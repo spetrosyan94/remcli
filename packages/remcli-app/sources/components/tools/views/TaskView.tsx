@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { ToolViewProps } from './_all';
 import { Text, View, ActivityIndicator, StyleSheet, Platform } from 'react-native';
-import { knownTools } from '../../tools/knownTools';
+import { knownTools } from '../knownTools';
 import { Ionicons } from '@expo/vector-icons';
 import { ToolCall } from '@/sync/typesMessage';
 import { useUnistyles } from 'react-native-unistyles';
