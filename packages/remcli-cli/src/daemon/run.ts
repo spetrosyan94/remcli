@@ -80,9 +80,9 @@ function resolveWebAppDir(): string | undefined {
         logger.debug(`[DAEMON RUN] REMCLI_WEB_DIR=${dir} does not contain index.html`);
     }
 
-    // 2. Relative to compiled dist/ (monorepo: dist/ → ../../../remcli-app/dist)
-    const fromDist = resolve(__dirname, '../../../remcli-app/dist');
-    if (existsSync(join(fromDist, 'index.html'))) return fromDist;
+    // 2. Relative to CLI package root (projectPath() = packages/remcli-cli/)
+    const fromProject = resolve(projectPath(), '../remcli-app/dist');
+    if (existsSync(join(fromProject, 'index.html'))) return fromProject;
 
     // 3. From cwd (running from monorepo root)
     const fromCwd = resolve(process.cwd(), 'packages/remcli-app/dist');
@@ -920,7 +920,8 @@ export async function startDaemon(): Promise<void> {
     const shutdownRequest = await resolvesWhenShutdownRequested;
     await cleanupAndShutdown(shutdownRequest.source, shutdownRequest.errorMessage);
   } catch (error) {
-    logger.debug('[DAEMON RUN][FATAL] Failed somewhere unexpectedly - exiting with code 1', error);
+    const errorMessage = error instanceof Error ? `${error.message}\n${error.stack}` : String(error);
+    logger.debug(`[DAEMON RUN][FATAL] Failed somewhere unexpectedly - exiting with code 1: ${errorMessage}`);
     process.exit(1);
   }
 }
