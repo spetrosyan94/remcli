@@ -30,6 +30,18 @@ export function isNgrokAvailable(): boolean {
 }
 
 /**
+ * Kill any existing ngrok processes to avoid port 4040 conflicts
+ */
+function killExistingNgrok(): void {
+    try {
+        execSync('pkill -f ngrok', { stdio: 'pipe' });
+        logger.debug('[TUNNEL] Killed existing ngrok processes');
+    } catch {
+        // No ngrok running — that's fine
+    }
+}
+
+/**
  * Start an ngrok tunnel for the given local port.
  *
  * Spawns `ngrok http <port>` and polls the local ngrok API to retrieve the
@@ -44,19 +56,34 @@ export async function startNgrokTunnel(localPort: number): Promise<TunnelInfo | 
         return null;
     }
 
+    // Kill any leftover ngrok from previous daemon sessions
+    killExistingNgrok();
+    await new Promise(resolve => setTimeout(resolve, 500));
+
     logger.debug(`[TUNNEL] Starting ngrok tunnel for port ${localPort}`);
 
-    // Spawn ngrok as a background process
+    // Spawn ngrok — capture stderr for error diagnostics
     const ngrokProcess: ChildProcess = spawn('ngrok', ['http', String(localPort)], {
-        stdio: 'ignore',
+        stdio: ['ignore', 'ignore', 'pipe'],
         detached: true
+    });
+
+    // Collect stderr for error messages
+    let stderrOutput = '';
+    ngrokProcess.stderr?.on('data', (data) => {
+        stderrOutput += data.toString();
     });
 
     // Handle early exit
     let exited = false;
+    let exitCode: number | null = null;
     ngrokProcess.on('exit', (code) => {
         exited = true;
+        exitCode = code;
         logger.debug(`[TUNNEL] ngrok exited with code ${code}`);
+        if (stderrOutput.trim()) {
+            logger.debug(`[TUNNEL] ngrok stderr: ${stderrOutput.trim()}`);
+        }
     });
 
     ngrokProcess.on('error', (error) => {
@@ -72,7 +99,9 @@ export async function startNgrokTunnel(localPort: number): Promise<TunnelInfo | 
 
     for (let i = 0; i < maxAttempts; i++) {
         if (exited) {
-            logger.debug('[TUNNEL] ngrok exited before tunnel was established');
+            const reason = stderrOutput.trim() || `exit code ${exitCode}`;
+            logger.debug(`[TUNNEL] ngrok exited before tunnel was established: ${reason}`);
+            console.log(`  ngrok failed: ${reason}`);
             return null;
         }
 

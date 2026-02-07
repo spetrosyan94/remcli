@@ -6,8 +6,8 @@
  * the app to connect directly to the daemon's local P2P server.
  */
 
-import * as Crypto from 'expo-crypto';
 import { decodeBase64 } from '@/encryption/base64';
+import { hmac_sha512 } from '@/encryption/hmac_sha512';
 import { setP2PConfig, clearP2PConfig, P2PConfig } from './serverConfig';
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -50,52 +50,17 @@ export function parseP2PQRCode(data: string): P2PQRPayload | null {
 const P2P_AUTH_CONTEXT = 'p2p-auth';
 
 /**
- * Derive bearer token from shared secret using HMAC-SHA256.
+ * Derive bearer token from shared secret using HMAC-SHA512.
  * Must produce the same output as the CLI daemon's `deriveBearerToken()`.
  *
- * Uses Web Crypto API (via expo-crypto digest) for cross-platform support.
+ * Uses hmac_sha512 which has platform-specific implementations:
+ * - Native: expo-crypto (secure native crypto)
+ * - Web: libsodium WASM (works on HTTP, no secure context needed)
  */
 export async function deriveBearerToken(sharedSecret: Uint8Array): Promise<string> {
-    // HMAC-SHA256 manual implementation using expo-crypto SHA256 digest
-    // This mirrors Node.js createHmac('sha256', key).update(data).digest('hex')
-    const blockSize = 64; // SHA256 block size in bytes
-
-    // Prepare key — if longer than block size, hash it first
-    let key = new Uint8Array(sharedSecret);
-    if (key.length > blockSize) {
-        const keyHash = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, new Uint8Array(key));
-        key = new Uint8Array(keyHash);
-    }
-
-    // Pad key to block size
-    const paddedKey = new Uint8Array(blockSize);
-    paddedKey.set(key);
-
-    // Create inner and outer padded keys
-    const innerKey = new Uint8Array(blockSize);
-    const outerKey = new Uint8Array(blockSize);
-    for (let i = 0; i < blockSize; i++) {
-        innerKey[i] = paddedKey[i] ^ 0x36;
-        outerKey[i] = paddedKey[i] ^ 0x5c;
-    }
-
-    // Data to HMAC
     const data = new TextEncoder().encode(P2P_AUTH_CONTEXT);
-
-    // Inner hash: SHA256(innerKey || data)
-    const innerData = new Uint8Array(blockSize + data.length);
-    innerData.set(innerKey);
-    innerData.set(data, blockSize);
-    const innerHash = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, innerData);
-
-    // Outer hash: SHA256(outerKey || innerHash)
-    const outerData = new Uint8Array(blockSize + 32); // 32 bytes for SHA256
-    outerData.set(outerKey);
-    outerData.set(new Uint8Array(innerHash), blockSize);
-    const finalHash = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, outerData);
-
-    // Convert to hex string
-    return Array.from(new Uint8Array(finalHash))
+    const hash = await hmac_sha512(sharedSecret, data);
+    return Array.from(hash)
         .map(b => b.toString(16).padStart(2, '0'))
         .join('');
 }
@@ -123,7 +88,7 @@ export async function connectP2P(payload: P2PQRPayload): Promise<{
     // Build endpoint URL
     let endpoint: string;
     if (payload.port === 0) {
-        // Tunnel mode — host IS the full URL
+        // Tunnel mode — host contains full URL with protocol (e.g. "https://abc.ngrok.io")
         endpoint = payload.host;
     } else {
         endpoint = `http://${payload.host}:${payload.port}`;

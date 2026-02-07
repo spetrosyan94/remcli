@@ -18,11 +18,13 @@ export function generateSharedSecret(): Uint8Array {
 }
 
 /**
- * Derive a bearer token from the shared secret using HMAC-SHA256
- * Both daemon and app compute the same token from the same secret
+ * Derive a bearer token from the shared secret using HMAC-SHA512
+ * Both daemon and app compute the same token from the same secret.
+ * SHA-512 is used because libsodium-wrappers (web) only exposes crypto_hash (SHA-512),
+ * and Web Crypto API (SHA-256) requires HTTPS which isn't available on LAN HTTP.
  */
 export function deriveBearerToken(sharedSecret: Uint8Array): string {
-    const hmac = createHmac('sha256', sharedSecret);
+    const hmac = createHmac('sha512', sharedSecret);
     hmac.update(P2P_AUTH_CONTEXT);
     return hmac.digest('hex');
 }

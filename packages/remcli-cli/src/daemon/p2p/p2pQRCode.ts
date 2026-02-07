@@ -10,7 +10,7 @@ import { encodeSharedSecret } from './p2pAuth';
 
 export interface P2PConnectionInfo {
     mode: 'p2p';
-    host: string;      // LAN IP or tunnel hostname
+    host: string;      // LAN IP (e.g. "192.168.1.5") or full tunnel URL (e.g. "https://abc.ngrok.io")
     port: number;       // Socket.IO server port (0 when using tunnel)
     key: string;        // Base64-encoded shared secret
     v: 1;               // Protocol version

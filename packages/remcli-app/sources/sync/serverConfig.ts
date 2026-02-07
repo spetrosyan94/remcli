@@ -1,7 +1,36 @@
-import { MMKV } from 'react-native-mmkv';
+import { Platform } from 'react-native';
 
-// Separate MMKV instance for server config that persists across logouts
-const serverConfigStorage = new MMKV({ id: 'server-config' });
+// ─── Storage Abstraction ────────────────────────────────────────
+// MMKV does not support web — use localStorage as fallback
+
+interface KVStorage {
+    getString(key: string): string | undefined;
+    set(key: string, value: string): void;
+    delete(key: string): void;
+}
+
+function createStorage(id: string): KVStorage {
+    if (Platform.OS === 'web') {
+        const prefix = `mmkv-${id}:`;
+        return {
+            getString(key: string) {
+                return localStorage.getItem(prefix + key) ?? undefined;
+            },
+            set(key: string, value: string) {
+                localStorage.setItem(prefix + key, value);
+            },
+            delete(key: string) {
+                localStorage.removeItem(prefix + key);
+            }
+        };
+    }
+
+    // Native: use MMKV
+    const { MMKV } = require('react-native-mmkv');
+    return new MMKV({ id });
+}
+
+const serverConfigStorage = createStorage('server-config');
 
 const SERVER_KEY = 'custom-server-url';
 const P2P_CONFIG_KEY = 'p2p-config';
@@ -42,7 +71,7 @@ export function getServerUrl(): string {
     const p2p = getP2PConfig();
     if (p2p) {
         if (p2p.port === 0) {
-            // Tunnel mode — host is the full URL
+            // Tunnel mode — host contains full URL with protocol (e.g. "https://abc.ngrok.io")
             return p2p.host;
         }
         return `http://${p2p.host}:${p2p.port}`;

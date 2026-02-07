@@ -30,23 +30,15 @@
 - **Claude Code** (`npm install -g @anthropic-ai/claude-code`) и/или [Codex](https://github.com/openai/codex) / [Gemini CLI](https://github.com/google-gemini/gemini-cli)
 - **macOS** или **Linux** (Windows через WSL)
 
-### 1. Установка
+### 1. Установка и сборка
 
 ```bash
 git clone https://github.com/spetrosyan94/remcli.git
 cd remcli
-npm install
+npm run setup
 ```
 
-### 2. Сборка
-
-Соберите CLI и веб-приложение (однократно):
-
-```bash
-npm run build:all
-```
-
-### 3. Запуск
+### 2. Запуск
 
 ```bash
 npm start
@@ -63,30 +55,17 @@ npm start
 
 > Демон сам раздаёт веб-приложение. Никакой отдельный сервер не нужен.
 
-### 5. Запуск AI-сессии
+### 5. Запуск AI-сессии (опционально)
 
-В новом терминале:
+Можно запускать сессии с телефона (через веб-интерфейс). Но если хотите видеть сессию **одновременно на Mac и на телефоне**, откройте новый терминал:
 
 ```bash
-# Claude Code (по умолчанию)
-remcli
-
-# Codex
-remcli codex
-
-# Gemini CLI
-remcli gemini
+npm run claude              # Claude Code
+npm run codex               # Codex
+npm run gemini              # Gemini CLI
 ```
 
-> Если `remcli` не установлен глобально, используйте `node packages/remcli-cli/bin/remcli.mjs` вместо `remcli`.
-
-Сессия появится на телефоне в реальном времени. Можно:
-
-- Читать сообщения и результаты инструментов
-- Отправлять промпты
-- Одобрять / отклонять запросы на использование инструментов
-- Переключаться между сессиями
-- Запускать новые сессии удалённо
+Сессия появится и в терминале Mac, и на телефоне. Управлять можно с обоих устройств.
 
 ---
 
@@ -102,21 +81,18 @@ npm run start:tunnel
 
 ## Команды
 
-### Из корня репозитория
-
 | Команда | Описание |
 |---------|----------|
-| `npm run build:all` | Сборка CLI + веб-приложения |
-| `npm run build` | Только сборка CLI |
-| `npm run build:web` | Только сборка веб-приложения |
-| `npm start` | Сборка CLI + запуск демона |
-| `npm run start:tunnel` | Сборка CLI + запуск с ngrok-туннелем |
+| `npm run setup` | Первоначальная установка (install + сборка) |
+| `npm run build:web` | Пересборка CLI + веб-приложения |
+| `npm start` | Запуск демона (LAN) |
+| `npm run start:tunnel` | Запуск демона через интернет (ngrok) |
+| `npm run claude` | Сессия Claude Code (видна на Mac и телефоне) |
+| `npm run codex` | Сессия Codex |
+| `npm run gemini` | Сессия Gemini CLI |
 | `npm run stop` | Остановить демон |
 | `npm run status` | Статус демона |
 | `npm run qr` | Показать QR-код повторно |
-| `npm run app` | Expo dev server (мобильное приложение) |
-| `npm run app:web` | Expo dev server (веб-версия) |
-| `npm run typecheck` | Проверка типов приложения |
 
 ### CLI (после глобальной установки)
 
@@ -159,24 +135,22 @@ docs/             Документация (протокол, шифровани
 
 ## Разработка
 
-### CLI
+Все команды для разработки имеют префикс `dev:`:
+
+| Команда | Описание |
+|---------|----------|
+| `npm run dev:app` | Expo dev server (мобильное приложение, hot reload) |
+| `npm run dev:web` | Expo dev server (веб-версия, hot reload) |
+| `npm run dev:cli` | Сборка CLI |
+| `npm run dev:typecheck` | Проверка типов приложения |
+
+### Пакетные команды
 
 ```bash
-npm run build                              # Сборка
-npm run dev --workspace=remcli             # Dev-режим (TSX, без сборки)
-npm run test --workspace=remcli            # Тесты
-npm run typecheck --workspace=remcli       # Проверка типов
-```
-
-### Приложение
-
-```bash
-npm run app                                # Expo dev server
-npm run app:web                            # Веб-версия (dev)
-npm run build:web                          # Продакшн веб-билд
+npm run dev --workspace=remcli             # CLI dev-режим (TSX, без сборки)
+npm run test --workspace=remcli            # CLI тесты
 npm run ios --workspace=remcli-app         # iOS симулятор
 npm run android --workspace=remcli-app     # Android эмулятор
-npm run typecheck                          # Проверка типов
 ```
 
 ### macOS десктоп (Tauri)
@@ -192,7 +166,7 @@ npm run tauri:build:production             # Продакшн сборка
 ## Безопасность
 
 - **QR-код** — демон генерирует случайный 32-байтный секрет. Он передаётся только через QR-код в вашем терминале
-- **Аутентификация** — обе стороны вычисляют Bearer-токен через `HMAC-SHA256(secret, "p2p-auth")`. Секрет никогда не передаётся по сети
+- **Аутентификация** — обе стороны вычисляют Bearer-токен через `HMAC-SHA512(secret, "p2p-auth")`. Секрет никогда не передаётся по сети
 - **Шифрование** — все данные сессий зашифрованы AES-256-GCM (ключи на сессию) или XSalsa20-Poly1305
 - **Локальность** — P2P-сервер работает на вашей машине. Данные не покидают локальную сеть (кроме режима `--tunnel`)
 

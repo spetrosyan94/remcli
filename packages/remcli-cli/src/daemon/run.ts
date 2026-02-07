@@ -757,7 +757,8 @@ export async function startDaemon(): Promise<void> {
             logger.debug(`[DAEMON RUN] Tunnel started: ${tunnelUrl}`);
 
             // Show QR with tunnel URL (accessible from anywhere)
-            const tunnelConnectionInfo = buildP2PConnectionInfo(tunnelUrl.replace(/^https?:\/\//, ''), 0, sharedSecret);
+            // Keep full URL with protocol in host field — app needs it to connect
+            const tunnelConnectionInfo = buildP2PConnectionInfo(tunnelUrl.replace(/\/$/, ''), 0, sharedSecret);
             const tunnelQRUrl = buildP2PQRUrl(tunnelConnectionInfo, tunnelUrl);
             displayP2PQRCode(tunnelQRUrl);
             displayP2PConnectionStatus(lanIP, p2pServer.port, tunnelUrl);
