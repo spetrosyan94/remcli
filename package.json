@@ -1,0 +1,21 @@
+{
+    "name": "remcli-monorepo",
+    "private": true,
+    "workspaces": [
+        "packages/remcli-app",
+        "packages/remcli-cli"
+    ],
+    "scripts": {
+        "build": "npm run build --workspace=remcli",
+        "build:web": "npm run export:web --workspace=remcli-app",
+        "build:all": "npm run build --workspace=remcli && npm run export:web --workspace=remcli-app",
+        "start": "npm run build --workspace=remcli && node packages/remcli-cli/bin/remcli.mjs daemon start",
+        "start:tunnel": "npm run build --workspace=remcli && node packages/remcli-cli/bin/remcli.mjs daemon start --tunnel",
+        "stop": "node packages/remcli-cli/bin/remcli.mjs daemon stop",
+        "status": "node packages/remcli-cli/bin/remcli.mjs daemon status",
+        "qr": "node packages/remcli-cli/bin/remcli.mjs daemon qr",
+        "app": "npm run start --workspace=remcli-app",
+        "app:web": "npm run web --workspace=remcli-app",
+        "typecheck": "npm run typecheck --workspace=remcli-app"
+    }
+}

@@ -1,0 +1,12 @@
+{
+  "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Remcli (preview)",
+  "identifier": "com.slopus.remcli.preview",
+  "app": {
+    "windows": [
+      {
+        "title": "Remcli (preview)"
+      }
+    ]
+  }
+}

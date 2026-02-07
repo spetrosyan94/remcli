@@ -1,0 +1,32 @@
+name: Expo App TypeScript typecheck
+
+on:
+    pull_request:
+        paths:
+            - 'packages/remcli-app/**'
+            - '.github/workflows/typecheck.yml'
+    push:
+        branches:
+            - main
+        paths:
+            - 'packages/remcli-app/**'
+            - '.github/workflows/typecheck.yml'
+
+jobs:
+    typecheck:
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 20
+
+            - name: Install dependencies
+              run: npm install
+
+            - name: TypeScript typecheck
+              run: npm -w remcli-app run typecheck

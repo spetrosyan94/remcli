@@ -1,0 +1,213 @@
+name: CLI Smoke Test
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'packages/remcli-cli/**'
+      - '.github/workflows/cli-smoke-test.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'packages/remcli-cli/**'
+      - '.github/workflows/cli-smoke-test.yml'
+  workflow_dispatch:
+
+jobs:
+  smoke-test-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20, 24]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Build package
+      run: npm -w remcli run build
+
+    - name: Pack package
+      run: npm -w remcli pack
+
+    - name: Install packed package globally
+      run: |
+        PACKAGE_FILE=$(ls packages/remcli-cli/*.tgz)
+        npm install -g "./$PACKAGE_FILE"
+
+    - name: Test binary execution
+      run: |
+        # Test that the binary starts successfully
+        echo "Testing remcli --help..."
+        timeout 30s remcli --help || {
+          echo "Error: remcli --help failed or timed out"
+          exit 1
+        }
+
+        echo "Testing remcli --version..."
+        timeout 10s remcli --version || {
+          echo "Error: remcli --version failed or timed out"
+          exit 1
+        }
+
+        echo "Testing remcli doctor..."
+        timeout 30s remcli doctor || {
+          echo "Error: remcli doctor failed or timed out"
+          exit 1
+        }
+
+        echo "Testing remcli daemon status..."
+        timeout 10s remcli daemon status || {
+          echo "Error: remcli daemon status failed or timed out"
+          exit 1
+        }
+
+        echo "Smoke test passed on Linux!"
+
+  smoke-test-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        node-version: [20, 24]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Build package
+      run: npm -w remcli run build
+
+    - name: Pack package
+      run: npm -w remcli run pack
+
+    - name: Install packed package globally
+      shell: cmd
+      run: |
+        for %%f in (packages\remcli-cli\*.tgz) do npm install -g "%%f"
+
+    - name: Debug npm global installation structure
+      shell: cmd
+      run: |
+        for /f "tokens=*" %%i in ('npm config get prefix') do set NPM_PREFIX=%%i
+        echo NPM_PREFIX: %NPM_PREFIX%
+        echo Listing npm prefix directory:
+        dir "%NPM_PREFIX%" 2>nul || echo Failed to list NPM_PREFIX
+        echo.
+        echo Checking for node_modules in npm prefix:
+        if exist "%NPM_PREFIX%\node_modules" (
+          echo Found node_modules directory
+          dir "%NPM_PREFIX%\node_modules" 2>nul
+          echo.
+          echo Checking for remcli package:
+          if exist "%NPM_PREFIX%\node_modules\remcli" (
+            echo Found remcli package
+            dir "%NPM_PREFIX%\node_modules\remcli" 2>nul
+            echo.
+            echo Checking for dist directory:
+            if exist "%NPM_PREFIX%\node_modules\remcli\dist" (
+              echo Found dist directory
+              dir "%NPM_PREFIX%\node_modules\remcli\dist" 2>nul
+            ) else (
+              echo No dist directory found
+            )
+          ) else (
+            echo No remcli package found
+          )
+        ) else (
+          echo No node_modules directory found
+        )
+
+    - name: Test binary execution
+      shell: cmd
+      run: |
+        @echo on
+
+        rem Get npm global prefix and add to PATH
+        for /f "tokens=*" %%i in ('npm config get prefix') do set NPM_PREFIX=%%i
+        set PATH=%NPM_PREFIX%;%PATH%
+        echo NPM_PREFIX: %NPM_PREFIX%
+        echo Current PATH: %PATH%
+
+        rem Debug: Check if remcli exists in various locations
+        echo Checking for remcli binary...
+        where remcli 2>nul && echo Found remcli in PATH || echo remcli not found in PATH
+        if exist "%NPM_PREFIX%\remcli.cmd" echo Found remcli.cmd in NPM_PREFIX
+        if exist "%NPM_PREFIX%\node_modules\.bin\remcli.cmd" echo Found remcli.cmd in .bin directory
+        dir "%NPM_PREFIX%\*remcli*" 2>nul || echo No remcli files found in NPM_PREFIX
+
+        rem Debug: Check the actual contents and encoding of the installed file
+        if exist "%NPM_PREFIX%\remcli.cmd" (
+          echo File size and type:
+          dir "%NPM_PREFIX%\remcli.cmd"
+          echo.
+          echo First few lines of the file:
+          type "%NPM_PREFIX%\remcli.cmd" | head -5
+          echo.
+          echo Hex dump of first 50 bytes to check line endings:
+          powershell -Command "Get-Content '%NPM_PREFIX%\remcli.cmd' -Encoding Byte -TotalCount 50 | ForEach-Object { '{0:X2}' -f $_ } | Join-String -Separator ' '"
+          echo.
+          echo Testing with direct path...
+          "%NPM_PREFIX%\remcli.cmd" --help
+        ) else (
+          echo Testing remcli --help...
+          remcli --help
+        )
+        if errorlevel 1 (
+          echo Error: remcli --help failed
+          exit /b 1
+        )
+
+        rem Test version
+        if exist "%NPM_PREFIX%\remcli.cmd" (
+          "%NPM_PREFIX%\remcli.cmd" --version
+        ) else (
+          remcli --version
+        )
+        if errorlevel 1 (
+          echo Error: remcli --version failed
+          exit /b 1
+        )
+
+        rem Test doctor
+        echo Testing remcli doctor...
+        if exist "%NPM_PREFIX%\remcli.cmd" (
+          "%NPM_PREFIX%\remcli.cmd" doctor
+        ) else (
+          remcli doctor
+        )
+        if errorlevel 1 (
+          echo Error: remcli doctor failed
+          exit /b 1
+        )
+
+        rem Test daemon status
+        echo Testing remcli daemon status...
+        if exist "%NPM_PREFIX%\remcli.cmd" (
+          "%NPM_PREFIX%\remcli.cmd" daemon status
+        ) else (
+          remcli daemon status
+        )
+        if errorlevel 1 (
+          echo Error: remcli daemon status failed
+          exit /b 1
+        )
+
+        echo Smoke test passed on Windows!
+
+# We don't need a smoke test for macOS because most contributors are developing on macOS.
