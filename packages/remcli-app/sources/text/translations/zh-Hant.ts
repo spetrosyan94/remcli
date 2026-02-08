@@ -308,24 +308,6 @@ export const zhHant: TranslationStructure = {
         placeholder: '輸入命令或搜尋...',
     },
 
-    server: {
-        // Used by Server Configuration screen (app/(app)/server.tsx)
-        serverConfiguration: '伺服器設定',
-        enterServerUrl: '請輸入伺服器 URL',
-        notValidRemcliServer: '不是有效的 Remcli 伺服器',
-        changeServer: '更改伺服器',
-        continueWithServer: '繼續使用此伺服器？',
-        resetToDefault: '重設為預設',
-        resetServerDefault: '重設伺服器為預設值？',
-        validating: '驗證中...',
-        validatingServer: '正在驗證伺服器...',
-        serverReturnedError: '伺服器返回錯誤',
-        failedToConnectToServer: '連線伺服器失敗',
-        currentlyUsingCustomServer: '目前使用自訂伺服器',
-        customServerUrlLabel: '自訂伺服器 URL',
-        advancedFeatureFooter: "這是一個進階功能。只有在您知道自己在做什麼時才更改伺服器。更改伺服器後您需要重新登入。"
-    },
-
     sessionInfo: {
         // Used by Session Info screen (app/(app)/session/[id]/info.tsx)
         killSession: '終止工作階段',

@@ -5,7 +5,7 @@
 
 import { io, Socket } from 'socket.io-client';
 import { logger } from '@/ui/logger';
-import { configuration } from '@/configuration';
+import { getEffectiveServerUrl } from '@/daemon/p2p/p2pSession';
 import { MachineMetadata, DaemonState, Machine, Update, UpdateMachineBody } from './types';
 import { registerCommonHandlers, SpawnSessionOptions, SpawnSessionResult } from '../modules/common/registerCommonHandlers';
 import { encodeBase64, decodeBase64, encrypt, decrypt } from './encryption';
@@ -214,7 +214,7 @@ export class ApiMachineClient {
     }
 
     connect() {
-        const serverUrl = configuration.serverUrl.replace(/^http/, 'ws');
+        const serverUrl = getEffectiveServerUrl().replace(/^http/, 'ws');
         logger.debug(`[API MACHINE] Connecting to ${serverUrl}`);
 
         this.socket = io(serverUrl, {

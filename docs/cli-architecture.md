@@ -91,11 +91,9 @@ graph LR
     subgraph "Environment Overrides"
         direction TB
         E1[REMCLI_HOME_DIR]
-        E2[REMCLI_SERVER_URL]
-        E3[REMCLI_WEBAPP_URL]
-        E4[REMCLI_VARIANT]
-        E5[REMCLI_EXPERIMENTAL]
-        E6[REMCLI_DISABLE_CAFFEINATE]
+        E2[REMCLI_VARIANT]
+        E3[REMCLI_EXPERIMENTAL]
+        E4[REMCLI_DISABLE_CAFFEINATE]
     end
 
     E1 -.-> settings & access & daemon & logs
@@ -108,7 +106,6 @@ Local state lives under `~/.remcli` (or `REMCLI_HOME_DIR`):
 - `logs/`: CLI/daemon logs.
 
 Configuration lives in `src/configuration.ts`:
-- `REMCLI_SERVER_URL` and `REMCLI_WEBAPP_URL` override defaults.
 - `REMCLI_VARIANT`, `REMCLI_EXPERIMENTAL`, `REMCLI_DISABLE_CAFFEINATE` control behavior.
 
 ## API client architecture

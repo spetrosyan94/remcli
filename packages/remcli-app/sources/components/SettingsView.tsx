@@ -13,8 +13,6 @@ import { ItemList } from '@/components/ItemList';
 import { useConnectTerminal } from '@/hooks/useConnectTerminal';
 import { useLocalSettingMutable, useSetting } from '@/sync/storage';
 import { sync } from '@/sync/sync';
-import { isUsingCustomServer } from '@/sync/serverConfig';
-
 import { Modal } from '@/modal';
 import { useMultiClick } from '@/hooks/useMultiClick';
 import { useAllMachines } from '@/sync/storage';
@@ -36,7 +34,6 @@ export const SettingsView = React.memo(function SettingsView() {
     const auth = useAuth();
     const [devModeEnabled, setDevModeEnabled] = useLocalSettingMutable('devModeEnabled');
     const experiments = useSetting('experiments');
-    const isCustomServer = isUsingCustomServer();
     const allMachines = useAllMachines();
     const profile = useProfile();
     const displayName = getDisplayName(profile);

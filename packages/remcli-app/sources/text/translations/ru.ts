@@ -281,24 +281,6 @@ export const ru: TranslationStructure = {
         viewAll: 'Посмотреть все сессии',
     },
 
-    server: {
-        // Used by Server Configuration screen (app/(app)/server.tsx)
-        serverConfiguration: 'Настройка сервера',
-        enterServerUrl: 'Пожалуйста, введите URL сервера',
-        notValidRemcliServer: 'Это не валидный сервер Remcli',
-        changeServer: 'Изменить сервер',
-        continueWithServer: 'Продолжить с этим сервером?',
-        resetToDefault: 'Сбросить по умолчанию',
-        resetServerDefault: 'Сбросить сервер по умолчанию?',
-        validating: 'Проверка...',
-        validatingServer: 'Проверка сервера...',
-        serverReturnedError: 'Сервер вернул ошибку',
-        failedToConnectToServer: 'Не удалось подключиться к серверу',
-        currentlyUsingCustomServer: 'Сейчас используется пользовательский сервер',
-        customServerUrlLabel: 'URL пользовательского сервера',
-        advancedFeatureFooter: 'Это расширенная функция. Изменяйте сервер только если знаете, что делаете. Вам нужно будет выйти и войти снова после изменения серверов.'
-    },
-
     sessionInfo: {
         // Used by Session Info screen (app/(app)/session/[id]/info.tsx)
         killSession: 'Завершить сессию',

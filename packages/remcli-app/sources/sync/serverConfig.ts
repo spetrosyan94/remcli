@@ -32,7 +32,6 @@ function createStorage(id: string): KVStorage {
 
 const serverConfigStorage = createStorage('server-config');
 
-const SERVER_KEY = 'custom-server-url';
 const P2P_CONFIG_KEY = 'p2p-config';
 // ─── P2P Config ──────────────────────────────────────────────────
 
@@ -67,7 +66,6 @@ export function isP2PMode(): boolean {
 // ─── Server URL ──────────────────────────────────────────────────
 
 export function getServerUrl(): string {
-    // P2P config takes priority
     const p2p = getP2PConfig();
     if (p2p) {
         if (p2p.port === 0) {
@@ -77,26 +75,11 @@ export function getServerUrl(): string {
         return `http://${p2p.host}:${p2p.port}`;
     }
 
-    return serverConfigStorage.getString(SERVER_KEY) ||
-           process.env.EXPO_PUBLIC_REMCLI_SERVER_URL ||
-           '';
+    return '';
 }
 
-export function setServerUrl(url: string | null): void {
-    if (url && url.trim()) {
-        serverConfigStorage.set(SERVER_KEY, url.trim());
-    } else {
-        serverConfigStorage.delete(SERVER_KEY);
-    }
-}
-
-export function isUsingCustomServer(): boolean {
-    return isP2PMode() || !!serverConfigStorage.getString(SERVER_KEY);
-}
-
-export function getServerInfo(): { hostname: string; port?: number; isCustom: boolean; isP2P: boolean } {
+export function getServerInfo(): { hostname: string; port?: number; isP2P: boolean } {
     const url = getServerUrl();
-    const isCustom = isUsingCustomServer();
     const p2p = isP2PMode();
 
     try {
@@ -105,31 +88,13 @@ export function getServerInfo(): { hostname: string; port?: number; isCustom: bo
         return {
             hostname: parsed.hostname,
             port,
-            isCustom,
             isP2P: p2p
         };
     } catch {
         return {
             hostname: url,
             port: undefined,
-            isCustom,
             isP2P: p2p
         };
-    }
-}
-
-export function validateServerUrl(url: string): { valid: boolean; error?: string } {
-    if (!url || !url.trim()) {
-        return { valid: false, error: 'Server URL cannot be empty' };
-    }
-
-    try {
-        const parsed = new URL(url);
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-            return { valid: false, error: 'Server URL must use HTTP or HTTPS protocol' };
-        }
-        return { valid: true };
-    } catch {
-        return { valid: false, error: 'Invalid URL format' };
     }
 }

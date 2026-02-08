@@ -5,6 +5,7 @@
  */
 
 import { existsSync } from 'fs';
+import { randomUUID } from 'node:crypto';
 import fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { Server as SocketIOServer } from 'socket.io';
@@ -116,6 +117,9 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
         next();
     });
 
+    // Track sessions that have already received message replay to avoid duplicates on reconnect
+    const replayedSessions = new Set<string>();
+
     // Socket.IO connection handler
     io.on('connection', (socket) => {
         const { clientType, sessionId, machineId } = socket.handshake.auth || {};
@@ -132,6 +136,37 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
 
         router.addConnection(connection);
         registerSocketHandlers(socket, connection, store, router);
+
+        // Replay pending messages for session-scoped connections (first connect only).
+        // Fixes race condition: app sends message before session process connects to Socket.IO,
+        // so the broadcast is missed. On connect, replay all stored messages for this session.
+        if (connectionType === 'session-scoped' && sessionId && !replayedSessions.has(sessionId)) {
+            replayedSessions.add(sessionId);
+            const messages = store.getMessages(sessionId);
+            if (messages.length > 0) {
+                logger.debug(`[P2P SERVER] Replaying ${messages.length} pending message(s) for session ${sessionId}`);
+                // getMessages returns newest first — reverse for chronological order
+                for (const msg of [...messages].reverse()) {
+                    socket.emit('update', {
+                        id: randomUUID(),
+                        seq: store.allocateUserSeq(),
+                        body: {
+                            t: 'new-message',
+                            sid: sessionId,
+                            message: {
+                                id: msg.id,
+                                seq: msg.seq,
+                                content: msg.content,
+                                localId: msg.localId,
+                                createdAt: msg.createdAt,
+                                updatedAt: msg.updatedAt
+                            }
+                        },
+                        createdAt: Date.now()
+                    });
+                }
+            }
+        }
     });
 
     // Start listening

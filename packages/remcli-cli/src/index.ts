@@ -20,7 +20,6 @@ import { getLatestDaemonLog } from './ui/logger'
 import { killRunawayRemcliProcesses } from './daemon/doctor'
 import { install } from './daemon/install'
 import { uninstall } from './daemon/uninstall'
-import { ApiClient } from './api/api'
 import { runDoctorCommand } from './ui/doctor'
 import { listDaemonSessions, stopDaemonSession } from './daemon/controlClient'
 import { handleAuthCommand } from './commands/auth'
@@ -206,22 +205,17 @@ import { execFileSync } from 'node:child_process'
       
       try {
         const { saveGoogleCloudProjectToConfig } = await import('@/gemini/utils/config');
-        const { readCredentials } = await import('@/persistence');
-        const { ApiClient } = await import('@/api/api');
-        
-        // Try to get current user email from Remcli cloud token
+        const { getVendorToken } = await import('@/api/vendorTokens');
+
+        // Try to get current user email from local vendor token
         let userEmail: string | undefined = undefined;
         try {
-          const credentials = await readCredentials();
-          if (credentials) {
-            const api = await ApiClient.create(credentials);
-            const vendorToken = await api.getVendorToken('gemini');
-            if (vendorToken?.oauth?.id_token) {
-              const parts = vendorToken.oauth.id_token.split('.');
-              if (parts.length === 3) {
-                const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-                userEmail = payload.email;
-              }
+          const vendorToken = getVendorToken('gemini') as any;
+          if (vendorToken?.oauth?.id_token) {
+            const parts = vendorToken.oauth.id_token.split('.');
+            if (parts.length === 3) {
+              const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+              userEmail = payload.email;
             }
           }
         } catch {
@@ -723,42 +717,6 @@ ${chalk.bold('Examples:')}
     process.exit(1)
   }
 
-  // Load credentials
-  let credentials = await readCredentials()
-  if (!credentials) {
-    console.error(chalk.red('Error: Not authenticated. Please run "remcli auth login" first.'))
-    process.exit(1)
-  }
-
-  console.log(chalk.blue('📱 Sending push notification...'))
-
-  try {
-    // Create API client and send push notification
-    const api = await ApiClient.create(credentials);
-
-    // Use custom title or default to "Remcli"
-    const notificationTitle = title || 'Remcli'
-
-    // Send the push notification
-    api.push().sendToAllDevices(
-      notificationTitle,
-      message,
-      {
-        source: 'cli',
-        timestamp: Date.now()
-      }
-    )
-
-    console.log(chalk.green('✓ Push notification sent successfully!'))
-    console.log(chalk.gray(`  Title: ${notificationTitle}`))
-    console.log(chalk.gray(`  Message: ${message}`))
-    console.log(chalk.gray('  Check your mobile device for the notification.'))
-
-    // Give a moment for the async operation to start
-    await new Promise(resolve => setTimeout(resolve, 1000))
-
-  } catch (error) {
-    console.error(chalk.red('✗ Failed to send push notification'))
-    throw error
-  }
+  console.log(chalk.yellow('⚠️  Push notifications are not available in P2P mode.'))
+  console.log(chalk.gray('  Push notifications require a cloud server which has been removed.'))
 }

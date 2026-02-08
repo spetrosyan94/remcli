@@ -339,24 +339,6 @@ export const ja: TranslationStructure = {
         placeholder: 'コマンドを入力または検索...',
     },
 
-    server: {
-        // Used by Server Configuration screen (app/(app)/server.tsx)
-        serverConfiguration: 'サーバー設定',
-        enterServerUrl: 'サーバーURLを入力してください',
-        notValidRemcliServer: '有効なRemcli Serverではありません',
-        changeServer: 'サーバーを変更',
-        continueWithServer: 'このサーバーで続行しますか？',
-        resetToDefault: 'デフォルトにリセット',
-        resetServerDefault: 'サーバーをデフォルトにリセットしますか？',
-        validating: '検証中...',
-        validatingServer: 'サーバーを検証中...',
-        serverReturnedError: 'サーバーがエラーを返しました',
-        failedToConnectToServer: 'サーバーへの接続に失敗しました',
-        currentlyUsingCustomServer: '現在カスタムサーバーを使用中',
-        customServerUrlLabel: 'カスタムサーバーURL',
-        advancedFeatureFooter: "これは高度な機能です。何をしているか理解している場合のみサーバーを変更してください。サーバー変更後は再度ログインが必要です。"
-    },
-
     sessionInfo: {
         // Used by Session Info screen (app/(app)/session/[id]/info.tsx)
         killSession: 'セッションを終了',

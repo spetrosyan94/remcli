@@ -10,7 +10,7 @@ import * as Application from 'expo-application';
 import { useLocalSettingMutable, useSocketStatus } from '@/sync/storage';
 import { Modal } from '@/modal';
 import { sync } from '@/sync/sync';
-import { getServerUrl, setServerUrl, validateServerUrl } from '@/sync/serverConfig';
+import { getServerUrl } from '@/sync/serverConfig';
 import { Switch } from '@/components/Switch';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -22,29 +22,6 @@ export default function DevScreen() {
     const socketStatus = useSocketStatus();
     const anonymousId = sync.encryption!.anonID;
     const { theme } = useUnistyles();
-
-    const handleEditServerUrl = async () => {
-        const currentUrl = getServerUrl();
-
-        const newUrl = await Modal.prompt(
-            'Edit API Endpoint',
-            'Enter the server URL:',
-            {
-                defaultValue: currentUrl,
-                confirmText: 'Save'
-            }
-        );
-
-        if (newUrl && newUrl !== currentUrl) {
-            const validation = validateServerUrl(newUrl);
-            if (validation.valid) {
-                setServerUrl(newUrl);
-                Modal.alert('Success', 'Server URL updated. Please restart the app for changes to take effect.');
-            } else {
-                Modal.alert('Invalid URL', validation.error || 'Please enter a valid URL');
-            }
-        }
-    };
 
     const handleClearCache = async () => {
         const confirmed = await Modal.confirm(
@@ -326,9 +303,9 @@ export default function DevScreen() {
             {/* Network */}
             <ItemGroup title="Network">
                 <Item
-                    title="API Endpoint"
-                    detail={getServerUrl()}
-                    onPress={handleEditServerUrl}
+                    title="P2P Server URL"
+                    detail={getServerUrl() || 'Not connected'}
+                    showChevron={false}
                     detailStyle={{ flex: 1, textAlign: 'right', minWidth: '70%' }}
                 />
                 <Item

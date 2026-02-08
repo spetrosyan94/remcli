@@ -86,6 +86,116 @@ export function registerP2PRestRoutes(
         return { status: 'ok', mode: 'p2p' };
     });
 
+    // ─── GET /v1/account/settings (stub for P2P) ────────────────
+    typed.get('/v1/account/settings', async () => {
+        return { settings: null, settingsVersion: 0 };
+    });
+
+    // ─── GET /v1/account/profile (stub for P2P) ──────────────────
+    typed.get('/v1/account/profile', async () => {
+        return {
+            id: 'p2p-local',
+            timestamp: Date.now(),
+            firstName: null,
+            lastName: null,
+            avatar: null,
+            github: null
+        };
+    });
+
+    // ─── POST /v1/account/settings (stub for P2P) ────────────────
+    typed.post('/v1/account/settings', async () => {
+        return { success: true };
+    });
+
+    // ─── GET /v1/artifacts (stub for P2P) ─────────────────────────
+    typed.get('/v1/artifacts', async () => {
+        return [];
+    });
+
+    // ─── GET /v1/artifacts/:artifactId (stub for P2P) ──────────────
+    typed.get('/v1/artifacts/:artifactId', {
+        schema: {
+            params: z.object({
+                artifactId: z.string()
+            })
+        }
+    }, async (_request, reply) => {
+        reply.code(404);
+        return { error: 'Artifact not found' };
+    });
+
+    // ─── POST /v1/artifacts (stub for P2P) ──────────────────────────
+    typed.post('/v1/artifacts', async (_request, reply) => {
+        reply.code(501);
+        return { error: 'Artifacts not supported in P2P mode' };
+    });
+
+    // ─── POST /v1/artifacts/:artifactId (stub for P2P) ─────────────
+    typed.post('/v1/artifacts/:artifactId', {
+        schema: {
+            params: z.object({
+                artifactId: z.string()
+            })
+        }
+    }, async (_request, reply) => {
+        reply.code(501);
+        return { error: 'Artifacts not supported in P2P mode' };
+    });
+
+    // ─── DELETE /v1/artifacts/:artifactId (stub for P2P) ────────────
+    typed.delete('/v1/artifacts/:artifactId', {
+        schema: {
+            params: z.object({
+                artifactId: z.string()
+            })
+        }
+    }, async (_request, reply) => {
+        reply.code(501);
+        return { error: 'Artifacts not supported in P2P mode' };
+    });
+
+    // ─── GET /v1/kv (stub for P2P — returns empty list) ────────────
+    typed.get('/v1/kv', async () => {
+        return { items: [] };
+    });
+
+    // ─── GET /v1/kv/:key (stub for P2P) ────────────────────────────
+    typed.get('/v1/kv/:key', {
+        schema: {
+            params: z.object({
+                key: z.string()
+            })
+        }
+    }, async (_request, reply) => {
+        reply.code(404);
+        return { error: 'Key not found' };
+    });
+
+    // ─── POST /v1/kv/bulk (stub for P2P) ───────────────────────────
+    typed.post('/v1/kv/bulk', async () => {
+        return { values: [] };
+    });
+
+    // ─── POST /v1/kv (stub for P2P — mutate) ──────────────────────
+    typed.post('/v1/kv', async (request) => {
+        const body = request.body as { mutations?: Array<{ key: string }> };
+        const mutations = body.mutations || [];
+        return {
+            success: true,
+            results: mutations.map((m: { key: string }) => ({
+                key: m.key,
+                version: 1
+            }))
+        };
+    });
+
+    // ─── POST /v1/voice/token (stub for P2P) ──────────────────────
+    typed.post('/v1/voice/token', async (_request, reply) => {
+        reply.code(400);
+        return { error: 'Voice not supported in P2P mode' };
+    });
+
     // ─── GET /v1/sessions ────────────────────────────────────────
     typed.get('/v1/sessions', async () => {
         const sessions = store.getSessions().slice(0, 150);

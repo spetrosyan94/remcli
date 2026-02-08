@@ -4,7 +4,7 @@ import * as tmp from 'tmp';
 
 import { TrackedSession } from './types';
 import { MachineMetadata, Metadata } from '@/api/types';
-import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
+import { SpawnSessionOptions, SpawnSessionResult, registerCommonHandlers } from '@/modules/common/registerCommonHandlers';
 import { logger } from '@/ui/logger';
 import { configuration } from '@/configuration';
 import { startCaffeinate, stopCaffeinate } from '@/utils/caffeinate';
@@ -26,6 +26,8 @@ import { generateSharedSecret, encodeSharedSecret, deriveBearerToken } from './p
 import { getLanIPAddress } from './p2p/networkUtils';
 import { buildP2PConnectionInfo, buildP2PQRUrl, displayP2PQRCode, displayP2PConnectionStatus } from './p2p/p2pQRCode';
 import { startNgrokTunnel } from './p2p/tunnel';
+import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
+import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 
 // Prepare initial metadata
 export const initialMachineMetadata: MachineMetadata = {
@@ -741,6 +743,107 @@ export async function startDaemon(): Promise<void> {
     );
     logger.debug(`[DAEMON RUN] Machine registered in P2P store: ${machineId}`);
 
+    // ─── Self-connect as machine client for RPC handling ────────────
+    // In P2P mode, the daemon IS the server. To handle RPC calls from the
+    // mobile app (e.g., spawn-remcli-session), the daemon connects to its
+    // own P2P server as a machine-scoped Socket.IO client and registers
+    // RPC handlers via the existing forwarding mechanism.
+    const machineSocket: ClientSocket = ioClient(`http://127.0.0.1:${p2pServer.port}`, {
+        transports: ['websocket'],
+        auth: {
+            token: bearerToken,
+            clientType: 'machine-scoped',
+            machineId
+        },
+        path: '/v1/updates',
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000
+    });
+
+    const machineRpcManager = new RpcHandlerManager({
+        scopePrefix: machineId,
+        encryptionKey: sharedSecret,
+        encryptionVariant: 'legacy',
+        logger: (msg, data) => logger.debug(msg, data)
+    });
+
+    // Register common handlers (bash, readFile, listDirectory, etc.)
+    registerCommonHandlers(machineRpcManager, process.cwd());
+
+    // Register daemon-specific RPC handlers
+    machineRpcManager.registerHandler('spawn-remcli-session', async (params: any) => {
+        const { directory, sessionId: sid, machineId: targetMachineId, approvedNewDirectoryCreation, agent, token, environmentVariables } = params || {};
+        logger.debugLargeJson('[DAEMON RUN] RPC spawn-remcli-session', params);
+
+        if (!directory) {
+            throw new Error('Directory is required');
+        }
+
+        const result = await spawnSession({
+            directory,
+            sessionId: sid,
+            machineId: targetMachineId,
+            approvedNewDirectoryCreation,
+            agent,
+            token,
+            environmentVariables
+        });
+
+        switch (result.type) {
+            case 'success':
+                logger.debug(`[DAEMON RUN] RPC spawned session ${result.sessionId}`);
+                return { type: 'success', sessionId: result.sessionId };
+            case 'requestToApproveDirectoryCreation':
+                logger.debug(`[DAEMON RUN] RPC requesting directory approval: ${result.directory}`);
+                return { type: 'requestToApproveDirectoryCreation', directory: result.directory };
+            case 'error':
+                throw new Error(result.errorMessage);
+        }
+    });
+
+    machineRpcManager.registerHandler('stop-session', (params: any) => {
+        const { sessionId: targetSessionId } = params || {};
+        if (!targetSessionId) {
+            throw new Error('Session ID is required');
+        }
+
+        const success = stopSession(targetSessionId);
+        if (!success) {
+            throw new Error('Session not found or failed to stop');
+        }
+
+        logger.debug(`[DAEMON RUN] RPC stopped session ${targetSessionId}`);
+        return { message: 'Session stopped' };
+    });
+
+    machineRpcManager.registerHandler('stop-daemon', () => {
+        logger.debug('[DAEMON RUN] RPC stop-daemon received');
+        setTimeout(() => requestShutdown('remcli-app'), 100);
+        return { message: 'Daemon stop request acknowledged' };
+    });
+
+    machineSocket.on('connect', () => {
+        logger.debug('[DAEMON RUN] Machine RPC socket connected to own P2P server');
+        machineRpcManager.onSocketConnect(machineSocket);
+    });
+
+    machineSocket.on('rpc-request', async (data: { method: string; params: string }, callback: (response: string) => void) => {
+        logger.debug(`[DAEMON RUN] Machine RPC request: ${data.method}`);
+        callback(await machineRpcManager.handleRequest(data));
+    });
+
+    machineSocket.on('disconnect', () => {
+        logger.debug('[DAEMON RUN] Machine RPC socket disconnected');
+        machineRpcManager.onSocketDisconnect();
+    });
+
+    machineSocket.on('connect_error', (error: Error) => {
+        logger.debug(`[DAEMON RUN] Machine RPC socket error: ${error.message}`);
+    });
+
+    logger.debug('[DAEMON RUN] Machine RPC socket connecting to own P2P server');
+
     // Optionally start ngrok tunnel for remote access
     const useTunnel = process.argv.includes('--tunnel') || process.env.REMCLI_TUNNEL === 'true';
     let tunnelStop: (() => void) | null = null;
@@ -886,6 +989,14 @@ export async function startDaemon(): Promise<void> {
         logger.debug('[DAEMON RUN] P2P store saved to disk');
       } catch (error) {
         logger.debug('[DAEMON RUN] Failed to save P2P store:', error);
+      }
+
+      // Disconnect machine RPC socket
+      try {
+        machineSocket.close();
+        logger.debug('[DAEMON RUN] Machine RPC socket closed');
+      } catch (error) {
+        logger.debug('[DAEMON RUN] Failed to close machine RPC socket:', error);
       }
 
       // Stop ngrok tunnel if running

@@ -6,7 +6,7 @@ import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import { storage } from './storage';
 import { ApiEphemeralUpdateSchema, ApiMessage, ApiUpdateContainerSchema } from './apiTypes';
 import type { ApiEphemeralActivityUpdate } from './apiTypes';
-import { Session, Machine } from './storageTypes';
+import { Session, Machine, MachineMetadata, MachineMetadataSchema } from './storageTypes';
 import { InvalidateSync } from '@/utils/sync';
 import { ActivityUpdateAccumulator } from './reducer/activityUpdateAccumulator';
 import { randomUUID } from 'expo-crypto';
@@ -724,15 +724,30 @@ class Sync {
             }
 
             try {
+                let metadata: MachineMetadata | null = null;
+                let daemonState: any | null = null;
 
-                // Use machine-specific encryption (which handles fallback internally)
-                const metadata = machine.metadata
-                    ? await machineEncryption.decryptMetadata(machine.metadataVersion, machine.metadata)
-                    : null;
-
-                const daemonState = machine.daemonState
-                    ? await machineEncryption.decryptDaemonState(machine.daemonStateVersion || 0, machine.daemonState)
-                    : null;
+                if (!machine.dataEncryptionKey) {
+                    // P2P mode: metadata and daemonState are stored as plain JSON
+                    try {
+                        metadata = machine.metadata ? MachineMetadataSchema.parse(JSON.parse(machine.metadata)) : null;
+                    } catch {
+                        metadata = null;
+                    }
+                    try {
+                        daemonState = machine.daemonState ? JSON.parse(machine.daemonState) : null;
+                    } catch {
+                        daemonState = null;
+                    }
+                } else {
+                    // Cloud mode: metadata and daemonState are encrypted
+                    metadata = machine.metadata
+                        ? await machineEncryption.decryptMetadata(machine.metadataVersion, machine.metadata)
+                        : null;
+                    daemonState = machine.daemonState
+                        ? await machineEncryption.decryptDaemonState(machine.daemonStateVersion || 0, machine.daemonState)
+                        : null;
+                }
 
                 decryptedMachines.push({
                     id: machine.id,
@@ -1676,7 +1691,12 @@ export async function syncCreate(credentials: AuthCredentials) {
         return;
     }
     isInitialized = true;
-    await syncInit(credentials, false);
+    try {
+        await syncInit(credentials, false);
+    } catch (e) {
+        isInitialized = false;
+        throw e;
+    }
 }
 
 export async function syncRestore(credentials: AuthCredentials) {

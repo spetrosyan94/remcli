@@ -24,15 +24,12 @@ export function getEnvironmentInfo(): Record<string, any> {
     return {
         PWD: process.env.PWD,
         REMCLI_HOME_DIR: process.env.REMCLI_HOME_DIR,
-        REMCLI_SERVER_URL: process.env.REMCLI_SERVER_URL,
         REMCLI_PROJECT_ROOT: process.env.REMCLI_PROJECT_ROOT,
-        DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING: process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING,
         NODE_ENV: process.env.NODE_ENV,
         DEBUG: process.env.DEBUG,
         workingDirectory: process.cwd(),
         processArgv: process.argv,
         remcliDir: configuration?.remcliHomeDir,
-        serverUrl: configuration?.serverUrl,
         logsDir: configuration?.logsDir,
         processPid: process.pid,
         nodeVersion: process.version,
@@ -104,15 +101,13 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         // Configuration
         console.log(chalk.bold('⚙️  Configuration'));
         console.log(`Remcli Home: ${chalk.blue(configuration.remcliHomeDir)}`);
-        console.log(`Server URL: ${chalk.blue(configuration.serverUrl)}`);
+        console.log(`P2P Server URL: ${chalk.blue(configuration.p2pServerUrl || 'not configured (daemon sets this)')}`);
         console.log(`Logs Dir: ${chalk.blue(configuration.logsDir)}`);
 
         // Environment
         console.log(chalk.bold('\n🌍 Environment Variables'));
         const env = getEnvironmentInfo();
         console.log(`REMCLI_HOME_DIR: ${env.REMCLI_HOME_DIR ? chalk.green(env.REMCLI_HOME_DIR) : chalk.gray('not set')}`);
-        console.log(`REMCLI_SERVER_URL: ${env.REMCLI_SERVER_URL ? chalk.green(env.REMCLI_SERVER_URL) : chalk.gray('not set')}`);
-        console.log(`DANGEROUSLY_LOG_TO_SERVER: ${env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING ? chalk.yellow('ENABLED') : chalk.gray('not set')}`);
         console.log(`DEBUG: ${env.DEBUG ? chalk.green(env.DEBUG) : chalk.gray('not set')}`);
         console.log(`NODE_ENV: ${env.NODE_ENV ? chalk.green(env.NODE_ENV) : chalk.gray('not set')}`);
 

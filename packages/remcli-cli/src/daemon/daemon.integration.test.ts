@@ -11,7 +11,6 @@
  * 
  * The integration test environment uses .env.integration-test which sets:
  * - REMCLI_HOME_DIR=~/.remcli-dev-test (DIFFERENT from dev's ~/.remcli-dev!)
- * - REMCLI_SERVER_URL=http://localhost:3005 (local dev server)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';

@@ -192,15 +192,6 @@ export async function runCodex(opts: {
 
     const sendReady = () => {
         session.sendSessionEvent({ type: 'ready' });
-        try {
-            api.push().sendToAllDevices(
-                "It's ready!",
-                'Codex is waiting for your command',
-                { sessionId: session.sessionId }
-            );
-        } catch (pushError) {
-            logger.debug('[Codex] Failed to send ready push', pushError);
-        }
     };
 
     // Debug helper: log active handles/requests if DEBUG is enabled

@@ -384,11 +384,6 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     onReady: () => {
                         if (!pending && session.queue.size() === 0) {
                             session.client.sendSessionEvent({ type: 'ready' });
-                            session.api.push().sendToAllDevices(
-                                'It\'s ready!',
-                                `Claude is waiting for your command`,
-                                { sessionId: session.client.sessionId }
-                            );
                         }
                     },
                     signal: abortController.signal,

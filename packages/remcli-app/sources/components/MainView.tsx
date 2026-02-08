@@ -18,7 +18,6 @@ import { StatusDot } from './StatusDot';
 import { Ionicons } from '@expo/vector-icons';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
-import { isUsingCustomServer } from '@/sync/serverConfig';
 
 interface MainViewProps {
     variant: 'phone' | 'sidebar';
@@ -171,7 +170,6 @@ const HeaderTitle = React.memo(({ activeTab }: { activeTab: ActiveTabType }) => 
 const HeaderRight = React.memo(({ activeTab }: { activeTab: ActiveTabType }) => {
     const router = useRouter();
     const { theme } = useUnistyles();
-    const isCustomServer = isUsingCustomServer();
 
     if (activeTab === 'sessions') {
         return (
@@ -185,23 +183,8 @@ const HeaderRight = React.memo(({ activeTab }: { activeTab: ActiveTabType }) => 
         );
     }
 
-    if (activeTab === 'settings') {
-        if (!isCustomServer) {
-            // Empty view to maintain header centering
-            return <View style={styles.headerButton} />;
-        }
-        return (
-            <Pressable
-                onPress={() => router.push('/server')}
-                hitSlop={15}
-                style={styles.headerButton}
-            >
-                <Ionicons name="server-outline" size={24} color={theme.colors.header.tint} />
-            </Pressable>
-        );
-    }
-
-    return null;
+    // Empty view to maintain header centering
+    return <View style={styles.headerButton} />;
 });
 
 export const MainView = React.memo(({ variant }: MainViewProps) => {

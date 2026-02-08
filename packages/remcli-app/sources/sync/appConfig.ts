@@ -8,7 +8,6 @@ export interface AppConfig {
     revenueCatStripeKey?: string;
     elevenLabsAgentIdDev?: string;
     elevenLabsAgentIdProd?: string;
-    serverUrl?: string;
 }
 
 /**
@@ -92,10 +91,5 @@ export function loadAppConfig(): AppConfig {
         console.log('[loadAppConfig] Override elevenLabsAgentIdProd from EXPO_PUBLIC_ELEVENLABS_AGENT_ID_PROD');
         config.elevenLabsAgentIdProd = process.env.EXPO_PUBLIC_ELEVENLABS_AGENT_ID_PROD;
     }
-    if (process.env.EXPO_PUBLIC_SERVER_URL && config.serverUrl !== process.env.EXPO_PUBLIC_SERVER_URL) {
-        console.log('[loadAppConfig] Override serverUrl from EXPO_PUBLIC_SERVER_URL');
-        config.serverUrl = process.env.EXPO_PUBLIC_SERVER_URL;
-    }
-
     return config as AppConfig;
 }

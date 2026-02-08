@@ -6,7 +6,6 @@ import { Typography } from '@/constants/Typography';
 import { StatusDot } from './StatusDot';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useSegments } from 'expo-router';
-import { getServerInfo } from '@/sync/serverConfig';
 import { Image } from 'expo-image';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { t } from '@/text';
@@ -101,11 +100,10 @@ export const HomeHeader = React.memo(() => {
 
 export const HomeHeaderNotAuth = React.memo(() => {
     useSegments(); // Re-rendered automatically when screen navigates back
-    const serverInfo = getServerInfo();
     const { theme } = useUnistyles();
     return (
         <Header
-            title={<HeaderTitleWithSubtitle subtitle={serverInfo.isCustom ? serverInfo.hostname + (serverInfo.port ? `:${serverInfo.port}` : '') : undefined} />}
+            title={<HeaderTitleWithSubtitle />}
             headerRight={() => <HeaderRightNotAuth />}
             headerLeft={() => <HeaderLeft />}
             headerShadowVisible={false}
@@ -131,20 +129,8 @@ function HeaderRight() {
 }
 
 function HeaderRightNotAuth() {
-    const router = useRouter();
-    const { theme } = useUnistyles();
     const styles = stylesheet;
-
-
-    return (
-        <Pressable
-            onPress={() => router.push('/server')}
-            hitSlop={15}
-            style={styles.headerButton}
-        >
-            <Ionicons name="server-outline" size={24} color={theme.colors.header.tint} />
-        </Pressable>
-    );
+    return <View style={styles.headerButton} />;
 }
 
 function HeaderLeft() {

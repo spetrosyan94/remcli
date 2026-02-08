@@ -9,7 +9,6 @@
 import { readDaemonState, readSettings, updateSettings, Credentials } from '@/persistence';
 import { deriveBearerToken, decodeSharedSecret } from './p2pAuth';
 import { configuration } from '@/configuration';
-import { getRandomBytes } from '@/api/encryption';
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
 
@@ -50,16 +49,13 @@ export async function setupP2PForSession(): Promise<{
 
     logger.debug(`[P2P-SESSION] P2P URL: ${p2pUrl}`);
 
-    // Create P2P credentials using dataKey encryption with a derived key
-    // The encryption key is generated per-session and sent to the P2P store
-    const sessionEncryptionKey = getRandomBytes(32);
-
+    // Use legacy encryption with shared secret so the mobile app can decrypt
+    // session metadata using the same shared secret from the QR code
     const credentials: Credentials = {
         token: bearerToken,
         encryption: {
-            type: 'dataKey',
-            publicKey: sessionEncryptionKey, // Used as public key for encrypting data keys
-            machineKey: getRandomBytes(32)   // Machine-scoped key
+            type: 'legacy',
+            secret: sharedSecret
         }
     };
 
@@ -82,8 +78,13 @@ export async function setupP2PForSession(): Promise<{
 
 /**
  * Get the effective server URL for API calls.
- * Returns P2P URL if configured, otherwise falls back to cloud server URL.
+ * Returns the P2P URL from the local daemon.
  */
 export function getEffectiveServerUrl(): string {
-    return configuration.p2pServerUrl || configuration.serverUrl;
+    if (!configuration.p2pServerUrl) {
+        throw new Error(
+            'P2P server URL is not configured. Make sure the daemon is running: remcli daemon start'
+        );
+    }
+    return configuration.p2pServerUrl;
 }

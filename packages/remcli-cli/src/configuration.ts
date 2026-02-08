@@ -11,8 +11,6 @@ import { join } from 'node:path'
 import packageJson from '../package.json'
 
 class Configuration {
-  public readonly serverUrl: string
-  public readonly webappUrl: string
   public readonly isDaemonProcess: boolean
   public p2pServerUrl: string | null = null
 
@@ -29,10 +27,6 @@ class Configuration {
   public readonly disableCaffeinate: boolean
 
   constructor() {
-    // Server configuration - priority: parameter > environment > default
-    this.serverUrl = process.env.REMCLI_SERVER_URL || ''
-    this.webappUrl = process.env.REMCLI_WEBAPP_URL || ''
-
     // Check if we're running as daemon based on process args
     const args = process.argv.slice(2)
     this.isDaemonProcess = args.length >= 2 && args[0] === 'daemon' && (args[1] === 'start-sync')

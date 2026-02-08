@@ -85,16 +85,17 @@ export async function runGemini(opts: {
   logger.debug(`Using machineId: ${machineId}`);
 
   //
-  // Fetch Gemini cloud token (from 'remcli connect gemini')
+  // Fetch Gemini token from local store (from 'remcli connect gemini')
   //
   let cloudToken: string | undefined = undefined;
   let currentUserEmail: string | undefined = undefined;
   try {
-    const vendorToken = await api.getVendorToken('gemini');
+    const { getVendorToken } = await import('@/api/vendorTokens');
+    const vendorToken = getVendorToken('gemini') as any;
     if (vendorToken?.oauth?.access_token) {
       cloudToken = vendorToken.oauth.access_token;
-      logger.debug('[Gemini] Using OAuth token from Remcli cloud');
-      
+      logger.debug('[Gemini] Using OAuth token from local vendor tokens');
+
       // Extract email from id_token for per-account project matching
       if (vendorToken.oauth.id_token) {
         try {
@@ -112,7 +113,7 @@ export async function runGemini(opts: {
       }
     }
   } catch (error) {
-    logger.debug('[Gemini] Failed to fetch cloud token:', error);
+    logger.debug('[Gemini] Failed to fetch local vendor token:', error);
   }
 
   //
@@ -289,15 +290,6 @@ export async function runGemini(opts: {
 
   const sendReady = () => {
     session.sendSessionEvent({ type: 'ready' });
-    try {
-      api.push().sendToAllDevices(
-        "It's ready!",
-        'Gemini is waiting for your command',
-        { sessionId: session.sessionId }
-      );
-    } catch (pushError) {
-      logger.debug('[Gemini] Failed to send ready push', pushError);
-    }
   };
 
   /**

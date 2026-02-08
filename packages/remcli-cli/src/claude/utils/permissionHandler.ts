@@ -199,18 +199,6 @@ export class PermissionHandler {
             if (this.onPermissionRequestCallback) {
                 this.onPermissionRequestCallback(id);
             }
-            
-            // Send push notification
-            this.session.api.push().sendToAllDevices(
-                'Permission Request',
-                `Claude wants to ${getToolName(toolName)}`,
-                {
-                    sessionId: this.session.client.sessionId,
-                    requestId: id,
-                    tool: toolName,
-                    type: 'permission_request'
-                }
-            );
 
             // Update agent state
             this.session.client.updateAgentState((currentState) => ({

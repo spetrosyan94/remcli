@@ -306,24 +306,6 @@ export const en = {
         placeholder: 'Type a command or search...',
     },
 
-    server: {
-        // Used by Server Configuration screen (app/(app)/server.tsx)
-        serverConfiguration: 'Server Configuration',
-        enterServerUrl: 'Please enter a server URL',
-        notValidRemcliServer: 'Not a valid Remcli Server',
-        changeServer: 'Change Server',
-        continueWithServer: 'Continue with this server?',
-        resetToDefault: 'Reset to Default',
-        resetServerDefault: 'Reset server to default?',
-        validating: 'Validating...',
-        validatingServer: 'Validating server...',
-        serverReturnedError: 'Server returned an error',
-        failedToConnectToServer: 'Failed to connect to server',
-        currentlyUsingCustomServer: 'Currently using custom server',
-        customServerUrlLabel: 'Custom Server URL',
-        advancedFeatureFooter: "This is an advanced feature. Only change the server if you know what you're doing. You will need to log out and log in again after changing servers."
-    },
-
     sessionInfo: {
         // Used by Session Info screen (app/(app)/session/[id]/info.tsx)
         killSession: 'Kill Session',

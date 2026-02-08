@@ -309,24 +309,6 @@ export const zhHans: TranslationStructure = {
         placeholder: '输入命令或搜索...',
     },
 
-    server: {
-        // Used by Server Configuration screen (app/(app)/server.tsx)
-        serverConfiguration: '服务器配置',
-        enterServerUrl: '请输入服务器 URL',
-        notValidRemcliServer: '不是有效的 Remcli 服务器',
-        changeServer: '更改服务器',
-        continueWithServer: '继续使用此服务器？',
-        resetToDefault: '重置为默认',
-        resetServerDefault: '重置服务器为默认值？',
-        validating: '验证中...',
-        validatingServer: '正在验证服务器...',
-        serverReturnedError: '服务器返回错误',
-        failedToConnectToServer: '连接服务器失败',
-        currentlyUsingCustomServer: '当前使用自定义服务器',
-        customServerUrlLabel: '自定义服务器 URL',
-        advancedFeatureFooter: "这是一个高级功能。只有在您知道自己在做什么时才更改服务器。更改服务器后您需要重新登录。"
-    },
-
     sessionInfo: {
         // Used by Session Info screen (app/(app)/session/[id]/info.tsx)
         killSession: '终止会话',

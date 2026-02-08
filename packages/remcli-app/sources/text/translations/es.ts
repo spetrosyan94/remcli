@@ -307,24 +307,6 @@ export const es: TranslationStructure = {
         placeholder: 'Escriba un comando o busque...',
     },
 
-    server: {
-        // Used by Server Configuration screen (app/(app)/server.tsx)
-        serverConfiguration: 'Configuración del servidor',
-        enterServerUrl: 'Ingresa una URL de servidor',
-        notValidRemcliServer: 'No es un servidor Remcli válido',
-        changeServer: 'Cambiar servidor',
-        continueWithServer: '¿Continuar con este servidor?',
-        resetToDefault: 'Restablecer por defecto',
-        resetServerDefault: '¿Restablecer servidor por defecto?',
-        validating: 'Validando...',
-        validatingServer: 'Validando servidor...',
-        serverReturnedError: 'El servidor devolvió un error',
-        failedToConnectToServer: 'Falló al conectar con el servidor',
-        currentlyUsingCustomServer: 'Actualmente usando servidor personalizado',
-        customServerUrlLabel: 'URL del servidor personalizado',
-        advancedFeatureFooter: 'Esta es una característica avanzada. Solo cambia el servidor si sabes lo que haces. Necesitarás cerrar sesión e iniciarla nuevamente después de cambiar servidores.'
-    },
-
     sessionInfo: {
         // Used by Session Info screen (app/(app)/session/[id]/info.tsx)
         killSession: 'Terminar sesión',

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { readCredentials } from '@/persistence';
-import { ApiClient } from '@/api/api';
+import { registerVendorToken, getVendorToken } from '@/api/vendorTokens';
 import { authenticateCodex } from './connect/authenticateCodex';
 import { authenticateClaude } from './connect/authenticateClaude';
 import { authenticateGemini } from './connect/authenticateGemini';
@@ -48,19 +48,19 @@ export async function handleConnectCommand(args: string[]): Promise<void> {
 
 function showConnectHelp(): void {
     console.log(`
-${chalk.bold('remcli connect')} - Connect AI vendor API keys to Remcli cloud
+${chalk.bold('remcli connect')} - Store AI vendor API keys locally
 
 ${chalk.bold('Usage:')}
-  remcli connect codex        Store your Codex API key in Remcli cloud
-  remcli connect claude       Store your Anthropic API key in Remcli cloud
-  remcli connect gemini       Store your Gemini API key in Remcli cloud
+  remcli connect codex        Store your Codex API key
+  remcli connect claude       Store your Anthropic API key
+  remcli connect gemini       Store your Gemini API key
   remcli connect status       Show connection status for all vendors
   remcli connect help         Show this help message
 
 ${chalk.bold('Description:')}
-  The connect command allows you to securely store your AI vendor API keys
-  in Remcli cloud. This enables you to use these services through Remcli
-  without exposing your API keys locally.
+  The connect command allows you to store your AI vendor API keys
+  locally in ~/.remcli/vendor-tokens.json. This enables you to use
+  these services through Remcli.
 
 ${chalk.bold('Examples:')}
   remcli connect codex
@@ -68,15 +68,14 @@ ${chalk.bold('Examples:')}
   remcli connect gemini
   remcli connect status
 
-${chalk.bold('Notes:')} 
+${chalk.bold('Notes:')}
   • You must be authenticated with Remcli first (run 'remcli auth login')
-  • API keys are encrypted and stored securely in Remcli cloud
-  • You can manage your stored keys at app.remcli.dev
+  • API keys are stored locally on this machine
 `);
 }
 
 async function handleConnectVendor(vendor: 'codex' | 'claude' | 'gemini', displayName: string): Promise<void> {
-    console.log(chalk.bold(`\n🔌 Connecting ${displayName} to Remcli cloud\n`));
+    console.log(chalk.bold(`\n🔌 Connecting ${displayName}\n`));
 
     // Check if authenticated
     const credentials = await readCredentials();
@@ -86,31 +85,28 @@ async function handleConnectVendor(vendor: 'codex' | 'claude' | 'gemini', displa
         process.exit(1);
     }
 
-    // Create API client
-    const api = await ApiClient.create(credentials);
-
     // Handle vendor authentication
     if (vendor === 'codex') {
-        console.log('🚀 Registering Codex token with server');
+        console.log('🚀 Registering Codex token');
         const codexAuthTokens = await authenticateCodex();
-        await api.registerVendorToken('openai', { oauth: codexAuthTokens });
-        console.log('✅ Codex token registered with server');
+        registerVendorToken('openai', { oauth: codexAuthTokens });
+        console.log('✅ Codex token saved');
         process.exit(0);
     } else if (vendor === 'claude') {
-        console.log('🚀 Registering Anthropic token with server');
+        console.log('🚀 Registering Anthropic token');
         const anthropicAuthTokens = await authenticateClaude();
-        await api.registerVendorToken('anthropic', { oauth: anthropicAuthTokens });
-        console.log('✅ Anthropic token registered with server');
+        registerVendorToken('anthropic', { oauth: anthropicAuthTokens });
+        console.log('✅ Anthropic token saved');
         process.exit(0);
     } else if (vendor === 'gemini') {
-        console.log('🚀 Registering Gemini token with server');
+        console.log('🚀 Registering Gemini token');
         const geminiAuthTokens = await authenticateGemini();
-        await api.registerVendorToken('gemini', { oauth: geminiAuthTokens });
-        console.log('✅ Gemini token registered with server');
-        
+        registerVendorToken('gemini', { oauth: geminiAuthTokens });
+        console.log('✅ Gemini token saved');
+
         // Also update local Gemini config to keep tokens in sync
         updateLocalGeminiCredentials(geminiAuthTokens);
-        
+
         process.exit(0);
     } else {
         throw new Error(`Unsupported vendor: ${vendor}`);
@@ -123,17 +119,6 @@ async function handleConnectVendor(vendor: 'codex' | 'claude' | 'gemini', displa
 async function handleConnectStatus(): Promise<void> {
     console.log(chalk.bold('\n🔌 Connection Status\n'));
 
-    // Check if authenticated
-    const credentials = await readCredentials();
-    if (!credentials) {
-        console.log(chalk.yellow('⚠️  Not authenticated with Remcli'));
-        console.log(chalk.gray('  Please run "remcli auth login" first'));
-        process.exit(1);
-    }
-
-    // Create API client
-    const api = await ApiClient.create(credentials);
-
     // Check each vendor
     const vendors: Array<{ key: 'openai' | 'anthropic' | 'gemini'; name: string; display: string }> = [
         { key: 'gemini', name: 'Gemini', display: 'Google Gemini' },
@@ -143,23 +128,23 @@ async function handleConnectStatus(): Promise<void> {
 
     for (const vendor of vendors) {
         try {
-            const token = await api.getVendorToken(vendor.key);
-            
+            const token = getVendorToken(vendor.key) as any;
+
             if (token?.oauth) {
                 // Try to extract user info from id_token (JWT)
                 let userInfo = '';
-                
+
                 if (token.oauth.id_token) {
                     const payload = decodeJwtPayload(token.oauth.id_token);
                     if (payload?.email) {
                         userInfo = chalk.gray(` (${payload.email})`);
                     }
                 }
-                
+
                 // Check if token might be expired
                 const expiresAt = token.oauth.expires_at || (token.oauth.expires_in ? Date.now() + token.oauth.expires_in * 1000 : null);
                 const isExpired = expiresAt && expiresAt < Date.now();
-                
+
                 if (isExpired) {
                     console.log(`  ${chalk.yellow('⚠️')}  ${vendor.display}: ${chalk.yellow('expired')}${userInfo}`);
                 } else {
