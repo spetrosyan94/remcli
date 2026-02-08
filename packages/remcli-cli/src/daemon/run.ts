@@ -14,11 +14,12 @@ import { spawnRemcliCLI } from '@/utils/spawnRemcliCLI';
 import { writeDaemonState, DaemonLocallyPersistedState, readDaemonState, acquireDaemonLock, releaseDaemonLock, readSettings, validateProfileForAgent, getProfileEnvironmentVariables } from '@/persistence';
 
 import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledRemcliVersion, stopDaemon } from './controlClient';
+import { findAllRemcliProcesses } from './doctor';
 import { startDaemonControlServer } from './controlServer';
 import { existsSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { projectPath } from '@/projectPath';
-import { getTmuxUtilities, isTmuxAvailable, parseTmuxSessionIdentifier, formatTmuxSessionIdentifier } from '@/utils/tmux';
+import { getTmuxUtilities, isTmuxAvailable } from '@/utils/tmux';
 import { expandEnvironmentVariables } from '@/utils/expandEnvVars';
 import { P2PStore } from './p2p/p2pStore';
 import { startP2PServer, P2PServer } from './p2p/p2pServer';
@@ -28,6 +29,10 @@ import { buildP2PConnectionInfo, buildP2PQRUrl, displayP2PQRCode, displayP2PConn
 import { startNgrokTunnel } from './p2p/tunnel';
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
+import { openTerminalWithCommand } from '@/utils/openTerminal';
+
+// Track whether we've already opened a terminal for the tmux session
+let terminalOpenedForTmux = false;
 
 // Prepare initial metadata
 export const initialMachineMetadata: MachineMetadata = {
@@ -181,6 +186,38 @@ export async function startDaemon(): Promise<void> {
   // At this point we should be safe to startup the daemon:
   // 1. Not have a stale daemon state
   // 2. Should not have another daemon process running
+
+  // Kill orphaned sessions from previous daemon (they have stale P2P credentials)
+  try {
+    const allProcesses = await findAllRemcliProcesses();
+    const orphanedSessions = allProcesses.filter(p =>
+      (p.type === 'daemon-spawned-session' || p.type === 'dev-daemon-spawned') &&
+      p.pid !== process.pid
+    );
+    for (const orphan of orphanedSessions) {
+      try {
+        process.kill(orphan.pid, 'SIGTERM');
+        logger.debug(`[DAEMON RUN] Killed orphaned session PID ${orphan.pid}`);
+      } catch {
+        // Process may have already exited
+      }
+    }
+    if (orphanedSessions.length > 0) {
+      logger.debug(`[DAEMON RUN] Cleaned up ${orphanedSessions.length} orphaned session(s)`);
+    }
+  } catch (error) {
+    logger.debug('[DAEMON RUN] Orphan cleanup failed, continuing startup:', error);
+  }
+
+  // Verify tmux is available (required for session spawning)
+  const tmuxAvailable = await isTmuxAvailable();
+  if (!tmuxAvailable) {
+    console.error('Error: tmux is required for remcli daemon. Install it with: brew install tmux');
+    logger.debug('[DAEMON RUN] tmux not found, aborting daemon startup');
+    await releaseDaemonLock(daemonLockHandle);
+    process.exit(1);
+  }
+  logger.debug('[DAEMON RUN] tmux is available');
 
   try {
     // Start caffeinate
@@ -390,26 +427,20 @@ export async function startDaemon(): Promise<void> {
           };
         }
 
-        // Check if tmux is available and should be used
+        // tmux is required for daemon-spawned sessions (provides TTY for Ink UI)
         const tmuxAvailable = await isTmuxAvailable();
-        let useTmux = tmuxAvailable;
-
-        // Get tmux session name from environment variables (now set by profile system)
-        // Empty string means "use current/most recent session" (tmux default behavior)
-        let tmuxSessionName: string | undefined = extraEnv.TMUX_SESSION_NAME;
-
-        // If tmux is not available or session name is explicitly undefined, fall back to regular spawning
-        // Note: Empty string is valid (means use current/most recent tmux session)
-        if (!tmuxAvailable || tmuxSessionName === undefined) {
-          useTmux = false;
-          if (tmuxSessionName !== undefined) {
-            logger.debug(`[DAEMON RUN] tmux session name specified but tmux not available, falling back to regular spawning`);
-          }
+        if (!tmuxAvailable) {
+          return {
+            type: 'error',
+            errorMessage: 'tmux is required for session spawning. Install it with: brew install tmux'
+          };
         }
 
-        if (useTmux && tmuxSessionName !== undefined) {
-          // Try to spawn in tmux session
-          const sessionDesc = tmuxSessionName || 'current/most recent session';
+        // Get tmux session name from profile or use default
+        const tmuxSessionName: string = extraEnv.TMUX_SESSION_NAME ?? 'remcli';
+
+        // Spawn in tmux session
+        const sessionDesc = tmuxSessionName || 'current/most recent session';
           logger.debug(`[DAEMON RUN] Attempting to spawn session in tmux: ${sessionDesc}`);
 
           const tmux = getTmuxUtilities(tmuxSessionName);
@@ -466,6 +497,25 @@ export async function startDaemon(): Promise<void> {
             // Add to tracking map so webhook can find it later
             pidToTrackedSession.set(tmuxResult.pid, trackedSession);
 
+            // Auto-open terminal with tmux attach if no client is attached yet
+            if (!terminalOpenedForTmux) {
+              try {
+                const tmux = getTmuxUtilities(tmuxSessionName);
+                const clientsResult = await tmux.executeTmuxCommand(['list-clients', '-t', tmuxSessionName]);
+                const hasClients = clientsResult && clientsResult.returncode === 0 && clientsResult.stdout.trim().length > 0;
+
+                if (!hasClients) {
+                  terminalOpenedForTmux = true;
+                  openTerminalWithCommand(`tmux attach -t ${tmuxSessionName}`);
+                  logger.debug(`[DAEMON RUN] Opened terminal with tmux attach -t ${tmuxSessionName}`);
+                } else {
+                  logger.debug(`[DAEMON RUN] tmux session already has attached clients, skipping terminal open`);
+                }
+              } catch (error) {
+                logger.debug(`[DAEMON RUN] Failed to check/open terminal for tmux:`, error);
+              }
+            }
+
             // Wait for webhook to populate session with remcliSessionId (exact same as regular flow)
             logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${tmuxResult.pid} (tmux)`);
 
@@ -491,129 +541,11 @@ export async function startDaemon(): Promise<void> {
               });
             });
           } else {
-            logger.debug(`[DAEMON RUN] Failed to spawn in tmux: ${tmuxResult.error}, falling back to regular spawning`);
-            useTmux = false;
-          }
-        }
-
-        // Regular process spawning (fallback or if tmux not available)
-        if (!useTmux) {
-          logger.debug(`[DAEMON RUN] Using regular process spawning`);
-
-          // Construct arguments for the CLI - support claude, codex, and gemini
-          let agentCommand: string;
-          switch (options.agent) {
-            case 'claude':
-            case undefined:
-              agentCommand = 'claude';
-              break;
-            case 'codex':
-              agentCommand = 'codex';
-              break;
-            case 'gemini':
-              agentCommand = 'gemini';
-              break;
-            default:
-              return {
-                type: 'error',
-                errorMessage: `Unsupported agent type: '${options.agent}'. Please update your CLI to the latest version.`
-              };
-          }
-          const args = [
-            agentCommand,
-            '--remcli-starting-mode', 'remote',
-            '--started-by', 'daemon'
-          ];
-
-          // TODO: In future, sessionId could be used with --resume to continue existing sessions
-          // For now, we ignore it - each spawn creates a new session
-          const remcliProcess = spawnRemcliCLI(args, {
-            cwd: directory,
-            detached: true,  // Sessions stay alive when daemon stops
-            stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
-            env: {
-              ...process.env,
-              ...extraEnv
-            }
-          });
-
-          // Log output for debugging
-          if (process.env.DEBUG) {
-            remcliProcess.stdout?.on('data', (data) => {
-              logger.debug(`[DAEMON RUN] Child stdout: ${data.toString()}`);
-            });
-            remcliProcess.stderr?.on('data', (data) => {
-              logger.debug(`[DAEMON RUN] Child stderr: ${data.toString()}`);
-            });
-          }
-
-          if (!remcliProcess.pid) {
-            logger.debug('[DAEMON RUN] Failed to spawn process - no PID returned');
             return {
               type: 'error',
-              errorMessage: 'Failed to spawn Remcli process - no PID returned'
+              errorMessage: `Failed to spawn in tmux: ${tmuxResult.error}`
             };
           }
-
-          logger.debug(`[DAEMON RUN] Spawned process with PID ${remcliProcess.pid}`);
-
-          const trackedSession: TrackedSession = {
-            startedBy: 'daemon',
-            pid: remcliProcess.pid,
-            childProcess: remcliProcess,
-            directoryCreated,
-            message: directoryCreated ? `The path '${directory}' did not exist. We created a new folder and spawned a new session there.` : undefined
-          };
-
-          pidToTrackedSession.set(remcliProcess.pid, trackedSession);
-
-          remcliProcess.on('exit', (code, signal) => {
-            logger.debug(`[DAEMON RUN] Child PID ${remcliProcess.pid} exited with code ${code}, signal ${signal}`);
-            if (remcliProcess.pid) {
-              onChildExited(remcliProcess.pid);
-            }
-          });
-
-          remcliProcess.on('error', (error) => {
-            logger.debug(`[DAEMON RUN] Child process error:`, error);
-            if (remcliProcess.pid) {
-              onChildExited(remcliProcess.pid);
-            }
-          });
-
-          // Wait for webhook to populate session with remcliSessionId
-          logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${remcliProcess.pid}`);
-
-          return new Promise((resolve) => {
-            // Set timeout for webhook
-            const timeout = setTimeout(() => {
-              pidToAwaiter.delete(remcliProcess.pid!);
-              logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${remcliProcess.pid}`);
-              resolve({
-                type: 'error',
-                errorMessage: `Session webhook timeout for PID ${remcliProcess.pid}`
-              });
-              // 15 second timeout - I have seen timeouts on 10 seconds
-              // even though session was still created successfully in ~2 more seconds
-            }, 15_000);
-
-            // Register awaiter
-            pidToAwaiter.set(remcliProcess.pid!, (completedSession) => {
-              clearTimeout(timeout);
-              logger.debug(`[DAEMON RUN] Session ${completedSession.remcliSessionId} fully spawned with webhook`);
-              resolve({
-                type: 'success',
-                sessionId: completedSession.remcliSessionId!
-              });
-            });
-          });
-        }
-
-        // This should never be reached, but TypeScript requires a return statement
-        return {
-          type: 'error',
-          errorMessage: 'Unexpected error in session spawning'
-        };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         logger.debug('[DAEMON RUN] Failed to spawn session:', error);
@@ -689,8 +621,9 @@ export async function startDaemon(): Promise<void> {
     // ─── P2P Server ──────────────────────────────────────────────
     // Load P2P store from disk
     const p2pStore = new P2PStore();
-    p2pStore.loadFromDisk();
-    logger.debug('[DAEMON RUN] P2P store loaded from disk');
+    // Start with a fresh store — each daemon session generates a new shared secret,
+    // so old sessions/machines encrypted with the previous key are unusable.
+    logger.debug('[DAEMON RUN] P2P store initialized (fresh — new shared secret)');
 
     // Determine LAN IP address
     const lanIP = getLanIPAddress() || '0.0.0.0';
@@ -983,20 +916,32 @@ export async function startDaemon(): Promise<void> {
         logger.debug('[DAEMON RUN] Health check interval cleared');
       }
 
-      // Save P2P store to disk before shutting down
-      try {
-        p2pStore.saveNow();
-        logger.debug('[DAEMON RUN] P2P store saved to disk');
-      } catch (error) {
-        logger.debug('[DAEMON RUN] Failed to save P2P store:', error);
-      }
-
       // Disconnect machine RPC socket
       try {
         machineSocket.close();
         logger.debug('[DAEMON RUN] Machine RPC socket closed');
       } catch (error) {
         logger.debug('[DAEMON RUN] Failed to close machine RPC socket:', error);
+      }
+
+      // Kill all tracked child sessions
+      for (const [pid, session] of pidToTrackedSession) {
+        try {
+          process.kill(pid, 'SIGTERM');
+          logger.debug(`[DAEMON RUN] Killed tracked session PID ${pid} (${session.remcliSessionId || 'no session id'})`);
+        } catch {
+          // Process may have already exited
+        }
+      }
+      pidToTrackedSession.clear();
+
+      // Kill tmux session created by daemon (windows already closing since processes are killed)
+      try {
+        const { execSync } = await import('child_process');
+        execSync('tmux has-session -t remcli 2>/dev/null && tmux kill-session -t remcli', { stdio: 'ignore' });
+        logger.debug('[DAEMON RUN] Killed tmux session "remcli"');
+      } catch {
+        // tmux session may not exist
       }
 
       // Stop ngrok tunnel if running

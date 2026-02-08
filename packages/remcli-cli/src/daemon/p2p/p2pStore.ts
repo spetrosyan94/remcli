@@ -1,14 +1,11 @@
 /**
- * P2P in-memory data store with JSON file persistence
+ * P2P in-memory data store
  * Replaces PostgreSQL for local P2P mode
  * Stores sessions, messages, machines with sequence numbering
+ * Data lives only in memory — each daemon session generates a new shared secret
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { configuration } from '@/configuration';
-import { logger } from '@/ui/logger';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -63,16 +60,6 @@ export interface P2PArtifact {
     updatedAt: number;
 }
 
-interface StoreSnapshot {
-    version: 1;
-    userSeq: number;
-    sessions: P2PSession[];
-    sessionSeqs: Record<string, number>;
-    messages: Record<string, P2PMessage[]>;
-    machines: P2PMachine[];
-    artifacts: P2PArtifact[];
-}
-
 // ─── Store ───────────────────────────────────────────────────────
 
 export class P2PStore {
@@ -82,12 +69,6 @@ export class P2PStore {
     private artifacts = new Map<string, P2PArtifact>();
     private userSeq = 0;
     private sessionSeqs = new Map<string, number>();
-    private saveTimer: ReturnType<typeof setTimeout> | null = null;
-    private readonly storePath: string;
-
-    constructor() {
-        this.storePath = join(configuration.remcliHomeDir, 'p2p-store.json');
-    }
 
     // ─── Sequences ───────────────────────────────────────────────
 
@@ -117,7 +98,6 @@ export class P2PStore {
                 if (dataEncryptionKey !== null) {
                     session.dataEncryptionKey = dataEncryptionKey;
                 }
-                this.scheduleSave();
                 return session;
             }
         }
@@ -140,7 +120,6 @@ export class P2PStore {
 
         this.sessions.set(session.id, session);
         this.sessionMessages.set(session.id, []);
-        this.scheduleSave();
         return session;
     }
 
@@ -171,7 +150,6 @@ export class P2PStore {
         const existed = this.sessions.delete(id);
         this.sessionMessages.delete(id);
         this.sessionSeqs.delete(id);
-        if (existed) this.scheduleSave();
         return existed;
     }
 
@@ -198,7 +176,6 @@ export class P2PStore {
         session.metadata = metadata;
         session.metadataVersion++;
         session.updatedAt = Date.now();
-        this.scheduleSave();
 
         return {
             result: 'success',
@@ -229,7 +206,6 @@ export class P2PStore {
         session.agentState = agentState;
         session.agentStateVersion++;
         session.updatedAt = Date.now();
-        this.scheduleSave();
 
         return {
             result: 'success',
@@ -275,7 +251,6 @@ export class P2PStore {
         session.updatedAt = now;
         session.active = true;
 
-        this.scheduleSave();
         return message;
     }
 
@@ -307,7 +282,6 @@ export class P2PStore {
             existing.active = true;
             existing.activeAt = Date.now();
             existing.updatedAt = Date.now();
-            this.scheduleSave();
             return existing;
         }
 
@@ -327,7 +301,6 @@ export class P2PStore {
         };
 
         this.machines.set(id, machine);
-        this.scheduleSave();
         return machine;
     }
 
@@ -359,7 +332,6 @@ export class P2PStore {
         machine.metadata = metadata;
         machine.metadataVersion++;
         machine.updatedAt = Date.now();
-        this.scheduleSave();
 
         return {
             result: 'success',
@@ -389,7 +361,6 @@ export class P2PStore {
         machine.active = true;
         machine.activeAt = Date.now();
         machine.updatedAt = Date.now();
-        this.scheduleSave();
 
         return {
             result: 'success',
@@ -414,7 +385,6 @@ export class P2PStore {
             updatedAt: now
         };
         this.artifacts.set(id, artifact);
-        this.scheduleSave();
         return artifact;
     }
 
@@ -437,7 +407,6 @@ export class P2PStore {
         artifact.header = header;
         artifact.headerVersion++;
         artifact.updatedAt = Date.now();
-        this.scheduleSave();
 
         return { result: 'success', version: artifact.headerVersion, data: artifact.header };
     }
@@ -457,124 +426,13 @@ export class P2PStore {
         artifact.body = body;
         artifact.bodyVersion++;
         artifact.updatedAt = Date.now();
-        this.scheduleSave();
 
         return { result: 'success', version: artifact.bodyVersion, data: artifact.body };
     }
 
     deleteArtifact(id: string): boolean {
         const existed = this.artifacts.delete(id);
-        if (existed) this.scheduleSave();
         return existed;
     }
 
-    // ─── Persistence ─────────────────────────────────────────────
-
-    /**
-     * Debounced save — max once per second to avoid excessive disk writes
-     */
-    private scheduleSave(): void {
-        if (this.saveTimer) return;
-        this.saveTimer = setTimeout(() => {
-            this.saveTimer = null;
-            this.saveToDisk();
-        }, 1000);
-    }
-
-    /**
-     * Force immediate save (call on shutdown)
-     */
-    saveNow(): void {
-        if (this.saveTimer) {
-            clearTimeout(this.saveTimer);
-            this.saveTimer = null;
-        }
-        this.saveToDisk();
-    }
-
-    private saveToDisk(): void {
-        try {
-            const dir = dirname(this.storePath);
-            if (!existsSync(dir)) {
-                mkdirSync(dir, { recursive: true });
-            }
-
-            const snapshot: StoreSnapshot = {
-                version: 1,
-                userSeq: this.userSeq,
-                sessions: Array.from(this.sessions.values()),
-                sessionSeqs: Object.fromEntries(this.sessionSeqs),
-                messages: Object.fromEntries(
-                    Array.from(this.sessionMessages.entries()).map(
-                        ([k, v]) => [k, v]
-                    )
-                ),
-                machines: Array.from(this.machines.values()),
-                artifacts: Array.from(this.artifacts.values())
-            };
-
-            writeFileSync(this.storePath, JSON.stringify(snapshot), 'utf-8');
-            logger.debug(`[P2P STORE] Saved to disk: ${this.sessions.size} sessions, ${this.machines.size} machines`);
-        } catch (error) {
-            logger.debug('[P2P STORE] Failed to save to disk:', error);
-        }
-    }
-
-    loadFromDisk(): void {
-        if (!existsSync(this.storePath)) {
-            logger.debug('[P2P STORE] No store file found, starting fresh');
-            return;
-        }
-
-        try {
-            const raw = readFileSync(this.storePath, 'utf-8');
-            const snapshot: StoreSnapshot = JSON.parse(raw);
-
-            if (snapshot.version !== 1) {
-                logger.debug(`[P2P STORE] Unknown store version ${snapshot.version}, starting fresh`);
-                return;
-            }
-
-            this.userSeq = snapshot.userSeq;
-
-            this.sessions.clear();
-            for (const session of snapshot.sessions) {
-                this.sessions.set(session.id, session);
-            }
-
-            this.sessionSeqs.clear();
-            for (const [sessionId, seq] of Object.entries(snapshot.sessionSeqs)) {
-                this.sessionSeqs.set(sessionId, seq);
-            }
-
-            this.sessionMessages.clear();
-            for (const [sessionId, messages] of Object.entries(snapshot.messages)) {
-                this.sessionMessages.set(sessionId, messages);
-            }
-
-            this.machines.clear();
-            for (const machine of snapshot.machines) {
-                this.machines.set(machine.id, machine);
-            }
-
-            this.artifacts.clear();
-            for (const artifact of snapshot.artifacts) {
-                this.artifacts.set(artifact.id, artifact);
-            }
-
-            logger.debug(`[P2P STORE] Loaded from disk: ${this.sessions.size} sessions, ${this.machines.size} machines`);
-        } catch (error) {
-            logger.debug('[P2P STORE] Failed to load from disk, starting fresh:', error);
-        }
-    }
-
-    /**
-     * Clean up timers on shutdown
-     */
-    destroy(): void {
-        if (this.saveTimer) {
-            clearTimeout(this.saveTimer);
-            this.saveTimer = null;
-        }
-    }
 }

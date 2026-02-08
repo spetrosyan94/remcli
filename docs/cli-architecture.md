@@ -311,6 +311,10 @@ Sessions can be started by:
 - The daemon (background).
 - Remote requests over RPC (from mobile/web via machine connection).
 
+All daemon-spawned sessions run inside **tmux** (required dependency). The first session creates a tmux session named `remcli` with the command as its only window. Subsequent sessions add new windows to the same tmux session. Terminal.app/iTerm2 opens automatically on macOS when the first session is spawned.
+
+When the daemon shuts down, it kills all tracked child processes and the tmux session `remcli`.
+
 Daemon session spawning uses `registerCommonHandlers` to expose a controlled RPC surface (shell commands, file operations, search/diff helpers).
 
 ### Machine state

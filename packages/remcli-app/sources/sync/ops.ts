@@ -174,6 +174,12 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
             'spawn-remcli-session',
             { type: 'spawn-in-directory', directory, approvedNewDirectoryCreation, token, agent, environmentVariables }
         );
+        if (!result) {
+            return {
+                type: 'error',
+                errorMessage: 'RPC returned null — decryption likely failed'
+            };
+        }
         return result;
     } catch (error) {
         // Handle RPC errors

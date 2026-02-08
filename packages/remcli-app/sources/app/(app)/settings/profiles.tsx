@@ -13,7 +13,7 @@ import { useWindowDimensions } from 'react-native';
 import { AIBackendProfile } from '@/sync/settings';
 import { getBuiltInProfile, DEFAULT_PROFILES } from '@/sync/profileUtils';
 import { ProfileEditForm } from '@/components/ProfileEditForm';
-import { randomUUID } from 'expo-crypto';
+import { randomUUID } from '@/utils/uuid';
 
 interface ProfileDisplay {
     id: string;

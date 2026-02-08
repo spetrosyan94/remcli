@@ -149,10 +149,14 @@ class ApiSocket {
             params: await machineEncryption.encryptRaw(params)
         });
 
+        console.log(`[RPC] machineRPC ${method} result.ok=${result.ok}, result.error=${result.error}, resultType=${typeof result.result}, resultLen=${result.result?.length}`);
+
         if (result.ok) {
-            return await machineEncryption.decryptRaw(result.result) as R;
+            const decrypted = await machineEncryption.decryptRaw(result.result);
+            console.log(`[RPC] machineRPC ${method} decrypted:`, JSON.stringify(decrypted));
+            return decrypted as R;
         }
-        throw new Error('RPC call failed');
+        throw new Error(`RPC call failed: ${result.error || 'unknown'}`);
     }
 
     send(event: string, data: any) {

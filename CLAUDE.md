@@ -17,6 +17,10 @@ Each package has its own `CLAUDE.md` with detailed package-specific guidance. Th
 
 ## Commands
 
+### Prerequisites
+- **Node.js** (v20+)
+- **tmux** — required for daemon session spawning (`brew install tmux` on macOS)
+
 ### Install
 ```bash
 npm install
@@ -43,7 +47,7 @@ npm -w remcli run dev              # Run with TSX (no build)
 
 ### P2P Direct Data Flow
 ```
-Mobile/Web App  <-- WS (LAN / ngrok tunnel) -->  CLI Daemon (Fastify + Socket.IO + JSON store)  <->  Claude Code/Codex SDK
+Mobile/Web App  <-- WS (LAN / ngrok tunnel) -->  CLI Daemon (Fastify + Socket.IO + in-memory store)  <->  Claude Code/Codex SDK
 ```
 
 The daemon runs a Fastify HTTP server with Socket.IO on `0.0.0.0` — it IS the server. No cloud dependency.

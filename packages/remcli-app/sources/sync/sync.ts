@@ -9,7 +9,7 @@ import type { ApiEphemeralActivityUpdate } from './apiTypes';
 import { Session, Machine, MachineMetadata, MachineMetadataSchema } from './storageTypes';
 import { InvalidateSync } from '@/utils/sync';
 import { ActivityUpdateAccumulator } from './reducer/activityUpdateAccumulator';
-import { randomUUID } from 'expo-crypto';
+import { randomUUID } from '@/utils/uuid';
 import { Platform, AppState } from 'react-native';
 import { isRunningOnMac } from '@/utils/platform';
 import { NormalizedMessage, normalizeRawMessage, RawRecord } from './typesRaw';
@@ -1685,6 +1685,15 @@ export const sync = new Sync();
 //
 
 let isInitialized = false;
+
+/**
+ * Reset sync state so it can be re-initialized with new credentials.
+ * Call this before syncCreate() when reconnecting to a different daemon.
+ */
+export function syncReset() {
+    isInitialized = false;
+}
+
 export async function syncCreate(credentials: AuthCredentials) {
     if (isInitialized) {
         console.warn('Sync already initialized: ignoring');

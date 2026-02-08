@@ -18,9 +18,11 @@ Control Flow:
    - If version mismatch: calls `stopDaemon()` to kill old daemon before proceeding
    - If same version running: exits with "Daemon already running"
    - Lock acquisition: `acquireDaemonLock()` creates exclusive lock file to prevent multiple daemons
+   - Orphan cleanup: kills any leftover `daemon-spawned-session` processes from previous daemon
+   - tmux check: verifies tmux is installed (required for session spawning), exits with error if missing
    - State persistence: writes PID, version, HTTP port to daemon.state.json
    - HTTP control server: starts on random port on `127.0.0.1` for local CLI control
-   - P2P Store: loads `~/.remcli/p2p-store.json` from disk
+   - P2P Store: initializes fresh in-memory store (no disk persistence)
    - P2P Server: starts Fastify + Socket.IO on `0.0.0.0:PORT` for mobile app connections
    - Shared secret: generates 32-byte secret, derives bearer token
    - QR code: displays connection info (host, port, key) in terminal
@@ -35,7 +37,7 @@ Control Flow:
    - Uncaught exception occurs
 6. On shutdown, `cleanupAndShutdown()` performs:
    - Clears heartbeat interval
-   - Saves P2PStore to disk
+   - Kills all tracked child sessions (SIGTERM)
    - Stops ngrok tunnel (if running)
    - Stops P2P server
    - Stops HTTP control server
@@ -150,8 +152,8 @@ Local HTTP server (127.0.0.1 only) provides:
 }
 ```
 
-### P2P Store (`~/.remcli/p2p-store.json`)
-In-memory maps with debounced JSON persistence:
+### P2P Store (in-memory)
+In-memory maps (no disk persistence — each daemon session uses a new shared secret):
 - Sessions: id, tag, seq, metadata, agentState, dataEncryptionKey, active
 - Messages: id, sessionId, seq, content, localId
 - Machines: id, seq, metadata, daemonState, dataEncryptionKey

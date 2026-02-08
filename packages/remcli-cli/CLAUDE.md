@@ -64,7 +64,7 @@ Handles communication with the local P2P server and encryption.
 The built-in P2P server that replaces the cloud backend:
 
 - **`p2pServer.ts`**: Main Fastify + Socket.IO server on `0.0.0.0`
-- **`p2pStore.ts`**: In-memory store with JSON file persistence (`~/.remcli/p2p-store.json`)
+- **`p2pStore.ts`**: In-memory data store (sessions, messages, machines, artifacts)
 - **`p2pAuth.ts`**: Shared-secret authentication (HMAC-SHA256 token derivation)
 - **`p2pSocketHandlers.ts`**: Socket.IO event handlers (mirrors server protocol)
 - **`p2pRestRoutes.ts`**: REST API routes (mirrors server endpoints)
@@ -132,7 +132,7 @@ User interface components.
 1. **File-based logging**: Prevents interference with Claude's terminal UI
 2. **Dual Claude integration**: Process spawning for interactive, SDK for remote
 3. **P2P direct connection**: No cloud dependency — daemon IS the server
-4. **JSON file persistence**: Sessions/messages in `~/.remcli/p2p-store.json`
+4. **In-memory store**: Sessions/messages live in daemon memory only (no disk persistence)
 5. **Shared secret auth**: QR code scan proves physical proximity
 6. **ngrok tunnel support**: `--tunnel` flag for remote access beyond LAN
 

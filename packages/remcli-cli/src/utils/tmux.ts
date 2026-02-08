@@ -585,13 +585,19 @@ export class TmuxUtilities {
         const targetSession = sessionName || this.sessionName;
 
         // Check if session exists
-        const result = await this.executeTmuxCommand(['has-session', '-t', targetSession]);
+        // Use executeCommand directly because executeTmuxCommand auto-appends -t for has-session,
+        // which is fine here but we want consistency with the create path.
+        const result = await this.executeCommand(['tmux', 'has-session', '-t', targetSession]);
         if (result && result.returncode === 0) {
             return true;
         }
 
         // Create session if it doesn't exist
-        const createResult = await this.executeTmuxCommand(['new-session', '-d', '-s', targetSession]);
+        // IMPORTANT: Use executeCommand directly, NOT executeTmuxCommand!
+        // executeTmuxCommand auto-appends "-t sessionName" for new-session,
+        // but for new-session, -t means SESSION GROUP (not target), which causes
+        // grouped sessions where new-window fails with "index in use".
+        const createResult = await this.executeCommand(['tmux', 'new-session', '-d', '-s', targetSession]);
         return createResult !== null && createResult.returncode === 0;
     }
 
@@ -778,61 +784,72 @@ export class TmuxUtilities {
 
             const windowName = options.windowName || `remcli-${Date.now()}`;
 
-            // Ensure session exists
-            await this.ensureSessionExists(sessionName);
+            // Check if session already exists
+            const sessionExistsResult = await this.executeCommand(['tmux', 'has-session', '-t', sessionName]);
+            const sessionExists = sessionExistsResult !== null && sessionExistsResult.returncode === 0;
 
-            // Build command to execute in the new window
+            // Build command to execute
             const fullCommand = args.join(' ');
 
-            // Create new window in session with command and environment variables
-            // IMPORTANT: Don't manually add -t here - executeTmuxCommand handles it via parameters
-            const createWindowArgs = ['new-window', '-n', windowName];
-
-            // Add working directory if specified
-            if (options.cwd) {
-                const cwdPath = typeof options.cwd === 'string' ? options.cwd : options.cwd.pathname;
-                createWindowArgs.push('-c', cwdPath);
-            }
-
-            // Add environment variables using -e flag (sets them in the window's environment)
-            // Note: tmux windows inherit environment from tmux server, but we need to ensure
-            // the daemon's environment variables (especially expanded auth variables) are available
+            // Build env flags (shared between new-session and new-window paths)
+            const envFlags: string[] = [];
             if (env && Object.keys(env).length > 0) {
                 for (const [key, value] of Object.entries(env)) {
-                    // Skip undefined/null values with warning
                     if (value === undefined || value === null) {
                         logger.warn(`[TMUX] Skipping undefined/null environment variable: ${key}`);
                         continue;
                     }
-
-                    // Validate variable name (tmux accepts standard env var names)
                     if (!/^[A-Z_][A-Z0-9_]*$/i.test(key)) {
                         logger.warn(`[TMUX] Skipping invalid environment variable name: ${key}`);
                         continue;
                     }
-
-                    // Escape value for shell safety
-                    // Must escape: backslashes, double quotes, dollar signs, backticks
-                    const escapedValue = value
-                        .replace(/\\/g, '\\\\')   // Backslash first!
-                        .replace(/"/g, '\\"')     // Double quotes
-                        .replace(/\$/g, '\\$')    // Dollar signs
-                        .replace(/`/g, '\\`');    // Backticks
-
-                    createWindowArgs.push('-e', `${key}="${escapedValue}"`);
+                    envFlags.push('-e', `${key}=${value}`);
                 }
                 logger.debug(`[TMUX] Setting ${Object.keys(env).length} environment variables in tmux window`);
             }
 
-            // Add the command to run in the window (runs immediately when window is created)
-            createWindowArgs.push(fullCommand);
+            let createWindowArgs: string[];
 
-            // Add -P flag to print the pane PID immediately
-            createWindowArgs.push('-P');
-            createWindowArgs.push('-F', '#{pane_pid}');
+            if (!sessionExists) {
+                // Session doesn't exist — create it WITH the command as first window.
+                // This avoids an empty default shell window (window 0).
+                // tmux new-session -d -s <session> -n <window> [-c cwd] [-e K=V]... -P -F '#{pane_pid}' <command>
+                createWindowArgs = ['new-session', '-d', '-s', sessionName, '-n', windowName];
 
-            // Create window with command and get PID immediately
-            const createResult = await this.executeTmuxCommand(createWindowArgs, sessionName);
+                if (options.cwd) {
+                    const cwdPath = typeof options.cwd === 'string' ? options.cwd : options.cwd.pathname;
+                    createWindowArgs.push('-c', cwdPath);
+                }
+
+                createWindowArgs.push(...envFlags);
+                createWindowArgs.push('-P', '-F', '#{pane_pid}');
+                createWindowArgs.push(fullCommand);
+
+                logger.debug(`[TMUX] Creating new session "${sessionName}" with command window "${windowName}"`);
+            } else {
+                // Session exists — add a new window to it.
+                // IMPORTANT: Use "sessionName:" (with trailing colon) to auto-assign window index.
+                // Without the colon, tmux tries to create at the active window's index → "index N in use".
+                createWindowArgs = ['new-window', '-t', `${sessionName}:`, '-n', windowName];
+
+                if (options.cwd) {
+                    const cwdPath = typeof options.cwd === 'string' ? options.cwd : options.cwd.pathname;
+                    createWindowArgs.push('-c', cwdPath);
+                }
+
+                createWindowArgs.push(...envFlags);
+                createWindowArgs.push('-P', '-F', '#{pane_pid}');
+                createWindowArgs.push(fullCommand);
+
+                logger.debug(`[TMUX] Adding window "${windowName}" to existing session "${sessionName}"`);
+            }
+
+            // Execute tmux command and get PID immediately
+            // IMPORTANT: Call executeCommand directly, NOT executeTmuxCommand!
+            // executeTmuxCommand auto-appends "-t sessionName" which would corrupt the command.
+            const fullTmuxCmd = ['tmux', ...createWindowArgs];
+            logger.debug(`[TMUX] Full tmux command (${fullTmuxCmd.length} args): tmux ${createWindowArgs.slice(0, 6).join(' ')} ... [${env ? Object.keys(env).length : 0} env vars] ... ${createWindowArgs.slice(-3).join(' ')}`);
+            const createResult = await this.executeCommand(fullTmuxCmd);
 
             if (!createResult || createResult.returncode !== 0) {
                 throw new Error(`Failed to create tmux window: ${createResult?.stderr}`);

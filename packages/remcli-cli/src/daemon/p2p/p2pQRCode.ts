@@ -78,7 +78,8 @@ export function displayP2PQRCode(url: string): void {
     });
 
     console.log();
-    console.log(`  URL: ${url.split('#')[0]}`);
+    console.log(`  Open in browser:`);
+    console.log(`  ${url}`);
     console.log();
     console.log('='.repeat(60));
     console.log();

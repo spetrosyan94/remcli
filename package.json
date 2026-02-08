@@ -8,8 +8,8 @@
     "scripts": {
         "setup": "npm install && npm run build:web",
         "build:web": "npm run build --workspace=remcli && npm run export:web --workspace=remcli-app",
-        "start": "npm run build --workspace=remcli && node packages/remcli-cli/bin/remcli.mjs daemon start-sync",
-        "start:tunnel": "npm run build --workspace=remcli && node packages/remcli-cli/bin/remcli.mjs daemon start-sync --tunnel",
+        "start": "npm run build --workspace=remcli && node packages/remcli-cli/bin/remcli.mjs daemon stop; node packages/remcli-cli/bin/remcli.mjs daemon start-sync",
+        "start:tunnel": "npm run build --workspace=remcli && node packages/remcli-cli/bin/remcli.mjs daemon stop; node packages/remcli-cli/bin/remcli.mjs daemon start-sync --tunnel",
         "claude": "node packages/remcli-cli/bin/remcli.mjs claude",
         "codex": "node packages/remcli-cli/bin/remcli.mjs codex",
         "gemini": "node packages/remcli-cli/bin/remcli.mjs gemini",

@@ -25,7 +25,7 @@ import { AIBackendProfile, getProfileEnvironmentVariables, validateProfileForAge
 import { getBuiltInProfile, DEFAULT_PROFILES } from '@/sync/profileUtils';
 import { AgentInput } from '@/components/AgentInput';
 import { StyleSheet } from 'react-native-unistyles';
-import { randomUUID } from 'expo-crypto';
+import { randomUUID } from '@/utils/uuid';
 import { useCLIDetection } from '@/hooks/useCLIDetection';
 import { useEnvironmentVariables, resolveEnvVarSubstitution, extractEnvVarReferences } from '@/hooks/useEnvironmentVariables';
 import { formatPathRelativeToHome } from '@/utils/sessionUtils';
@@ -1055,7 +1055,9 @@ function NewSessionWizard() {
                 environmentVariables
             });
 
-            if ('sessionId' in result && result.sessionId) {
+            console.log('[NEW SESSION] machineSpawnNewSession result:', JSON.stringify(result));
+
+            if (result && 'sessionId' in result && result.sessionId) {
                 // Clear draft state on successful session creation
                 clearNewSessionDraft();
 
@@ -1082,15 +1084,8 @@ function NewSessionWizard() {
             }
         } catch (error) {
             console.error('Failed to start session', error);
-            let errorMessage = 'Failed to start session. Make sure the daemon is running on the target machine.';
-            if (error instanceof Error) {
-                if (error.message.includes('timeout')) {
-                    errorMessage = 'Session startup timed out. The machine may be slow or the daemon may not be responding.';
-                } else if (error.message.includes('Socket not connected')) {
-                    errorMessage = 'Not connected to server. Check your internet connection.';
-                }
-            }
-            Modal.alert(t('common.error'), errorMessage);
+            const rawMessage = error instanceof Error ? error.message : String(error);
+            Modal.alert(t('common.error'), `Failed to start session: ${rawMessage}`);
             setIsCreating(false);
         }
     }, [selectedMachineId, selectedPath, sessionPrompt, sessionType, experimentsEnabled, agentType, selectedProfileId, permissionMode, modelMode, recentMachinePaths, profileMap, router]);
