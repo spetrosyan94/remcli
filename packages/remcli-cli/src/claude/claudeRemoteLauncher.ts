@@ -1,20 +1,15 @@
-import { render } from "ink";
 import { Session } from "./session";
-import { MessageBuffer } from "@/ui/ink/messageBuffer";
-import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay";
-import React from "react";
+import { ConsoleRemoteDisplay } from "@/ui/ink/ConsoleRemoteDisplay";
 import { claudeRemote } from "./claudeRemote";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
 import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "./sdk";
-import { formatClaudeMessageForInk } from "@/ui/messageFormatterInk";
+import { formatClaudeMessageForConsole } from "@/ui/messageFormatterConsole";
 import { logger } from "@/ui/logger";
 import { SDKToLogConverter } from "./utils/sdkToLogConverter";
 import { PLAN_FAKE_REJECT } from "./sdk/prompts";
 import { EnhancedMode } from "./loop";
-import { RawJSONLines } from "@/claude/types";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
-import { getToolName } from "./utils/getToolName";
 
 interface PermissionsField {
     date: number;
@@ -26,48 +21,24 @@ interface PermissionsField {
 export async function claudeRemoteLauncher(session: Session): Promise<'switch' | 'exit'> {
     logger.debug('[claudeRemoteLauncher] Starting remote launcher');
 
-    // Check if we have a TTY for UI rendering
-    const hasTTY = process.stdout.isTTY && process.stdin.isTTY;
-    logger.debug(`[claudeRemoteLauncher] TTY available: ${hasTTY}`);
-
-    // Configure terminal
-    let messageBuffer = new MessageBuffer();
-    let inkInstance: any = null;
-
-    if (hasTTY) {
-        console.clear();
-        inkInstance = render(React.createElement(RemoteModeDisplay, {
-            messageBuffer,
-            logPath: process.env.DEBUG ? session.logPath : undefined,
-            onExit: async () => {
-                // Exit the entire client
-                logger.debug('[remote]: Exiting client via Ctrl-C');
-                if (!exitReason) {
-                    exitReason = 'exit';
-                }
-                await abort();
-            },
-            onSwitchToLocal: () => {
-                // Switch to local mode
-                logger.debug('[remote]: Switching to local mode via double space');
-                doSwitch();
-            }
-        }), {
-            exitOnCtrlC: false,
-            patchConsole: false
-        });
-    }
-
-    if (hasTTY) {
-        process.stdin.resume();
-        if (process.stdin.isTTY) {
-            process.stdin.setRawMode(true);
-        }
-        process.stdin.setEncoding("utf8");
-    }
-
     // Handle abort
     let exitReason: 'switch' | 'exit' | null = null;
+
+    // Console-based display (replaces Ink full-screen rendering for tmux compat)
+    const display = new ConsoleRemoteDisplay({
+        onExit: async () => {
+            logger.debug('[remote]: Exiting client via Ctrl-C');
+            if (!exitReason) {
+                exitReason = 'exit';
+            }
+            await abort();
+        },
+        onSwitch: () => {
+            logger.debug('[remote]: Switching to local mode via double space');
+            doSwitch();
+        },
+        logPath: process.env.DEBUG ? session.logPath : undefined,
+    });
     let abortController: AbortController | null = null;
     let abortFuture: Future<void> | null = null;
 
@@ -94,7 +65,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
     // When to abort
     session.client.rpcHandlerManager.registerHandler('abort', doAbort); // When abort clicked
     session.client.rpcHandlerManager.registerHandler('switch', doSwitch); // When switch clicked
-    // Removed catch-all stdin handler - now handled by RemoteModeDisplay keyboard handlers
+    // Removed catch-all stdin handler - now handled by ConsoleRemoteDisplay keyboard handlers
 
     // Create permission handler
     const permissionHandler = new PermissionHandler(session);
@@ -123,8 +94,8 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
 
     function onMessage(message: SDKMessage) {
 
-        // Write to message log
-        formatClaudeMessageForInk(message, messageBuffer);
+        // Write to console display
+        formatClaudeMessageForConsole(message, display);
 
         // Write to permission handler for tool id resolving
         permissionHandler.onMessage(message);
@@ -303,17 +274,17 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         let previousSessionId: string | null = null;
         while (!exitReason) {
             logger.debug('[remote]: launch');
-            messageBuffer.addMessage('═'.repeat(40), 'status');
+            display.writeMessage('═'.repeat(40), 'status');
 
             // Only reset parent chain and show "new session" message when session ID actually changes
             const isNewSession = session.sessionId !== previousSessionId;
             if (isNewSession) {
-                messageBuffer.addMessage('Starting new Claude session...', 'status');
+                display.writeMessage('Starting new Claude session...', 'status');
                 permissionHandler.reset(); // Reset permissions before starting new session
                 sdkToLogConverter.resetParentChain(); // Reset parent chain for new conversation
                 logger.debug(`[remote]: New session detected (previous: ${previousSessionId}, current: ${session.sessionId})`);
             } else {
-                messageBuffer.addMessage('Continuing Claude session...', 'status');
+                display.writeMessage('Continuing Claude session...', 'status');
                 logger.debug(`[remote]: Continuing existing session: ${session.sessionId}`);
             }
 
@@ -340,6 +311,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                             let p = pending;
                             pending = null;
                             permissionHandler.handleModeChange(p.mode.permissionMode);
+                            display.writeMessage(`User: ${p.message}`, 'user');
                             return p;
                         }
 
@@ -355,6 +327,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                             modeHash = msg.hash;
                             mode = msg.mode;
                             permissionHandler.handleModeChange(mode.permissionMode);
+                            display.writeMessage(`User: ${msg.message}`, 'user');
                             return {
                                 message: msg.message,
                                 mode: msg.mode
@@ -436,15 +409,8 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         // Clean up permission handler
         permissionHandler.reset();
 
-        // Reset Terminal
-        process.stdin.off('data', abort);
-        if (process.stdin.isTTY) {
-            process.stdin.setRawMode(false);
-        }
-        if (inkInstance) {
-            inkInstance.unmount();
-        }
-        messageBuffer.clear();
+        // Clean up console display (restores stdin raw mode, removes listeners)
+        display.destroy();
 
         // Resolve abort future
         if (abortFuture) { // Just in case of error

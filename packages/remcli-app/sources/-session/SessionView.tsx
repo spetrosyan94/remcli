@@ -283,6 +283,7 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
             modelMode={modelMode as any}
             onModelModeChange={updateModelMode as any}
             metadata={session.metadata}
+            isSendDisabled={session.presence !== 'online'}
             connectionStatus={{
                 text: sessionStatus.statusText,
                 color: sessionStatus.statusColor,

@@ -1,5 +1,10 @@
 /**
- * Open a Terminal.app window with a given command on macOS via AppleScript.
+ * Open a Terminal.app tab/window with a given command on macOS via AppleScript.
+ *
+ * Three cases:
+ * - Terminal NOT running: `activate` creates a default window, `do script in front window` reuses it.
+ * - Terminal running WITH windows: Cmd+T creates a new tab, `do script in front window` runs in it.
+ * - Terminal running WITHOUT windows: `do script` creates a new window.
  */
 
 import { execFile } from 'child_process';
@@ -11,10 +16,32 @@ export async function openTerminalWithCommand(command: string): Promise<void> {
         return;
     }
 
+    const escaped = escapeAppleScript(command);
+
     const script = `
+        set termWasRunning to application "Terminal" is running
         tell application "Terminal"
+            if termWasRunning then
+                activate
+                if (count of windows) > 0 then
+                    -- Create a new tab in the existing window via Cmd+T
+                    tell application "System Events"
+                        tell process "Terminal"
+                            keystroke "t" using command down
+                        end tell
+                    end tell
+                    delay 0.3
+                    do script "${escaped}" in front window
+                else
+                    do script "${escaped}"
+                end if
+            else
+                -- Terminal not running: activate creates default window, reuse it
+                activate
+                delay 0.5
+                do script "${escaped}" in front window
+            end if
             activate
-            do script "${escapeAppleScript(command)}"
         end tell
     `;
 

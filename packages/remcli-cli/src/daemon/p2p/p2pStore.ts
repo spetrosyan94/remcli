@@ -246,10 +246,9 @@ export class P2PStore {
         }
         messages.push(message);
 
-        // Update session activity
-        session.activeAt = now;
+        // Update timestamps but do NOT change session.active —
+        // active state is controlled only by session-alive / session-end events from the agent
         session.updatedAt = now;
-        session.active = true;
 
         return message;
     }

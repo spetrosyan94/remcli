@@ -31,8 +31,8 @@ import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import { openTerminalWithCommand } from '@/utils/openTerminal';
 
-// Track whether we've already opened a terminal for the tmux session
-let terminalOpenedForTmux = false;
+// Track tmux session names created by this daemon for cleanup
+const daemonTmuxSessions = new Set<string>();
 
 // Prepare initial metadata
 export const initialMachineMetadata: MachineMetadata = {
@@ -436,27 +436,20 @@ export async function startDaemon(): Promise<void> {
           };
         }
 
-        // Get tmux session name from profile or use default
-        const tmuxSessionName: string = extraEnv.TMUX_SESSION_NAME ?? 'remcli';
+        // Each remote session gets its own tmux session → its own Terminal.app tab
+        const agent = options.agent === 'gemini' ? 'gemini' : (options.agent === 'codex' ? 'codex' : 'claude');
+        const tmuxSessionName = `remcli-${Date.now()}-${agent}`;
+        const windowName = 'main';
 
-        // Spawn in tmux session
-        const sessionDesc = tmuxSessionName || 'current/most recent session';
-          logger.debug(`[DAEMON RUN] Attempting to spawn session in tmux: ${sessionDesc}`);
+          logger.debug(`[DAEMON RUN] Attempting to spawn session in tmux: ${tmuxSessionName}`);
 
           const tmux = getTmuxUtilities(tmuxSessionName);
 
           // Construct command for the CLI
           const cliPath = join(projectPath(), 'dist', 'index.mjs');
-          // Determine agent command - support claude, codex, and gemini
-          const agent = options.agent === 'gemini' ? 'gemini' : (options.agent === 'codex' ? 'codex' : 'claude');
           const fullCommand = `node --no-warnings --no-deprecation ${cliPath} ${agent} --remcli-starting-mode remote --started-by daemon`;
 
           // Spawn in tmux with environment variables
-          // IMPORTANT: Pass complete environment (process.env + extraEnv) because:
-          // 1. tmux sessions need daemon's expanded auth variables (e.g., ANTHROPIC_AUTH_TOKEN)
-          // 2. Regular spawn uses env: { ...process.env, ...extraEnv }
-          // 3. tmux needs explicit environment via -e flags to ensure all variables are available
-          const windowName = `remcli-${Date.now()}-${agent}`;
           const tmuxEnv: Record<string, string> = {};
 
           // Add all daemon environment variables (filtering out undefined)
@@ -473,47 +466,36 @@ export async function startDaemon(): Promise<void> {
             sessionName: tmuxSessionName,
             windowName: windowName,
             cwd: directory
-          }, tmuxEnv);  // Pass complete environment for tmux session
+          }, tmuxEnv);
 
           if (tmuxResult.success) {
             logger.debug(`[DAEMON RUN] Successfully spawned in tmux session: ${tmuxResult.sessionId}, PID: ${tmuxResult.pid}`);
 
-            // Validate we got a PID from tmux
             if (!tmuxResult.pid) {
               throw new Error('Tmux window created but no PID returned');
             }
 
-            // Create a tracked session for tmux windows - now we have the real PID!
+            // Track tmux session name for cleanup
+            daemonTmuxSessions.add(tmuxSessionName);
+
             const trackedSession: TrackedSession = {
               startedBy: 'daemon',
-              pid: tmuxResult.pid, // Real PID from tmux -P flag
+              pid: tmuxResult.pid,
               tmuxSessionId: tmuxResult.sessionId,
               directoryCreated,
               message: directoryCreated
-                ? `The path '${directory}' did not exist. We created a new folder and spawned a new session in tmux session '${tmuxSessionName}'. Use 'tmux attach -t ${tmuxSessionName}' to view the session.`
-                : `Spawned new session in tmux session '${tmuxSessionName}'. Use 'tmux attach -t ${tmuxSessionName}' to view the session.`
+                ? `The path '${directory}' did not exist. Created folder and spawned session in tmux '${tmuxSessionName}'.`
+                : `Spawned new session in tmux '${tmuxSessionName}'.`
             };
 
-            // Add to tracking map so webhook can find it later
             pidToTrackedSession.set(tmuxResult.pid, trackedSession);
 
-            // Auto-open terminal with tmux attach if no client is attached yet
-            if (!terminalOpenedForTmux) {
-              try {
-                const tmux = getTmuxUtilities(tmuxSessionName);
-                const clientsResult = await tmux.executeTmuxCommand(['list-clients', '-t', tmuxSessionName]);
-                const hasClients = clientsResult && clientsResult.returncode === 0 && clientsResult.stdout.trim().length > 0;
-
-                if (!hasClients) {
-                  terminalOpenedForTmux = true;
-                  openTerminalWithCommand(`tmux attach -t ${tmuxSessionName}`);
-                  logger.debug(`[DAEMON RUN] Opened terminal with tmux attach -t ${tmuxSessionName}`);
-                } else {
-                  logger.debug(`[DAEMON RUN] tmux session already has attached clients, skipping terminal open`);
-                }
-              } catch (error) {
-                logger.debug(`[DAEMON RUN] Failed to check/open terminal for tmux:`, error);
-              }
+            // Always open a new Terminal.app tab for this session
+            try {
+              openTerminalWithCommand(`tmux attach -t ${tmuxSessionName}`);
+              logger.debug(`[DAEMON RUN] Opened terminal tab for tmux session ${tmuxSessionName}`);
+            } catch (error) {
+              logger.debug(`[DAEMON RUN] Failed to open terminal for tmux:`, error);
             }
 
             // Wait for webhook to populate session with remcliSessionId (exact same as regular flow)
@@ -935,13 +917,20 @@ export async function startDaemon(): Promise<void> {
       }
       pidToTrackedSession.clear();
 
-      // Kill tmux session created by daemon (windows already closing since processes are killed)
+      // Kill all tmux sessions created by this daemon
       try {
         const { execSync } = await import('child_process');
-        execSync('tmux has-session -t remcli 2>/dev/null && tmux kill-session -t remcli', { stdio: 'ignore' });
-        logger.debug('[DAEMON RUN] Killed tmux session "remcli"');
+        for (const sessionName of daemonTmuxSessions) {
+          try {
+            execSync(`tmux kill-session -t ${sessionName}`, { stdio: 'ignore' });
+            logger.debug(`[DAEMON RUN] Killed tmux session "${sessionName}"`);
+          } catch {
+            // Session may have already exited
+          }
+        }
+        daemonTmuxSessions.clear();
       } catch {
-        // tmux session may not exist
+        // tmux may not be available
       }
 
       // Stop ngrok tunnel if running
