@@ -313,6 +313,7 @@ function SessionInfoContent({ session }: { session: Session }) {
                                 const flavor = session.metadata.flavor || 'claude';
                                 if (flavor === 'claude') return 'Claude';
                                 if (flavor === 'gpt' || flavor === 'openai') return 'Codex';
+                                if (flavor === 'cursor') return 'Cursor';
                                 if (flavor === 'gemini') return 'Gemini';
                                 return flavor;
                             })()}

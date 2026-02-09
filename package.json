@@ -12,6 +12,7 @@
         "start:tunnel": "npm run build --workspace=remcli && node packages/remcli-cli/bin/remcli.mjs daemon stop; node packages/remcli-cli/bin/remcli.mjs daemon start-sync --tunnel",
         "claude": "node packages/remcli-cli/bin/remcli.mjs claude",
         "codex": "node packages/remcli-cli/bin/remcli.mjs codex",
+        "cursor": "node packages/remcli-cli/bin/remcli.mjs cursor",
         "gemini": "node packages/remcli-cli/bin/remcli.mjs gemini",
         "stop": "node packages/remcli-cli/bin/remcli.mjs daemon stop",
         "status": "node packages/remcli-cli/bin/remcli.mjs daemon status",

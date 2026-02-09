@@ -395,6 +395,7 @@ export const ru: TranslationStructure = {
         agent: {
             claude: 'Claude',
             codex: 'Codex',
+            cursor: 'Cursor',
             gemini: 'Gemini',
         },
         model: {
@@ -430,6 +431,16 @@ export const ru: TranslationStructure = {
             badgeReadOnly: 'Только чтение',
             badgeSafeYolo: 'Безопасный YOLO',
             badgeYolo: 'YOLO',
+        },
+        cursorPermissionMode: {
+            title: 'РЕЖИМ CURSOR',
+            default: 'Агент',
+            plan: 'План',
+            readOnly: 'Вопрос',
+            yolo: 'Форс',
+            badgePlan: 'Режим плана',
+            badgeReadOnly: 'Режим вопросов',
+            badgeYolo: 'Режим форс',
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `Осталось ${percent}%`,

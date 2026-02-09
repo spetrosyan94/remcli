@@ -1,13 +1,13 @@
 # Remcli
 
-> Remote Mobile CLI for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex) & [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+> Remote CLI for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex) & [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Cursor](https://cursor.com/cli)
 
-Open-source мобильный и веб-клиент для удалённого управления AI CLI-инструментами. Управляйте сессиями Claude Code, Codex и Gemini CLI прямо с телефона — со сквозным шифрованием и без облачных серверов.
+Open-source Remote CLI для удалённого управления AI агентами. Управляйте сессиями Claude Code, Cursor, Codex и Gemini CLI прямо с телефона — со сквозным шифрованием и без облачных серверов.
 
 Проект вдохновлён [Happy](https://github.com/slopus/happy) — open-source решением той же задачи, но реализует другой подход: вместо облачной архитектуры Remcli использует прямое P2P-соединение, где демон на вашей машине выступает сервером.
 
 ```
-Телефон  ←── WebSocket (LAN / ngrok) ──→  CLI Daemon  ←──→  Claude Code / Codex / Gemini CLI
+Телефон  ←── WebSocket (LAN / ngrok) ──→  CLI Daemon  ←──→  Claude Code / Cursor / Codex / Gemini CLI
 ```
 
 ---
@@ -30,7 +30,7 @@ Open-source мобильный и веб-клиент для удалённог�
 
 - **Node.js** 20+
 - **tmux** (`brew install tmux` на macOS, `apt install tmux` на Linux)
-- **Claude Code** (`npm install -g @anthropic-ai/claude-code`) и/или [Codex](https://github.com/openai/codex) / [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+- **Claude Code** (`npm install -g @anthropic-ai/claude-code`) и/или [Cursor CLI](https://cursor.com/cli) / [Codex](https://github.com/openai/codex) / [Gemini CLI](https://github.com/google-gemini/gemini-cli)
 - **macOS** или **Linux** (Windows через WSL)
 
 ### 1. Установка и сборка
@@ -66,6 +66,7 @@ npm start
 
 ```bash
 npm run claude              # Claude Code
+npm run cursor              # Cursor
 npm run codex               # Codex
 npm run gemini              # Gemini CLI
 ```
@@ -93,6 +94,7 @@ npm run start:tunnel
 | `npm start` | Запуск демона (LAN) |
 | `npm run start:tunnel` | Запуск демона через интернет (ngrok) |
 | `npm run claude` | Сессия Claude Code (видна на Mac и телефоне) |
+| `npm run cursor` | Сессия Cursor |
 | `npm run codex` | Сессия Codex |
 | `npm run gemini` | Сессия Gemini CLI |
 | `npm run stop` | Остановить демон |
@@ -103,6 +105,7 @@ npm run start:tunnel
 
 ```bash
 remcli                        # Сессия Claude Code
+remcli cursor                 # Сессия Cursor
 remcli codex                  # Сессия Codex
 remcli gemini                 # Сессия Gemini CLI
 remcli daemon start           # Запустить демон

@@ -58,6 +58,7 @@ const EnvironmentVariableSchema = z.object({
 const ProfileCompatibilitySchema = z.object({
     claude: z.boolean().default(true),
     codex: z.boolean().default(true),
+    cursor: z.boolean().default(true),
     gemini: z.boolean().default(true),
 });
 
@@ -92,7 +93,7 @@ export const AIBackendProfileSchema = z.object({
     defaultModelMode: z.string().optional(),
 
     // Compatibility metadata
-    compatibility: ProfileCompatibilitySchema.default({ claude: true, codex: true, gemini: true }),
+    compatibility: ProfileCompatibilitySchema.default({ claude: true, codex: true, cursor: true, gemini: true }),
 
     // Built-in profile indicator
     isBuiltIn: z.boolean().default(false),
@@ -106,7 +107,7 @@ export const AIBackendProfileSchema = z.object({
 export type AIBackendProfile = z.infer<typeof AIBackendProfileSchema>;
 
 // Helper functions matching the remcli app exactly
-export function validateProfileForAgent(profile: AIBackendProfile, agent: 'claude' | 'codex' | 'gemini'): boolean {
+export function validateProfileForAgent(profile: AIBackendProfile, agent: 'claude' | 'codex' | 'cursor' | 'gemini'): boolean {
   return profile.compatibility[agent];
 }
 

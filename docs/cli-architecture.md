@@ -43,7 +43,7 @@ graph TB
 - **API client:** `src/api` handles HTTP + Socket.IO, encryption, and RPC.
 - **Daemon:** `src/daemon` runs in the background, spawns sessions, and maintains machine state.
 - **Persistence/config:** `src/persistence.ts` + `src/configuration.ts` manage local state in `~/.remcli`.
-- **Agents:** `src/claude`, `src/codex`, `src/gemini` provide provider-specific runners.
+- **Agents:** `src/claude`, `src/cursor`, `src/codex`, `src/gemini` provide provider-specific runners.
 
 ## CLI entry flow
 
@@ -54,7 +54,7 @@ flowchart TD
     Parse --> Doctor{doctor?}
     Parse --> Auth{auth?}
     Parse --> Connect{connect?}
-    Parse --> Agent{codex/gemini?}
+    Parse --> Agent{cursor/codex/gemini?}
     Parse --> Default{default}
 
     Doctor --> RunDoctor[Run diagnostics]
@@ -72,7 +72,7 @@ flowchart TD
 ```
 
 `src/index.ts` is the CLI router. It:
-- Parses subcommands (`doctor`, `auth`, `connect`, `codex`, `gemini`, and default run flows).
+- Parses subcommands (`doctor`, `auth`, `connect`, `cursor`, `codex`, `gemini`, and default run flows).
 - Ensures auth and machine setup when needed (`authAndSetupMachineIfNeeded`).
 - Starts the daemon or runs an agent directly based on subcommand/context.
 

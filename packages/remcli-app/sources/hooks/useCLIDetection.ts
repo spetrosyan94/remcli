@@ -4,6 +4,7 @@ import { machineBash } from '@/sync/ops';
 interface CLIAvailability {
     claude: boolean | null; // null = unknown/loading, true = installed, false = not installed
     codex: boolean | null;
+    cursor: boolean | null;
     gemini: boolean | null;
     isDetecting: boolean; // Explicit loading state
     timestamp: number; // When detection completed
@@ -36,6 +37,7 @@ export function useCLIDetection(machineId: string | null): CLIAvailability {
     const [availability, setAvailability] = useState<CLIAvailability>({
         claude: null,
         codex: null,
+        cursor: null,
         gemini: null,
         isDetecting: false,
         timestamp: 0,
@@ -43,7 +45,7 @@ export function useCLIDetection(machineId: string | null): CLIAvailability {
 
     useEffect(() => {
         if (!machineId) {
-            setAvailability({ claude: null, codex: null, gemini: null, isDetecting: false, timestamp: 0 });
+            setAvailability({ claude: null, codex: null, cursor: null, gemini: null, isDetecting: false, timestamp: 0 });
             return;
         }
 
@@ -55,12 +57,14 @@ export function useCLIDetection(machineId: string | null): CLIAvailability {
             console.log('[useCLIDetection] Starting detection for machineId:', machineId);
 
             try {
-                // Use single bash command to check both CLIs efficiently
+                // Use single bash command to check all CLIs efficiently
                 // command -v is POSIX compliant and more reliable than which
+                // Note: Cursor CLI binary is called "agent", not "cursor"
                 const result = await machineBash(
                     machineId,
                     '(command -v claude >/dev/null 2>&1 && echo "claude:true" || echo "claude:false") && ' +
                     '(command -v codex >/dev/null 2>&1 && echo "codex:true" || echo "codex:false") && ' +
+                    '(command -v agent >/dev/null 2>&1 && echo "cursor:true" || echo "cursor:false") && ' +
                     '(command -v gemini >/dev/null 2>&1 && echo "gemini:true" || echo "gemini:false")',
                     '/'
                 );
@@ -71,12 +75,12 @@ export function useCLIDetection(machineId: string | null): CLIAvailability {
                 if (result.success && result.exitCode === 0) {
                     // Parse output: "claude:true\ncodex:false\ngemini:false"
                     const lines = result.stdout.trim().split('\n');
-                    const cliStatus: { claude?: boolean; codex?: boolean; gemini?: boolean } = {};
+                    const cliStatus: { claude?: boolean; codex?: boolean; cursor?: boolean; gemini?: boolean } = {};
 
                     lines.forEach(line => {
                         const [cli, status] = line.split(':');
                         if (cli && status) {
-                            cliStatus[cli.trim() as 'claude' | 'codex' | 'gemini'] = status.trim() === 'true';
+                            cliStatus[cli.trim() as 'claude' | 'codex' | 'cursor' | 'gemini'] = status.trim() === 'true';
                         }
                     });
 
@@ -84,6 +88,7 @@ export function useCLIDetection(machineId: string | null): CLIAvailability {
                     setAvailability({
                         claude: cliStatus.claude ?? null,
                         codex: cliStatus.codex ?? null,
+                        cursor: cliStatus.cursor ?? null,
                         gemini: cliStatus.gemini ?? null,
                         isDetecting: false,
                         timestamp: Date.now(),
@@ -94,6 +99,7 @@ export function useCLIDetection(machineId: string | null): CLIAvailability {
                     setAvailability({
                         claude: null,
                         codex: null,
+                        cursor: null,
                         gemini: null,
                         isDetecting: false,
                         timestamp: 0,
@@ -108,6 +114,7 @@ export function useCLIDetection(machineId: string | null): CLIAvailability {
                 setAvailability({
                     claude: null,
                     codex: null,
+                    cursor: null,
                     gemini: null,
                     isDetecting: false,
                     timestamp: 0,

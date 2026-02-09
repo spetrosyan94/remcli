@@ -48,6 +48,7 @@ interface AgentInputProps {
         cliStatus?: {
             claude: boolean | null;
             codex: boolean | null;
+            cursor?: boolean | null;
             gemini?: boolean | null;
         };
     };
@@ -62,7 +63,7 @@ interface AgentInputProps {
     };
     alwaysShowContextSize?: boolean;
     onFileViewerPress?: () => void;
-    agentType?: 'claude' | 'codex' | 'gemini';
+    agentType?: 'claude' | 'codex' | 'cursor' | 'gemini';
     onAgentClick?: () => void;
     machineName?: string | null;
     onMachineClick?: () => void;
@@ -299,9 +300,10 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
 
     const hasText = props.value.trim().length > 0;
 
-    // Check if this is a Codex or Gemini session
+    // Check if this is a Codex, Cursor, or Gemini session
     // Use metadata.flavor for existing sessions, agentType prop for new sessions
     const isCodex = props.metadata?.flavor === 'codex' || props.agentType === 'codex';
+    const isCursor = props.metadata?.flavor === 'cursor' || props.agentType === 'cursor';
     const isGemini = props.metadata?.flavor === 'gemini' || props.agentType === 'gemini';
 
     // Profile data
@@ -474,9 +476,11 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
             }
             // Handle Shift+Tab for permission mode switching
             if (event.key === 'Tab' && event.shiftKey && props.onPermissionModeChange) {
-                const modeOrder: PermissionMode[] = isCodex
-                    ? ['default', 'read-only', 'safe-yolo', 'yolo']
-                    : ['default', 'acceptEdits', 'plan', 'bypassPermissions']; // Claude and Gemini share same modes
+                const modeOrder: PermissionMode[] = isCursor
+                    ? ['default', 'plan', 'read-only', 'yolo']
+                    : (isCodex || isGemini)
+                        ? ['default', 'read-only', 'safe-yolo', 'yolo']
+                        : ['default', 'acceptEdits', 'plan', 'bypassPermissions']; // Claude modes
                 const currentIndex = modeOrder.indexOf(props.permissionMode || 'default');
                 const nextIndex = (currentIndex + 1) % modeOrder.length;
                 props.onPermissionModeChange(modeOrder[nextIndex]);
@@ -532,13 +536,20 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                 {/* Permission Mode Section */}
                                 <View style={styles.overlaySection}>
                                     <Text style={styles.overlaySectionTitle}>
-                                        {isCodex ? t('agentInput.codexPermissionMode.title') : isGemini ? t('agentInput.geminiPermissionMode.title') : t('agentInput.permissionMode.title')}
+                                        {isCursor ? t('agentInput.cursorPermissionMode.title') : isCodex ? t('agentInput.codexPermissionMode.title') : isGemini ? t('agentInput.geminiPermissionMode.title') : t('agentInput.permissionMode.title')}
                                     </Text>
-                                    {((isCodex || isGemini)
-                                        ? (['default', 'read-only', 'safe-yolo', 'yolo'] as const)
-                                        : (['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const)
+                                    {(isCursor
+                                        ? (['default', 'plan', 'read-only', 'yolo'] as const)
+                                        : (isCodex || isGemini)
+                                            ? (['default', 'read-only', 'safe-yolo', 'yolo'] as const)
+                                            : (['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const)
                                     ).map((mode) => {
-                                        const modeConfig = isCodex ? {
+                                        const modeConfig = isCursor ? {
+                                            'default': { label: t('agentInput.cursorPermissionMode.default') },
+                                            'plan': { label: t('agentInput.cursorPermissionMode.plan') },
+                                            'read-only': { label: t('agentInput.cursorPermissionMode.readOnly') },
+                                            'yolo': { label: t('agentInput.cursorPermissionMode.yolo') },
+                                        } : isCodex ? {
                                             'default': { label: t('agentInput.codexPermissionMode.default') },
                                             'read-only': { label: t('agentInput.codexPermissionMode.readOnly') },
                                             'safe-yolo': { label: t('agentInput.codexPermissionMode.safeYolo') },
@@ -620,7 +631,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                     }}>
                                         {t('agentInput.model.title')}
                                     </Text>
-                                    {isGemini ? (
+                                    {(isGemini && !isCursor) ? (
                                         // Gemini model selector
                                         (['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'] as const).map((model) => {
                                             const modelConfig = {
@@ -771,6 +782,28 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                     codex
                                                 </Text>
                                             </View>
+                                            {props.connectionStatus.cliStatus.cursor !== undefined && (
+                                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                                    <Text style={{
+                                                        fontSize: 11,
+                                                        color: props.connectionStatus.cliStatus.cursor
+                                                            ? theme.colors.success
+                                                            : theme.colors.textDestructive,
+                                                        ...Typography.default()
+                                                    }}>
+                                                        {props.connectionStatus.cliStatus.cursor ? '✓' : '✗'}
+                                                    </Text>
+                                                    <Text style={{
+                                                        fontSize: 11,
+                                                        color: props.connectionStatus.cliStatus.cursor
+                                                            ? theme.colors.success
+                                                            : theme.colors.textDestructive,
+                                                        ...Typography.default()
+                                                    }}>
+                                                        cursor
+                                                    </Text>
+                                                </View>
+                                            )}
                                             {props.connectionStatus.cliStatus.gemini !== undefined && (
                                                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                                                     <Text style={{
@@ -825,7 +858,12 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                             theme.colors.textSecondary, // Use secondary text color for default
                                     ...Typography.default()
                                 }}>
-                                    {isCodex ? (
+                                    {isCursor ? (
+                                        props.permissionMode === 'default' ? t('agentInput.cursorPermissionMode.default') :
+                                            props.permissionMode === 'plan' ? t('agentInput.cursorPermissionMode.badgePlan') :
+                                                props.permissionMode === 'read-only' ? t('agentInput.cursorPermissionMode.badgeReadOnly') :
+                                                    props.permissionMode === 'yolo' ? t('agentInput.cursorPermissionMode.badgeYolo') : ''
+                                    ) : isCodex ? (
                                         props.permissionMode === 'default' ? t('agentInput.codexPermissionMode.default') :
                                             props.permissionMode === 'read-only' ? t('agentInput.codexPermissionMode.badgeReadOnly') :
                                                 props.permissionMode === 'safe-yolo' ? t('agentInput.codexPermissionMode.badgeSafeYolo') :
@@ -1043,7 +1081,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                             fontWeight: '600',
                                             ...Typography.default('semiBold'),
                                         }}>
-                                            {props.agentType === 'claude' ? t('agentInput.agent.claude') : props.agentType === 'codex' ? t('agentInput.agent.codex') : t('agentInput.agent.gemini')}
+                                            {props.agentType === 'claude' ? t('agentInput.agent.claude') : props.agentType === 'codex' ? t('agentInput.agent.codex') : props.agentType === 'cursor' ? t('agentInput.agent.cursor') : t('agentInput.agent.gemini')}
                                         </Text>
                                     </Pressable>
                                 )}

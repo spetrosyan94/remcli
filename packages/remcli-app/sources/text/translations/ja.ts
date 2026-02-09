@@ -417,6 +417,7 @@ export const ja: TranslationStructure = {
         agent: {
             claude: 'Claude',
             codex: 'Codex',
+            cursor: 'Cursor',
             gemini: 'Gemini',
         },
         model: {
@@ -452,6 +453,16 @@ export const ja: TranslationStructure = {
             badgeReadOnly: '読み取り専用',
             badgeSafeYolo: '安全YOLO',
             badgeYolo: 'YOLO',
+        },
+        cursorPermissionMode: {
+            title: 'CURSORモード',
+            default: 'エージェント',
+            plan: 'プラン',
+            readOnly: '質問',
+            yolo: '強制',
+            badgePlan: 'プランモード',
+            badgeReadOnly: '質問モード',
+            badgeYolo: '強制モード',
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `残り ${percent}%`,

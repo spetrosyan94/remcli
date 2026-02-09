@@ -387,6 +387,7 @@ export const zhHans: TranslationStructure = {
         agent: {
             claude: 'Claude',
             codex: 'Codex',
+            cursor: 'Cursor',
             gemini: 'Gemini',
         },
         model: {
@@ -422,6 +423,16 @@ export const zhHans: TranslationStructure = {
             badgeReadOnly: '只读',
             badgeSafeYolo: '安全 YOLO',
             badgeYolo: 'YOLO',
+        },
+        cursorPermissionMode: {
+            title: 'CURSOR 模式',
+            default: '代理',
+            plan: '计划',
+            readOnly: '提问',
+            yolo: '强制',
+            badgePlan: '计划模式',
+            badgeReadOnly: '提问模式',
+            badgeYolo: '强制模式',
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `剩余 ${percent}%`,

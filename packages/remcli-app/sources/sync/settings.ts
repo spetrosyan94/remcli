@@ -87,6 +87,7 @@ const EnvironmentVariableSchema = z.object({
 const ProfileCompatibilitySchema = z.object({
     claude: z.boolean().default(true),
     codex: z.boolean().default(true),
+    cursor: z.boolean().default(true),
     gemini: z.boolean().default(true),
 });
 
@@ -122,7 +123,7 @@ export const AIBackendProfileSchema = z.object({
     defaultModelMode: z.string().optional(),
 
     // Compatibility metadata
-    compatibility: ProfileCompatibilitySchema.default({ claude: true, codex: true, gemini: true }),
+    compatibility: ProfileCompatibilitySchema.default({ claude: true, codex: true, cursor: true, gemini: true }),
 
     // Built-in profile indicator
     isBuiltIn: z.boolean().default(false),
@@ -136,7 +137,7 @@ export const AIBackendProfileSchema = z.object({
 export type AIBackendProfile = z.infer<typeof AIBackendProfileSchema>;
 
 // Helper functions for profile validation and compatibility
-export function validateProfileForAgent(profile: AIBackendProfile, agent: 'claude' | 'codex' | 'gemini'): boolean {
+export function validateProfileForAgent(profile: AIBackendProfile, agent: 'claude' | 'codex' | 'cursor' | 'gemini'): boolean {
     return profile.compatibility[agent];
 }
 
@@ -293,11 +294,13 @@ export const SettingsSchema = z.object({
         perMachine: z.record(z.string(), z.object({
             claude: z.boolean().optional(),
             codex: z.boolean().optional(),
+            cursor: z.boolean().optional(),
             gemini: z.boolean().optional(),
         })).default({}),
         global: z.object({
             claude: z.boolean().optional(),
             codex: z.boolean().optional(),
+            cursor: z.boolean().optional(),
             gemini: z.boolean().optional(),
         }).default({}),
     }).default({ perMachine: {}, global: {} }).describe('Tracks which CLI installation warnings user has dismissed (per-machine or globally)'),

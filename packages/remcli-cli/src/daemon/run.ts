@@ -47,7 +47,7 @@ export const initialMachineMetadata: MachineMetadata = {
 // Get environment variables for a profile, filtered for agent compatibility
 async function getProfileEnvironmentVariablesForAgent(
   profileId: string,
-  agentType: 'claude' | 'codex' | 'gemini'
+  agentType: 'claude' | 'codex' | 'cursor' | 'gemini'
 ): Promise<Record<string, string>> {
   try {
     const settings = await readSettings();
@@ -437,7 +437,7 @@ export async function startDaemon(): Promise<void> {
         }
 
         // Each remote session gets its own tmux session → its own Terminal.app tab
-        const agent = options.agent === 'gemini' ? 'gemini' : (options.agent === 'codex' ? 'codex' : 'claude');
+        const agent = options.agent === 'gemini' ? 'gemini' : options.agent === 'cursor' ? 'cursor' : (options.agent === 'codex' ? 'codex' : 'claude');
         const tmuxSessionName = `remcli-${Date.now()}-${agent}`;
         const windowName = 'main';
 

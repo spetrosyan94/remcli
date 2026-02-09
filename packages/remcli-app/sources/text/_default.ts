@@ -384,6 +384,7 @@ export const en = {
         agent: {
             claude: 'Claude',
             codex: 'Codex',
+            cursor: 'Cursor',
             gemini: 'Gemini',
         },
         model: {
@@ -419,6 +420,16 @@ export const en = {
             badgeReadOnly: 'Read Only',
             badgeSafeYolo: 'Safe YOLO',
             badgeYolo: 'YOLO',
+        },
+        cursorPermissionMode: {
+            title: 'CURSOR MODE',
+            default: 'Agent',
+            plan: 'Plan',
+            readOnly: 'Ask',
+            yolo: 'Force',
+            badgePlan: 'Plan Mode',
+            badgeReadOnly: 'Ask Mode',
+            badgeYolo: 'Force Mode',
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `${percent}% left`,
