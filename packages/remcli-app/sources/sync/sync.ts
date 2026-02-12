@@ -30,6 +30,7 @@ import { fetchArtifact, fetchArtifacts, createArtifact, updateArtifact } from '.
 import { DecryptedArtifact, Artifact, ArtifactCreateRequest, ArtifactUpdateRequest } from './artifactTypes';
 import { ArtifactEncryption } from './encryption/artifactEncryption';
 import { initializeTodoSync } from '../-zen/model/ops';
+import { getDefaultModel, type AIAgent } from '@/utils/agents';
 
 class Sync {
     // Spawned agents (especially in spawn mode) can take noticeable time to connect.
@@ -185,10 +186,10 @@ class Sync {
         // Read permission mode from session state
         const permissionMode = session.permissionMode || 'default';
         
-        // Read model mode - for Gemini, default to gemini-2.5-pro if not set
+        // Read model mode
         const flavor = session.metadata?.flavor;
-        const isGemini = flavor === 'gemini';
-        const modelMode = session.modelMode || (isGemini ? 'gemini-2.5-pro' : 'default');
+        const agent = (flavor || 'claude') as AIAgent;
+        const modelMode = session.modelMode || getDefaultModel(agent);
 
         // Generate local ID
         const localId = randomUUID();
@@ -210,12 +211,8 @@ class Sync {
             sentFrom = 'web'; // fallback
         }
 
-        // Model settings - for Gemini, we pass the selected model; for others, CLI handles it
-        let model: string | null = null;
-        if (isGemini && modelMode !== 'default') {
-            // For Gemini ACP, pass the selected model to CLI
-            model = modelMode;
-        }
+        // Model settings — pass selected model to CLI for all agents
+        const model: string | null = modelMode !== 'default' ? modelMode : null;
         const fallbackModel: string | null = null;
 
         // Create user message content with metadata

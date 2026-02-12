@@ -393,6 +393,12 @@ export const zhHans: TranslationStructure = {
         model: {
             title: '模型',
             configureInCli: '在 CLI 设置中配置模型',
+            default: '默认',
+            defaultDesc: '代理默认模型',
+            mostCapable: '最强大',
+            balanced: '均衡',
+            fast: '快速',
+            fastest: '最快',
         },
         codexPermissionMode: {
             title: 'CODEX 权限模式',
@@ -406,9 +412,6 @@ export const zhHans: TranslationStructure = {
         },
         codexModel: {
             title: 'CODEX MODEL',
-            gpt5CodexLow: 'gpt-5-codex low',
-            gpt5CodexMedium: 'gpt-5-codex medium',
-            gpt5CodexHigh: 'gpt-5-codex high',
             gpt5Minimal: 'GPT-5 Minimal',
             gpt5Low: 'GPT-5 Low',
             gpt5Medium: 'GPT-5 Medium',

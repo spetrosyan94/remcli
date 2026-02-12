@@ -401,6 +401,12 @@ export const ru: TranslationStructure = {
         model: {
             title: 'МОДЕЛЬ',
             configureInCli: 'Настройте модели в настройках CLI',
+            default: 'По умолчанию',
+            defaultDesc: 'Модель агента по умолчанию',
+            mostCapable: 'Самая мощная',
+            balanced: 'Сбалансированная',
+            fast: 'Быстрая',
+            fastest: 'Самая быстрая',
         },
         codexPermissionMode: {
             title: 'РЕЖИМ РАЗРЕШЕНИЙ CODEX',
@@ -414,9 +420,6 @@ export const ru: TranslationStructure = {
         },
         codexModel: {
             title: 'CODEX MODEL',
-            gpt5CodexLow: 'gpt-5-codex low',
-            gpt5CodexMedium: 'gpt-5-codex medium',
-            gpt5CodexHigh: 'gpt-5-codex high',
             gpt5Minimal: 'GPT-5 Minimal',
             gpt5Low: 'GPT-5 Low',
             gpt5Medium: 'GPT-5 Medium',

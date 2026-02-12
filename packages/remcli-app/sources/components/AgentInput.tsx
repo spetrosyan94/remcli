@@ -6,6 +6,7 @@ import { layout } from './layout';
 import { MultiTextInput, KeyPressEvent } from './MultiTextInput';
 import { Typography } from '@/constants/Typography';
 import { PermissionMode, ModelMode } from './PermissionModeSelector';
+import { AGENT_MODELS, type AIAgent } from '@/utils/agents';
 import { hapticsLight, hapticsError } from './haptics';
 import { Shaker, ShakeInstance } from './Shaker';
 import { StatusDot } from './StatusDot';
@@ -296,7 +297,7 @@ const getContextWarning = (contextSize: number, alwaysShow: boolean = false, the
 export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, AgentInputProps>((props, ref) => {
     const styles = stylesheet;
     const { theme } = useUnistyles();
-    const screenWidth = useWindowDimensions().width;
+    const { width: screenWidth, height: screenHeight } = useWindowDimensions();
 
     const hasText = props.value.trim().length > 0;
 
@@ -532,7 +533,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                             styles.settingsOverlay,
                             { paddingHorizontal: screenWidth > 700 ? 0 : 8 }
                         ]}>
-                            <FloatingOverlay maxHeight={400} keyboardShouldPersistTaps="always">
+                            <FloatingOverlay maxHeight={Math.min(400, screenHeight * 0.45)} keyboardShouldPersistTaps="always">
                                 {/* Permission Mode Section */}
                                 <View style={styles.overlaySection}>
                                     <Text style={styles.overlaySectionTitle}>
@@ -631,23 +632,20 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                     }}>
                                         {t('agentInput.model.title')}
                                     </Text>
-                                    {(isGemini && !isCursor) ? (
-                                        // Gemini model selector
-                                        (['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'] as const).map((model) => {
-                                            const modelConfig = {
-                                                'gemini-2.5-pro': { label: 'Gemini 2.5 Pro', description: 'Most capable' },
-                                                'gemini-2.5-flash': { label: 'Gemini 2.5 Flash', description: 'Fast & efficient' },
-                                                'gemini-2.5-flash-lite': { label: 'Gemini 2.5 Flash Lite', description: 'Fastest' },
-                                            };
-                                            const config = modelConfig[model];
-                                            const isSelected = props.modelMode === model;
+                                    {(() => {
+                                        const agent = (props.agentType || 'claude') as AIAgent;
+                                        const config = AGENT_MODELS[agent];
 
+                                        return config.options.map((opt) => {
+                                            const displayLabel = opt.label || t('agentInput.model.default');
+                                            const displayDesc = t(`agentInput.model.${opt.descriptionKey}` as any);
+                                            const isSelected = (props.modelMode || config.defaultMode) === opt.value;
                                             return (
                                                 <Pressable
-                                                    key={model}
+                                                    key={opt.value}
                                                     onPress={() => {
                                                         hapticsLight();
-                                                        props.onModelModeChange?.(model);
+                                                        props.onModelModeChange?.(opt.value);
                                                     }}
                                                     style={({ pressed }) => ({
                                                         flexDirection: 'row',
@@ -682,30 +680,20 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                             color: isSelected ? theme.colors.radio.active : theme.colors.text,
                                                             ...Typography.default()
                                                         }}>
-                                                            {config.label}
+                                                            {displayLabel}
                                                         </Text>
                                                         <Text style={{
                                                             fontSize: 11,
                                                             color: theme.colors.textSecondary,
                                                             ...Typography.default()
                                                         }}>
-                                                            {config.description}
+                                                            {displayDesc}
                                                         </Text>
                                                     </View>
                                                 </Pressable>
                                             );
-                                        })
-                                    ) : (
-                                        <Text style={{
-                                            fontSize: 13,
-                                            color: theme.colors.textSecondary,
-                                            paddingHorizontal: 16,
-                                            paddingVertical: 8,
-                                            ...Typography.default()
-                                        }}>
-                                            {t('agentInput.model.configureInCli')}
-                                        </Text>
-                                    )}
+                                        });
+                                    })()}
                                 </View>
                             </FloatingOverlay>
                         </View>
@@ -1082,6 +1070,15 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                             ...Typography.default('semiBold'),
                                         }}>
                                             {props.agentType === 'claude' ? t('agentInput.agent.claude') : props.agentType === 'codex' ? t('agentInput.agent.codex') : props.agentType === 'cursor' ? t('agentInput.agent.cursor') : t('agentInput.agent.gemini')}
+                                            {(() => {
+                                                const agent = (props.agentType || 'claude') as AIAgent;
+                                                const config = AGENT_MODELS[agent];
+                                                const currentModel = props.modelMode || config.defaultMode;
+                                                if (currentModel === 'default') return null;
+                                                const opt = config.options.find(o => o.value === currentModel);
+                                                if (!opt || !opt.label) return null;
+                                                return ` · ${opt.label}`;
+                                            })()}
                                         </Text>
                                     </Pressable>
                                 )}

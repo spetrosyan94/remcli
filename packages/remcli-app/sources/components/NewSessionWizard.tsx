@@ -6,6 +6,7 @@ import { t } from '@/text';
 import { Ionicons } from '@expo/vector-icons';
 import { SessionTypeSelector } from '@/components/SessionTypeSelector';
 import { PermissionModeSelector, PermissionMode, ModelMode } from '@/components/PermissionModeSelector';
+import { AGENT_MODELS, type AIAgent } from '@/utils/agents';
 import { ItemGroup } from '@/components/ItemGroup';
 import { Item } from '@/components/Item';
 import { useAllMachines, useSessions, useSetting, storage } from '@/sync/storage';
@@ -1625,23 +1626,14 @@ export function NewSessionWizard({ onComplete, onCancel, initialPrompt = '' }: N
                         </ItemGroup>
 
                         <ItemGroup title="Model Mode">
-                            {(agentType === 'claude' ? [
-                                { value: 'default', label: 'Default', description: 'Balanced performance', icon: 'cube-outline' },
-                                { value: 'adaptiveUsage', label: 'Adaptive Usage', description: 'Automatically choose model', icon: 'analytics-outline' },
-                                { value: 'sonnet', label: 'Sonnet', description: 'Fast and efficient', icon: 'speedometer-outline' },
-                                { value: 'opus', label: 'Opus', description: 'Most capable model', icon: 'diamond-outline' },
-                            ] as const : [
-                                { value: 'gpt-5-codex-high', label: 'GPT-5 Codex High', description: 'Best for complex coding', icon: 'diamond-outline' },
-                                { value: 'gpt-5-codex-medium', label: 'GPT-5 Codex Medium', description: 'Balanced coding assistance', icon: 'cube-outline' },
-                                { value: 'gpt-5-codex-low', label: 'GPT-5 Codex Low', description: 'Fast coding help', icon: 'speedometer-outline' },
-                            ] as const).map((option, index, array) => (
+                            {AGENT_MODELS[(agentType || 'claude') as AIAgent].options.map((option, index, array) => (
                                 <Item
                                     key={option.value}
-                                    title={option.label}
-                                    subtitle={option.description}
+                                    title={option.label || t('agentInput.model.default')}
+                                    subtitle={t(`agentInput.model.${option.descriptionKey}` as any)}
                                     leftElement={
                                         <Ionicons
-                                            name={option.icon}
+                                            name="cube-outline"
                                             size={24}
                                             color={theme.colors.textSecondary}
                                         />

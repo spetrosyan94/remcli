@@ -420,6 +420,12 @@ export const it: TranslationStructure = {
         model: {
             title: 'MODELLO',
             configureInCli: 'Configura i modelli nelle impostazioni CLI',
+            default: 'Predefinito',
+            defaultDesc: 'Modello predefinito dell\'agente',
+            mostCapable: 'Più potente',
+            balanced: 'Bilanciato',
+            fast: 'Veloce',
+            fastest: 'Più veloce',
         },
         codexPermissionMode: {
             title: 'MODALITÀ PERMESSI CODEX',
@@ -433,9 +439,6 @@ export const it: TranslationStructure = {
         },
         codexModel: {
             title: 'MODELLO CODEX',
-            gpt5CodexLow: 'gpt-5-codex basso',
-            gpt5CodexMedium: 'gpt-5-codex medio',
-            gpt5CodexHigh: 'gpt-5-codex alto',
             gpt5Minimal: 'GPT-5 Minimo',
             gpt5Low: 'GPT-5 Basso',
             gpt5Medium: 'GPT-5 Medio',

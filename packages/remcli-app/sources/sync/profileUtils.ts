@@ -159,13 +159,13 @@ export Z_AI_HAIKU_MODEL="GLM-4.5-Air"`,
                     },
                     {
                         name: 'OPENAI_MODEL',
-                        expectedValue: 'gpt-5-codex-high',
+                        expectedValue: 'gpt-5.3-codex',
                         description: 'Default model for code tasks',
                         isSecret: false,
                     },
                     {
                         name: 'OPENAI_SMALL_FAST_MODEL',
-                        expectedValue: 'gpt-5-codex-low',
+                        expectedValue: 'gpt-5.3',
                         description: 'Fast model for quick responses',
                         isSecret: false,
                     },
@@ -173,8 +173,8 @@ export Z_AI_HAIKU_MODEL="GLM-4.5-Air"`,
                 shellConfigExample: `# Add to ~/.zshrc or ~/.bashrc:
 export OPENAI_BASE_URL="https://api.openai.com/v1"
 export OPENAI_API_KEY="sk-YOUR_OPENAI_API_KEY"
-export OPENAI_MODEL="gpt-5-codex-high"
-export OPENAI_SMALL_FAST_MODEL="gpt-5-codex-low"`,
+export OPENAI_MODEL="gpt-5.3-codex"
+export OPENAI_SMALL_FAST_MODEL="gpt-5.3"`,
             };
         case 'azure-openai':
             return {
@@ -201,7 +201,7 @@ export OPENAI_SMALL_FAST_MODEL="gpt-5-codex-low"`,
                     },
                     {
                         name: 'AZURE_OPENAI_DEPLOYMENT_NAME',
-                        expectedValue: 'gpt-5-codex',
+                        expectedValue: 'gpt-5.3-codex',
                         description: 'Your deployment name for the model',
                         isSecret: false,
                     },
@@ -210,7 +210,7 @@ export OPENAI_SMALL_FAST_MODEL="gpt-5-codex-low"`,
 export AZURE_OPENAI_ENDPOINT="https://YOUR_RESOURCE.openai.azure.com"
 export AZURE_OPENAI_API_KEY="YOUR_AZURE_API_KEY"
 export AZURE_OPENAI_API_VERSION="2024-02-15-preview"
-export AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5-codex"`,
+export AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5.3-codex"`,
             };
         default:
             return null;
@@ -310,11 +310,11 @@ export const getBuiltInProfile = (id: string): AIBackendProfile | null => {
                 openaiConfig: {},
                 environmentVariables: [
                     { name: 'OPENAI_BASE_URL', value: 'https://api.openai.com/v1' },
-                    { name: 'OPENAI_MODEL', value: 'gpt-5-codex-high' },
+                    { name: 'OPENAI_MODEL', value: 'gpt-5.3-codex' },
                     { name: 'OPENAI_API_TIMEOUT_MS', value: '600000' },
-                    { name: 'OPENAI_SMALL_FAST_MODEL', value: 'gpt-5-codex-low' },
+                    { name: 'OPENAI_SMALL_FAST_MODEL', value: 'gpt-5.3' },
                     { name: 'API_TIMEOUT_MS', value: '600000' },
-                    { name: 'CODEX_SMALL_FAST_MODEL', value: 'gpt-5-codex-low' },
+                    { name: 'CODEX_SMALL_FAST_MODEL', value: 'gpt-5.3' },
                 ],
                 compatibility: { claude: false, codex: true, cursor: false, gemini: false },
                 isBuiltIn: true,
@@ -329,7 +329,7 @@ export const getBuiltInProfile = (id: string): AIBackendProfile | null => {
                 azureOpenAIConfig: {},
                 environmentVariables: [
                     { name: 'AZURE_OPENAI_API_VERSION', value: '2024-02-15-preview' },
-                    { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: 'gpt-5-codex' },
+                    { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: 'gpt-5.3-codex' },
                     { name: 'OPENAI_API_TIMEOUT_MS', value: '600000' },
                     { name: 'API_TIMEOUT_MS', value: '600000' },
                 ],
