@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * link-dev.cjs - Create symlink for happy-dev only
+ * link-dev.cjs - Create symlink for remcli-dev only
  *
- * This script creates a symlink for the happy-dev command pointing to the local
- * development version, while leaving the stable npm version of `happy` untouched.
+ * This script creates a symlink for the remcli-dev command pointing to the local
+ * development version, while leaving the stable npm version of `remcli` untouched.
  *
- * Usage: yarn link:dev
+ * Usage: npm run link:dev
  *
  * What it does:
  * 1. Finds the global npm bin directory
- * 2. Creates/updates a symlink: happy-dev -> ./bin/happy-dev.mjs
+ * 2. Creates/updates a symlink: remcli-dev -> ./bin/remcli-dev.mjs
  *
- * To undo: yarn unlink:dev
+ * To undo: npm run unlink:dev
  */
 
 const { execFileSync } = require('child_process');
@@ -19,7 +19,7 @@ const { join, dirname } = require('path');
 const fs = require('fs');
 
 const projectRoot = dirname(__dirname);
-const binSource = join(projectRoot, 'bin', 'happy-dev.mjs');
+const binSource = join(projectRoot, 'bin', 'remcli-dev.mjs');
 
 // Get the action from command line args
 const action = process.argv[2] || 'link';
@@ -55,16 +55,16 @@ function getGlobalBinDir() {
 
 function link() {
     const globalBin = getGlobalBinDir();
-    const binTarget = join(globalBin, 'happy-dev');
+    const binTarget = join(globalBin, 'remcli-dev');
 
-    console.log('Creating symlink for happy-dev...');
+    console.log('Creating symlink for remcli-dev...');
     console.log(`  Source: ${binSource}`);
     console.log(`  Target: ${binTarget}`);
 
     // Check if source exists
     if (!fs.existsSync(binSource)) {
         console.error(`\n❌ Error: ${binSource} does not exist.`);
-        console.error("   Run 'yarn build' first to compile the project.");
+        console.error("   Run 'npm run build' first to compile the project.");
         process.exit(1);
     }
 
@@ -82,15 +82,15 @@ function link() {
     // Create the symlink
     try {
         fs.symlinkSync(binSource, binTarget);
-        console.log('\n✅ Successfully linked happy-dev to local development version');
+        console.log('\n✅ Successfully linked remcli-dev to local development version');
         console.log('\nNow you can use:');
-        console.log('  happy      → stable npm version (unchanged)');
-        console.log('  happy-dev  → local development version');
-        console.log('\nTo undo: yarn unlink:dev');
+        console.log('  remcli      → stable npm version (unchanged)');
+        console.log('  remcli-dev  → local development version');
+        console.log('\nTo undo: npm run unlink:dev');
     } catch (e) {
         if (e.code === 'EACCES') {
             console.error('\n❌ Permission denied. Try running with sudo:');
-            console.error('   sudo yarn link:dev');
+            console.error('   sudo npm run link:dev');
         } else {
             console.error(`\n❌ Error creating symlink: ${e.message}`);
         }
@@ -100,20 +100,20 @@ function link() {
 
 function unlink() {
     const globalBin = getGlobalBinDir();
-    const binTarget = join(globalBin, 'happy-dev');
+    const binTarget = join(globalBin, 'remcli-dev');
 
-    console.log('Removing happy-dev symlink...');
+    console.log('Removing remcli-dev symlink...');
 
     try {
         const stat = fs.lstatSync(binTarget);
         if (stat.isSymbolicLink()) {
             const linkTarget = fs.readlinkSync(binTarget);
-            if (linkTarget === binSource || linkTarget.includes('happy-cli')) {
+            if (linkTarget === binSource || linkTarget.includes('remcli')) {
                 fs.unlinkSync(binTarget);
-                console.log('\n✅ Removed happy-dev development symlink');
-                console.log('\nTo restore npm version: npm install -g happy-coder');
+                console.log('\n✅ Removed remcli-dev development symlink');
+                console.log('\nTo restore npm version: npm install -g remcli');
             } else {
-                console.log(`\n⚠️  happy-dev symlink points elsewhere: ${linkTarget}`);
+                console.log(`\n⚠️  remcli-dev symlink points elsewhere: ${linkTarget}`);
                 console.log('   Not removing. Remove manually if needed.');
             }
         } else {
@@ -122,10 +122,10 @@ function unlink() {
         }
     } catch (e) {
         if (e.code === 'ENOENT') {
-            console.log("\n✅ happy-dev symlink doesn't exist (already removed or never created)");
+            console.log("\n✅ remcli-dev symlink doesn't exist (already removed or never created)");
         } else if (e.code === 'EACCES') {
             console.error('\n❌ Permission denied. Try running with sudo:');
-            console.error('   sudo yarn unlink:dev');
+            console.error('   sudo npm run unlink:dev');
             process.exit(1);
         } else {
             console.error(`\n❌ Error: ${e.message}`);

@@ -28,6 +28,33 @@ import { spawnRemcliCLI } from './utils/spawnRemcliCLI'
 import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
 
+async function ensureDaemonRunning(): Promise<void> {
+    logger.debug('Ensuring Remcli background service is running & matches our version...');
+    if (!(await isDaemonRunningCurrentlyInstalledRemcliVersion())) {
+        logger.debug('Starting Remcli background service...');
+        const daemonProcess = spawnRemcliCLI(['daemon', 'start-sync'], {
+            detached: true,
+            stdio: 'ignore',
+            env: process.env
+        });
+        daemonProcess.unref();
+
+        // Wait for daemon to write state file (PID, port, shared secret)
+        const maxWait = 5000;
+        const interval = 200;
+        let waited = 0;
+        while (waited < maxWait) {
+            await new Promise(resolve => setTimeout(resolve, interval));
+            waited += interval;
+            if (await isDaemonRunningCurrentlyInstalledRemcliVersion()) {
+                logger.debug(`Daemon started after ${waited}ms`);
+                return;
+            }
+        }
+        logger.debug(`Daemon may not have started within ${maxWait}ms, proceeding anyway`);
+    }
+}
+
 
 (async () => {
   const args = process.argv.slice(2)
@@ -93,6 +120,7 @@ import { execFileSync } from 'node:child_process'
         }
       }
       
+      await ensureDaemonRunning();
       const {
         credentials
       } = await setupP2PForSession();
@@ -119,22 +147,10 @@ import { execFileSync } from 'node:child_process'
         }
       }
 
+      await ensureDaemonRunning();
       const {
         credentials
       } = await setupP2PForSession();
-
-      // Auto-start daemon (same as other agents)
-      logger.debug('Ensuring Remcli background service is running & matches our version...');
-      if (!(await isDaemonRunningCurrentlyInstalledRemcliVersion())) {
-        logger.debug('Starting Remcli background service...');
-        const daemonProcess = spawnRemcliCLI(['daemon', 'start-sync'], {
-          detached: true,
-          stdio: 'ignore',
-          env: process.env
-        });
-        daemonProcess.unref();
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
 
       await runCursor({credentials, startedBy});
     } catch (error) {
@@ -332,22 +348,10 @@ import { execFileSync } from 'node:child_process'
         }
       }
       
+      await ensureDaemonRunning();
       const {
         credentials
       } = await setupP2PForSession();
-
-      // Auto-start daemon for gemini (same as claude)
-      logger.debug('Ensuring Remcli background service is running & matches our version...');
-      if (!(await isDaemonRunningCurrentlyInstalledRemcliVersion())) {
-        logger.debug('Starting Remcli background service...');
-        const daemonProcess = spawnRemcliCLI(['daemon', 'start-sync'], {
-          detached: true,
-          stdio: 'ignore',
-          env: process.env
-        });
-        daemonProcess.unref();
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
 
       await runGemini({credentials, startedBy});
     } catch (error) {
@@ -670,28 +674,11 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
       // Don't exit - continue to pass --version to Claude Code
     }
 
-    // Normal flow - auth and machine setup
+    // Normal flow - auto-start daemon then connect
+    await ensureDaemonRunning();
     const {
       credentials
     } = await setupP2PForSession();
-
-    // Always auto-start daemon for simplicity
-    logger.debug('Ensuring Remcli background service is running & matches our version...');
-
-    if (!(await isDaemonRunningCurrentlyInstalledRemcliVersion())) {
-      logger.debug('Starting Remcli background service...');
-
-      // Use the built binary to spawn daemon
-      const daemonProcess = spawnRemcliCLI(['daemon', 'start-sync'], {
-        detached: true,
-        stdio: 'ignore',
-        env: process.env
-      })
-      daemonProcess.unref();
-
-      // Give daemon a moment to write PID & port file
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
 
     // Start the CLI
     try {
