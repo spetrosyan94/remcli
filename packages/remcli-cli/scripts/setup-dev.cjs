@@ -10,10 +10,10 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const STABLE_DIR = path.join(os.homedir(), '.happy');
-const DEV_DIR = path.join(os.homedir(), '.happy-dev');
+const STABLE_DIR = path.join(os.homedir(), '.remcli');
+const DEV_DIR = path.join(os.homedir(), '.remcli-dev');
 
-console.log('🔧 Setting up happy-cli development environment...\n');
+console.log('🔧 Setting up remcli development environment...\n');
 
 // Create directories
 [STABLE_DIR, DEV_DIR].forEach(dir => {
@@ -26,12 +26,12 @@ console.log('🔧 Setting up happy-cli development environment...\n');
 });
 
 // Create .envrc for direnv users (optional)
-const envrcContent = `# Happy CLI environment (for direnv users)
-# Automatically sets HAPPY_HOME_DIR based on directory
+const envrcContent = `# Remcli environment (for direnv users)
+# Automatically sets REMCLI_HOME_DIR based on directory
 #
-# To use: cd to happy-cli-dev directory, run: direnv allow
-export HAPPY_HOME_DIR="$HOME/.happy-dev"
-export HAPPY_VARIANT="dev"
+# To use: cd to remcli-dev directory, run: direnv allow
+export REMCLI_HOME_DIR="$HOME/.remcli-dev"
+export REMCLI_VARIANT="dev"
 `;
 
 const envrcPath = path.join(__dirname, '..', '.envrc.example');

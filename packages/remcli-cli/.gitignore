@@ -23,8 +23,8 @@ pnpm-lock.yaml
 .claude/settings.local.json
 
 # Local installation and data directories
-.happy/
-.happy-dev/
+.remcli/
+.remcli-dev/
 
 **/*.log
 .release-notes-temp.md
@@ -34,7 +34,7 @@ pnpm-lock.yaml
 bun.lock
 claude-docs/
 note/
-happy-coder-*.tgz
+remcli-*.tgz
 
 # npm auth token (never commit)
 .npmrc
