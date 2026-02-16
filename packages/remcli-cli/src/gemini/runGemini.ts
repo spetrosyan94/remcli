@@ -28,6 +28,7 @@ import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import { stopCaffeinate } from '@/utils/caffeinate';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
+import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
 import type { ApiSessionClient } from '@/api/apiSession';
 
 import { createGeminiBackend } from '@/agent/factories/gemini';
@@ -492,13 +493,15 @@ export async function runGemini(opts: {
   
   // Create reasoning processor for handling thinking/reasoning chunks
   const reasoningProcessor = new GeminiReasoningProcessor((message) => {
-    // Callback to send messages directly from the processor
+    // Filter out tool-call/tool-call-result — only forward reasoning text to mobile
+    if (message.type === 'tool-call' || message.type === 'tool-call-result') return;
     session.sendAgentMessage('gemini', message);
   });
-  
+
   // Create diff processor for handling file edit events and diff tracking
   const diffProcessor = new GeminiDiffProcessor((message) => {
-    // Callback to send messages directly from the processor
+    // Filter out tool-call/tool-call-result — only forward diff info to mobile
+    if (message.type === 'tool-call' || message.type === 'tool-call-result') return;
     session.sendAgentMessage('gemini', message);
   });
   
@@ -636,74 +639,35 @@ export async function runGemini(opts: {
       case 'tool-call':
         // Track that we had tool calls in this turn (for task_complete)
         hadToolCallInTurn = true;
-        
-        // Show tool call in UI like Codex does
-        const toolArgs = msg.args ? JSON.stringify(msg.args).substring(0, 100) : '';
-        const isInvestigationTool = msg.toolName === 'codebase_investigator' || 
-                                    (typeof msg.toolName === 'string' && msg.toolName.includes('investigator'));
-        
-        logger.debug(`[gemini] 🔧 Tool call received: ${msg.toolName} (${msg.callId})${isInvestigationTool ? ' [INVESTIGATION]' : ''}`);
-        if (isInvestigationTool && msg.args && typeof msg.args === 'object' && 'objective' in msg.args) {
-          logger.debug(`[gemini] 🔍 Investigation objective: ${String(msg.args.objective).substring(0, 150)}...`);
-        }
-        
-        messageBuffer.addMessage(`Executing: ${msg.toolName}${toolArgs ? ` ${toolArgs}${toolArgs.length >= 100 ? '...' : ''}` : ''}`, 'tool');
-        session.sendAgentMessage('gemini', {
-          type: 'tool-call',
-          name: msg.toolName,
-          callId: msg.callId,
-          input: msg.args,
-          id: randomUUID(),
-        });
+
+        logger.debug(`[gemini] Tool call: ${msg.toolName} (${msg.callId})`);
+        // No tool-call sent to mobile — informational only, clutters phone UI
         break;
 
-      case 'tool-result':
+      case 'tool-result': {
         // Track change_title completion
-        if (msg.toolName === 'change_title' || 
+        if (msg.toolName === 'change_title' ||
             msg.callId?.includes('change_title') ||
             msg.toolName === 'remcli__change_title') {
           changeTitleCompleted = true;
           logger.debug('[gemini] change_title completed');
         }
-        
-        // Show tool result in UI like Codex does
-        // Check if result contains error information
+
         const isError = msg.result && typeof msg.result === 'object' && 'error' in msg.result;
-        const resultText = typeof msg.result === 'string' 
-          ? msg.result.substring(0, 200)
-          : JSON.stringify(msg.result).substring(0, 200);
-        const truncatedResult = resultText + (typeof msg.result === 'string' && msg.result.length > 200 ? '...' : '');
-        
-        const resultSize = typeof msg.result === 'string' 
-          ? msg.result.length 
-          : JSON.stringify(msg.result).length;
-        
-        logger.debug(`[gemini] ${isError ? '❌' : '✅'} Tool result received: ${msg.toolName} (${msg.callId}) - Size: ${resultSize} bytes${isError ? ' [ERROR]' : ''}`);
-        
-        // Process tool result through diff processor to check for diff information (like Codex)
+        logger.debug(`[gemini] ${isError ? 'Error' : 'OK'} Tool result: ${msg.toolName} (${msg.callId})`);
+
+        // Process tool result through diff processor to check for diff information
         if (!isError) {
           diffProcessor.processToolResult(msg.toolName, msg.result, msg.callId);
         }
-        
+
         if (isError) {
           const errorMsg = (msg.result as any).error || 'Tool call failed';
-          logger.debug(`[gemini] ❌ Tool call error: ${errorMsg.substring(0, 300)}`);
           messageBuffer.addMessage(`Error: ${errorMsg}`, 'status');
-        } else {
-          // Log summary for large results (like investigation tools)
-          if (resultSize > 1000) {
-            logger.debug(`[gemini] ✅ Large tool result (${resultSize} bytes) - first 200 chars: ${truncatedResult}`);
-          }
-          messageBuffer.addMessage(`Result: ${truncatedResult}`, 'result');
         }
-        
-        session.sendAgentMessage('gemini', {
-          type: 'tool-result',
-          callId: msg.callId,
-          output: msg.result,
-          id: randomUUID(),
-        });
+        // No tool-result sent to mobile — informational only
         break;
+      }
 
       case 'fs-edit':
         messageBuffer.addMessage(`File edit: ${msg.description}`, 'tool');
@@ -777,57 +741,30 @@ export async function runGemini(opts: {
         });
         break;
 
-      case 'patch-apply-begin':
-        // Handle patch operation begin (like Codex patch_apply_begin)
+      case 'patch-apply-begin': {
+        // Terminal UI feedback only — no mobile message
         const patchBeginMsg = msg as any;
-        const patchCallId = patchBeginMsg.call_id || patchBeginMsg.callId || randomUUID();
-        const { call_id: patchCallIdVar, type: patchType, auto_approved, changes } = patchBeginMsg;
-        
-        // Add UI feedback for patch operation
-        const changeCount = changes ? Object.keys(changes).length : 0;
+        const patchChanges = patchBeginMsg.changes;
+        const changeCount = patchChanges ? Object.keys(patchChanges).length : 0;
         const filesMsg = changeCount === 1 ? '1 file' : `${changeCount} files`;
         messageBuffer.addMessage(`Modifying ${filesMsg}...`, 'tool');
-        logger.debug(`[gemini] Patch apply begin: ${patchCallId}, files: ${changeCount}`);
-        
-        session.sendAgentMessage('gemini', {
-          type: 'tool-call',
-          name: 'GeminiPatch', // Similar to Codex's CodexPatch
-          callId: patchCallId,
-          input: {
-            auto_approved,
-            changes
-          },
-          id: randomUUID(),
-        });
+        logger.debug(`[gemini] Patch apply begin: files: ${changeCount}`);
         break;
+      }
 
-      case 'patch-apply-end':
-        // Handle patch operation end (like Codex patch_apply_end)
+      case 'patch-apply-end': {
+        // Terminal UI feedback only — no mobile message
         const patchEndMsg = msg as any;
-        const patchEndCallId = patchEndMsg.call_id || patchEndMsg.callId || randomUUID();
-        const { call_id: patchEndCallIdVar, type: patchEndType, stdout, stderr, success } = patchEndMsg;
-        
-        // Add UI feedback for completion
-        if (success) {
-          const message = stdout || 'Files modified successfully';
+        if (patchEndMsg.success) {
+          const message = patchEndMsg.stdout || 'Files modified successfully';
           messageBuffer.addMessage(message.substring(0, 200), 'result');
         } else {
-          const errorMsg = stderr || 'Failed to modify files';
+          const errorMsg = patchEndMsg.stderr || 'Failed to modify files';
           messageBuffer.addMessage(`Error: ${errorMsg.substring(0, 200)}`, 'result');
         }
-        logger.debug(`[gemini] Patch apply end: ${patchEndCallId}, success: ${success}`);
-        
-        session.sendAgentMessage('gemini', {
-          type: 'tool-result',
-          callId: patchEndCallId,
-          output: {
-            stdout,
-            stderr,
-            success
-          },
-          id: randomUUID(),
-        });
+        logger.debug(`[gemini] Patch apply end: success: ${patchEndMsg.success}`);
         break;
+      }
 
       case 'event':
         // Handle thinking events - process through ReasoningProcessor like Codex
@@ -870,6 +807,7 @@ export async function runGemini(opts: {
   // This allows us to support model changes by recreating the backend
 
   let first = true;
+  const autoSetTitle = createAutoTitleSetter(session);
 
   try {
     let currentModeHash: string | null = null;
@@ -1127,6 +1065,8 @@ export async function runGemini(opts: {
         // Mark as not first message after sending prompt
         if (first) {
           first = false;
+          // Fallback: auto-set title in case AI doesn't call change_title
+          autoSetTitle(message.message);
         }
       } catch (error) {
         logger.debug('[gemini] Error in gemini session:', error);

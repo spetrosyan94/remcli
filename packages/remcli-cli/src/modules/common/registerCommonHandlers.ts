@@ -120,7 +120,7 @@ export interface SpawnSessionOptions {
     directory: string;
     sessionId?: string;
     approvedNewDirectoryCreation?: boolean;
-    agent?: 'claude' | 'codex' | 'gemini' | 'cursor';
+    agent?: 'claude' | 'codex' | 'cursor' | 'gemini';
     token?: string;
     environmentVariables?: {
         // Anthropic Claude API configuration

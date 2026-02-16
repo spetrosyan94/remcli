@@ -1,7 +1,7 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Remcli (dev)",
-  "identifier": "com.slopus.remcli.dev",
+  "identifier": "com.spetrosyan94.remcli.dev",
   "app": {
     "windows": [
       {

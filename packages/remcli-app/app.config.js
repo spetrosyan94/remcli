@@ -5,16 +5,16 @@ const name = {
     production: "Remcli"
 }[variant];
 const bundleId = {
-    development: "com.slopus.remcli.dev",
-    preview: "com.slopus.remcli.preview",
-    production: "com.slopus.remcli"
+    development: "com.remcli.dev",
+    preview: "com.remcli.preview",
+    production: "com.remcli"
 }[variant];
 
 export default {
     expo: {
         name,
         slug: "remcli",
-        version: "1.6.2",
+        version: "0.0.1",
         runtimeVersion: "18",
         orientation: "default",
         icon: "./sources/assets/images/icon.png",

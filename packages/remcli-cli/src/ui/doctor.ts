@@ -256,7 +256,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
 
         // Support and bug reports
         console.log(chalk.bold('\n🐛 Support & Bug Reports'));
-        console.log(`Report issues: ${chalk.blue('https://github.com/slopus/remcli-cli/issues')}`);
+        console.log(`Report issues: ${chalk.blue('https://github.com/spetrosyan94/remcli/issues')}`);
         console.log(`Documentation: ${chalk.blue('https://remcli.dev/')}`);
     }
 

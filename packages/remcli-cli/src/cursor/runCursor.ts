@@ -26,10 +26,10 @@ import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import { stopCaffeinate } from '@/utils/caffeinate';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
-import { CHANGE_TITLE_INSTRUCTION } from '@/gemini/constants';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { PermissionMode } from '@/api/types';
 
+import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
 import { cursorQuery } from './cursorQuery';
 import type { CursorMode, CursorStreamEvent } from './types';
 
@@ -231,17 +231,16 @@ export async function runCursor(opts: {
     }
 
     //
-    // Start Remcli MCP server (for change_title tool)
-    // Note: Cursor agent auto-discovers MCP servers from .cursor/mcp.json
+    // Start Remcli MCP server (for RPC tools)
+    // Note: Cursor auto-discovers MCP from .cursor/mcp.json — change_title not available
     //
 
     const remcliServer = await startRemcliServer(session);
 
-    let first = true;
-
     try {
         let currentModeHash: string | null = null;
         let pending: { message: string; mode: CursorMode; isolate: boolean; hash: string } | null = null;
+        const autoSetTitle = createAutoTitleSetter(session);
 
         while (!shouldExit) {
             let message: { message: string; mode: CursorMode; isolate: boolean; hash: string } | null = pending;
@@ -274,10 +273,8 @@ export async function runCursor(opts: {
             messageBuffer.addMessage(message.message, 'user');
 
             try {
-                // Build prompt
-                const prompt = first
-                    ? message.message + '\n\n' + CHANGE_TITLE_INSTRUCTION
-                    : message.message;
+                // Build prompt (no CHANGE_TITLE_INSTRUCTION — Cursor doesn't have access to remcli MCP server)
+                const prompt = message.message;
 
                 // Map permission mode → Cursor CLI flags
                 // default → agent mode (no extra flags)
@@ -294,6 +291,11 @@ export async function runCursor(opts: {
                 const cursorForce = message.mode.permissionMode === 'yolo'
                     || message.mode.permissionMode === 'bypassPermissions';
 
+                // Show active mode in terminal
+                const modeLabel = cursorMode === 'plan' ? 'Plan' : cursorMode === 'ask' ? 'Ask' : cursorForce ? 'Agent + Force' : 'Agent';
+                messageBuffer.addMessage(`Mode: ${modeLabel}`, 'system');
+                logger.debug(`[Cursor] Spawning with mode=${cursorMode} force=${cursorForce} permissionMode=${message.mode.permissionMode}`);
+
                 const extraEnv: Record<string, string> = {};
 
                 // Send task_started
@@ -306,6 +308,7 @@ export async function runCursor(opts: {
 
                 // Iterate NDJSON events from cursor agent
                 let accumulatedResponse = '';
+                isStreamingAssistant = false;
 
                 for await (const event of cursorQuery({
                     prompt,
@@ -317,9 +320,12 @@ export async function runCursor(opts: {
                     mode: cursorMode,
                     force: cursorForce,
                 })) {
-                    handleCursorEvent(event, session, messageBuffer, accumulatedResponse);
+                    // Debug: log every event type for diagnosis
+                    logger.debug(`[Cursor] Event: type=${event.type} subtype=${event.subtype ?? '-'} hasContent=${!!event.message?.content} hasTextDelta=${!!event.text_delta} hasText=${!!event.text}`);
 
-                    // Accumulate text
+                    handleCursorEvent(event, messageBuffer);
+
+                    // Accumulate text ONLY from assistant events (not thinking — user doesn't want reasoning)
                     if (event.type === 'assistant' && event.message?.content) {
                         for (const part of event.message.content) {
                             if (part.type === 'text') {
@@ -329,6 +335,9 @@ export async function runCursor(opts: {
                     }
                     if (event.type === 'assistant' && event.text_delta) {
                         accumulatedResponse += event.text_delta;
+                    }
+                    if (event.type === 'assistant' && event.text) {
+                        accumulatedResponse += event.text;
                     }
 
                     // Capture session ID
@@ -352,7 +361,10 @@ export async function runCursor(opts: {
                     id: randomUUID(),
                 });
 
-                if (first) first = false;
+                // Auto-set session title from first user message
+                // (Cursor can't call change_title MCP tool like Claude/Gemini/Codex)
+                autoSetTitle(message.message);
+
             } catch (error) {
                 logger.debug('[cursor] Error in cursor session:', error);
                 const isAbortError = error instanceof Error && error.name === 'AbortError';
@@ -420,16 +432,46 @@ export async function runCursor(opts: {
 
 
 /**
- * Process a single Cursor NDJSON event and forward to mobile session
+ * Tracks whether the last event added to messageBuffer was an assistant text_delta.
+ * When a non-assistant event interrupts the stream, we reset this so the next
+ * text_delta creates a new message instead of appending to a stale one.
+ */
+let isStreamingAssistant = false;
+
+/**
+ * Extract a short human-readable label from a Cursor tool_call object.
+ * Cursor format: { readToolCall: { args: { path: "..." } } }
+ * Returns e.g. "read_file src/index.ts" or "edit_file package.json"
+ */
+function formatToolLabel(toolCall: Record<string, unknown>): { name: string; summary: string } {
+    const entries = Object.entries(toolCall);
+    if (entries.length === 0) return { name: 'unknown', summary: '' };
+
+    const [rawName, rawData] = entries[0];
+    const data = rawData as Record<string, unknown> | undefined;
+    const args = (data?.args ?? data ?? {}) as Record<string, unknown>;
+
+    // Simplify common tool names: readToolCall → read, editToolCall → edit, etc.
+    const name = rawName.replace(/ToolCall$/i, '').replace(/Tool$/i, '');
+
+    // Pick the most useful arg for a short summary (path, file_path, command, query)
+    const hint = args.path ?? args.file_path ?? args.filePath ?? args.command ?? args.query ?? '';
+    const summary = typeof hint === 'string' ? hint.slice(0, 80) : '';
+
+    return { name, summary };
+}
+
+/**
+ * Process a single Cursor NDJSON event and update terminal display.
+ * Tool calls are NOT forwarded to mobile — only the final assistant message is sent.
  */
 function handleCursorEvent(
     event: CursorStreamEvent,
-    session: ApiSessionClient,
     messageBuffer: MessageBuffer,
-    _accumulated: string,
 ): void {
     switch (event.type) {
         case 'system':
+            isStreamingAssistant = false;
             if (event.subtype === 'init') {
                 logger.debug(`[Cursor] Init: model=${event.model}, session=${event.session_id}`);
                 if (event.model) {
@@ -439,52 +481,52 @@ function handleCursorEvent(
             break;
 
         case 'assistant':
+            // Full message content — start a new assistant block
             if (event.message?.content) {
                 for (const part of event.message.content) {
                     if (part.type === 'text') {
                         messageBuffer.addMessage(part.text, 'assistant');
+                        isStreamingAssistant = true;
                     }
                 }
             }
+            // Streaming delta — append to current block only if we're mid-stream
             if (event.text_delta) {
-                messageBuffer.updateLastMessage(event.text_delta, 'assistant');
+                if (isStreamingAssistant) {
+                    messageBuffer.updateLastMessage(event.text_delta, 'assistant');
+                } else {
+                    messageBuffer.addMessage(event.text_delta, 'assistant');
+                    isStreamingAssistant = true;
+                }
             }
+            // Standalone text (no delta, no content array)
+            if (event.text && !event.text_delta && !event.message?.content) {
+                messageBuffer.addMessage(event.text, 'assistant');
+                isStreamingAssistant = true;
+            }
+            break;
+
+        case 'thinking':
+            // Skip thinking/reasoning in UI — user doesn't want to see model reasoning
+            logger.debug(`[Cursor] Thinking event (suppressed from UI)`);
             break;
 
         case 'tool_call':
+            isStreamingAssistant = false;
             if (event.subtype === 'started' && event.tool_call) {
-                // Cursor tool_call format: { readToolCall: { args: {...} } } or { writeToolCall: { args: {...} } }
-                const toolEntries = Object.entries(event.tool_call);
-                const toolName = toolEntries.length > 0 ? toolEntries[0][0] : 'unknown';
-                const toolData = toolEntries.length > 0 ? toolEntries[0][1] as Record<string, unknown> : {};
-                const toolArgs = (toolData?.args ?? toolData) as Record<string, unknown>;
-                const inputPreview = JSON.stringify(toolArgs).substring(0, 100);
-                messageBuffer.addMessage(`Executing: ${toolName} ${inputPreview}`, 'tool');
-
-                session.sendAgentMessage('cursor', {
-                    type: 'tool-call',
-                    name: toolName,
-                    callId: event.call_id || randomUUID(),
-                    input: toolArgs,
-                    id: randomUUID(),
-                });
+                const { name, summary } = formatToolLabel(event.tool_call);
+                // Terminal: short one-liner
+                messageBuffer.addMessage(`${name}${summary ? ' ' + summary : ''}`, 'tool');
             } else if (event.subtype === 'completed' && event.tool_call) {
-                // Extract result from tool_call structure
-                const toolEntries = Object.entries(event.tool_call);
-                const toolData = toolEntries.length > 0 ? toolEntries[0][1] as Record<string, unknown> : {};
-                const resultText = toolData?.result ? JSON.stringify(toolData.result).substring(0, 200) : 'Completed';
-                messageBuffer.addMessage(`Result: ${resultText}`, 'result');
-
-                session.sendAgentMessage('cursor', {
-                    type: 'tool-result',
-                    callId: event.call_id || randomUUID(),
-                    output: toolData?.result ? JSON.stringify(toolData.result) : event.result,
-                    id: randomUUID(),
-                });
+                const toolData = Object.values(event.tool_call)[0] as Record<string, unknown> | undefined;
+                logger.debug(`[Cursor] Tool completed: ${JSON.stringify(toolData?.result).substring(0, 200)}`);
             }
+            // No tool-call/tool-result sent to mobile — Cursor's tool details are too verbose
+            // and not useful on a phone screen. The final assistant message is enough.
             break;
 
         case 'result':
+            isStreamingAssistant = false;
             if (event.subtype === 'success') {
                 if (event.duration_ms) {
                     const seconds = (event.duration_ms / 1000).toFixed(1);
@@ -494,6 +536,7 @@ function handleCursorEvent(
             break;
 
         default:
+            isStreamingAssistant = false;
             logger.debug(`[cursor] Unhandled event type: ${event.type}`);
             break;
     }

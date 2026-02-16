@@ -29,6 +29,7 @@ import { delay } from "@/utils/time";
 import { stopCaffeinate } from "@/utils/caffeinate";
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
+import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
 import type { ApiSessionClient } from '@/api/apiSession';
 
 type ReadyEventOptions = {
@@ -383,11 +384,13 @@ export async function runCodex(opts: {
     }
     permissionHandler = new CodexPermissionHandler(session);
     const reasoningProcessor = new ReasoningProcessor((message) => {
-        // Callback to send messages directly from the processor
+        // Filter out tool-call/tool-call-result — only forward reasoning text to mobile
+        if (message.type === 'tool-call' || message.type === 'tool-call-result') return;
         session.sendCodexMessage(message);
     });
     const diffProcessor = new DiffProcessor((message) => {
-        // Callback to send messages directly from the processor
+        // Filter out tool-call/tool-call-result — only forward diff info to mobile
+        if (message.type === 'tool-call' || message.type === 'tool-call-result') return;
         session.sendCodexMessage(message);
     });
     client.setPermissionHandler(permissionHandler);
@@ -455,7 +458,8 @@ export async function runCodex(opts: {
                 id: randomUUID()
             });
         }
-        if (msg.type === 'exec_command_begin' || msg.type === 'exec_approval_request') {
+        if (msg.type === 'exec_approval_request') {
+            // Permission request — must be forwarded to mobile for approve/deny
             let { call_id, type, ...inputs } = msg;
             session.sendCodexMessage({
                 type: 'tool-call',
@@ -465,15 +469,7 @@ export async function runCodex(opts: {
                 id: randomUUID()
             });
         }
-        if (msg.type === 'exec_command_end') {
-            let { call_id, type, ...output } = msg;
-            session.sendCodexMessage({
-                type: 'tool-call-result',
-                callId: call_id,
-                output: output,
-                id: randomUUID()
-            });
-        }
+        // exec_command_begin / exec_command_end — informational only, skip sending to mobile
         if (msg.type === 'token_count') {
             session.sendCodexMessage({
                 ...msg,
@@ -481,31 +477,15 @@ export async function runCodex(opts: {
             });
         }
         if (msg.type === 'patch_apply_begin') {
-            // Handle the start of a patch operation
-            let { call_id, auto_approved, changes } = msg;
-
-            // Add UI feedback for patch operation
+            // Terminal UI feedback only — no mobile message
+            const { changes } = msg;
             const changeCount = Object.keys(changes).length;
             const filesMsg = changeCount === 1 ? '1 file' : `${changeCount} files`;
             messageBuffer.addMessage(`Modifying ${filesMsg}...`, 'tool');
-
-            // Send tool call message
-            session.sendCodexMessage({
-                type: 'tool-call',
-                name: 'CodexPatch',
-                callId: call_id,
-                input: {
-                    auto_approved,
-                    changes
-                },
-                id: randomUUID()
-            });
         }
         if (msg.type === 'patch_apply_end') {
-            // Handle the end of a patch operation
-            let { call_id, stdout, stderr, success } = msg;
-
-            // Add UI feedback for completion
+            // Terminal UI feedback only — no mobile message
+            const { stdout, stderr, success } = msg;
             if (success) {
                 const message = stdout || 'Files modified successfully';
                 messageBuffer.addMessage(message.substring(0, 200), 'result');
@@ -513,18 +493,6 @@ export async function runCodex(opts: {
                 const errorMsg = stderr || 'Failed to modify files';
                 messageBuffer.addMessage(`Error: ${errorMsg.substring(0, 200)}`, 'result');
             }
-
-            // Send tool call result message
-            session.sendCodexMessage({
-                type: 'tool-call-result',
-                callId: call_id,
-                output: {
-                    stdout,
-                    stderr,
-                    success
-                },
-                id: randomUUID()
-            });
         }
         if (msg.type === 'turn_diff') {
             // Handle turn_diff messages and track unified_diff changes
@@ -544,6 +512,7 @@ export async function runCodex(opts: {
         }
     } as const;
     let first = true;
+    const autoSetTitle = createAutoTitleSetter(session);
 
     try {
         logger.debug('[codex]: client.connect begin');
@@ -689,6 +658,8 @@ export async function runCodex(opts: {
                     );
                     wasCreated = true;
                     first = false;
+                    // Fallback: auto-set title in case AI doesn't call change_title
+                    autoSetTitle(message.message);
                 } else {
                     const response = await client.continueSession(
                         message.message,

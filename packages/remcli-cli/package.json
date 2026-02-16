@@ -1,13 +1,13 @@
 {
   "name": "remcli",
-  "version": "0.14.0-0",
-  "description": "Mobile and Web client for Claude Code and Codex",
-  "author": "Kirill Dubovitskiy",
+  "version": "0.0.1",
+  "description": "Remote control for AI agents",
+  "author": "Sergei Petrosyan",
   "license": "MIT",
   "type": "module",
-  "homepage": "https://github.com/slopus/remcli-cli",
-  "bugs": "https://github.com/slopus/remcli-cli/issues",
-  "repository": "slopus/remcli-cli",
+  "homepage": "https://github.com/spetrosyan94/remcli",
+  "bugs": "https://github.com/spetrosyan94/remcli/issues",
+  "repository": "spetrosyan94/remcli",
   "bin": {
     "remcli": "./bin/remcli.mjs",
     "remcli-mcp": "./bin/remcli-mcp.mjs"
