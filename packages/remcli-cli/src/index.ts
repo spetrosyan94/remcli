@@ -474,12 +474,12 @@ async function ensureDaemonRunning(): Promise<void> {
       if (state.tunnelUrl) {
         const info = buildP2PConnectionInfo(state.tunnelUrl.replace(/^https?:\/\//, ''), 0, secret);
         const qrUrl = buildP2PQRUrl(info, state.tunnelUrl);
-        displayP2PQRCode(qrUrl);
+        await displayP2PQRCode(qrUrl);
         displayP2PConnectionStatus(state.p2pHost || '0.0.0.0', state.p2pPort, state.tunnelUrl);
       } else {
         const info = buildP2PConnectionInfo(state.p2pHost || '0.0.0.0', state.p2pPort, secret);
         const qrUrl = buildP2PQRUrl(info);
-        displayP2PQRCode(qrUrl);
+        await displayP2PQRCode(qrUrl);
         displayP2PConnectionStatus(state.p2pHost || '0.0.0.0', state.p2pPort);
       }
       process.exit(0)

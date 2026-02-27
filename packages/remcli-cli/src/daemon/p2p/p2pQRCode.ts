@@ -1,9 +1,12 @@
 /**
  * P2P QR Code generation
- * Generates a QR code containing a URL that opens the web app with connection info in the hash
+ *
+ * Generates a compact QR code URL for the web app.
+ * Hash fragment contains base64-encoded compact JSON ({k, v}) — host/port
+ * are derived from the URL itself by the web client, keeping the QR small.
  */
 
-import qrcode from 'qrcode-terminal';
+import QRCode from 'qrcode';
 import { encodeSharedSecret } from './p2pAuth';
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -14,6 +17,12 @@ export interface P2PConnectionInfo {
     port: number;       // Socket.IO server port (0 when using tunnel)
     key: string;        // Base64-encoded shared secret
     v: 1;               // Protocol version
+}
+
+/** Compact hash payload — only the shared secret key and protocol version */
+interface CompactHashPayload {
+    k: string;  // Base64-encoded shared secret
+    v: number;  // Protocol version
 }
 
 // ─── QR Code ─────────────────────────────────────────────────────
@@ -37,20 +46,22 @@ export function buildP2PConnectionInfo(
 
 /**
  * Build a URL that, when opened in a browser, loads the web app and auto-connects.
- * The hash fragment contains the P2P connection JSON — the web app's
- * terminal/connect page already reads and parses it from window.location.hash.
  *
- * LAN:    http://192.168.1.x:PORT/terminal/connect#<encoded_json>
- * Tunnel: https://abc.ngrok.io/terminal/connect#<encoded_json>
+ * The hash fragment contains a base64-encoded compact JSON with only the shared
+ * secret and version — host/port are derived from the URL by the web client.
+ * This keeps the QR code ~30-40% smaller than encoding the full JSON.
+ *
+ * LAN:    http://192.168.1.x:PORT/terminal/connect#<base64>
+ * Tunnel: https://abc.ngrok.io/terminal/connect#<base64>
  */
 export function buildP2PQRUrl(
     info: P2PConnectionInfo,
     tunnelUrl?: string
 ): string {
-    const hash = encodeURIComponent(JSON.stringify(info));
+    const compact: CompactHashPayload = { k: info.key, v: info.v };
+    const hash = Buffer.from(JSON.stringify(compact)).toString('base64');
 
     if (tunnelUrl) {
-        // Tunnel URL already includes protocol
         const base = tunnelUrl.replace(/\/$/, '');
         return `${base}/terminal/connect#${hash}`;
     }
@@ -60,9 +71,9 @@ export function buildP2PQRUrl(
 
 /**
  * Display P2P QR code in the terminal.
- * The QR encodes a URL so any phone camera can open it in a browser.
+ * Uses error correction level L for the smallest possible QR code.
  */
-export function displayP2PQRCode(url: string): void {
+export async function displayP2PQRCode(url: string): Promise<void> {
     console.log();
     console.log('='.repeat(60));
     console.log('  P2P Direct Connection');
@@ -71,11 +82,14 @@ export function displayP2PQRCode(url: string): void {
     console.log('  Scan this QR code with your phone camera:');
     console.log();
 
-    qrcode.generate(url, { small: true }, (qr) => {
-        for (const line of qr.split('\n')) {
-            console.log('    ' + line);
-        }
+    const qr = await QRCode.toString(url, {
+        type: 'terminal',
+        small: true,
+        errorCorrectionLevel: 'L',
     });
+    for (const line of qr.split('\n')) {
+        console.log('    ' + line);
+    }
 
     console.log();
     console.log(`  Open in browser:`);

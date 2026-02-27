@@ -778,20 +778,20 @@ export async function startDaemon(): Promise<void> {
             // Keep full URL with protocol in host field — app needs it to connect
             const tunnelConnectionInfo = buildP2PConnectionInfo(tunnelUrl.replace(/\/$/, ''), 0, sharedSecret);
             const tunnelQRUrl = buildP2PQRUrl(tunnelConnectionInfo, tunnelUrl);
-            displayP2PQRCode(tunnelQRUrl);
+            await displayP2PQRCode(tunnelQRUrl);
             displayP2PConnectionStatus(lanIP, p2pServer.port, tunnelUrl);
         } else {
             console.log('  Failed to start tunnel, using LAN only');
             const connectionInfo = buildP2PConnectionInfo(lanIP, p2pServer.port, sharedSecret);
             const qrUrl = buildP2PQRUrl(connectionInfo);
-            displayP2PQRCode(qrUrl);
+            await displayP2PQRCode(qrUrl);
             displayP2PConnectionStatus(lanIP, p2pServer.port);
         }
     } else {
         // LAN only - show QR with LAN IP
         const connectionInfo = buildP2PConnectionInfo(lanIP, p2pServer.port, sharedSecret);
         const qrUrl = buildP2PQRUrl(connectionInfo);
-        displayP2PQRCode(qrUrl);
+        await displayP2PQRCode(qrUrl);
         displayP2PConnectionStatus(lanIP, p2pServer.port);
     }
 

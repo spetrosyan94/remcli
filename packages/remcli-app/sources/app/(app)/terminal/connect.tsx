@@ -23,16 +23,31 @@ export default function TerminalConnectScreen() {
         }
     });
 
-    // Extract P2P payload from hash on web platform
+    // Extract P2P payload from hash on web platform.
+    // Hash contains base64-encoded compact JSON ({k, v}) — host/port come from the URL itself.
     useEffect(() => {
         if (Platform.OS === 'web' && typeof window !== 'undefined' && !hashProcessed) {
             const hash = window.location.hash;
             if (hash.length > 1) {
-                const data = decodeURIComponent(hash.substring(1));
-                const payload = parseP2PQRCode(data);
-                if (payload) {
+                try {
+                    const decoded = atob(hash.substring(1));
+                    const compact = JSON.parse(decoded) as { k: string; v: number };
+
+                    const host = window.location.hostname;
+                    const port = window.location.port ? parseInt(window.location.port, 10) : 0;
+
+                    const payload: P2PQRPayload = {
+                        mode: 'p2p',
+                        host,
+                        port,
+                        key: compact.k,
+                        v: compact.v,
+                    };
+                    const data = JSON.stringify(payload);
                     setP2pPayload(payload);
                     setRawData(data);
+                } catch {
+                    // Invalid hash — will show error state
                 }
 
                 // Clear the hash from URL to prevent exposure in browser history
