@@ -69,17 +69,24 @@ function UserTextBlock(props: {
   message: UserTextMessage;
   sessionId: string;
 }) {
+  const isVoiceMessage = props.message.displayText?.startsWith('🎤') ?? false;
+
   const handleOptionPress = React.useCallback((option: Option) => {
     sync.sendMessage(props.sessionId, option.title);
   }, [props.sessionId]);
 
   return (
     <View style={styles.userMessageContainer}>
-      <View style={styles.userMessageBubble}>
-        <MarkdownView markdown={props.message.displayText || props.message.text} onOptionPress={handleOptionPress} />
-        {/* {__DEV__ && (
-          <Text style={styles.debugText}>{JSON.stringify(props.message.meta)}</Text>
-        )} */}
+      <View style={[styles.userMessageBubble, isVoiceMessage && styles.voiceMessageBubble]}>
+        {isVoiceMessage && (
+          <View style={styles.voiceBadge}>
+            <Text style={styles.voiceBadgeText}>🎤 Voice</Text>
+          </View>
+        )}
+        <MarkdownView
+          markdown={isVoiceMessage ? props.message.text : (props.message.displayText || props.message.text)}
+          onOptionPress={handleOptionPress}
+        />
       </View>
     </View>
   );
@@ -196,6 +203,22 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: 12,
     marginBottom: 12,
     maxWidth: '100%',
+  },
+  voiceMessageBubble: {
+    backgroundColor: theme.colors.voiceMessageBackground,
+    borderWidth: 1,
+    borderColor: theme.colors.voiceMessageBorder,
+  },
+  voiceBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+    marginTop: 4,
+  },
+  voiceBadgeText: {
+    fontSize: 11,
+    color: theme.colors.textSecondary,
+    fontWeight: '500',
   },
   agentMessageContainer: {
     marginHorizontal: 16,

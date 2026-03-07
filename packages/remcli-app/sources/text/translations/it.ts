@@ -910,7 +910,15 @@ export const it: TranslationStructure = {
         friendRequestGeneric: 'Nuova richiesta di amicizia',
         friendAccepted: ({ name }: { name: string }) => `Ora sei amico di ${name}`,
         friendAcceptedGeneric: 'Richiesta di amicizia accettata',
-    }
+    },
+
+    whisper: {
+        recording: 'Registrazione...',
+        transcribing: 'Trascrizione...',
+        notAvailable: 'Whisper non è disponibile su questo server',
+        transcriptionFailed: "Impossibile trascrivere l'audio",
+        emptyTranscription: 'Impossibile riconoscere il parlato. Riprova.',
+    },
 } as const;
 
 export type TranslationsIt = typeof it;

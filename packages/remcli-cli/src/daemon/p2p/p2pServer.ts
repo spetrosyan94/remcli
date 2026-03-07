@@ -7,6 +7,7 @@
 import { existsSync } from 'fs';
 import { randomUUID } from 'node:crypto';
 import fastify from 'fastify';
+import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { Server as SocketIOServer } from 'socket.io';
 import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
@@ -55,6 +56,14 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
     const app = fastify({ logger: false });
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
+
+    // Multipart support for file uploads (voice transcription)
+    await app.register(fastifyMultipart, {
+        limits: {
+            fileSize: 25 * 1024 * 1024, // 25MB max audio file
+            files: 1,
+        },
+    });
 
     // CORS for mobile app
     app.addHook('onRequest', async (request, reply) => {

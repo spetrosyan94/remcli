@@ -6,8 +6,6 @@ export interface AppConfig {
     revenueCatAppleKey?: string;
     revenueCatGoogleKey?: string;
     revenueCatStripeKey?: string;
-    elevenLabsAgentIdDev?: string;
-    elevenLabsAgentIdProd?: string;
 }
 
 /**
@@ -82,14 +80,6 @@ export function loadAppConfig(): AppConfig {
     if (process.env.EXPO_PUBLIC_POSTHOG_KEY && config.postHogKey !== process.env.EXPO_PUBLIC_POSTHOG_KEY) {
         console.log('[loadAppConfig] Override postHogKey from EXPO_PUBLIC_POSTHOG_KEY');
         config.postHogKey = process.env.EXPO_PUBLIC_POSTHOG_KEY;
-    }
-    if (process.env.EXPO_PUBLIC_ELEVENLABS_AGENT_ID_DEV && config.elevenLabsAgentIdDev !== process.env.EXPO_PUBLIC_ELEVENLABS_AGENT_ID_DEV) {
-        console.log('[loadAppConfig] Override elevenLabsAgentIdDev from EXPO_PUBLIC_ELEVENLABS_AGENT_ID_DEV');
-        config.elevenLabsAgentIdDev = process.env.EXPO_PUBLIC_ELEVENLABS_AGENT_ID_DEV;
-    }
-    if (process.env.EXPO_PUBLIC_ELEVENLABS_AGENT_ID_PROD && config.elevenLabsAgentIdProd !== process.env.EXPO_PUBLIC_ELEVENLABS_AGENT_ID_PROD) {
-        console.log('[loadAppConfig] Override elevenLabsAgentIdProd from EXPO_PUBLIC_ELEVENLABS_AGENT_ID_PROD');
-        config.elevenLabsAgentIdProd = process.env.EXPO_PUBLIC_ELEVENLABS_AGENT_ID_PROD;
     }
     return config as AppConfig;
 }

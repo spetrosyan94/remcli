@@ -7,10 +7,13 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
+import { tmpNameSync } from 'tmp';
+import { writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { P2PStore } from './p2pStore';
 import { P2PEventRouter } from './p2pEventRouter';
 import { verifyBearerToken } from './p2pAuth';
 import { logger } from '@/ui/logger';
+import { transcribe, isAvailable as isWhisperAvailable, ensureModel } from '../whisper/whisperService';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -194,6 +197,59 @@ export function registerP2PRestRoutes(
     typed.post('/v1/voice/token', async (_request, reply) => {
         reply.code(400);
         return { error: 'Voice not supported in P2P mode' };
+    });
+
+    // ─── POST /v1/voice/transcribe (Whisper STT) ────────────────
+    app.post('/v1/voice/transcribe', async (request, reply) => {
+        if (!isWhisperAvailable()) {
+            reply.code(503);
+            return { error: 'Whisper native bindings not available' };
+        }
+
+        let tempPath: string | null = null;
+        try {
+            const data = await request.file();
+            if (!data) {
+                reply.code(400);
+                return { error: 'No audio file provided. Send multipart/form-data with field "audio".' };
+            }
+
+            // Determine file extension from mimetype
+            const ext = mimeToExt(data.mimetype) || 'm4a';
+            tempPath = tmpNameSync({ postfix: `.${ext}` });
+
+            // Write uploaded file to temp
+            const chunks: Buffer[] = [];
+            for await (const chunk of data.file) {
+                chunks.push(chunk);
+            }
+            writeFileSync(tempPath, Buffer.concat(chunks));
+
+            logger.debug(`[WHISPER] Received audio file: ${data.filename}, ${data.mimetype}, ${chunks.reduce((s, c) => s + c.length, 0)} bytes`);
+
+            // Ensure model is downloaded (first-time auto-download)
+            await ensureModel();
+
+            // Transcribe
+            const result = await transcribe(tempPath);
+
+            logger.debug(`[WHISPER] Transcription result: "${result.text.substring(0, 100)}"`);
+
+            return {
+                text: result.text,
+                language: result.language,
+                duration: result.duration,
+            };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Transcription failed';
+            logger.debug(`[WHISPER] Transcription error: ${message}`);
+            reply.code(500);
+            return { error: message };
+        } finally {
+            if (tempPath && existsSync(tempPath)) {
+                try { unlinkSync(tempPath); } catch { /* ignore cleanup errors */ }
+            }
+        }
     });
 
     // ─── GET /v1/sessions ────────────────────────────────────────
@@ -425,4 +481,22 @@ export function registerP2PRestRoutes(
     });
 
     logger.debug('[P2P REST] All routes registered');
+}
+
+// ─── Helpers ────────────────────────────────────────────────────
+
+function mimeToExt(mime: string): string | null {
+    const map: Record<string, string> = {
+        'audio/wav': 'wav',
+        'audio/x-wav': 'wav',
+        'audio/wave': 'wav',
+        'audio/mp4': 'm4a',
+        'audio/x-m4a': 'm4a',
+        'audio/aac': 'aac',
+        'audio/mpeg': 'mp3',
+        'audio/webm': 'webm',
+        'audio/ogg': 'ogg',
+        'audio/3gpp': '3gp',
+    };
+    return map[mime] || null;
 }

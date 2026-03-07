@@ -911,7 +911,15 @@ export const en = {
             confirm: 'Delete',
             cancel: 'Cancel',
         },
-    }
+    },
+
+    whisper: {
+        recording: 'Recording...',
+        transcribing: 'Transcribing...',
+        notAvailable: 'Whisper is not available on this server',
+        transcriptionFailed: 'Failed to transcribe audio',
+        emptyTranscription: 'Could not recognize speech. Please try again.',
+    },
 } as const;
 
 export type Translations = typeof en;

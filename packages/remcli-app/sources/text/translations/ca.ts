@@ -910,7 +910,15 @@ export const ca: TranslationStructure = {
         friendRequestGeneric: 'Nova sol·licitud d\'amistat',
         friendAccepted: ({ name }: { name: string }) => `Ara ets amic de ${name}`,
         friendAcceptedGeneric: 'Sol·licitud d\'amistat acceptada',
-    }
+    },
+
+    whisper: {
+        recording: 'Gravant...',
+        transcribing: 'Transcrivint...',
+        notAvailable: 'Whisper no està disponible en aquest servidor',
+        transcriptionFailed: "No s'ha pogut transcriure l'àudio",
+        emptyTranscription: "No s'ha pogut reconèixer la parla. Torneu-ho a provar.",
+    },
 } as const;
 
 export type TranslationsCa = typeof ca;

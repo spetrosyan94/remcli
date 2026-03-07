@@ -934,7 +934,15 @@ export const ru: TranslationStructure = {
             confirm: 'Удалить',
             cancel: 'Отмена',
         },
-    }
+    },
+
+    whisper: {
+        recording: 'Запись...',
+        transcribing: 'Распознавание...',
+        notAvailable: 'Whisper недоступен на этом сервере',
+        transcriptionFailed: 'Не удалось распознать аудио',
+        emptyTranscription: 'Не удалось распознать речь. Попробуйте ещё раз.',
+    },
 } as const;
 
 export type TranslationsRu = typeof ru;

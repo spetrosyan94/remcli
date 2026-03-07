@@ -910,7 +910,15 @@ export const pt: TranslationStructure = {
         friendRequestGeneric: 'Novo pedido de amizade',
         friendAccepted: ({ name }: { name: string }) => `Agora você é amigo de ${name}`,
         friendAcceptedGeneric: 'Pedido de amizade aceito',
-    }
+    },
+
+    whisper: {
+        recording: 'Gravando...',
+        transcribing: 'Transcrevendo...',
+        notAvailable: 'Whisper não está disponível neste servidor',
+        transcriptionFailed: 'Falha ao transcrever o áudio',
+        emptyTranscription: 'Não foi possível reconhecer a fala. Tente novamente.',
+    },
 } as const;
 
 export type TranslationsPt = typeof pt;

@@ -16,6 +16,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { projectPath } from '@/projectPath'
 import packageJson from '../../package.json'
+import { getStatus as getWhisperStatus } from '@/daemon/whisper/whisperService'
 
 /**
  * Get relevant environment information for debugging
@@ -258,6 +259,25 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         console.log(chalk.bold('\n🐛 Support & Bug Reports'));
         console.log(`Report issues: ${chalk.blue('https://github.com/spetrosyan94/remcli/issues')}`);
         console.log(`Documentation: ${chalk.blue('https://remcli.dev/')}`);
+    }
+
+    // Whisper STT status
+    console.log(chalk.bold('\n🎤 Whisper STT'));
+    const whisper = getWhisperStatus();
+    if (whisper.nativeBindings) {
+        console.log(chalk.green('✓ Whisper: native bindings (smart-whisper)'));
+    }
+    if (whisper.modelDownloaded) {
+        console.log(chalk.green(`✓ Model downloaded: ${whisper.modelPath}`));
+    } else {
+        console.log(chalk.yellow(`⚠️  Model not downloaded (will auto-download on first use)`));
+        console.log(chalk.gray(`   Path: ${whisper.modelPath}`));
+    }
+    if (whisper.ffmpegAvailable) {
+        console.log(chalk.green('✓ ffmpeg available (for audio conversion)'));
+    } else {
+        console.log(chalk.yellow('⚠️  ffmpeg not found. Install: brew install ffmpeg'));
+        console.log(chalk.gray('   Required for non-WAV audio files (m4a, webm, etc.)'));
     }
 
     console.log(chalk.green('\n✅ Doctor diagnosis complete!\n'));

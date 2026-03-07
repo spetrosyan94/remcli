@@ -912,5 +912,13 @@ export const zhHans: TranslationStructure = {
         friendRequestGeneric: '新的好友请求',
         friendAccepted: ({ name }: { name: string }) => `您现在与 ${name} 成为了好友`,
         friendAcceptedGeneric: '好友请求已接受',
-    }
+    },
+
+    whisper: {
+        recording: '录音中...',
+        transcribing: '转录中...',
+        notAvailable: '此服务器上不可用 Whisper',
+        transcriptionFailed: '音频转录失败',
+        emptyTranscription: '无法识别语音，请重试。',
+    },
 } as const;

@@ -913,5 +913,13 @@ export const ja: TranslationStructure = {
         friendRequestGeneric: '新しい友達リクエスト',
         friendAccepted: ({ name }: { name: string }) => `${name}さんと友達になりました`,
         friendAcceptedGeneric: '友達リクエストが承認されました',
-    }
+    },
+
+    whisper: {
+        recording: '録音中...',
+        transcribing: '文字起こし中...',
+        notAvailable: 'このサーバーではWhisperを利用できません',
+        transcriptionFailed: '音声の文字起こしに失敗しました',
+        emptyTranscription: '音声を認識できませんでした。もう一度お試しください。',
+    },
 } as const;

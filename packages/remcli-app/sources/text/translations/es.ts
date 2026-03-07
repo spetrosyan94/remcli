@@ -912,7 +912,15 @@ export const es: TranslationStructure = {
             confirm: 'Eliminar',
             cancel: 'Cancelar',
         },
-    }
+    },
+
+    whisper: {
+        recording: 'Grabando...',
+        transcribing: 'Transcribiendo...',
+        notAvailable: 'Whisper no está disponible en este servidor',
+        transcriptionFailed: 'Error al transcribir el audio',
+        emptyTranscription: 'No se pudo reconocer el habla. Inténtelo de nuevo.',
+    },
 } as const;
 
 export type TranslationsEs = typeof es;

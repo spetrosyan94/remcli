@@ -28,6 +28,7 @@ import { getLanIPAddress } from './p2p/networkUtils';
 import { buildP2PConnectionInfo, buildP2PQRUrl, displayP2PQRCode, displayP2PConnectionStatus } from './p2p/p2pQRCode';
 import { startNgrokTunnel } from './p2p/tunnel';
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
+import { freeWhisper } from './whisper/whisperService';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import { openTerminalWithCommand } from '@/utils/openTerminal';
 
@@ -941,6 +942,14 @@ export async function startDaemon(): Promise<void> {
         } catch (error) {
           logger.debug('[DAEMON RUN] Failed to stop tunnel:', error);
         }
+      }
+
+      // Free Whisper native resources
+      try {
+        await freeWhisper();
+        logger.debug('[DAEMON RUN] Whisper native resources freed');
+      } catch (error) {
+        logger.debug('[DAEMON RUN] Failed to free Whisper resources:', error);
       }
 
       // Stop P2P server

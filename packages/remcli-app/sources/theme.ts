@@ -200,6 +200,8 @@ export const lightTheme = {
 
         // Message View colors
         userMessageBackground: '#f0eee6',
+        voiceMessageBackground: '#e8e4f0',
+        voiceMessageBorder: '#c9b8e8',
         userMessageText: '#000000',
         agentMessageText: '#000000',
         agentEventText: '#666666',
@@ -410,6 +412,8 @@ export const darkTheme = {
 
         // Message View colors
         userMessageBackground: '#2C2C2E',
+        voiceMessageBackground: '#2E2A3A',
+        voiceMessageBorder: '#4A3D6B',
         userMessageText: '#FFFFFF',
         agentMessageText: '#FFFFFF',
         agentEventText: '#8E8E93',

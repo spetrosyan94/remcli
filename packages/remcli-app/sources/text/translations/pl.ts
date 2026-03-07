@@ -935,7 +935,15 @@ export const pl: TranslationStructure = {
             confirm: 'Usuń',
             cancel: 'Anuluj',
         },
-    }
+    },
+
+    whisper: {
+        recording: 'Nagrywanie...',
+        transcribing: 'Transkrypcja...',
+        notAvailable: 'Whisper nie jest dostępny na tym serwerze',
+        transcriptionFailed: 'Nie udało się transkrybować audio',
+        emptyTranscription: 'Nie rozpoznano mowy. Spróbuj ponownie.',
+    },
 } as const;
 
 export type TranslationsPl = typeof pl;

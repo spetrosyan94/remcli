@@ -7,9 +7,8 @@ import { Deferred } from '@/components/Deferred';
 import { EmptyMessages } from '@/components/EmptyMessages';
 import { VoiceAssistantStatusBar } from '@/components/VoiceAssistantStatusBar';
 import { useDraft } from '@/hooks/useDraft';
-import { Modal } from '@/modal';
-import { voiceHooks } from '@/realtime/hooks/voiceHooks';
-import { startRealtimeSession, stopRealtimeSession } from '@/realtime/RealtimeSession';
+import { useWhisperVoice } from '@/hooks/useWhisperVoice';
+import { isP2PMode } from '@/sync/serverConfig';
 import { gitStatusSync } from '@/sync/gitStatusSync';
 import { sessionAbort } from '@/sync/ops';
 import { storage, useIsDataReady, useLocalSetting, useRealtimeStatus, useSessionMessages, useSessionUsage, useSetting } from '@/sync/storage';
@@ -180,6 +179,13 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
     // Use draft hook for auto-saving message drafts
     const { clearDraft } = useDraft(sessionId, message, setMessage);
 
+    // Whisper STT for P2P mode
+    const { whisperState, startWhisper, stopWhisper } = useWhisperVoice();
+    const useWhisperMode = React.useMemo(
+        () => isP2PMode(),
+        []
+    );
+
     // Handle dismissing CLI version warning
     const handleDismissCliWarning = React.useCallback(() => {
         if (machineId && cliVersion) {
@@ -215,33 +221,25 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
 
     // Handle microphone button press - memoized to prevent button flashing
     const handleMicrophonePress = React.useCallback(async () => {
-        if (realtimeStatus === 'connecting') {
-            return; // Prevent actions during transitions
-        }
-        if (realtimeStatus === 'disconnected' || realtimeStatus === 'error') {
-            try {
-                const initialPrompt = voiceHooks.onVoiceStarted(sessionId);
-                await startRealtimeSession(sessionId, initialPrompt);
-                tracking?.capture('voice_session_started', { sessionId });
-            } catch (error) {
-                console.error('Failed to start realtime session:', error);
-                Modal.alert(t('common.error'), t('errors.voiceSessionFailed'));
-                tracking?.capture('voice_session_error', { error: error instanceof Error ? error.message : 'Unknown error' });
+        // Whisper mode: record -> transcribe -> send as message
+        if (useWhisperMode) {
+            if (whisperState === 'idle') {
+                await startWhisper();
+                tracking?.capture('whisper_recording_started', { sessionId });
+            } else if (whisperState === 'recording') {
+                await stopWhisper(sessionId);
+                tracking?.capture('whisper_recording_stopped', { sessionId });
             }
-        } else if (realtimeStatus === 'connected') {
-            await stopRealtimeSession();
-            tracking?.capture('voice_session_stopped');
-
-            // Notify voice assistant about voice session stop
-            voiceHooks.onVoiceStopped();
+            // Do nothing during 'transcribing' state
+            return;
         }
-    }, [realtimeStatus, sessionId]);
+    }, [sessionId, useWhisperMode, whisperState, startWhisper, stopWhisper]);
 
     // Memoize mic button state to prevent flashing during chat transitions
     const micButtonState = useMemo(() => ({
         onMicPress: handleMicrophonePress,
-        isMicActive: realtimeStatus === 'connected' || realtimeStatus === 'connecting'
-    }), [handleMicrophonePress, realtimeStatus]);
+        isMicActive: whisperState === 'recording' || whisperState === 'transcribing',
+    }), [handleMicrophonePress, whisperState]);
 
     // Trigger session visibility and initialize git status sync
     React.useLayoutEffect(() => {

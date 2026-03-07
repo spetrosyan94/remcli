@@ -912,5 +912,13 @@ export const zhHant: TranslationStructure = {
             confirm: '刪除',
             cancel: '取消',
         },
-    }
+    },
+
+    whisper: {
+        recording: '錄音中...',
+        transcribing: '轉錄中...',
+        notAvailable: '此伺服器上無法使用 Whisper',
+        transcriptionFailed: '音訊轉錄失敗',
+        emptyTranscription: '無法辨識語音，請重試。',
+    },
 } as const;
