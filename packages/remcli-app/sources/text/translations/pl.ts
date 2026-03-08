@@ -946,6 +946,16 @@ export const pl: TranslationStructure = {
         setupRequired: 'Wprowadzanie głosowe niedostępne',
         setupRequiredDescription: 'Uruchom remcli setup, aby włączyć wprowadzanie głosowe.',
     },
+    microphone: {
+        accessRequired: 'Wymagany dostęp do mikrofonu',
+        grantPermission: 'Remcli potrzebuje dostępu do mikrofonu do czatu głosowego. Udziel uprawnienia po wyświetleniu monitu.',
+        enableInSettings: 'Remcli potrzebuje dostępu do mikrofonu do czatu głosowego. Włącz dostęp do mikrofonu w ustawieniach urządzenia.',
+        httpsRequired: 'Mikrofon wymaga bezpiecznego połączenia (HTTPS). Uruchom demona z flagą --tunnel, aby włączyć wprowadzanie głosowe: remcli daemon start --tunnel',
+        webInstructionsSafari: 'Gdy przeglądarka poprosi o dostęp do mikrofonu, naciśnij „Zezwól". Jeśli odmówiłeś dostępu, przejdź do Ustawienia \u2192 Safari \u2192 Mikrofon i zezwól dla tej strony.',
+        webInstructionsChrome: 'Gdy przeglądarka poprosi o dostęp do mikrofonu, naciśnij „Zezwól". Jeśli odmówiłeś dostępu, naciśnij ikonę ustawień witryny (po lewej stronie paska adresu) i włącz mikrofon.',
+        webInstructionsGeneric: 'Gdy przeglądarka poprosi o dostęp do mikrofonu, naciśnij „Zezwól". Jeśli odmówiłeś dostępu, sprawdź ustawienia przeglądarki i włącz mikrofon dla tej strony.',
+        openSettings: 'Otwórz ustawienia',
+    },
 } as const;
 
 export type TranslationsPl = typeof pl;

@@ -24,9 +24,14 @@ export interface P2PQRPayload {
 
 /**
  * Try to parse a scanned QR code as P2P connection info.
- * Returns null if the data is not a valid P2P QR payload.
+ *
+ * Supports two formats:
+ * 1. Full JSON: {"mode":"p2p","host":"...","port":12345,"key":"...","v":1}
+ * 2. Compact URL: http://host:port/terminal/connect#<base64({k,v})>
+ *    Host/port extracted from URL, key/version from base64-encoded hash fragment.
  */
 export function parseP2PQRCode(data: string): P2PQRPayload | null {
+    // Try full JSON format first
     try {
         const parsed = JSON.parse(data);
         if (
@@ -40,9 +45,35 @@ export function parseP2PQRCode(data: string): P2PQRPayload | null {
             return parsed as P2PQRPayload;
         }
     } catch {
-        // Not JSON — not a P2P QR code
+        // Not JSON — try URL format below
     }
-    return null;
+
+    // Try compact URL format: http://host:port/terminal/connect#<base64>
+    return parseP2PQRUrl(data);
+}
+
+/**
+ * Parse compact QR URL: extract host/port from URL, key/version from hash fragment.
+ * URL format: http://192.168.1.x:PORT/terminal/connect#<base64({k,v})>
+ */
+function parseP2PQRUrl(data: string): P2PQRPayload | null {
+    try {
+        const url = new URL(data);
+        if (!url.hash || url.hash.length <= 1) return null;
+
+        const base64 = url.hash.substring(1);
+        const decoded = atob(base64);
+        const compact = JSON.parse(decoded) as { k?: string; v?: number };
+
+        if (typeof compact.k !== 'string' || typeof compact.v !== 'number') return null;
+
+        const host = url.hostname;
+        const port = url.port ? parseInt(url.port, 10) : 0;
+
+        return { mode: 'p2p', host, port, key: compact.k, v: compact.v };
+    } catch {
+        return null;
+    }
 }
 
 // ─── Token Derivation ────────────────────────────────────────────

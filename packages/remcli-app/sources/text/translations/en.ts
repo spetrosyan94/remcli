@@ -938,6 +938,16 @@ export const en: TranslationStructure = {
         setupRequired: 'Voice Input Unavailable',
         setupRequiredDescription: 'Run remcli setup to enable voice input.',
     },
+    microphone: {
+        accessRequired: 'Microphone Access Required',
+        grantPermission: 'Remcli needs access to your microphone for voice chat. Please grant permission when prompted.',
+        enableInSettings: 'Remcli needs access to your microphone for voice chat. Please enable microphone access in your device settings.',
+        httpsRequired: 'Microphone requires a secure connection (HTTPS). Start the daemon with --tunnel flag to enable voice input: remcli daemon start --tunnel',
+        webInstructionsSafari: 'When the browser asks for microphone access, tap "Allow". If you denied it, go to Settings \u2192 Safari \u2192 Microphone and allow for this site.',
+        webInstructionsChrome: 'When the browser asks for microphone access, tap "Allow". If you denied it, tap the site settings icon (left of the address bar) and enable the microphone.',
+        webInstructionsGeneric: 'When the browser asks for microphone access, tap "Allow". If you denied it, check your browser settings to enable microphone for this site.',
+        openSettings: 'Open Settings',
+    },
 } as const;
 
 export type TranslationsEn = typeof en;

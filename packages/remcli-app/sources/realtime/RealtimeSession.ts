@@ -18,7 +18,7 @@ export async function startRealtimeSession(sessionId: string, initialContext?: s
     // Critical for iOS/Android - first session will fail without this
     const permissionResult = await requestMicrophonePermission();
     if (!permissionResult.granted) {
-        showMicrophonePermissionDeniedAlert(permissionResult.canAskAgain);
+        showMicrophonePermissionDeniedAlert(permissionResult.canAskAgain, permissionResult.insecureContext);
         return;
     }
 

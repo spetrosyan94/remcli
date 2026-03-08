@@ -7,11 +7,12 @@
  * 3. Saves configuration to ~/.remcli/setup.json
  */
 
-import { select, checkbox } from '@inquirer/prompts';
+import { select, checkbox, confirm } from '@inquirer/prompts';
 import chalk from 'chalk';
 import { execFileSync, execSync } from 'node:child_process';
 import { readSetupConfig, writeSetupConfig } from '@/persistence';
 import { WHISPER_MODELS, downloadModelWithProgress, isModelDownloaded } from '@/daemon/whisper/whisperService';
+import { resolveNgrokBinary } from '@/daemon/p2p/tunnel';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -188,6 +189,12 @@ async function stepAIAgents(): Promise<string[]> {
         const agent = AGENTS.find(a => a.binary === binary);
         if (!agent) continue;
 
+        if (isBinaryInstalled(agent.binary)) {
+            const version = getBinaryVersion(agent.binary);
+            console.log(chalk.green(`\n  ${agent.name} is already installed${version ? ` (${version})` : ''}, skipping.`));
+            continue;
+        }
+
         const installCmd = IS_WINDOWS ? agent.install.windows : agent.install.unix;
         console.log(chalk.yellow(`\n  Installing ${agent.name}...`));
         console.log(chalk.gray(`  $ ${installCmd}`));
@@ -204,7 +211,92 @@ async function stepAIAgents(): Promise<string[]> {
     return installedAgents;
 }
 
-function stepSummary(whisperModel: string, installedAgents: string[]): void {
+async function stepNgrok(): Promise<boolean> {
+    console.log(chalk.bold('\n\u{1F310} Step 3: ngrok (HTTPS tunnel)\n'));
+
+    const installed = resolveNgrokBinary() !== null;
+
+    if (installed) {
+        console.log(chalk.green('  ngrok is already installed.'));
+        console.log(chalk.gray('  Use --tunnel flag to enable remote access with voice input.\n'));
+        return true;
+    }
+
+    console.log(chalk.gray('  ngrok provides HTTPS tunnel for remote access beyond your local network.'));
+    console.log(chalk.gray('  Required for voice input on web (microphone needs HTTPS).\n'));
+
+    const shouldInstall = await confirm({
+        message: 'Install ngrok?',
+        default: true,
+    });
+
+    if (!shouldInstall) {
+        console.log(chalk.gray('\n  Skipped. You can install ngrok later from https://ngrok.com/download'));
+        return false;
+    }
+
+    const isMac = process.platform === 'darwin';
+    const isLinux = process.platform === 'linux';
+
+    if (isMac) {
+        console.log(chalk.yellow('\n  Installing ngrok via Homebrew...'));
+        console.log(chalk.gray('  $ brew install ngrok/ngrok/ngrok'));
+        try {
+            execSync('brew install ngrok/ngrok/ngrok', { stdio: 'inherit', timeout: 300_000 });
+            console.log(chalk.green('  ngrok installed successfully.'));
+        } catch {
+            console.log(chalk.red('  Failed to install via Homebrew.'));
+            console.log(chalk.gray('  Install manually: https://ngrok.com/download'));
+            return false;
+        }
+    } else if (isLinux) {
+        console.log(chalk.yellow('\n  Installing ngrok via snap...'));
+        console.log(chalk.gray('  $ sudo snap install ngrok'));
+        try {
+            execSync('sudo snap install ngrok', { stdio: 'inherit', timeout: 300_000 });
+            console.log(chalk.green('  ngrok installed successfully.'));
+        } catch {
+            console.log(chalk.red('  Failed to install via snap. Trying apt...'));
+            try {
+                execSync(
+                    'curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null'
+                    + ' && echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list'
+                    + ' && sudo apt update && sudo apt install -y ngrok',
+                    { stdio: 'inherit', timeout: 300_000 },
+                );
+                console.log(chalk.green('  ngrok installed successfully.'));
+            } catch {
+                console.log(chalk.red('  Failed to install ngrok.'));
+                console.log(chalk.gray('  Install manually: https://ngrok.com/download'));
+                return false;
+            }
+        }
+    } else if (IS_WINDOWS) {
+        console.log(chalk.yellow('\n  Installing ngrok via winget...'));
+        console.log(chalk.gray('  $ winget install ngrok'));
+        try {
+            execSync('winget install ngrok', { stdio: 'inherit', timeout: 300_000 });
+            console.log(chalk.green('  ngrok installed successfully.'));
+        } catch {
+            console.log(chalk.red('  Failed to install via winget. Try: choco install ngrok'));
+            console.log(chalk.gray('  Or install manually: https://ngrok.com/download'));
+            return false;
+        }
+    } else {
+        console.log(chalk.gray('  Install ngrok from: https://ngrok.com/download'));
+        return false;
+    }
+
+    // Prompt for authtoken
+    console.log(chalk.yellow('\n  To use ngrok, you need a free account and authtoken.'));
+    console.log(chalk.gray('  1. Sign up at: https://dashboard.ngrok.com/signup'));
+    console.log(chalk.gray('  2. Get your token: https://dashboard.ngrok.com/get-started/your-authtoken'));
+    console.log(chalk.gray('  3. Run: ngrok config add-authtoken <your-token>\n'));
+
+    return true;
+}
+
+function stepSummary(whisperModel: string, installedAgents: string[], ngrokInstalled: boolean): void {
     console.log(chalk.bold('\n\u{2728} Setup Summary\n'));
 
     // Whisper
@@ -231,6 +323,14 @@ function stepSummary(whisperModel: string, installedAgents: string[]): void {
         console.log(chalk.gray(`\n  Newly installed: ${installedAgents.join(', ')}`));
     }
 
+    // ngrok
+    console.log(chalk.bold('\n  HTTPS Tunnel (ngrok)'));
+    if (ngrokInstalled) {
+        console.log(chalk.green('  \u2713 ngrok installed'));
+    } else {
+        console.log(chalk.red('  \u2717 ngrok not installed — voice input on web requires HTTPS'));
+    }
+
     console.log('');
 }
 
@@ -238,7 +338,7 @@ function stepSummary(whisperModel: string, installedAgents: string[]): void {
 
 export async function handleSetupCommand(): Promise<void> {
     console.log(chalk.bold.cyan('\n\u{1F680} Remcli Setup Wizard\n'));
-    console.log(chalk.gray('  This wizard will help you configure Whisper STT and AI agents.\n'));
+    console.log(chalk.gray('  This wizard will help you configure Whisper STT, AI agents, and ngrok.\n'));
 
     // Step 1: Whisper model
     const whisperModel = await stepWhisperModel();
@@ -246,7 +346,10 @@ export async function handleSetupCommand(): Promise<void> {
     // Step 2: AI agents
     const installedAgents = await stepAIAgents();
 
-    // Step 3: Save config
+    // Step 3: ngrok
+    const ngrokInstalled = await stepNgrok();
+
+    // Step 4: Save config
     const existingConfig = readSetupConfig();
     writeSetupConfig({
         ...existingConfig,
@@ -257,8 +360,8 @@ export async function handleSetupCommand(): Promise<void> {
         setupCompletedAt: new Date().toISOString(),
     });
 
-    // Step 4: Summary
-    stepSummary(whisperModel, installedAgents);
+    // Step 5: Summary
+    stepSummary(whisperModel, installedAgents, ngrokInstalled);
 
     console.log(chalk.green('  Setup complete! Run `remcli doctor` to verify.\n'));
 }

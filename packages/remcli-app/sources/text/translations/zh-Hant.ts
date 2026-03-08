@@ -923,4 +923,14 @@ export const zhHant: TranslationStructure = {
         setupRequired: '語音輸入不可用',
         setupRequiredDescription: '請執行 remcli setup 以啟用語音輸入。',
     },
+    microphone: {
+        accessRequired: '需要麥克風存取權限',
+        grantPermission: 'Remcli 需要存取您的麥克風以進行語音聊天。請在提示時授予權限。',
+        enableInSettings: 'Remcli 需要存取您的麥克風以進行語音聊天。請在裝置設定中啟用麥克風存取權限。',
+        httpsRequired: '麥克風需要安全連線（HTTPS）。請使用 --tunnel 標誌啟動守護程式以啟用語音輸入：remcli daemon start --tunnel',
+        webInstructionsSafari: '當瀏覽器要求麥克風存取權限時，請點擊「允許」。如果您拒絕了，請前往設定 \u2192 Safari \u2192 麥克風，並允許此網站。',
+        webInstructionsChrome: '當瀏覽器要求麥克風存取權限時，請點擊「允許」。如果您拒絕了，請點擊網站設定圖示（網址列左側）並啟用麥克風。',
+        webInstructionsGeneric: '當瀏覽器要求麥克風存取權限時，請點擊「允許」。如果您拒絕了，請檢查瀏覽器設定以啟用此網站的麥克風。',
+        openSettings: '開啟設定',
+    },
 } as const;

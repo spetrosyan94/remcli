@@ -921,6 +921,16 @@ export const it: TranslationStructure = {
         setupRequired: 'Input vocale non disponibile',
         setupRequiredDescription: 'Esegui remcli setup per abilitare l\'input vocale.',
     },
+    microphone: {
+        accessRequired: 'Accesso al microfono richiesto',
+        grantPermission: 'Remcli ha bisogno di accedere al microfono per la chat vocale. Concedi il permesso quando richiesto.',
+        enableInSettings: 'Remcli ha bisogno di accedere al microfono per la chat vocale. Abilita l\'accesso al microfono nelle impostazioni del dispositivo.',
+        httpsRequired: 'Il microfono richiede una connessione sicura (HTTPS). Avvia il daemon con il flag --tunnel per abilitare l\'input vocale: remcli daemon start --tunnel',
+        webInstructionsSafari: 'Quando il browser chiede l\'accesso al microfono, tocca "Consenti". Se l\'hai negato, vai su Impostazioni \u2192 Safari \u2192 Microfono e consenti per questo sito.',
+        webInstructionsChrome: 'Quando il browser chiede l\'accesso al microfono, tocca "Consenti". Se l\'hai negato, tocca l\'icona delle impostazioni del sito (a sinistra della barra degli indirizzi) e abilita il microfono.',
+        webInstructionsGeneric: 'Quando il browser chiede l\'accesso al microfono, tocca "Consenti". Se l\'hai negato, controlla le impostazioni del browser per abilitare il microfono per questo sito.',
+        openSettings: 'Apri impostazioni',
+    },
 } as const;
 
 export type TranslationsIt = typeof it;

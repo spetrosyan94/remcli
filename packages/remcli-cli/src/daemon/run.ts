@@ -26,7 +26,7 @@ import { startP2PServer, P2PServer } from './p2p/p2pServer';
 import { generateSharedSecret, encodeSharedSecret, deriveBearerToken } from './p2p/p2pAuth';
 import { getLanIPAddress } from './p2p/networkUtils';
 import { buildP2PConnectionInfo, buildP2PQRUrl, displayP2PQRCode, displayP2PConnectionStatus } from './p2p/p2pQRCode';
-import { startNgrokTunnel } from './p2p/tunnel';
+import { startNgrokTunnel, isNgrokAvailable } from './p2p/tunnel';
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { freeWhisper } from './whisper/whisperService';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
@@ -794,6 +794,15 @@ export async function startDaemon(): Promise<void> {
         const qrUrl = buildP2PQRUrl(connectionInfo);
         await displayP2PQRCode(qrUrl);
         displayP2PConnectionStatus(lanIP, p2pServer.port);
+
+        // Hint about ngrok if not installed
+        if (!isNgrokAvailable()) {
+            console.log('  \u24D8  ngrok not installed — LAN only, no voice input on web.');
+            console.log('     Install ngrok and use --tunnel for HTTPS remote access.');
+            console.log('     Run: remcli setup\n');
+        } else {
+            console.log('  \u24D8  LAN only mode. Use --tunnel flag for HTTPS remote access.\n');
+        }
     }
 
     // Every 60 seconds:

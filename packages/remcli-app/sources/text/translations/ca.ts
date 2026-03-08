@@ -921,6 +921,16 @@ export const ca: TranslationStructure = {
         setupRequired: "Entrada de veu no disponible",
         setupRequiredDescription: "Executeu remcli setup per habilitar l'entrada de veu.",
     },
+    microphone: {
+        accessRequired: "Es requereix accés al micròfon",
+        grantPermission: "Remcli necessita accés al micròfon per al xat de veu. Concediu el permís quan se us demani.",
+        enableInSettings: "Remcli necessita accés al micròfon per al xat de veu. Activeu l'accés al micròfon a la configuració del dispositiu.",
+        httpsRequired: "El micròfon requereix una connexió segura (HTTPS). Inicieu el daemon amb la bandera --tunnel per habilitar l'entrada de veu: remcli daemon start --tunnel",
+        webInstructionsSafari: "Quan el navegador demani accés al micròfon, toqueu \"Permetre\". Si l'heu denegat, aneu a Configuració \u2192 Safari \u2192 Micròfon i permeteu per a aquest lloc.",
+        webInstructionsChrome: "Quan el navegador demani accés al micròfon, toqueu \"Permetre\". Si l'heu denegat, toqueu la icona de configuració del lloc (a l'esquerra de la barra d'adreces) i activeu el micròfon.",
+        webInstructionsGeneric: "Quan el navegador demani accés al micròfon, toqueu \"Permetre\". Si l'heu denegat, comproveu la configuració del navegador per habilitar el micròfon per a aquest lloc.",
+        openSettings: 'Obrir configuració',
+    },
 } as const;
 
 export type TranslationsCa = typeof ca;

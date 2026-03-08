@@ -97,7 +97,7 @@ export function WebAlertModal({ config, onClose, onConfirm }: WebAlertModalProps
     });
 
     return (
-        <BaseModal visible={true} onClose={onClose} closeOnBackdrop={false}>
+        <BaseModal visible={true} onClose={onClose} closeOnBackdrop={true}>
             <View style={styles.container}>
                 <View style={styles.content}>
                     <Text style={[styles.title, Typography.default('semiBold')]}>

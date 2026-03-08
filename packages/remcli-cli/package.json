@@ -57,9 +57,10 @@
   "scripts": {
     "why do we need to build before running tests / dev?": "We need the binary to be built so we run daemon commands which directly run the binary - we don't want them to go out of sync or have custom spawn logic depending how we started remcli",
     "typecheck": "tsc --noEmit",
-    "build": "shx rm -rf dist && npx tsc --noEmit && pkgroll",
+    "build": "shx rm -rf dist && npx tsc --noEmit && pkgroll 2>/dev/null",
     "test": "$npm_execpath run build && vitest run",
     "start": "$npm_execpath run build && node ./bin/remcli.mjs",
+    "start:tunnel": "$npm_execpath run build && node ./bin/remcli.mjs daemon start-sync --tunnel",
     "dev": "tsx src/index.ts",
     "prepublishOnly": "$npm_execpath run build && $npm_execpath test",
     "release": "$npm_execpath install && release-it",

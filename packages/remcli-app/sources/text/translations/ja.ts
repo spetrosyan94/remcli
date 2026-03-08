@@ -924,4 +924,14 @@ export const ja: TranslationStructure = {
         setupRequired: '音声入力が利用できません',
         setupRequiredDescription: 'remcli setup を実行して音声入力を有効にしてください。',
     },
+    microphone: {
+        accessRequired: 'マイクへのアクセスが必要です',
+        grantPermission: 'Remcliは音声チャットにマイクへのアクセスが必要です。プロンプトが表示されたら許可してください。',
+        enableInSettings: 'Remcliは音声チャットにマイクへのアクセスが必要です。デバイスの設定でマイクへのアクセスを有効にしてください。',
+        httpsRequired: 'マイクには安全な接続（HTTPS）が必要です。音声入力を有効にするには、--tunnelフラグを付けてデーモンを起動してください: remcli daemon start --tunnel',
+        webInstructionsSafari: 'ブラウザがマイクへのアクセスを求めたら、「許可」をタップしてください。拒否した場合は、設定 \u2192 Safari \u2192 マイクに移動し、このサイトを許可してください。',
+        webInstructionsChrome: 'ブラウザがマイクへのアクセスを求めたら、「許可」をタップしてください。拒否した場合は、サイト設定アイコン（アドレスバーの左側）をタップしてマイクを有効にしてください。',
+        webInstructionsGeneric: 'ブラウザがマイクへのアクセスを求めたら、「許可」をタップしてください。拒否した場合は、ブラウザの設定でこのサイトのマイクを有効にしてください。',
+        openSettings: '設定を開く',
+    },
 } as const;

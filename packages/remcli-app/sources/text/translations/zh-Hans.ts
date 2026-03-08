@@ -923,4 +923,14 @@ export const zhHans: TranslationStructure = {
         setupRequired: '语音输入不可用',
         setupRequiredDescription: '请运行 remcli setup 以启用语音输入。',
     },
+    microphone: {
+        accessRequired: '需要麦克风访问权限',
+        grantPermission: 'Remcli 需要访问您的麦克风以进行语音聊天。请在提示时授予权限。',
+        enableInSettings: 'Remcli 需要访问您的麦克风以进行语音聊天。请在设备设置中启用麦克风访问权限。',
+        httpsRequired: '麦克风需要安全连接（HTTPS）。请使用 --tunnel 标志启动守护进程以启用语音输入：remcli daemon start --tunnel',
+        webInstructionsSafari: '当浏览器请求麦克风访问权限时，请点击"允许"。如果您拒绝了，请前往设置 \u2192 Safari \u2192 麦克风，并允许此站点。',
+        webInstructionsChrome: '当浏览器请求麦克风访问权限时，请点击"允许"。如果您拒绝了，请点击站点设置图标（地址栏左侧）并启用麦克风。',
+        webInstructionsGeneric: '当浏览器请求麦克风访问权限时，请点击"允许"。如果您拒绝了，请检查浏览器设置以启用此站点的麦克风。',
+        openSettings: '打开设置',
+    },
 } as const;

@@ -27,7 +27,7 @@ export async function startRecording(): Promise<boolean> {
 
     const permission = await requestMicrophonePermission();
     if (!permission.granted) {
-        showMicrophonePermissionDeniedAlert(permission.canAskAgain);
+        showMicrophonePermissionDeniedAlert(permission.canAskAgain, permission.insecureContext);
         return false;
     }
 
