@@ -918,6 +918,8 @@ export const ca: TranslationStructure = {
         notAvailable: 'Whisper no està disponible en aquest servidor',
         transcriptionFailed: "No s'ha pogut transcriure l'àudio",
         emptyTranscription: "No s'ha pogut reconèixer la parla. Torneu-ho a provar.",
+        setupRequired: "Entrada de veu no disponible",
+        setupRequiredDescription: "Executeu remcli setup per habilitar l'entrada de veu.",
     },
 } as const;
 

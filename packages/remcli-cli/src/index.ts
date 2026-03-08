@@ -387,6 +387,18 @@ async function ensureDaemonRunning(): Promise<void> {
       process.exit(1)
     }
     return;
+  } else if (subcommand === 'setup') {
+    try {
+      const { handleSetupCommand } = await import('@/commands/setup');
+      await handleSetupCommand();
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
   } else if (subcommand === 'daemon') {
     // Show daemon management help
     const daemonSubcommand = args[1]
@@ -629,6 +641,7 @@ ${chalk.bold('Usage:')}
   remcli codex             Start Codex mode
   remcli cursor            Start Cursor mode
   remcli gemini            Start Gemini mode (ACP)
+  remcli setup             Setup wizard (Whisper, AI agents)
   remcli connect           Connect AI vendor API keys
   remcli notify            Send push notification
   remcli daemon            Manage background service that allows

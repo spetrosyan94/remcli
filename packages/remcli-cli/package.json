@@ -88,6 +88,7 @@
     "@agentclientprotocol/sdk": "^0.8.0",
     "@fastify/multipart": "^9.4.0",
     "@fastify/static": "^9.0.0",
+    "@inquirer/prompts": "^7.10.1",
     "@modelcontextprotocol/sdk": "^1.25.3",
     "@stablelib/base64": "^2.0.1",
     "@stablelib/hex": "^2.0.1",

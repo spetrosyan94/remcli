@@ -920,5 +920,7 @@ export const zhHant: TranslationStructure = {
         notAvailable: '此伺服器上無法使用 Whisper',
         transcriptionFailed: '音訊轉錄失敗',
         emptyTranscription: '無法辨識語音，請重試。',
+        setupRequired: '語音輸入不可用',
+        setupRequiredDescription: '請執行 remcli setup 以啟用語音輸入。',
     },
 } as const;

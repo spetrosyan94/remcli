@@ -17,6 +17,7 @@ import { FloatingOverlay } from './FloatingOverlay';
 import { TextInputState, MultiTextInputHandle } from './MultiTextInput';
 import { applySuggestion } from './autocomplete/applySuggestion';
 import { GitStatusBadge, useHasMeaningfulGitStatus } from './GitStatusBadge';
+import { Modal } from '@/modal';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { useSetting } from '@/sync/storage';
 import { Theme } from '@/theme';
@@ -34,6 +35,7 @@ interface AgentInputProps {
     sendIcon?: React.ReactNode;
     onMicPress?: () => void;
     isMicActive?: boolean;
+    isMicDisabled?: boolean;
     permissionMode?: PermissionMode;
     onPermissionModeChange?: (mode: PermissionMode) => void;
     modelMode?: ModelMode;
@@ -1136,10 +1138,19 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                             height: '100%',
                                             alignItems: 'center',
                                             justifyContent: 'center',
-                                            opacity: p.pressed ? 0.7 : 1,
+                                            opacity: p.pressed ? 0.7 : ((!hasText && props.isMicDisabled) ? 0.4 : 1),
                                         })}
                                         hitSlop={{ top: 5, bottom: 10, left: 0, right: 0 }}
                                         onPress={() => {
+                                            if (!hasText && props.isMicDisabled) {
+                                                hapticsError();
+                                                Modal.alert(
+                                                    t('whisper.setupRequired'),
+                                                    t('whisper.setupRequiredDescription'),
+                                                    [{ text: t('common.ok') }]
+                                                );
+                                                return;
+                                            }
                                             hapticsLight();
                                             if (hasText) {
                                                 props.onSend();
@@ -1147,7 +1158,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                 props.onMicPress?.();
                                             }
                                         }}
-                                        disabled={props.isSendDisabled || props.isSending || (!hasText && !props.onMicPress)}
+                                        disabled={props.isSendDisabled || props.isSending || (!hasText && !props.onMicPress && !props.isMicDisabled)}
                                     >
                                         {props.isSending ? (
                                             <ActivityIndicator
@@ -1164,7 +1175,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                     { marginTop: Platform.OS === 'web' ? 2 : 0 }
                                                 ]}
                                             />
-                                        ) : props.onMicPress && !props.isMicActive ? (
+                                        ) : (props.onMicPress || props.isMicDisabled) && !props.isMicActive ? (
                                             <Image
                                                 source={require('@/assets/images/icon-voice-white.png')}
                                                 style={{

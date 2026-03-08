@@ -13,13 +13,38 @@ import { pipeline } from 'node:stream/promises';
 import { Whisper } from 'smart-whisper';
 import { decode } from 'node-wav';
 import { configuration } from '@/configuration';
+import { readSetupConfig } from '@/persistence';
 import { logger } from '@/ui/logger';
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const MODEL_FILENAME = 'ggml-base.bin';
-const MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin';
-const MODEL_EXPECTED_SIZE_MB = 140; // ~142MB, used for sanity check
+const HUGGINGFACE_BASE_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main';
+
+export const WHISPER_MODELS: Record<string, { filename: string; sizeMB: number }> = {
+    tiny:   { filename: 'ggml-tiny.bin',     sizeMB: 75 },
+    base:   { filename: 'ggml-base.bin',     sizeMB: 140 },
+    small:  { filename: 'ggml-small.bin',    sizeMB: 460 },
+    medium: { filename: 'ggml-medium.bin',   sizeMB: 1500 },
+    large:  { filename: 'ggml-large-v3.bin', sizeMB: 3000 },
+};
+
+function getSelectedModel(): string {
+    const config = readSetupConfig();
+    return config.whisperModel || 'base';
+}
+
+function getModelInfo(modelName?: string): { filename: string; sizeMB: number } {
+    const name = modelName ?? getSelectedModel();
+    return WHISPER_MODELS[name] ?? WHISPER_MODELS['base'];
+}
+
+function getModelFilename(modelName?: string): string {
+    return getModelInfo(modelName).filename;
+}
+
+function getModelUrl(modelName?: string): string {
+    return `${HUGGINGFACE_BASE_URL}/${getModelFilename(modelName)}`;
+}
 
 // ─── State ──────────────────────────────────────────────────────
 
@@ -39,21 +64,24 @@ export interface WhisperStatus {
     modelDownloaded: boolean;
     modelPath: string;
     ffmpegAvailable: boolean;
+    selectedModel: string;
 }
 
 export function getModelsDir(): string {
     return join(configuration.remcliHomeDir, 'models');
 }
 
-export function getModelPath(): string {
-    return join(getModelsDir(), MODEL_FILENAME);
+export function getModelPath(modelName?: string): string {
+    return join(getModelsDir(), getModelFilename(modelName));
 }
 
-export function isModelDownloaded(): boolean {
-    const modelPath = getModelPath();
+export function isModelDownloaded(modelName?: string): boolean {
+    const name = modelName ?? getSelectedModel();
+    const modelPath = getModelPath(name);
     if (!existsSync(modelPath)) return false;
+    const info = getModelInfo(name);
     const stat = statSync(modelPath);
-    return stat.size > MODEL_EXPECTED_SIZE_MB * 1_000_000 * 0.9;
+    return stat.size > info.sizeMB * 1_000_000 * 0.9;
 }
 
 export function isFfmpegAvailable(): boolean {
@@ -76,19 +104,22 @@ export function isAvailable(): boolean {
 }
 
 export function getStatus(): WhisperStatus {
+    const selectedModel = getSelectedModel();
     return {
         available: true,
         nativeBindings: true,
         modelDownloaded: isModelDownloaded(),
         modelPath: getModelPath(),
         ffmpegAvailable: isFfmpegAvailable(),
+        selectedModel,
     };
 }
 
-export async function ensureModel(): Promise<string> {
-    const modelPath = getModelPath();
+export async function ensureModel(modelName?: string): Promise<string> {
+    const name = modelName ?? getSelectedModel();
+    const modelPath = getModelPath(name);
 
-    if (isModelDownloaded()) {
+    if (isModelDownloaded(name)) {
         return modelPath;
     }
 
@@ -97,9 +128,10 @@ export async function ensureModel(): Promise<string> {
         mkdirSync(modelsDir, { recursive: true });
     }
 
-    logger.debug(`[WHISPER] Downloading model to ${modelPath}...`);
+    logger.debug(`[WHISPER] Downloading model ${name} to ${modelPath}...`);
 
-    const response = await fetch(MODEL_URL, { redirect: 'follow' });
+    const url = getModelUrl(name);
+    const response = await fetch(url, { redirect: 'follow' });
     if (!response.ok || !response.body) {
         throw new Error(`Failed to download Whisper model: ${response.status} ${response.statusText}`);
     }
@@ -114,6 +146,61 @@ export async function ensureModel(): Promise<string> {
         logger.debug(`[WHISPER] Model downloaded successfully (${statSync(modelPath).size} bytes)`);
     } catch (error) {
         // Clean up partial download
+        if (existsSync(tempPath)) unlinkSync(tempPath);
+        throw error;
+    }
+
+    return modelPath;
+}
+
+export async function downloadModelWithProgress(
+    modelName: string,
+    onProgress: (downloadedBytes: number, totalBytes: number | null) => void
+): Promise<string> {
+    const modelPath = getModelPath(modelName);
+
+    if (isModelDownloaded(modelName)) {
+        const info = getModelInfo(modelName);
+        const totalBytes = info.sizeMB * 1_000_000;
+        onProgress(totalBytes, totalBytes);
+        return modelPath;
+    }
+
+    const modelsDir = getModelsDir();
+    if (!existsSync(modelsDir)) {
+        mkdirSync(modelsDir, { recursive: true });
+    }
+
+    const url = getModelUrl(modelName);
+    const response = await fetch(url, { redirect: 'follow' });
+    if (!response.ok || !response.body) {
+        throw new Error(`Failed to download Whisper model: ${response.status} ${response.statusText}`);
+    }
+
+    const contentLength = response.headers.get('content-length');
+    const totalBytes = contentLength ? parseInt(contentLength, 10) : null;
+    let downloadedBytes = 0;
+
+    const tempPath = `${modelPath}.downloading`;
+    try {
+        const fileStream = createWriteStream(tempPath);
+        const reader = response.body.getReader();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            fileStream.write(Buffer.from(value));
+            downloadedBytes += value.byteLength;
+            onProgress(downloadedBytes, totalBytes);
+        }
+
+        await new Promise<void>((resolve, reject) => {
+            fileStream.end(() => resolve());
+            fileStream.on('error', reject);
+        });
+
+        renameSync(tempPath, modelPath);
+    } catch (error) {
         if (existsSync(tempPath)) unlinkSync(tempPath);
         throw error;
     }

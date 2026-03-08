@@ -6,8 +6,9 @@
 
 import { FileHandle } from 'node:fs/promises'
 import { readFile, writeFile, mkdir, open, unlink, rename, stat } from 'node:fs/promises'
-import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs'
 import { constants } from 'node:fs'
+import { join } from 'node:path'
 import { configuration } from '@/configuration'
 import * as z from 'zod';
 import { encodeBase64 } from '@/api/encryption';
@@ -708,5 +709,41 @@ export async function getEnvironmentVariable(profileId: string, key: string): Pr
   }
 
   return undefined;
+}
+
+//
+// Setup Config
+//
+
+const SetupConfigSchema = z.object({
+    whisperModel: z.string().default('base'),
+    installedAgents: z.array(z.string()).default([]),
+    setupCompletedAt: z.string().optional(),
+});
+
+export type SetupConfig = z.infer<typeof SetupConfigSchema>;
+
+function getSetupConfigPath(): string {
+    return join(configuration.remcliHomeDir, 'setup.json');
+}
+
+export function readSetupConfig(): SetupConfig {
+    const configPath = getSetupConfigPath();
+    if (!existsSync(configPath)) {
+        return SetupConfigSchema.parse({});
+    }
+    try {
+        const content = readFileSync(configPath, 'utf-8');
+        return SetupConfigSchema.parse(JSON.parse(content));
+    } catch {
+        return SetupConfigSchema.parse({});
+    }
+}
+
+export function writeSetupConfig(config: SetupConfig): void {
+    if (!existsSync(configuration.remcliHomeDir)) {
+        mkdirSync(configuration.remcliHomeDir, { recursive: true });
+    }
+    writeFileSync(getSetupConfigPath(), JSON.stringify(config, null, 2), 'utf-8');
 }
 

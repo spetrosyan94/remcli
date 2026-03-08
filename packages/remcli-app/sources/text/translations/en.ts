@@ -935,6 +935,8 @@ export const en: TranslationStructure = {
         notAvailable: 'Whisper is not available on this server',
         transcriptionFailed: 'Failed to transcribe audio',
         emptyTranscription: 'Could not recognize speech. Please try again.',
+        setupRequired: 'Voice Input Unavailable',
+        setupRequiredDescription: 'Run remcli setup to enable voice input.',
     },
 } as const;
 

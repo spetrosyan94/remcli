@@ -7,6 +7,7 @@ import { Deferred } from '@/components/Deferred';
 import { EmptyMessages } from '@/components/EmptyMessages';
 import { VoiceAssistantStatusBar } from '@/components/VoiceAssistantStatusBar';
 import { useDraft } from '@/hooks/useDraft';
+import { useWhisperAvailability } from '@/hooks/useWhisperAvailability';
 import { useWhisperVoice } from '@/hooks/useWhisperVoice';
 import { isP2PMode } from '@/sync/serverConfig';
 import { gitStatusSync } from '@/sync/gitStatusSync';
@@ -181,9 +182,11 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
 
     // Whisper STT for P2P mode
     const { whisperState, startWhisper, stopWhisper } = useWhisperVoice();
+    const { available: whisperAvailable } = useWhisperAvailability();
+    const isP2P = React.useMemo(() => isP2PMode(), []);
     const useWhisperMode = React.useMemo(
-        () => isP2PMode(),
-        []
+        () => isP2P && whisperAvailable,
+        [isP2P, whisperAvailable]
     );
 
     // Handle dismissing CLI version warning
@@ -297,8 +300,9 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
                     trackMessageSent();
                 }
             }}
-            onMicPress={micButtonState.onMicPress}
+            onMicPress={isP2P ? micButtonState.onMicPress : undefined}
             isMicActive={micButtonState.isMicActive}
+            isMicDisabled={isP2P && !whisperAvailable}
             onAbort={() => sessionAbort(sessionId)}
             showAbortButton={sessionStatus.state === 'thinking' || sessionStatus.state === 'waiting'}
             onFileViewerPress={experiments ? () => router.push(`/session/${sessionId}/files`) : undefined}

@@ -13,7 +13,7 @@ import { P2PStore } from './p2pStore';
 import { P2PEventRouter } from './p2pEventRouter';
 import { verifyBearerToken } from './p2pAuth';
 import { logger } from '@/ui/logger';
-import { transcribe, isAvailable as isWhisperAvailable, ensureModel } from '../whisper/whisperService';
+import { transcribe, isAvailable as isWhisperAvailable, ensureModel, getStatus as getWhisperStatus } from '../whisper/whisperService';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -197,6 +197,16 @@ export function registerP2PRestRoutes(
     typed.post('/v1/voice/token', async (_request, reply) => {
         reply.code(400);
         return { error: 'Voice not supported in P2P mode' };
+    });
+
+    // ─── GET /v1/whisper/status ──────────────────────────────────
+    app.get('/v1/whisper/status', async () => {
+        const status = getWhisperStatus();
+        return {
+            available: status.available && status.nativeBindings,
+            model: status.selectedModel ?? null,
+            modelDownloaded: status.modelDownloaded,
+        };
     });
 
     // ─── POST /v1/voice/transcribe (Whisper STT) ────────────────
