@@ -16,7 +16,9 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { projectPath } from '@/projectPath'
 import packageJson from '../../package.json'
+import { execFileSync } from 'node:child_process'
 import { getStatus as getWhisperStatus } from '@/daemon/whisper/whisperService'
+import { readSetupConfig } from '@/persistence'
 
 /**
  * Get relevant environment information for debugging
@@ -267,6 +269,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
     if (whisper.nativeBindings) {
         console.log(chalk.green('✓ Whisper: native bindings (smart-whisper)'));
     }
+    console.log(`  Selected model: ${chalk.cyan(whisper.selectedModel)}`);
     if (whisper.modelDownloaded) {
         console.log(chalk.green(`✓ Model downloaded: ${whisper.modelPath}`));
     } else {
@@ -278,6 +281,50 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
     } else {
         console.log(chalk.yellow('⚠️  ffmpeg not found. Install: brew install ffmpeg'));
         console.log(chalk.gray('   Required for non-WAV audio files (m4a, webm, etc.)'));
+    }
+
+    // AI Agents status
+    console.log(chalk.bold('\n🤖 AI Agents'));
+    const whichCmd = process.platform === 'win32' ? 'where' : 'which';
+    const agents = [
+        { name: 'Claude Code', binary: 'claude' },
+        { name: 'Gemini CLI',  binary: 'gemini' },
+        { name: 'Codex CLI',   binary: 'codex' },
+        { name: 'Cursor CLI',  binary: 'cursor' },
+    ];
+
+    for (const agent of agents) {
+        let installed = false;
+        try {
+            execFileSync(whichCmd, [agent.binary], { encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+            installed = true;
+        } catch {
+            // not installed
+        }
+
+        if (installed) {
+            let version: string | null = null;
+            try {
+                const output = execFileSync(agent.binary, ['--version'], {
+                    encoding: 'utf8',
+                    timeout: 10000,
+                    stdio: 'pipe',
+                });
+                version = output.trim().split('\n')[0] || null;
+            } catch {
+                // version unavailable
+            }
+            console.log(chalk.green(`✓ ${agent.name}${version ? ` (${version})` : ''}`));
+        } else {
+            console.log(chalk.red(`❌ ${agent.name} - not installed`));
+        }
+    }
+
+    const setupConfig = readSetupConfig();
+    if (setupConfig.setupCompletedAt) {
+        console.log(chalk.gray(`\n  Setup completed: ${new Date(setupConfig.setupCompletedAt).toLocaleString()}`));
+    } else {
+        console.log(chalk.gray('\n  Run `remcli setup` to configure agents and Whisper model.'));
     }
 
     console.log(chalk.green('\n✅ Doctor diagnosis complete!\n'));

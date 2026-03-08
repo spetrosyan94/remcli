@@ -104,10 +104,25 @@ User interface components.
 - QR code display for easy mobile connection
 - Graceful mode switching between interactive and remote
 
-### 4. Core Files
+### 4. Commands (`/src/commands/`)
 
-- **`index.ts`**: CLI entry point with argument parsing
-- **`persistence.ts`**: Local storage for settings and keys
+- **`setup.ts`**: Interactive setup wizard — Whisper STT model selection/download and AI agent installation with cross-platform support (macOS/Linux/Windows).
+- **`auth.ts`**: Authentication flow.
+- **`connect.ts`**: Machine connection.
+
+Supported AI agents (`remcli setup`):
+
+| Agent | Binary | Install (unix) | Install (windows) |
+|-------|--------|----------------|-------------------|
+| Claude Code | `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` | `irm https://claude.ai/install.ps1 \| iex` |
+| Gemini CLI | `gemini` | `npm install -g @google/gemini-cli` | same |
+| Codex CLI | `codex` | `npm install -g @openai/codex` | same |
+| Cursor CLI | `cursor` | `curl https://cursor.com/install -fsS \| bash` | same |
+
+### 5. Core Files
+
+- **`index.ts`**: CLI entry point with argument parsing (subcommands: `setup`, `doctor`, `auth`, `connect`, `cursor`, `codex`, `gemini`)
+- **`persistence.ts`**: Local storage for settings, keys, and setup config (`~/.remcli/setup.json`)
 - **`utils/time.ts`**: Exponential backoff utilities
 
 ## Data Flow

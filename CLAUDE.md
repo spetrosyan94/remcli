@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Remcli?
 
-Remcli is a mobile and web client for Claude Code & Codex that enables end-to-end encrypted remote control from anywhere. Users run `remcli` instead of `claude` (or `remcli codex` instead of `codex`). The CLI wraps AI sessions, a persistent daemon acts as a local P2P server, and mobile/web clients connect directly via WebSocket (LAN or ngrok tunnel) for real-time control. No cloud server is required — the daemon IS the server.
+Remcli is a mobile and web client for AI coding agents (Claude Code, Codex, Gemini, Cursor) that enables end-to-end encrypted remote control from anywhere. Users run `remcli` instead of `claude` (or `remcli codex`/`remcli cursor`/`remcli gemini`). The CLI wraps AI sessions, a persistent daemon acts as a local P2P server, and mobile/web clients connect directly via WebSocket (LAN or ngrok tunnel) for real-time control. No cloud server is required — the daemon IS the server.
 
 ## Monorepo Structure
 
@@ -43,13 +43,15 @@ npm -w remcli-app run test         # Vitest
 npm -w remcli run build            # TypeScript + pkgroll build
 npm -w remcli run test             # Build then Vitest
 npm -w remcli run dev              # Run with TSX (no build)
+remcli setup                       # Interactive setup wizard (Whisper model + AI agents)
+remcli doctor                      # Diagnostics (daemon, agents, Whisper, logs)
 ```
 
 ## Architecture
 
 ### P2P Direct Data Flow
 ```
-Mobile/Web App  <-- WS (LAN / ngrok tunnel) -->  CLI Daemon (Fastify + Socket.IO + in-memory store)  <->  Claude Code/Codex SDK
+Mobile/Web App  <-- WS (LAN / ngrok tunnel) -->  CLI Daemon (Fastify + Socket.IO + in-memory store)  <->  Claude Code / Codex / Gemini / Cursor
 ```
 
 The daemon runs a Fastify HTTP server with Socket.IO on `0.0.0.0` — it IS the server. No cloud dependency.

@@ -72,7 +72,7 @@ flowchart TD
 ```
 
 `src/index.ts` is the CLI router. It:
-- Parses subcommands (`doctor`, `auth`, `connect`, `cursor`, `codex`, `gemini`, and default run flows).
+- Parses subcommands (`doctor`, `setup`, `auth`, `connect`, `cursor`, `codex`, `gemini`, and default run flows).
 - Ensures auth and machine setup when needed (`authAndSetupMachineIfNeeded`).
 - Starts the daemon or runs an agent directly based on subcommand/context.
 
@@ -382,6 +382,36 @@ RPC is used to send commands over the Socket.IO connection:
 - The daemon registers a spawn-session handler so the server/mobile client can ask it to start a local session.
 
 This mechanism allows the P2P server and mobile clients to drive local actions without exposing a broad REST surface.
+
+## Setup wizard and diagnostics
+
+### `remcli setup`
+
+Interactive setup wizard (`src/commands/setup.ts`) that configures:
+1. **Whisper STT model** — selects and downloads a local speech-to-text model.
+2. **AI agent installation** — installs supported agents with cross-platform commands.
+
+Supported agents:
+
+| Agent | Binary | macOS / Linux | Windows |
+|-------|--------|---------------|---------|
+| Claude Code | `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` | `irm https://claude.ai/install.ps1 \| iex` |
+| Gemini CLI | `gemini` | `npm install -g @google/gemini-cli` | `npm install -g @google/gemini-cli` |
+| Codex CLI | `codex` | `npm install -g @openai/codex` | `npm install -g @openai/codex` |
+| Cursor CLI | `cursor` | `curl https://cursor.com/install -fsS \| bash` | `curl https://cursor.com/install -fsS \| bash` |
+
+Platform detection uses `process.platform === 'win32'`. Installation runs with `stdio: 'inherit'` so the user sees real-time progress.
+
+Configuration is saved to `~/.remcli/setup.json`.
+
+### `remcli doctor`
+
+Diagnostics command (`src/ui/doctor.ts`) that checks:
+- Basic info (version, platform, Node.js)
+- Daemon status and processes
+- Whisper STT model status
+- **AI agent availability** — detects all four agents (Claude Code, Gemini CLI, Codex CLI, Cursor CLI) via `which`/`where` and reports installed versions
+- Log files and support links
 
 ## Implementation references
 - CLI entry: `packages/remcli-cli/src/index.ts`
