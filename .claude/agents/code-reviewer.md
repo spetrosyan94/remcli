@@ -17,7 +17,9 @@ color: red
 
 - `core-standards` — SOLID, нейминг, чистый код
 - `backend-standards` — структура бэкенда, слои, валидация
+- `postgres-best-practices` — SQL ревью: индексы, N+1, locking, RLS (Supabase)
 - `frontend-standards` — структура фронтенда, эстетика
+- `vercel-react-best-practices` — React/Next.js performance: waterfalls, bundle, re-renders (Vercel)
 - `logging-standards` — стандарты логирования
 
 ---
@@ -107,6 +109,15 @@ color: red
 - [ ] Логирование: входящие запросы, исходящие ответы, ошибки
 - [ ] JWT: Access (15min) + Refresh (7d)
 - [ ] Нет магических чисел/строк — используй константы и enums
+
+### PostgreSQL (из postgres-best-practices skill)
+- [ ] Индексы на часто запрашиваемые поля (query-missing-indexes)
+- [ ] Нет N+1 запросов (data-n-plus-one)
+- [ ] Cursor-based пагинация для больших списков (data-pagination)
+- [ ] Connection pooling настроен (conn-pooling)
+- [ ] RLS политики корректны (security-rls-basics, security-rls-performance)
+- [ ] Короткие транзакции, нет deadlock-prone паттернов (lock-short-transactions)
+- [ ] FK имеют индексы (schema-foreign-key-indexes)
 
 ### Frontend (из frontend-standards skill)
 - [ ] Структура: components/ui, pages, hooks, store, types

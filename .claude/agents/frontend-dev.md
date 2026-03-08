@@ -29,7 +29,7 @@ color: cyan
 
 - `core-standards` — SOLID, нейминг, чистый код
 - `frontend-standards` — структура фронтенда, эстетика
-- `react-best-practices` — 45 правил оптимизации React
+- `vercel-react-best-practices` — 45 правил оптимизации React
 
 ---
 
@@ -273,13 +273,13 @@ frontend/src/
 
 ## Best Practices
 
-### ОБЯЗАТЕЛЬНО: Skill `react-best-practices`
+### ОБЯЗАТЕЛЬНО: Skill `vercel-react-best-practices`
 
-**При написании любого React/Next.js кода** применяй рекомендации из skill `react-best-practices`:
+**При написании любого React/Next.js кода** применяй рекомендации из skill `vercel-react-best-practices`:
 
 ```
-.claude/skills/react-best-practices/SKILL.md — краткий справочник
-.claude/skills/react-best-practices/AGENTS.md — полное руководство
+.claude/skills/vercel-react-best-practices/SKILL.md — краткий справочник
+.claude/skills/vercel-react-best-practices/AGENTS.md — полное руководство
 ```
 
 **Приоритетные правила (применять ВСЕГДА):**
@@ -330,7 +330,7 @@ import X from 'lucide-react/dist/esm/icons/x'
 - React.memo для тяжёлых компонентов
 - Lazy loading для роутов
 - Оптимизация изображений (WebP, lazy load)
-- **Следуй skill `react-best-practices`** для всех оптимизаций
+- **Следуй skill `vercel-react-best-practices`** для всех оптимизаций
 
 **Доступность:**
 - Семантический HTML

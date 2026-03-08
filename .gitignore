@@ -39,10 +39,13 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
-.claude/settings.local.json
-.plan
-
+# Claude Code
+.claude/
+.agents/
+CLAUDE.md
 CLAUDE.local.md
+skills-lock.json
+plans/
 
 .dev/worktree/*
 

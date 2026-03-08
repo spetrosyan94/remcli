@@ -1,12 +1,40 @@
 ---
 name: backend-standards
 description: |
-  Стандарты разработки бэкенда: структура проекта, слои, валидация, аутентификация.
-  Применяется автоматически при: backend, бэкенд, api, сервер, server, fastify, nestjs,
-  controller, service, repository, jwt, auth, validation, zod, prisma, drizzle.
+  Стандарты разработки бэкенда на Node.js: слоёная архитектура (routes->controllers->services->repositories),
+  структура проекта, валидация, JWT аутентификация, обработка ошибок, инициализация Fastify.
+  Применяй этот skill при ЛЮБОЙ работе с бэкендом — даже если пользователь просто говорит
+  "создай API" или "добавь эндпоинт", этот skill содержит архитектурные стандарты проекта.
+  USE THIS SKILL WHEN:
+  - Создании/модификации бэкенд-сервиса, API, REST endpoints, GraphQL
+  - Работе с Fastify, NestJS, Express — роуты, контроллеры, сервисы, репозитории
+  - Настройке JWT (access 15min + refresh 7d), auth middleware, httpOnly cookies
+  - Валидации через zod, обработке request/response
+  - Работе с Prisma, Drizzle, миграциями, seed данными, PostgreSQL, Redis
+  - Настройке docker-compose для бэкенда, Dockerfile, env config
+  - Проектировании кастомных ошибок (NotFoundError, ValidationError), error handler middleware
+  - Настройке CORS, rate limiting, graceful shutdown
+  Связанные skills: postgres-best-practices (SQL, индексы), logging-standards (pino, traceId).
+  Ключевые слова: backend, бэкенд, api, server, сервер, fastify, nestjs, express,
+  controller, service, repository, jwt, auth, validation, zod, prisma, drizzle,
+  middleware, migration, seed, docker, postgresql, redis, error handling, endpoint, route.
+user-invocable: false
 ---
 
 # Стандарты Backend разработки
+
+## Как использовать этот skill
+
+При генерации бэкенд-кода всегда объясняй пользователю **почему** выбрана такая архитектура, паттерн или подход. Не просто показывай код — расскажи зачем слои разделены именно так, почему валидация именно на границах, почему dual-token для JWT. Пользователь должен понимать принципы, а не просто копировать boilerplate.
+
+## Связанные skills
+
+- **PostgreSQL**: запросы, схемы, индексы, RLS → skill `postgres-best-practices` / MCP `pg-aiguide`
+- **Логирование**: форматы, уровни, трейсинг → skill `logging-standards`
+- **Базовые принципы**: SOLID, нейминг, env → skill `core-standards`
+- **Тестирование**: unit/integration → skill `testing-patterns`
+
+---
 
 ## Структура проекта (Node.js)
 
@@ -15,53 +43,17 @@ backend/
 ├── src/
 │   ├── api/                    # API слой
 │   │   ├── routes/             # Роуты (endpoints)
-│   │   │   ├── index.ts        # Регистрация всех роутов
-│   │   │   ├── users.routes.ts
-│   │   │   └── auth.routes.ts
 │   │   ├── controllers/        # Контроллеры (обработка запросов)
-│   │   │   ├── users.controller.ts
-│   │   │   └── auth.controller.ts
-│   │   └── middleware/         # Middleware
-│   │       ├── auth.middleware.ts
-│   │       ├── error.middleware.ts
-│   │       └── logger.middleware.ts
-│   │
+│   │   └── middleware/         # Middleware (auth, validation, logging)
 │   ├── services/               # Бизнес-логика
-│   │   ├── users.service.ts
-│   │   └── auth.service.ts
-│   │
 │   ├── repositories/           # Работа с БД
-│   │   ├── users.repository.ts
-│   │   └── base.repository.ts
-│   │
-│   ├── db/                     # Конфигурация БД
-│   │   ├── client.ts           # Prisma/Drizzle client
-│   │   ├── migrations/         # Миграции
-│   │   └── seed.ts             # Seed данные
-│   │
-│   ├── lib/                    # Утилиты
-│   │   ├── logger.ts           # Логгер (pino)
-│   │   ├── errors.ts           # Кастомные ошибки
-│   │   └── jwt.ts              # JWT утилиты
-│   │
-│   ├── config/                 # Конфигурация
-│   │   ├── env.ts              # Environment variables
-│   │   └── constants.ts        # Константы
-│   │
-│   ├── types/                  # TypeScript типы
-│   │   ├── api.types.ts        # API типы (request/response)
-│   │   └── db.types.ts         # DB типы
-│   │
+│   ├── db/                     # Конфигурация БД (client, migrations, seed)
+│   ├── lib/                    # Утилиты (logger, errors, jwt)
+│   ├── config/                 # Environment, константы
+│   ├── types/                  # TypeScript типы (api.types.ts, db.types.ts)
 │   └── app.ts                  # Точка входа
-│
-├── tests/                      # Тесты
-│   ├── unit/
-│   ├── integration/
-│   └── setup.ts
-│
+├── tests/                      # unit/ + integration/ + setup.ts
 ├── prisma/                     # Prisma (если используется)
-│   └── schema.prisma
-│
 ├── Dockerfile
 ├── package.json
 └── tsconfig.json
@@ -77,414 +69,104 @@ Request → Routes → Controllers → Services → Repositories → Database
                    Middleware (auth, validation, logging)
 ```
 
-### Routes (API endpoints)
-```typescript
-// src/api/routes/users.routes.ts
-import { FastifyInstance } from 'fastify';
-import { UsersController } from '../controllers/users.controller';
-import { authMiddleware } from '../middleware/auth.middleware';
+### Почему слои
 
-export async function usersRoutes(app: FastifyInstance) {
-  const controller = new UsersController();
+Слоистая архитектура решает три проблемы:
 
-  app.get('/users', { preHandler: [authMiddleware] }, controller.getAll);
-  app.get('/users/:id', { preHandler: [authMiddleware] }, controller.getById);
-  app.post('/users', controller.create);
-}
-```
+1. **Тестируемость** — сервисы тестируются без HTTP, репозитории мокаются. Без слоёв приходится поднимать весь сервер для каждого теста.
+2. **Заменяемость** — переход с Prisma на Drizzle затрагивает только repositories. Смена Fastify на Hono — только routes/controllers.
+3. **Читаемость** — новый разработчик сразу понимает где искать бизнес-логику (services), а где работу с БД (repositories).
 
-### Controllers (обработка запросов)
-```typescript
-// src/api/controllers/users.controller.ts
-import { FastifyRequest, FastifyReply } from 'fastify';
-import { UsersService } from '../../services/users.service';
-import { CreateUserSchema, TCreateUser } from '../../types/api.types';
+### Ответственность каждого слоя
 
-export class UsersController {
-  private usersService = new UsersService();
+| Слой | Что делает | Чего не делает |
+|------|-----------|----------------|
+| **Routes** | Маппинг URL → controller, подключение middleware | Бизнес-логика, прямой доступ к БД |
+| **Controllers** | Парсинг request, вызов service, формирование response | SQL запросы, сложная логика |
+| **Services** | Бизнес-правила, оркестрация, транзакции | Знание о HTTP (req/reply), прямой SQL |
+| **Repositories** | CRUD, сложные запросы, работа с ORM | Бизнес-логика, HTTP |
 
-  getAll = async (req: FastifyRequest, reply: FastifyReply) => {
-    const users = await this.usersService.findAll();
-    return reply.send({ data: users });
-  };
-
-  create = async (
-    req: FastifyRequest<{ Body: TCreateUser }>,
-    reply: FastifyReply
-  ) => {
-    const validated = CreateUserSchema.parse(req.body);
-    const user = await this.usersService.create(validated);
-    return reply.status(201).send({ data: user });
-  };
-}
-```
-
-### Services (бизнес-логика)
-```typescript
-// src/services/users.service.ts
-import { UsersRepository } from '../repositories/users.repository';
-import { TCreateUser, TUser } from '../types/api.types';
-import { hashPassword } from '../lib/auth';
-
-export class UsersService {
-  private repository = new UsersRepository();
-
-  async findAll(): Promise<TUser[]> {
-    return this.repository.findAll();
-  }
-
-  async create(data: TCreateUser): Promise<TUser> {
-    const hashedPassword = await hashPassword(data.password);
-    return this.repository.create({
-      ...data,
-      password: hashedPassword,
-    });
-  }
-}
-```
-
-### Repositories (работа с БД)
-```typescript
-// src/repositories/users.repository.ts
-import { db } from '../db/client';
-import { TCreateUser, TUser } from '../types/api.types';
-
-export class UsersRepository {
-  async findAll(): Promise<TUser[]> {
-    return db.user.findMany();
-  }
-
-  async findById(id: string): Promise<TUser | null> {
-    return db.user.findUnique({ where: { id } });
-  }
-
-  async create(data: TCreateUser): Promise<TUser> {
-    return db.user.create({ data });
-  }
-}
-```
+> Примеры кода для каждого слоя → `references/layers.md`
 
 ---
 
-## Валидация (zod)
+## Валидация
 
-### Схемы валидации
-```typescript
-// src/types/api.types.ts
-import { z } from 'zod';
+Валидация на границах системы (API endpoints, env при старте) — это единственное место, где стоит валидировать. Внутренний код доверяет типам TypeScript.
 
-// User schemas
-export const CreateUserSchema = z.object({
-  email: z.string().email('Неверный формат email'),
-  password: z.string().min(8, 'Минимум 8 символов'),
-  name: z.string().min(2, 'Минимум 2 символа'),
-});
+Используй **zod** для:
+- Тел запросов (body), параметров (params), query
+- Environment variables при старте приложения
+- Ответов от внешних API (если не доверяешь)
 
-export const UpdateUserSchema = CreateUserSchema.partial();
+Паттерн: схемы живут в `types/api.types.ts`, типы выводятся через `z.infer`.
 
-export const UserIdSchema = z.object({
-  id: z.string().uuid('Неверный формат ID'),
-});
-
-// Types
-export type TCreateUser = z.infer<typeof CreateUserSchema>;
-export type TUpdateUser = z.infer<typeof UpdateUserSchema>;
-```
-
-### Middleware валидации
-```typescript
-// src/api/middleware/validate.middleware.ts
-import { FastifyRequest, FastifyReply } from 'fastify';
-import { ZodSchema, ZodError } from 'zod';
-import { ValidationError } from '../../lib/errors';
-
-export function validate(schema: ZodSchema) {
-  return async (req: FastifyRequest, reply: FastifyReply) => {
-    try {
-      req.body = schema.parse(req.body);
-    } catch (error) {
-      if (error instanceof ZodError) {
-        throw new ValidationError(error.errors);
-      }
-      throw error;
-    }
-  };
-}
-```
+> Примеры схем и middleware валидации → `references/layers.md` (секция "Валидация")
 
 ---
 
 ## Обработка ошибок
 
-### Кастомные ошибки
-```typescript
-// src/lib/errors.ts
-export class AppError extends Error {
-  constructor(
-    public message: string,
-    public statusCode: number = 500,
-    public code?: string
-  ) {
-    super(message);
-    this.name = 'AppError';
-  }
-}
+Иерархия кастомных ошибок позволяет:
+- Возвращать правильные HTTP коды без if/else цепочек
+- Логировать ошибки единообразно в одном месте
+- Скрывать внутренние детали от клиента (500 → generic message)
 
-export class NotFoundError extends AppError {
-  constructor(resource: string) {
-    super(`${resource} не найден`, 404, 'NOT_FOUND');
-  }
-}
+Базовая иерархия: `AppError` → `NotFoundError`, `ValidationError`, `UnauthorizedError`, `ForbiddenError`.
+Error handler middleware ловит все ошибки, логирует и возвращает стандартизированный JSON.
 
-export class ValidationError extends AppError {
-  constructor(public errors: any[]) {
-    super('Ошибка валидации', 400, 'VALIDATION_ERROR');
-  }
-}
-
-export class UnauthorizedError extends AppError {
-  constructor(message = 'Не авторизован') {
-    super(message, 401, 'UNAUTHORIZED');
-  }
-}
-
-export class ForbiddenError extends AppError {
-  constructor(message = 'Доступ запрещён') {
-    super(message, 403, 'FORBIDDEN');
-  }
-}
-```
-
-### Error handler middleware
-```typescript
-// src/api/middleware/error.middleware.ts
-import { FastifyError, FastifyRequest, FastifyReply } from 'fastify';
-import { AppError, ValidationError } from '../../lib/errors';
-import { logger } from '../../lib/logger';
-
-export function errorHandler(
-  error: FastifyError,
-  req: FastifyRequest,
-  reply: FastifyReply
-) {
-  // Логируем ошибку
-  logger.error({
-    type: 'error',
-    traceId: req.headers['x-trace-id'],
-    error: {
-      name: error.name,
-      message: error.message,
-      stack: error.stack,
-    },
-    method: req.method,
-    path: req.url,
-  });
-
-  // Кастомные ошибки
-  if (error instanceof ValidationError) {
-    return reply.status(400).send({
-      error: {
-        code: error.code,
-        message: error.message,
-        details: error.errors,
-      },
-    });
-  }
-
-  if (error instanceof AppError) {
-    return reply.status(error.statusCode).send({
-      error: {
-        code: error.code,
-        message: error.message,
-      },
-    });
-  }
-
-  // Неизвестные ошибки
-  return reply.status(500).send({
-    error: {
-      code: 'INTERNAL_ERROR',
-      message: 'Внутренняя ошибка сервера',
-    },
-  });
-}
-```
+> Полные примеры ошибок и error handler → `references/errors.md`
 
 ---
 
 ## Аутентификация (JWT)
 
-### JWT утилиты
-```typescript
-// src/lib/jwt.ts
-import jwt from 'jsonwebtoken';
-import { env } from '../config/env';
+Паттерн dual-token:
+- **Access token** (15 мин) — короткоживущий, для авторизации запросов
+- **Refresh token** (7 дней) — для обновления access token без повторного логина
 
-export interface IJwtPayload {
-  userId: string;
-  email: string;
-}
+Почему именно так: компромисс между безопасностью (украденный access token быстро истекает) и UX (пользователь не перелогинивается каждые 15 минут).
 
-export function generateAccessToken(payload: IJwtPayload): string {
-  return jwt.sign(payload, env.JWT_SECRET, { expiresIn: '15m' });
-}
+Хранение: httpOnly cookies (защита от XSS) или Authorization header (для мобильных/SPA).
 
-export function generateRefreshToken(payload: IJwtPayload): string {
-  return jwt.sign(payload, env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
-}
-
-export function verifyAccessToken(token: string): IJwtPayload {
-  return jwt.verify(token, env.JWT_SECRET) as IJwtPayload;
-}
-
-export function verifyRefreshToken(token: string): IJwtPayload {
-  return jwt.verify(token, env.JWT_REFRESH_SECRET) as IJwtPayload;
-}
-```
-
-### Auth middleware
-```typescript
-// src/api/middleware/auth.middleware.ts
-import { FastifyRequest, FastifyReply } from 'fastify';
-import { verifyAccessToken } from '../../lib/jwt';
-import { UnauthorizedError } from '../../lib/errors';
-
-export async function authMiddleware(
-  req: FastifyRequest,
-  reply: FastifyReply
-) {
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader?.startsWith('Bearer ')) {
-    throw new UnauthorizedError('Токен не предоставлен');
-  }
-
-  const token = authHeader.split(' ')[1];
-
-  try {
-    const payload = verifyAccessToken(token);
-    req.user = payload;
-  } catch (error) {
-    throw new UnauthorizedError('Невалидный токен');
-  }
-}
-```
-
-### Auth controller
-```typescript
-// src/api/controllers/auth.controller.ts
-import { FastifyRequest, FastifyReply } from 'fastify';
-import { AuthService } from '../../services/auth.service';
-import { LoginSchema, RegisterSchema } from '../../types/api.types';
-
-export class AuthController {
-  private authService = new AuthService();
-
-  login = async (req: FastifyRequest, reply: FastifyReply) => {
-    const { email, password } = LoginSchema.parse(req.body);
-    const tokens = await this.authService.login(email, password);
-    return reply.send({ data: tokens });
-  };
-
-  register = async (req: FastifyRequest, reply: FastifyReply) => {
-    const data = RegisterSchema.parse(req.body);
-    const user = await this.authService.register(data);
-    return reply.status(201).send({ data: user });
-  };
-
-  refresh = async (req: FastifyRequest, reply: FastifyReply) => {
-    const { refreshToken } = req.body as { refreshToken: string };
-    const tokens = await this.authService.refresh(refreshToken);
-    return reply.send({ data: tokens });
-  };
-}
-```
+> JWT утилиты, auth middleware, auth controller → `references/auth.md`
 
 ---
 
-## Конфигурация Environment
+## Инициализация и конфигурация
 
-```typescript
-// src/config/env.ts
-import { z } from 'zod';
+- **Environment**: валидация через zod при старте — приложение падает сразу если переменные не валидны, а не через час при первом обращении
+- **Fastify bootstrap**: plugins → middleware → routes → listen
+- **CORS**: настраивается через env (CORS_ORIGIN)
 
-const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  PORT: z.coerce.number().default(3000),
-  DATABASE_URL: z.string(),
-  REDIS_URL: z.string().optional(),
-  JWT_SECRET: z.string().min(32),
-  JWT_REFRESH_SECRET: z.string().min(32),
-  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-  CORS_ORIGIN: z.string().default('http://localhost:5173'),
-});
-
-export const env = envSchema.parse(process.env);
-export type TEnv = z.infer<typeof envSchema>;
-```
-
----
-
-## Инициализация Fastify
-
-```typescript
-// src/app.ts
-import Fastify from 'fastify';
-import cors from '@fastify/cors';
-import { env } from './config/env';
-import { logger } from './lib/logger';
-import { errorHandler } from './api/middleware/error.middleware';
-import { requestLogger } from './api/middleware/logger.middleware';
-import { registerRoutes } from './api/routes';
-
-async function bootstrap() {
-  const app = Fastify({ logger: false });
-
-  // Plugins
-  await app.register(cors, { origin: env.CORS_ORIGIN });
-
-  // Middleware
-  app.addHook('onRequest', requestLogger);
-  app.setErrorHandler(errorHandler);
-
-  // Routes
-  await registerRoutes(app);
-
-  // Start
-  await app.listen({ port: env.PORT, host: '0.0.0.0' });
-  logger.info(`Server running on port ${env.PORT}`);
-}
-
-bootstrap().catch((err) => {
-  logger.error(err);
-  process.exit(1);
-});
-```
+> Примеры env.ts и app.ts → `references/setup.md`
 
 ---
 
 ## Best Practices
 
 ### Код
-- TypeScript strict mode
-- Zod для валидации на границах (API, env)
-- Dependency Injection для тестируемости
-- Async/await везде (без callbacks)
+- TypeScript strict mode — ловит ошибки на этапе компиляции
+- Zod для валидации на границах (API, env) — единый источник правды для типов и валидации
+- Dependency Injection для тестируемости — сервисы принимают зависимости, а не создают их
+- Async/await везде — callbacks создают "pyramid of doom"
 
 ### БД
-- Prisma или Drizzle ORM
-- Миграции для всех изменений схемы
-- Индексы на часто запрашиваемые поля
-- Транзакции для связанных операций
+- Prisma или Drizzle ORM — типобезопасность и миграции из коробки
+- Миграции для всех изменений схемы — воспроизводимость на любом окружении
+- Индексы на часто запрашиваемые поля — без них full table scan на каждый запрос
+- Транзакции для связанных операций — частичные записи хуже полного отката
+- Подробнее → skill `postgres-best-practices`, MCP `pg-aiguide`
 
 ### Безопасность
-- Параметризованные запросы (ORM)
-- Rate limiting
-- Helmet для HTTP headers
-- Валидация всех входных данных
+- Параметризованные запросы через ORM — защита от SQL injection
+- Rate limiting — защита от brute force и DDoS
+- Helmet для HTTP headers — базовая защита от XSS, clickjacking
+- Валидация всех входных данных — никогда не доверяй клиенту
 
 ### Тесты
-- Unit-тесты для services
-- Integration-тесты для API
-- Моки для внешних сервисов
-- Отдельная БД для тестов
+- Unit-тесты для services — бизнес-логика покрыта
+- Integration-тесты для API — endpoints работают end-to-end
+- Моки для внешних сервисов — тесты не зависят от third-party
+- Отдельная БД для тестов — изоляция от dev данных
+- Подробнее → skill `testing-patterns`

@@ -26,6 +26,7 @@ color: blue
 
 - `core-standards` — SOLID, нейминг, чистый код
 - `backend-standards` — структура бэкенда, слои, валидация
+- `postgres-best-practices` — query performance, connections, RLS, locking, monitoring (Supabase)
 - `testing-patterns` — паттерны тестирования
 - `logging-standards` — стандарты логирования
 
@@ -75,11 +76,18 @@ mcp__context7__query-docs — получить документацию
 ```
 ВСЕГДА проверяй latest версии перед использованием библиотек.
 
-**pg-aiguide** — для PostgreSQL:
+**pg-aiguide** — для PostgreSQL документации и специализированных навыков:
 ```
-mcp__pg-aiguide__semantic_search_postgres_docs — документация
-mcp__pg-aiguide__view_skill — best practices (design-postgres-tables)
+mcp__pg-aiguide__search_docs — документация PostgreSQL
+mcp__pg-aiguide__view_skill — table design, pgvector, hybrid search, TimescaleDB
 ```
+
+**postgres-best-practices (Supabase skill)** — для production PostgreSQL:
+При работе с SQL, схемами, индексами, connection pooling, RLS — читай правила из:
+```
+.claude/skills/supabase-postgres-best-practices/references/
+```
+Категории (по приоритету): query-*, conn-*, security-*, schema-*, lock-*, data-*, monitor-*, advanced-*
 
 ### 3. Latest библиотеки
 

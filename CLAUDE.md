@@ -135,9 +135,10 @@ Sessions can be started from terminal (`remcli`) or spawned remotely by the daem
 - Для сложных проблем — больше агентов параллельно
 
 ### Цикл самоулучшения
-- После ЛЮБОЙ коррекции от пользователя → обновить plans/lessons.md с паттерном ошибки
+- После ЛЮБОЙ коррекции от пользователя → обновить .claude/LESSONS.md с паттерном ошибки
+- Если сам обнаружил свою ошибку → записать в .claude/LESSONS.md до того как продолжить. Только значимые: архитектурные просчёты, неверные технические решения, сломанная логика, проблемы совместимости. НЕ записывать: опечатки, синтаксис, забытый импорт, мелкие правки
 - Писать правила, предотвращающие повторение ошибки
-- Проверять plans/lessons.md в начале каждой сессии
+- Проверять .claude/LESSONS.md в начале каждой сессии
 - Итерировать до снижения процента ошибок
 
 ### Верификация перед завершением
@@ -163,7 +164,7 @@ Sessions can be started from terminal (`remcli`) or spawned remotely by the daem
 3. Отмечать выполненное по ходу работы
 4. Объяснять изменения на каждом шаге (высокоуровневое резюме)
 5. Фиксировать результаты
-6. Обновлять plans/lessons.md после коррекций
+6. Обновлять .claude/LESSONS.md после коррекций
 
 ---
 
@@ -231,13 +232,15 @@ settings.json: `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1"`
 
 **Фаза 9: Итоги** → Лид
 - Обновление PLAN.md с результатами
-- Обновление plans/lessons.md с паттернами
+- Обновление .claude/LESSONS.md с паттернами
 
 ### Артефакты задачи
 
 ```
+.claude/
+└── LESSONS.md          # Уроки и паттерны ошибок (постоянный)
+
 plans/
-├── lessons.md          # Уроки и паттерны ошибок (постоянный)
 └── PLAN.md             # План реализации (БЕЗ КОДА!)
 ```
 
@@ -269,7 +272,8 @@ plans/
 | MCP | Когда |
 |-----|-------|
 | `context7` | ПЕРЕД работой с любой библиотекой |
-| `pg-aiguide` | ПЕРЕД написанием SQL, миграций |
+| `pg-aiguide` | Table design, pgvector, hybrid search, TimescaleDB, документация PG |
+| `postgres-best-practices` (skill) | Query perf, connections, RLS, locking, monitoring — читай references/ |
 | `MCP Docker` | Логи, состояние контейнеров |
 
 ---
@@ -297,6 +301,7 @@ plans/
 | **frontend-standards** | Структура фронтенда, эстетика |
 | **devops-standards** | Terraform, Docker, K8s, CI/CD |
 | **react-best-practices** | 45 правил оптимизации React/Next.js |
+| **postgres-best-practices** | 30 правил PostgreSQL от Supabase (query, conn, RLS, locking) |
 | **logging-standards** | Стандарты логирования |
 | **testing-patterns** | Паттерны тестирования |
 | **documentation-sync** | Синхронизация документации |
