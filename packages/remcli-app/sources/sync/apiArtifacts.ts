@@ -13,7 +13,8 @@ export async function fetchArtifacts(credentials: AuthCredentials): Promise<Arti
         const response = await fetch(`${API_ENDPOINT}/v1/artifacts`, {
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': '1'
             }
         });
 
@@ -36,7 +37,8 @@ export async function fetchArtifact(credentials: AuthCredentials, artifactId: st
         const response = await fetch(`${API_ENDPOINT}/v1/artifacts/${artifactId}`, {
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': '1'
             }
         });
 
@@ -66,7 +68,8 @@ export async function createArtifact(
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': '1'
             },
             body: JSON.stringify(request)
         });
@@ -98,7 +101,8 @@ export async function updateArtifact(
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': '1'
             },
             body: JSON.stringify(request)
         });
@@ -128,7 +132,8 @@ export async function deleteArtifact(
         const response = await fetch(`${API_ENDPOINT}/v1/artifacts/${artifactId}`, {
             method: 'DELETE',
             headers: {
-                'Authorization': `Bearer ${credentials.token}`
+                'Authorization': `Bearer ${credentials.token}`,
+                'ngrok-skip-browser-warning': '1'
             }
         });
 

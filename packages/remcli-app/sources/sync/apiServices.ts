@@ -17,7 +17,9 @@ export async function connectService(
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
-                'Content-Type': 'application/json'
+                'ngrok-skip-browser-warning': '1',
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': '1'
             },
             body: JSON.stringify({ token: JSON.stringify(token) })
         });
@@ -43,7 +45,8 @@ export async function disconnectService(credentials: AuthCredentials, service: s
         const response = await fetch(`${API_ENDPOINT}/v1/connect/${service}`, {
             method: 'DELETE',
             headers: {
-                'Authorization': `Bearer ${credentials.token}`
+                'Authorization': `Bearer ${credentials.token}`,
+                'ngrok-skip-browser-warning': '1'
             }
         });
 

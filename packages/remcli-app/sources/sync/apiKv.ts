@@ -75,7 +75,8 @@ export async function kvGet(
     return await backoff(async () => {
         const response = await fetch(`${API_ENDPOINT}/v1/kv/${encodeURIComponent(key)}`, {
             headers: {
-                'Authorization': `Bearer ${credentials.token}`
+                'Authorization': `Bearer ${credentials.token}`,
+                'ngrok-skip-browser-warning': '1'
             }
         });
 
@@ -116,7 +117,8 @@ export async function kvList(
     return await backoff(async () => {
         const response = await fetch(url, {
             headers: {
-                'Authorization': `Bearer ${credentials.token}`
+                'Authorization': `Bearer ${credentials.token}`,
+                'ngrok-skip-browser-warning': '1'
             }
         });
 
@@ -151,7 +153,9 @@ export async function kvBulkGet(
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
-                'Content-Type': 'application/json'
+                'ngrok-skip-browser-warning': '1',
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': '1'
             },
             body: JSON.stringify({ keys })
         });
@@ -189,7 +193,9 @@ export async function kvMutate(
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
-                'Content-Type': 'application/json'
+                'ngrok-skip-browser-warning': '1',
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': '1'
             },
             body: JSON.stringify({ mutations })
         });

@@ -33,8 +33,11 @@ export default function TerminalConnectScreen() {
                     const decoded = atob(hash.substring(1));
                     const compact = JSON.parse(decoded) as { k: string; v: number };
 
-                    const host = window.location.hostname;
-                    const port = window.location.port ? parseInt(window.location.port, 10) : 0;
+                    // Use origin (protocol + host + port) so tunnel URLs keep "https://"
+                    // and LAN URLs keep "http://host:port". Port=0 tells connectP2P()
+                    // to use host as-is (full URL), which works for both cases.
+                    const host = window.location.origin;
+                    const port = 0;
 
                     const payload: P2PQRPayload = {
                         mode: 'p2p',

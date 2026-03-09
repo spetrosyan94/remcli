@@ -38,6 +38,7 @@ export async function transcribeAudio(audioUri: string): Promise<WhisperTranscri
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${credentials.token}`,
+            'ngrok-skip-browser-warning': '1',
         },
         body: formData,
     });

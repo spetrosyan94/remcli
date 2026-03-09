@@ -291,7 +291,8 @@ class Sync {
         const response = await fetch(`${API_ENDPOINT}/v1/sessions`, {
             headers: {
                 'Authorization': `Bearer ${this.credentials.token}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': '1',
             }
         });
 
@@ -665,7 +666,8 @@ class Sync {
         const response = await fetch(`${API_ENDPOINT}/v1/machines`, {
             headers: {
                 'Authorization': `Bearer ${this.credentials.token}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': '1',
             }
         });
 
@@ -883,7 +885,8 @@ class Sync {
                     }),
                     headers: {
                         'Authorization': `Bearer ${this.credentials.token}`,
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
+                        'ngrok-skip-browser-warning': '1',
                     }
                 });
                 const data = await response.json() as {
@@ -939,7 +942,8 @@ class Sync {
         const response = await fetch(`${API_ENDPOINT}/v1/account/settings`, {
             headers: {
                 'Authorization': `Bearer ${this.credentials.token}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': '1',
             }
         });
         if (!response.ok) {
@@ -984,7 +988,8 @@ class Sync {
         const response = await fetch(`${API_ENDPOINT}/v1/account/profile`, {
             headers: {
                 'Authorization': `Bearer ${this.credentials.token}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': '1',
             }
         });
 
@@ -1033,6 +1038,7 @@ class Sync {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    'ngrok-skip-browser-warning': '1',
                 },
                 body: JSON.stringify({
                     platform,
