@@ -3,13 +3,16 @@ import * as React from 'react';
 import { Drawer } from 'expo-router/drawer';
 import { useIsTablet } from '@/utils/responsive';
 import { SidebarView } from './SidebarView';
-import { Slot } from 'expo-router';
+import { usePathname } from 'expo-router';
 import { useWindowDimensions } from 'react-native';
 
 export const SidebarNavigator = React.memo(() => {
     const auth = useAuth();
     const isTablet = useIsTablet();
-    const showPermanentDrawer = auth.isAuthenticated && isTablet;
+    const pathname = usePathname();
+    // Hide sidebar on pre-auth pages (e.g. /terminal/connect)
+    const isPreAuthPage = pathname.startsWith('/terminal/connect');
+    const showPermanentDrawer = auth.isAuthenticated && isTablet && !isPreAuthPage;
     const { width: windowWidth } = useWindowDimensions();
 
     // Calculate drawer width only when needed
