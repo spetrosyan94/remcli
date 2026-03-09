@@ -40,6 +40,8 @@ class ApiSocket {
     //
 
     initialize(config: SyncSocketConfig, encryption: Encryption) {
+        // Disconnect old socket so connect() creates a new one with fresh credentials
+        this.disconnect();
         this.config = config;
         this.encryption = encryption;
         this.connect();
