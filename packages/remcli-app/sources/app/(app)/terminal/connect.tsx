@@ -19,7 +19,9 @@ export default function TerminalConnectScreen() {
     const [hashProcessed, setHashProcessed] = useState(false);
     const { processAuthUrl, isLoading } = useConnectTerminal({
         onSuccess: () => {
-            router.back();
+            // Use replace instead of back — on web the connect page is often
+            // the entry point (opened via QR URL), so there's nothing to go back to.
+            router.replace('/');
         }
     });
 

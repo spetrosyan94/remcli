@@ -79,7 +79,7 @@ export function registerSocketHandlers(
         if (result.result === 'success') {
             const update = buildUpdate(store, {
                 t: 'update-session',
-                sid,
+                id: sid,
                 metadata: { version: result.version, value: result.metadata }
             });
             router.emitUpdate(update, { type: 'all-interested-in-session', sessionId: sid }, socket);
@@ -100,7 +100,7 @@ export function registerSocketHandlers(
         if (result.result === 'success') {
             const update = buildUpdate(store, {
                 t: 'update-session',
-                sid,
+                id: sid,
                 agentState: { version: result.version, value: result.agentState }
             });
             router.emitUpdate(update, { type: 'all-interested-in-session', sessionId: sid }, socket);
