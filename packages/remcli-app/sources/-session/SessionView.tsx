@@ -181,7 +181,7 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
     const { clearDraft } = useDraft(sessionId, message, setMessage);
 
     // Whisper STT for P2P mode
-    const { whisperState, startWhisper, stopWhisper } = useWhisperVoice();
+    const { whisperState, elapsedSeconds, startWhisper, stopWhisper } = useWhisperVoice();
     const { available: whisperAvailable } = useWhisperAvailability();
     const isP2P = React.useMemo(() => isP2PMode(), []);
     const useWhisperMode = React.useMemo(
@@ -237,6 +237,14 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
             return;
         }
     }, [sessionId, useWhisperMode, whisperState, startWhisper, stopWhisper]);
+
+    // Handle stopping recording from the recording bar
+    const handleMicStop = React.useCallback(async () => {
+        if (whisperState === 'recording') {
+            await stopWhisper(sessionId);
+            tracking?.capture('whisper_recording_stopped', { sessionId });
+        }
+    }, [whisperState, stopWhisper, sessionId]);
 
     // Memoize mic button state to prevent flashing during chat transitions
     const micButtonState = useMemo(() => ({
@@ -303,6 +311,9 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
             onMicPress={isP2P ? micButtonState.onMicPress : undefined}
             isMicActive={micButtonState.isMicActive}
             isMicDisabled={isP2P && !whisperAvailable}
+            whisperState={isP2P ? whisperState : undefined}
+            elapsedSeconds={elapsedSeconds}
+            onMicStop={isP2P ? handleMicStop : undefined}
             onAbort={() => sessionAbort(sessionId)}
             showAbortButton={sessionStatus.state === 'thinking' || sessionStatus.state === 'waiting'}
             onFileViewerPress={experiments ? () => router.push(`/session/${sessionId}/files`) : undefined}

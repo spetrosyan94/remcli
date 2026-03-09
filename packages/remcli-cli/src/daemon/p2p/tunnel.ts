@@ -1,49 +1,43 @@
 /**
- * Ngrok tunnel support for P2P remote access
+ * Cloudflare Tunnel (cloudflared) support for P2P remote access
  *
- * When --tunnel flag is used, starts an ngrok tunnel pointing at the local
- * P2P server port. The tunnel URL replaces the LAN IP in the QR code,
+ * When --tunnel flag is used, starts a cloudflared quick tunnel pointing at the
+ * local P2P server port. The tunnel URL replaces the LAN IP in the QR code,
  * enabling access from anywhere (not just local network).
  *
- * Prerequisites: ngrok must be installed and authenticated.
+ * Quick tunnels require no account or auth — just `cloudflared tunnel --url http://localhost:PORT`.
+ * Provides HTTPS with no interstitial page and no account required.
  */
 
 import { execSync, spawn, ChildProcess } from 'node:child_process';
 import { delimiter } from 'node:path';
 import { logger } from '@/ui/logger';
-import axios from 'axios';
 
 const IS_WINDOWS = process.platform === 'win32';
 const PATH_KEY = IS_WINDOWS ? 'Path' : 'PATH';
 const WHICH_CMD = IS_WINDOWS ? 'where' : 'which';
 
-interface TunnelInfo {
+export interface TunnelInfo {
     url: string;
     stop: () => void;
 }
 
 /**
- * Resolve the path to the SYSTEM ngrok binary, skipping node_modules/.bin.
- *
- * When running inside npm scripts, PATH is prepended with node_modules/.bin
- * which may contain @expo/ngrok-bin (a JS wrapper that uses its own config
- * and does NOT share the system ngrok authtoken). We must use the real
- * system-installed ngrok binary.
+ * Resolve the path to the cloudflared binary, skipping node_modules/.bin.
  */
-export function resolveNgrokBinary(): string | null {
-    // Filter PATH to exclude node_modules/.bin entries
+export function resolveCloudflaredBinary(): string | null {
     const systemPath = (process.env[PATH_KEY] || '')
         .split(delimiter)
         .filter(p => !p.includes('node_modules'))
         .join(delimiter);
 
     try {
-        const resolved = execSync(`${WHICH_CMD} ngrok`, {
+        const resolved = execSync(`${WHICH_CMD} cloudflared`, {
             stdio: 'pipe',
             encoding: 'utf-8',
             env: { ...process.env, [PATH_KEY]: systemPath },
-        }).trim().split('\n')[0]; // `where` on Windows may return multiple lines
-        logger.debug(`[TUNNEL] Resolved system ngrok: ${resolved}`);
+        }).trim().split('\n')[0];
+        logger.debug(`[TUNNEL] Resolved cloudflared: ${resolved}`);
         return resolved;
     } catch {
         return null;
@@ -51,157 +45,128 @@ export function resolveNgrokBinary(): string | null {
 }
 
 /**
- * Check if ngrok is available on the system
+ * Check if cloudflared is available on the system
  */
-export function isNgrokAvailable(): boolean {
-    return resolveNgrokBinary() !== null;
+export function isCloudflaredAvailable(): boolean {
+    return resolveCloudflaredBinary() !== null;
 }
 
 /**
- * Kill any existing ngrok processes and wait for port 4040 to be freed.
- */
-async function killExistingNgrok(): Promise<void> {
-    try {
-        if (IS_WINDOWS) {
-            execSync('taskkill /F /IM ngrok.exe', { stdio: 'pipe' });
-        } else {
-            execSync('pkill -f "ngrok http"', { stdio: 'pipe' });
-        }
-        logger.debug('[TUNNEL] Killed existing ngrok processes');
-    } catch {
-        // No ngrok running
-    }
-
-    if (!IS_WINDOWS) {
-        try {
-            execSync('lsof -ti :4040 | xargs kill -9', { stdio: 'pipe' });
-            logger.debug('[TUNNEL] Killed processes on port 4040');
-        } catch {
-            // Nothing on 4040
-        }
-    }
-
-    // Wait until port 4040 is actually free (up to 5 seconds)
-    const portCheckCmd = IS_WINDOWS
-        ? 'netstat -ano | findstr :4040 | findstr LISTENING'
-        : 'lsof -i :4040';
-
-    for (let i = 0; i < 10; i++) {
-        try {
-            execSync(portCheckCmd, { stdio: 'pipe' });
-            logger.debug(`[TUNNEL] Port 4040 still in use, waiting... (${i + 1}/10)`);
-            await new Promise(resolve => setTimeout(resolve, 500));
-        } catch {
-            logger.debug('[TUNNEL] Port 4040 is free');
-            return;
-        }
-    }
-    logger.debug('[TUNNEL] Port 4040 may still be in use after waiting');
-}
-
-/**
- * Start an ngrok tunnel for the given local port.
+ * Start a cloudflared quick tunnel for the given local port.
  *
- * Spawns `ngrok http <port>` and polls the local ngrok API (http://127.0.0.1:4040)
- * to retrieve the public URL. Returns the tunnel URL and a stop function.
+ * Spawns `cloudflared tunnel --url http://localhost:<port>` and parses stderr
+ * for the generated trycloudflare.com URL.
  *
- * IMPORTANT: Do NOT add extra flags (--log, --config, etc.) to the ngrok command.
- * ngrok v3 has bugs where certain flags cause it to skip loading its config file,
- * resulting in ERR_NGROK_4018 (authtoken not found) even when properly configured.
- * The simplest invocation `ngrok http <port>` works reliably.
+ * Quick tunnels need no account, no auth, and have no interstitial pages.
+ *
+ * After capturing the tunnel URL, stdout/stderr listeners are replaced with
+ * drain handlers to prevent pipe buffer overflow from blocking cloudflared.
  */
-export async function startNgrokTunnel(localPort: number): Promise<TunnelInfo | null> {
-    const ngrokBin = resolveNgrokBinary();
-    if (!ngrokBin) {
-        console.log('  ngrok is not installed. Install it from https://ngrok.com/download');
-        console.log('  Then authenticate: ngrok config add-authtoken <your-token>');
+export async function startCloudflaredTunnel(localPort: number): Promise<TunnelInfo | null> {
+    const bin = resolveCloudflaredBinary();
+    if (!bin) {
+        console.log('  cloudflared is not installed.');
+        console.log('  Install: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/');
+        console.log('  macOS: brew install cloudflared');
         return null;
     }
 
-    await killExistingNgrok();
+    logger.debug(`[TUNNEL] Starting cloudflared tunnel for port ${localPort} using ${bin}`);
 
-    logger.debug(`[TUNNEL] Starting ngrok tunnel for port ${localPort} using ${ngrokBin}`);
+    const cfProcess: ChildProcess = spawn(
+        bin,
+        ['tunnel', '--no-autoupdate', '--url', `http://localhost:${localPort}`],
+        { stdio: ['ignore', 'pipe', 'pipe'] }
+    );
 
-    // Spawn system ngrok binary directly (not the node_modules/.bin wrapper)
-    const ngrokProcess: ChildProcess = spawn(ngrokBin, ['http', String(localPort)], {
-        stdio: 'ignore',
-        detached: true,
-    });
-    ngrokProcess.unref();
+    // Prevent the cloudflared child from keeping the daemon alive on shutdown
+    cfProcess.unref();
 
     let exited = false;
     let exitCode: number | null = null;
-    ngrokProcess.on('exit', (code) => {
+    cfProcess.on('exit', (code) => {
         exited = true;
         exitCode = code;
-        logger.debug(`[TUNNEL] ngrok exited with code ${code}`);
+        logger.debug(`[TUNNEL] cloudflared exited with code ${code}`);
     });
-    ngrokProcess.on('error', (error) => {
+    cfProcess.on('error', (error) => {
         exited = true;
-        logger.debug(`[TUNNEL] ngrok spawn error: ${error.message}`);
+        logger.debug(`[TUNNEL] cloudflared spawn error: ${error.message}`);
     });
 
-    // Poll ngrok local API for tunnel URL
-    const maxAttempts = 30;
-    const pollIntervalMs = 500;
-    let tunnelUrl: string | null = null;
+    // Parse stderr for the tunnel URL (cloudflared prints it there)
+    const tunnelUrl = await new Promise<string | null>((resolve) => {
+        let resolved = false;
+        const urlRegex = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
 
-    for (let i = 0; i < maxAttempts; i++) {
-        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-
-        if (exited) {
-            logger.debug(`[TUNNEL] ngrok exited with code ${exitCode}`);
-            showNgrokError(exitCode);
-            return null;
-        }
-
-        try {
-            const response = await axios.get('http://127.0.0.1:4040/api/tunnels', {
-                timeout: 2000,
-            });
-            const tunnels = response.data?.tunnels;
-            if (tunnels && tunnels.length > 0) {
-                const httpsTunnel = tunnels.find((t: { proto: string }) => t.proto === 'https');
-                tunnelUrl = httpsTunnel?.public_url || tunnels[0].public_url;
-                break;
+        const timeout = setTimeout(() => {
+            if (!resolved) {
+                resolved = true;
+                resolve(null);
             }
-        } catch {
-            // ngrok API not ready yet
-        }
-    }
+        }, 30_000);
 
-    if (!tunnelUrl) {
-        logger.debug('[TUNNEL] Failed to get tunnel URL after polling');
-        try { ngrokProcess.kill(); } catch { /* already dead */ }
-        console.log('  ngrok timed out — could not establish tunnel');
+        const handleData = (data: Buffer) => {
+            if (resolved) return;
+            const text = data.toString();
+            logger.debug(`[TUNNEL] cloudflared output: ${text.trim()}`);
+            const match = text.match(urlRegex);
+            if (match) {
+                resolved = true;
+                clearTimeout(timeout);
+                resolve(match[0]);
+            }
+        };
+
+        cfProcess.stdout?.on('data', handleData);
+        cfProcess.stderr?.on('data', handleData);
+
+        cfProcess.on('exit', () => {
+            if (!resolved) {
+                resolved = true;
+                clearTimeout(timeout);
+                resolve(null);
+            }
+        });
+    });
+
+    if (!tunnelUrl || exited) {
+        logger.debug(`[TUNNEL] Failed to get tunnel URL (exited=${exited}, code=${exitCode})`);
+        try { cfProcess.kill(); } catch { /* already dead */ }
+        if (exitCode !== null) {
+            console.log(`  cloudflared failed with exit code ${exitCode}`);
+        } else {
+            console.log('  cloudflared timed out — could not establish tunnel');
+        }
         return null;
     }
 
     logger.debug(`[TUNNEL] Tunnel established: ${tunnelUrl}`);
 
+    // Replace data listeners with drain handlers — cloudflared outputs connection
+    // metrics, reconnect info, etc. continuously. Without draining, the pipe buffer
+    // fills up (~64KB) and the process blocks on write(), killing the tunnel.
+    cfProcess.stdout?.removeAllListeners('data');
+    cfProcess.stderr?.removeAllListeners('data');
+    cfProcess.stdout?.on('data', () => { /* drain */ });
+    cfProcess.stderr?.on('data', (data: Buffer) => {
+        // Log only errors/warnings, not routine metrics
+        const text = data.toString();
+        if (text.includes('ERR') || text.includes('WRN')) {
+            logger.debug(`[TUNNEL] ${text.trim()}`);
+        }
+    });
+
     const stop = () => {
         try {
             if (!exited) {
-                ngrokProcess.kill();
-                logger.debug('[TUNNEL] ngrok process killed');
+                cfProcess.kill();
+                logger.debug('[TUNNEL] cloudflared process killed');
             }
         } catch (error) {
-            logger.debug('[TUNNEL] Error killing ngrok:', error);
+            logger.debug('[TUNNEL] Error killing cloudflared:', error);
         }
     };
 
     return { url: tunnelUrl, stop };
-}
-
-/**
- * Show user-friendly ngrok error based on exit code
- */
-function showNgrokError(exitCode: number | null): void {
-    if (exitCode === 1) {
-        console.log('  ngrok failed (exit code 1). Most common cause: missing authtoken.');
-        console.log('  Run: ngrok config add-authtoken <your-token>');
-        console.log('  Get your token at: https://dashboard.ngrok.com/get-started/your-authtoken');
-    } else {
-        console.log(`  ngrok failed with exit code ${exitCode}`);
-    }
 }

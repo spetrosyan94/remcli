@@ -13,7 +13,7 @@ import { encodeSharedSecret } from './p2pAuth';
 
 export interface P2PConnectionInfo {
     mode: 'p2p';
-    host: string;      // LAN IP (e.g. "192.168.1.5") or full tunnel URL (e.g. "https://abc.ngrok.io")
+    host: string;      // LAN IP (e.g. "192.168.1.5") or full tunnel URL (e.g. "https://xxx.trycloudflare.com")
     port: number;       // Socket.IO server port (0 when using tunnel)
     key: string;        // Base64-encoded shared secret
     v: 1;               // Protocol version
@@ -52,7 +52,7 @@ export function buildP2PConnectionInfo(
  * This keeps the QR code ~30-40% smaller than encoding the full JSON.
  *
  * LAN:    http://192.168.1.x:PORT/terminal/connect#<base64>
- * Tunnel: https://abc.ngrok.io/terminal/connect#<base64>
+ * Tunnel: https://xxx.trycloudflare.com/terminal/connect#<base64>
  */
 export function buildP2PQRUrl(
     info: P2PConnectionInfo,

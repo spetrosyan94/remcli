@@ -119,7 +119,7 @@ export async function connectP2P(payload: P2PQRPayload): Promise<{
     // Build endpoint URL
     let endpoint: string;
     if (payload.port === 0) {
-        // Tunnel mode — host contains full URL with protocol (e.g. "https://abc.ngrok.io")
+        // Tunnel mode — host contains full URL with protocol (e.g. "https://abc.trycloudflare.com")
         endpoint = payload.host;
     } else {
         endpoint = `http://${payload.host}:${payload.port}`;

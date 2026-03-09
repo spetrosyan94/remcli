@@ -12,7 +12,7 @@ import chalk from 'chalk';
 import { execFileSync, execSync } from 'node:child_process';
 import { readSetupConfig, writeSetupConfig } from '@/persistence';
 import { WHISPER_MODELS, downloadModelWithProgress, isModelDownloaded } from '@/daemon/whisper/whisperService';
-import { resolveNgrokBinary } from '@/daemon/p2p/tunnel';
+import { resolveCloudflaredBinary } from '@/daemon/p2p/tunnel';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -211,27 +211,27 @@ async function stepAIAgents(): Promise<string[]> {
     return installedAgents;
 }
 
-async function stepNgrok(): Promise<boolean> {
-    console.log(chalk.bold('\n\u{1F310} Step 3: ngrok (HTTPS tunnel)\n'));
+async function stepCloudflared(): Promise<boolean> {
+    console.log(chalk.bold('\n\u{1F310} Step 3: cloudflared (HTTPS tunnel)\n'));
 
-    const installed = resolveNgrokBinary() !== null;
+    const installed = resolveCloudflaredBinary() !== null;
 
     if (installed) {
-        console.log(chalk.green('  ngrok is already installed.'));
+        console.log(chalk.green('  cloudflared is already installed.'));
         console.log(chalk.gray('  Use --tunnel flag to enable remote access with voice input.\n'));
         return true;
     }
 
-    console.log(chalk.gray('  ngrok provides HTTPS tunnel for remote access beyond your local network.'));
-    console.log(chalk.gray('  Required for voice input on web (microphone needs HTTPS).\n'));
+    console.log(chalk.gray('  cloudflared provides free HTTPS tunnel for remote access beyond your local network.'));
+    console.log(chalk.gray('  No account required. No interstitial pages.\n'));
 
     const shouldInstall = await confirm({
-        message: 'Install ngrok?',
+        message: 'Install cloudflared?',
         default: true,
     });
 
     if (!shouldInstall) {
-        console.log(chalk.gray('\n  Skipped. You can install ngrok later from https://ngrok.com/download'));
+        console.log(chalk.gray('\n  Skipped. Install later: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/'));
         return false;
     }
 
@@ -239,64 +239,52 @@ async function stepNgrok(): Promise<boolean> {
     const isLinux = process.platform === 'linux';
 
     if (isMac) {
-        console.log(chalk.yellow('\n  Installing ngrok via Homebrew...'));
-        console.log(chalk.gray('  $ brew install ngrok/ngrok/ngrok'));
+        console.log(chalk.yellow('\n  Installing cloudflared via Homebrew...'));
+        console.log(chalk.gray('  $ brew install cloudflared'));
         try {
-            execSync('brew install ngrok/ngrok/ngrok', { stdio: 'inherit', timeout: 300_000 });
-            console.log(chalk.green('  ngrok installed successfully.'));
+            execSync('brew install cloudflared', { stdio: 'inherit', timeout: 300_000 });
+            console.log(chalk.green('  cloudflared installed successfully.'));
         } catch {
             console.log(chalk.red('  Failed to install via Homebrew.'));
-            console.log(chalk.gray('  Install manually: https://ngrok.com/download'));
+            console.log(chalk.gray('  Install manually: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/'));
             return false;
         }
     } else if (isLinux) {
-        console.log(chalk.yellow('\n  Installing ngrok via snap...'));
-        console.log(chalk.gray('  $ sudo snap install ngrok'));
+        console.log(chalk.yellow('\n  Installing cloudflared...'));
         try {
-            execSync('sudo snap install ngrok', { stdio: 'inherit', timeout: 300_000 });
-            console.log(chalk.green('  ngrok installed successfully.'));
+            // Try dpkg approach (works on Debian/Ubuntu)
+            const arch = execSync('dpkg --print-architecture', { encoding: 'utf-8', stdio: 'pipe' }).trim();
+            const url = `https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}.deb`;
+            console.log(chalk.gray(`  $ curl -L ${url} -o /tmp/cloudflared.deb && sudo dpkg -i /tmp/cloudflared.deb`));
+            execSync(`curl -L ${url} -o /tmp/cloudflared.deb && sudo dpkg -i /tmp/cloudflared.deb`, {
+                stdio: 'inherit', timeout: 300_000,
+            });
+            console.log(chalk.green('  cloudflared installed successfully.'));
         } catch {
-            console.log(chalk.red('  Failed to install via snap. Trying apt...'));
-            try {
-                execSync(
-                    'curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null'
-                    + ' && echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list'
-                    + ' && sudo apt update && sudo apt install -y ngrok',
-                    { stdio: 'inherit', timeout: 300_000 },
-                );
-                console.log(chalk.green('  ngrok installed successfully.'));
-            } catch {
-                console.log(chalk.red('  Failed to install ngrok.'));
-                console.log(chalk.gray('  Install manually: https://ngrok.com/download'));
-                return false;
-            }
+            console.log(chalk.red('  Failed to install cloudflared.'));
+            console.log(chalk.gray('  Install manually: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/'));
+            return false;
         }
     } else if (IS_WINDOWS) {
-        console.log(chalk.yellow('\n  Installing ngrok via winget...'));
-        console.log(chalk.gray('  $ winget install ngrok'));
+        console.log(chalk.yellow('\n  Installing cloudflared via winget...'));
+        console.log(chalk.gray('  $ winget install Cloudflare.cloudflared'));
         try {
-            execSync('winget install ngrok', { stdio: 'inherit', timeout: 300_000 });
-            console.log(chalk.green('  ngrok installed successfully.'));
+            execSync('winget install Cloudflare.cloudflared', { stdio: 'inherit', timeout: 300_000 });
+            console.log(chalk.green('  cloudflared installed successfully.'));
         } catch {
-            console.log(chalk.red('  Failed to install via winget. Try: choco install ngrok'));
-            console.log(chalk.gray('  Or install manually: https://ngrok.com/download'));
+            console.log(chalk.red('  Failed to install via winget.'));
+            console.log(chalk.gray('  Install manually: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/'));
             return false;
         }
     } else {
-        console.log(chalk.gray('  Install ngrok from: https://ngrok.com/download'));
+        console.log(chalk.gray('  Install from: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/'));
         return false;
     }
-
-    // Prompt for authtoken
-    console.log(chalk.yellow('\n  To use ngrok, you need a free account and authtoken.'));
-    console.log(chalk.gray('  1. Sign up at: https://dashboard.ngrok.com/signup'));
-    console.log(chalk.gray('  2. Get your token: https://dashboard.ngrok.com/get-started/your-authtoken'));
-    console.log(chalk.gray('  3. Run: ngrok config add-authtoken <your-token>\n'));
 
     return true;
 }
 
-function stepSummary(whisperModel: string, installedAgents: string[], ngrokInstalled: boolean): void {
+function stepSummary(whisperModel: string, installedAgents: string[], cloudflaredInstalled: boolean): void {
     console.log(chalk.bold('\n\u{2728} Setup Summary\n'));
 
     // Whisper
@@ -323,12 +311,12 @@ function stepSummary(whisperModel: string, installedAgents: string[], ngrokInsta
         console.log(chalk.gray(`\n  Newly installed: ${installedAgents.join(', ')}`));
     }
 
-    // ngrok
-    console.log(chalk.bold('\n  HTTPS Tunnel (ngrok)'));
-    if (ngrokInstalled) {
-        console.log(chalk.green('  \u2713 ngrok installed'));
+    // cloudflared
+    console.log(chalk.bold('\n  HTTPS Tunnel (cloudflared)'));
+    if (cloudflaredInstalled) {
+        console.log(chalk.green('  \u2713 cloudflared installed'));
     } else {
-        console.log(chalk.red('  \u2717 ngrok not installed — voice input on web requires HTTPS'));
+        console.log(chalk.red('  \u2717 cloudflared not installed — voice input on web requires HTTPS'));
     }
 
     console.log('');
@@ -338,7 +326,7 @@ function stepSummary(whisperModel: string, installedAgents: string[], ngrokInsta
 
 export async function handleSetupCommand(): Promise<void> {
     console.log(chalk.bold.cyan('\n\u{1F680} Remcli Setup Wizard\n'));
-    console.log(chalk.gray('  This wizard will help you configure Whisper STT, AI agents, and ngrok.\n'));
+    console.log(chalk.gray('  This wizard will help you configure Whisper STT, AI agents, and cloudflared.\n'));
 
     // Step 1: Whisper model
     const whisperModel = await stepWhisperModel();
@@ -346,8 +334,8 @@ export async function handleSetupCommand(): Promise<void> {
     // Step 2: AI agents
     const installedAgents = await stepAIAgents();
 
-    // Step 3: ngrok
-    const ngrokInstalled = await stepNgrok();
+    // Step 3: cloudflared
+    const cloudflaredInstalled = await stepCloudflared();
 
     // Step 4: Save config
     const existingConfig = readSetupConfig();
@@ -361,7 +349,7 @@ export async function handleSetupCommand(): Promise<void> {
     });
 
     // Step 5: Summary
-    stepSummary(whisperModel, installedAgents, ngrokInstalled);
+    stepSummary(whisperModel, installedAgents, cloudflaredInstalled);
 
     console.log(chalk.green('  Setup complete! Run `remcli doctor` to verify.\n'));
 }

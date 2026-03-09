@@ -4,7 +4,7 @@ import * as React from 'react';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Fonts from 'expo-font';
 import * as Notifications from 'expo-notifications';
-import { FontAwesome } from '@expo/vector-icons';
+import { FontAwesome, Ionicons, Octicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { AuthCredentials, TokenStorage } from '@/auth/tokenStorage';
 import { AuthProvider } from '@/auth/AuthContext';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
@@ -28,25 +28,27 @@ import { monkeyPatchConsoleForRemoteLoggingForFasterAiAutoDebuggingOnlyInLocalBu
 import { useUnistyles } from 'react-native-unistyles';
 import { AsyncLock } from '@/utils/lock';
 
-// Configure notification handler for foreground notifications
-Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-        shouldShowAlert: true,
-        shouldPlaySound: true,
-        shouldSetBadge: true,
-        shouldShowBanner: true,
-        shouldShowList: true,
-    }),
-});
-
-// Setup Android notification channel (required for Android 8.0+)
-if (Platform.OS === 'android') {
-    Notifications.setNotificationChannelAsync('default', {
-        name: 'Default',
-        importance: Notifications.AndroidImportance.MAX,
-        vibrationPattern: [0, 250, 250, 250],
-        lightColor: '#FF231F7C',
+// Configure notification handler for foreground notifications (not on web — no Notification API in HTTP context)
+if (Platform.OS !== 'web') {
+    Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+            shouldShowAlert: true,
+            shouldPlaySound: true,
+            shouldSetBadge: true,
+            shouldShowBanner: true,
+            shouldShowList: true,
+        }),
     });
+
+    // Setup Android notification channel (required for Android 8.0+)
+    if (Platform.OS === 'android') {
+        Notifications.setNotificationChannelAsync('default', {
+            name: 'Default',
+            importance: Notifications.AndroidImportance.MAX,
+            vibrationPattern: [0, 250, 250, 250],
+            lightColor: '#FF231F7C',
+        });
+    }
 }
 
 export {
@@ -118,6 +120,9 @@ async function loadFonts() {
                 'BricolageGrotesque-Bold': require('@/assets/fonts/BricolageGrotesque-Bold.ttf'),
 
                 ...FontAwesome.font,
+                ...Ionicons.font,
+                ...Octicons.font,
+                ...MaterialCommunityIcons.font,
             });
         } else {
             // For Tauri, skip Font Face Observer as fonts are loaded via CSS
@@ -142,6 +147,9 @@ async function loadFonts() {
                         'BricolageGrotesque-Bold': require('@/assets/fonts/BricolageGrotesque-Bold.ttf'),
 
                         ...FontAwesome.font,
+                        ...Ionicons.font,
+                        ...Octicons.font,
+                        ...MaterialCommunityIcons.font,
                     });
                 } catch (e) {
                     // Ignore

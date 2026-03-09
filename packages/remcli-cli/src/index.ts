@@ -528,7 +528,7 @@ ${chalk.bold('remcli daemon')} - Daemon management
 
 ${chalk.bold('Usage:')}
   remcli daemon start              Start the daemon (detached)
-  remcli daemon start --tunnel     Start with ngrok tunnel for remote access
+  remcli daemon start --tunnel     Start with cloudflared tunnel for remote access
   remcli daemon stop               Stop the daemon (sessions stay alive)
   remcli daemon status             Show daemon status
   remcli daemon qr                 Show P2P connection QR code

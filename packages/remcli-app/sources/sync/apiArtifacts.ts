@@ -14,7 +14,6 @@ export async function fetchArtifacts(credentials: AuthCredentials): Promise<Arti
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json',
-                'ngrok-skip-browser-warning': '1'
             }
         });
 
@@ -38,7 +37,6 @@ export async function fetchArtifact(credentials: AuthCredentials, artifactId: st
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json',
-                'ngrok-skip-browser-warning': '1'
             }
         });
 
@@ -69,7 +67,6 @@ export async function createArtifact(
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json',
-                'ngrok-skip-browser-warning': '1'
             },
             body: JSON.stringify(request)
         });
@@ -102,7 +99,6 @@ export async function updateArtifact(
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json',
-                'ngrok-skip-browser-warning': '1'
             },
             body: JSON.stringify(request)
         });
@@ -133,7 +129,6 @@ export async function deleteArtifact(
             method: 'DELETE',
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
-                'ngrok-skip-browser-warning': '1'
             }
         });
 

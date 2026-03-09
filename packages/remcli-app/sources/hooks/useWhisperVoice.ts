@@ -19,7 +19,17 @@ export type WhisperState = 'idle' | 'recording' | 'transcribing';
 
 export function useWhisperVoice() {
     const [state, setState] = React.useState<WhisperState>('idle');
+    const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
     const stateRef = React.useRef<WhisperState>('idle');
+    const timerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+
+    const clearTimer = React.useCallback(() => {
+        if (timerRef.current !== null) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+        }
+        setElapsedSeconds(0);
+    }, []);
 
     const setWhisperState = React.useCallback((newState: WhisperState) => {
         stateRef.current = newState;
@@ -32,12 +42,17 @@ export function useWhisperVoice() {
         const started = await startRecording();
         if (started) {
             setWhisperState('recording');
+            setElapsedSeconds(0);
+            timerRef.current = setInterval(() => {
+                setElapsedSeconds(prev => prev + 1);
+            }, 1000);
         }
     }, [setWhisperState]);
 
     const stop = React.useCallback(async (sessionId: string) => {
         if (stateRef.current !== 'recording') return;
 
+        clearTimer();
         setWhisperState('transcribing');
 
         try {
@@ -49,27 +64,43 @@ export function useWhisperVoice() {
 
             const result = await transcribeAudio(uri);
 
-            if (!result.text.trim()) {
-                Modal.alert(t('common.error'), t('whisper.emptyTranscription'));
+            // Filter blank/empty transcriptions — Whisper outputs these on silence
+            const cleaned = result.text
+                .replace(/\[BLANK_AUDIO\]/gi, '')
+                .replace(/\[[^\]]*\]/g, '')
+                .trim();
+
+            if (!cleaned) {
+                Modal.alert(t('whisper.noSpeechTitle'), t('whisper.noSpeechDetected'));
                 setWhisperState('idle');
                 return;
             }
 
-            sync.sendMessage(sessionId, result.text, `🎤 ${result.text}`);
+            sync.sendMessage(sessionId, cleaned, `🎤 ${cleaned}`);
         } catch (error) {
             const message = error instanceof Error ? error.message : t('whisper.transcriptionFailed');
             Modal.alert(t('common.error'), message);
         } finally {
             setWhisperState('idle');
         }
-    }, [setWhisperState]);
+    }, [setWhisperState, clearTimer]);
 
     const cancel = React.useCallback(async () => {
+        clearTimer();
         if (stateRef.current === 'recording') {
             await stopRecording();
         }
         setWhisperState('idle');
-    }, [setWhisperState]);
+    }, [setWhisperState, clearTimer]);
 
-    return { whisperState: state, startWhisper: start, stopWhisper: stop, cancelWhisper: cancel };
+    // Cleanup timer on unmount
+    React.useEffect(() => {
+        return () => {
+            if (timerRef.current !== null) {
+                clearInterval(timerRef.current);
+            }
+        };
+    }, []);
+
+    return { whisperState: state, elapsedSeconds, startWhisper: start, stopWhisper: stop, cancelWhisper: cancel };
 }

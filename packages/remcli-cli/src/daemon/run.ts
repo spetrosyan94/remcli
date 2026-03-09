@@ -26,7 +26,7 @@ import { startP2PServer, P2PServer } from './p2p/p2pServer';
 import { generateSharedSecret, encodeSharedSecret, deriveBearerToken } from './p2p/p2pAuth';
 import { getLanIPAddress } from './p2p/networkUtils';
 import { buildP2PConnectionInfo, buildP2PQRUrl, displayP2PQRCode, displayP2PConnectionStatus } from './p2p/p2pQRCode';
-import { startNgrokTunnel, isNgrokAvailable } from './p2p/tunnel';
+import { startCloudflaredTunnel, isCloudflaredAvailable } from './p2p/tunnel';
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { freeWhisper } from './whisper/whisperService';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
@@ -760,14 +760,14 @@ export async function startDaemon(): Promise<void> {
 
     logger.debug('[DAEMON RUN] Machine RPC socket connecting to own P2P server');
 
-    // Optionally start ngrok tunnel for remote access
+    // Optionally start cloudflared tunnel for remote access
     const useTunnel = process.argv.includes('--tunnel') || process.env.REMCLI_TUNNEL === 'true';
     let tunnelStop: (() => void) | null = null;
     let tunnelUrl: string | undefined;
 
     if (useTunnel) {
-        console.log('  Starting ngrok tunnel for remote access...');
-        const tunnel = await startNgrokTunnel(p2pServer.port);
+        console.log('  Starting cloudflared tunnel for remote access...');
+        const tunnel = await startCloudflaredTunnel(p2pServer.port);
         if (tunnel) {
             tunnelUrl = tunnel.url;
             tunnelStop = tunnel.stop;
@@ -776,7 +776,6 @@ export async function startDaemon(): Promise<void> {
             logger.debug(`[DAEMON RUN] Tunnel started: ${tunnelUrl}`);
 
             // Show QR with tunnel URL (accessible from anywhere)
-            // Keep full URL with protocol in host field — app needs it to connect
             const tunnelConnectionInfo = buildP2PConnectionInfo(tunnelUrl.replace(/\/$/, ''), 0, sharedSecret);
             const tunnelQRUrl = buildP2PQRUrl(tunnelConnectionInfo, tunnelUrl);
             await displayP2PQRCode(tunnelQRUrl);
@@ -795,11 +794,10 @@ export async function startDaemon(): Promise<void> {
         await displayP2PQRCode(qrUrl);
         displayP2PConnectionStatus(lanIP, p2pServer.port);
 
-        // Hint about ngrok if not installed
-        if (!isNgrokAvailable()) {
-            console.log('  \u24D8  ngrok not installed — LAN only, no voice input on web.');
-            console.log('     Install ngrok and use --tunnel for HTTPS remote access.');
-            console.log('     Run: remcli setup\n');
+        if (!isCloudflaredAvailable()) {
+            console.log('  \u24D8  cloudflared not installed — LAN only, no voice input on web.');
+            console.log('     Install: brew install cloudflared (macOS)');
+            console.log('     Then use --tunnel for HTTPS remote access.\n');
         } else {
             console.log('  \u24D8  LAN only mode. Use --tunnel flag for HTTPS remote access.\n');
         }
@@ -943,7 +941,7 @@ export async function startDaemon(): Promise<void> {
         // tmux may not be available
       }
 
-      // Stop ngrok tunnel if running
+      // Stop cloudflared tunnel if running
       if (tunnelStop) {
         try {
           tunnelStop();

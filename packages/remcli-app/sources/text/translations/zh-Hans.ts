@@ -920,6 +920,8 @@ export const zhHans: TranslationStructure = {
         notAvailable: '此服务器上不可用 Whisper',
         transcriptionFailed: '音频转录失败',
         emptyTranscription: '无法识别语音，请重试。',
+        noSpeechTitle: '未检测到语音',
+        noSpeechDetected: '未能识别录音中的语音，请重试。',
         setupRequired: '语音输入不可用',
         setupRequiredDescription: '请运行 remcli setup 以启用语音输入。',
     },

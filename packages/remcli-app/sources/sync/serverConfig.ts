@@ -69,7 +69,7 @@ export function getServerUrl(): string {
     const p2p = getP2PConfig();
     if (p2p) {
         if (p2p.port === 0) {
-            // Tunnel mode — host contains full URL with protocol (e.g. "https://abc.ngrok.io")
+            // Tunnel mode — host contains full URL with protocol (e.g. "https://abc.trycloudflare.com")
             return p2p.host;
         }
         return `http://${p2p.host}:${p2p.port}`;

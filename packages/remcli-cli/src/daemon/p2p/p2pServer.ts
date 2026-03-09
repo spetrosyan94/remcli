@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import fastify from 'fastify';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
+import fastifyCompress from '@fastify/compress';
 import { Server as SocketIOServer } from 'socket.io';
 import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
 import { P2PStore } from './p2pStore';
@@ -57,6 +58,12 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
 
+    // Gzip/Brotli compression for static assets (8.5MB JS → ~1.5MB compressed)
+    await app.register(fastifyCompress, {
+        global: true,
+        encodings: ['br', 'gzip', 'deflate'],
+    });
+
     // Multipart support for file uploads (voice transcription)
     await app.register(fastifyMultipart, {
         limits: {
@@ -85,12 +92,15 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
             root: config.webAppDir,
             prefix: '/',
             decorateReply: true,
-            wildcard: false
+            wildcard: false,
+            maxAge: '1y',         // All files have content-hash in name, safe to cache forever
+            immutable: true,
         });
 
         // SPA fallback: any GET that didn't match a file or API route → index.html
         app.setNotFoundHandler(async (request, reply) => {
             if (request.method === 'GET' && !request.url.startsWith('/v1/') && !request.url.startsWith('/v2/')) {
+                reply.header('Cache-Control', 'no-cache');
                 return reply.sendFile('index.html');
             }
             reply.code(404).send({ error: 'Not found' });

@@ -4,6 +4,7 @@
  * Uploads audio to daemon's /v1/voice/transcribe endpoint for local Whisper STT.
  */
 
+import { Platform } from 'react-native';
 import { TokenStorage } from '@/auth/tokenStorage';
 import { getServerUrl } from './serverConfig';
 
@@ -22,31 +23,39 @@ export async function transcribeAudio(audioUri: string): Promise<WhisperTranscri
 
     const formData = new FormData();
 
-    // React Native fetch handles file:// URIs natively via FormData
-    const fileExtension = audioUri.split('.').pop() || 'm4a';
-    const mimeType = fileExtension === 'wav' ? 'audio/wav'
-        : fileExtension === 'webm' ? 'audio/webm'
-        : 'audio/mp4';
+    if (Platform.OS === 'web') {
+        // On web, audioUri is a blob URL (blob:https://...) — fetch the actual Blob
+        const response = await fetch(audioUri);
+        const blob = await response.blob();
+        URL.revokeObjectURL(audioUri);
+        const ext = blob.type.includes('webm') ? 'webm' : blob.type.includes('wav') ? 'wav' : 'mp4';
+        formData.append('audio', blob, `recording.${ext}`);
+    } else {
+        // React Native fetch handles file:// URIs natively via FormData
+        const fileExtension = audioUri.split('.').pop() || 'm4a';
+        const mimeType = fileExtension === 'wav' ? 'audio/wav'
+            : fileExtension === 'webm' ? 'audio/webm'
+            : 'audio/mp4';
 
-    formData.append('audio', {
-        uri: audioUri,
-        name: `recording.${fileExtension}`,
-        type: mimeType,
-    } as unknown as Blob);
+        formData.append('audio', {
+            uri: audioUri,
+            name: `recording.${fileExtension}`,
+            type: mimeType,
+        } as unknown as Blob);
+    }
 
-    const response = await fetch(`${serverUrl}/v1/voice/transcribe`, {
+    const result = await fetch(`${serverUrl}/v1/voice/transcribe`, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${credentials.token}`,
-            'ngrok-skip-browser-warning': '1',
         },
         body: formData,
     });
 
-    if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || `Transcription failed: ${response.status}`);
+    if (!result.ok) {
+        const body = await result.json().catch(() => ({}));
+        throw new Error(body.error || `Transcription failed: ${result.status}`);
     }
 
-    return await response.json();
+    return await result.json();
 }

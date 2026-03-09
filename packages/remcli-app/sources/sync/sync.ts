@@ -87,6 +87,20 @@ class Sync {
         });
     }
 
+    /** Stop all InvalidateSync instances so their backoff loops exit */
+    stopAll() {
+        this.sessionsSync.stop();
+        this.settingsSync.stop();
+        this.profileSync.stop();
+        this.machinesSync.stop();
+        this.nativeUpdateSync.stop();
+        this.artifactsSync.stop();
+        this.todosSync.stop();
+        for (const msgSync of this.messagesSync.values()) {
+            msgSync.stop();
+        }
+    }
+
     async create(credentials: AuthCredentials, encryption: Encryption) {
         this.credentials = credentials;
         this.encryption = encryption;
@@ -292,7 +306,6 @@ class Sync {
             headers: {
                 'Authorization': `Bearer ${this.credentials.token}`,
                 'Content-Type': 'application/json',
-                'ngrok-skip-browser-warning': '1',
             }
         });
 
@@ -667,7 +680,6 @@ class Sync {
             headers: {
                 'Authorization': `Bearer ${this.credentials.token}`,
                 'Content-Type': 'application/json',
-                'ngrok-skip-browser-warning': '1',
             }
         });
 
@@ -886,8 +898,7 @@ class Sync {
                     headers: {
                         'Authorization': `Bearer ${this.credentials.token}`,
                         'Content-Type': 'application/json',
-                        'ngrok-skip-browser-warning': '1',
-                    }
+                            }
                 });
                 const data = await response.json() as {
                     success: false,
@@ -943,7 +954,6 @@ class Sync {
             headers: {
                 'Authorization': `Bearer ${this.credentials.token}`,
                 'Content-Type': 'application/json',
-                'ngrok-skip-browser-warning': '1',
             }
         });
         if (!response.ok) {
@@ -989,7 +999,6 @@ class Sync {
             headers: {
                 'Authorization': `Bearer ${this.credentials.token}`,
                 'Content-Type': 'application/json',
-                'ngrok-skip-browser-warning': '1',
             }
         });
 
@@ -1038,8 +1047,7 @@ class Sync {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'ngrok-skip-browser-warning': '1',
-                },
+                    },
                 body: JSON.stringify({
                     platform,
                     version,
@@ -1680,8 +1688,8 @@ class Sync {
     }
 }
 
-// Global singleton instance
-export const sync = new Sync();
+// Global singleton instance — recreated on each syncReset() to stop stale InvalidateSync loops
+export let sync = new Sync();
 
 //
 // Init sequence
@@ -1692,9 +1700,20 @@ let isInitialized = false;
 /**
  * Reset sync state so it can be re-initialized with new credentials.
  * Call this before syncCreate() when reconnecting to a different daemon.
+ *
+ * Stops all running InvalidateSync loops (which use infinite backoff retries),
+ * disconnects the socket, and creates a fresh Sync instance. Without this,
+ * old _doSync() loops continue fetching from the previous endpoint, and
+ * awaitQueue() in sync.create() hangs indefinitely.
  */
 export function syncReset() {
     isInitialized = false;
+    // Stop all running InvalidateSync instances — their backoff loops would
+    // otherwise block awaitQueue() in the next sync.create() call
+    sync.stopAll();
+    apiSocket.disconnect();
+    // Fresh instance — old InvalidateSync instances are stopped and abandoned
+    sync = new Sync();
 }
 
 export async function syncCreate(credentials: AuthCredentials) {

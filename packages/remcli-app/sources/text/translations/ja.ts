@@ -921,6 +921,8 @@ export const ja: TranslationStructure = {
         notAvailable: 'このサーバーではWhisperを利用できません',
         transcriptionFailed: '音声の文字起こしに失敗しました',
         emptyTranscription: '音声を認識できませんでした。もう一度お試しください。',
+        noSpeechTitle: '音声が検出されません',
+        noSpeechDetected: '録音から音声を認識できませんでした。もう一度お試しください。',
         setupRequired: '音声入力が利用できません',
         setupRequiredDescription: 'remcli setup を実行して音声入力を有効にしてください。',
     },

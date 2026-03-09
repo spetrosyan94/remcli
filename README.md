@@ -7,7 +7,7 @@ Open-source Remote CLI для удалённого управления AI аг�
 Проект вдохновлён [Happy](https://github.com/slopus/happy) — open-source решением той же задачи, но реализует другой подход: вместо облачной архитектуры Remcli использует прямое P2P-соединение, где демон на вашей машине выступает сервером.
 
 ```
-Телефон  ←── WebSocket (LAN / ngrok) ──→  CLI Daemon  ←──→  Claude Code / Cursor / Codex / Gemini CLI
+Телефон  ←── WebSocket (LAN / cloudflared) ──→  CLI Daemon  ←──→  Claude Code / Cursor / Codex / Gemini CLI
 ```
 
 ---
@@ -77,7 +77,7 @@ npm run gemini              # Gemini CLI
 
 ## Доступ через интернет
 
-Для подключения за пределами локальной сети (через ngrok-туннель):
+Для подключения за пределами локальной сети (через cloudflared-туннель):
 
 ```bash
 npm run start:tunnel
@@ -92,7 +92,7 @@ npm run start:tunnel
 | `npm run setup` | Первоначальная установка (install + сборка) |
 | `npm run build:web` | Пересборка CLI + веб-приложения |
 | `npm start` | Запуск демона (LAN) |
-| `npm run start:tunnel` | Запуск демона через интернет (ngrok) |
+| `npm run start:tunnel` | Запуск демона через интернет (cloudflared) |
 | `npm run claude` | Сессия Claude Code (видна на Mac и телефоне) |
 | `npm run cursor` | Сессия Cursor |
 | `npm run codex` | Сессия Codex |
@@ -109,7 +109,7 @@ remcli cursor                 # Сессия Cursor
 remcli codex                  # Сессия Codex
 remcli gemini                 # Сессия Gemini CLI
 remcli daemon start           # Запустить демон
-remcli daemon start --tunnel  # Запустить с ngrok
+remcli daemon start --tunnel  # Запустить с cloudflared
 remcli daemon stop            # Остановить демон
 remcli daemon status          # Статус
 remcli daemon qr              # Показать QR повторно

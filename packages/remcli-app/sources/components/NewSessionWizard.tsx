@@ -6,7 +6,7 @@ import { t } from '@/text';
 import { Ionicons } from '@expo/vector-icons';
 import { SessionTypeSelector } from '@/components/SessionTypeSelector';
 import { PermissionModeSelector, PermissionMode, ModelMode } from '@/components/PermissionModeSelector';
-import { AGENT_MODELS, type AIAgent } from '@/utils/agents';
+import { AGENT_MODELS, AGENT_PERMISSIONS, getDefaultModel, type AIAgent } from '@/utils/agents';
 import { ItemGroup } from '@/components/ItemGroup';
 import { Item } from '@/components/Item';
 import { useAllMachines, useSessions, useSetting, storage } from '@/sync/storage';
@@ -514,7 +514,7 @@ interface NewSessionWizardProps {
     onComplete: (config: {
         sessionType: 'simple' | 'worktree';
         profileId: string | null;
-        agentType: 'claude' | 'codex';
+        agentType: AIAgent;
         permissionMode: PermissionMode;
         modelMode: ModelMode;
         machineId: string;
@@ -543,17 +543,41 @@ export function NewSessionWizard({ onComplete, onCancel, initialPrompt = '' }: N
     // Wizard state
     const [currentStep, setCurrentStep] = useState<WizardStep>('profile');
     const [sessionType, setSessionType] = useState<'simple' | 'worktree'>('simple');
-    const [agentType, setAgentType] = useState<'claude' | 'codex'>(() => {
-        if (lastUsedAgent === 'claude' || lastUsedAgent === 'codex') {
+    const [agentType, setAgentType] = useState<AIAgent>(() => {
+        if (lastUsedAgent === 'claude' || lastUsedAgent === 'codex' || lastUsedAgent === 'cursor' || lastUsedAgent === 'gemini') {
             return lastUsedAgent;
         }
         return 'claude';
     });
-    const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
-    const [modelMode, setModelMode] = useState<ModelMode>('default');
+    const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => {
+        const initial = agentType;
+        const validPermissions = AGENT_PERMISSIONS[initial];
+        if (lastUsedPermissionMode && validPermissions.includes(lastUsedPermissionMode as PermissionMode)) {
+            return lastUsedPermissionMode as PermissionMode;
+        }
+        return 'default';
+    });
+    const [modelMode, setModelMode] = useState<ModelMode>(() => {
+        const initial = agentType;
+        const config = AGENT_MODELS[initial];
+        if (lastUsedModelMode && config.validModes.includes(lastUsedModelMode as ModelMode)) {
+            return lastUsedModelMode as ModelMode;
+        }
+        return getDefaultModel(initial);
+    });
     const [selectedProfileId, setSelectedProfileId] = useState<string | null>(() => {
         return lastUsedProfile;
     });
+
+    /** Switch agent and reset model/permission to agent-appropriate defaults */
+    const switchAgent = React.useCallback((newAgent: AIAgent) => {
+        setAgentType(newAgent);
+        setModelMode(getDefaultModel(newAgent));
+        const validPermissions = AGENT_PERMISSIONS[newAgent];
+        if (!validPermissions.includes(permissionMode)) {
+            setPermissionMode('default');
+        }
+    }, [permissionMode]);
 
     // Built-in profiles
     const builtInProfiles: AIBackendProfile[] = useMemo(() => [
@@ -782,9 +806,9 @@ export function NewSessionWizard({ onComplete, onCancel, initialPrompt = '' }: N
             if (selectedProfile) {
                 // Auto-select agent type based on profile compatibility
                 if (selectedProfile.compatibility.claude && !selectedProfile.compatibility.codex) {
-                    setAgentType('claude');
+                    switchAgent('claude');
                 } else if (selectedProfile.compatibility.codex && !selectedProfile.compatibility.claude) {
-                    setAgentType('codex');
+                    switchAgent('codex');
                 }
 
                 // Sync active profile to CLI
@@ -877,9 +901,9 @@ export function NewSessionWizard({ onComplete, onCancel, initialPrompt = '' }: N
 
         // Auto-select agent type based on profile compatibility
         if (profile.compatibility.claude && !profile.compatibility.codex) {
-            setAgentType('claude');
+            switchAgent('claude');
         } else if (profile.compatibility.codex && !profile.compatibility.claude) {
-            setAgentType('codex');
+            switchAgent('codex');
         }
 
         // Get environment variables from profile (no user configuration)
@@ -905,9 +929,9 @@ export function NewSessionWizard({ onComplete, onCancel, initialPrompt = '' }: N
 
         // Auto-select agent type based on profile compatibility
         if (profile.compatibility.claude && !profile.compatibility.codex) {
-            setAgentType('claude');
+            switchAgent('claude');
         } else if (profile.compatibility.codex && !profile.compatibility.claude) {
-            setAgentType('codex');
+            switchAgent('codex');
         }
 
         // If profile needs configuration, go to profileConfig step
@@ -1440,7 +1464,7 @@ export function NewSessionWizard({ onComplete, onCancel, initialPrompt = '' }: N
                                             color={theme.colors.button.primary.background}
                                         />
                                     ) : null}
-                                    onPress={() => setAgentType(backend.agentType)}
+                                    onPress={() => switchAgent(backend.agentType)}
                                     showChevron={false}
                                     selected={agentType === backend.agentType}
                                     showDivider={true}
@@ -1499,7 +1523,7 @@ export function NewSessionWizard({ onComplete, onCancel, initialPrompt = '' }: N
                             ]}
                             onPress={() => {
                                 if (!selectedProfileId || allProfiles.find(p => p.id === selectedProfileId)?.compatibility.claude) {
-                                    setAgentType('claude');
+                                    switchAgent('claude');
                                 }
                             }}
                             disabled={!!(selectedProfileId && !allProfiles.find(p => p.id === selectedProfileId)?.compatibility.claude)}
@@ -1534,7 +1558,7 @@ export function NewSessionWizard({ onComplete, onCancel, initialPrompt = '' }: N
                             ]}
                             onPress={() => {
                                 if (!selectedProfileId || allProfiles.find(p => p.id === selectedProfileId)?.compatibility.codex) {
-                                    setAgentType('codex');
+                                    switchAgent('codex');
                                 }
                             }}
                             disabled={!!(selectedProfileId && !allProfiles.find(p => p.id === selectedProfileId)?.compatibility.codex)}
@@ -1593,12 +1617,18 @@ export function NewSessionWizard({ onComplete, onCancel, initialPrompt = '' }: N
                             </View>
                         )}
                         <ItemGroup title="Permission Mode">
-                            {([
-                                { value: 'default', label: 'Default', description: 'Ask for permissions', icon: 'shield-outline' },
-                                { value: 'acceptEdits', label: 'Accept Edits', description: 'Auto-approve edits', icon: 'checkmark-outline' },
-                                { value: 'plan', label: 'Plan', description: 'Plan before executing', icon: 'list-outline' },
-                                { value: 'bypassPermissions', label: 'Bypass Permissions', description: 'Skip all permissions', icon: 'flash-outline' },
-                            ] as const).map((option, index, array) => (
+                            {AGENT_PERMISSIONS[agentType].map((value) => {
+                                const permissionMeta: Record<PermissionMode, { label: string; description: string; icon: React.ComponentProps<typeof Ionicons>['name'] }> = {
+                                    'default': { label: 'Default', description: 'Ask for permissions', icon: 'shield-outline' },
+                                    'acceptEdits': { label: 'Accept Edits', description: 'Auto-approve edits', icon: 'checkmark-outline' },
+                                    'plan': { label: 'Plan', description: 'Plan before executing', icon: 'list-outline' },
+                                    'bypassPermissions': { label: 'Bypass Permissions', description: 'Skip all permissions', icon: 'flash-outline' },
+                                    'read-only': { label: 'Read-only', description: 'Read-only mode', icon: 'eye-outline' },
+                                    'safe-yolo': { label: 'Safe YOLO', description: 'Safe auto-approve mode', icon: 'shield-outline' },
+                                    'yolo': { label: 'YOLO', description: 'Skip all permissions', icon: 'rocket-outline' },
+                                };
+                                return { value, ...permissionMeta[value] };
+                            }).map((option, index, array) => (
                                 <Item
                                     key={option.value}
                                     title={option.label}
@@ -1626,7 +1656,7 @@ export function NewSessionWizard({ onComplete, onCancel, initialPrompt = '' }: N
                         </ItemGroup>
 
                         <ItemGroup title="Model Mode">
-                            {AGENT_MODELS[(agentType || 'claude') as AIAgent].options.map((option, index, array) => (
+                            {AGENT_MODELS[agentType].options.map((option, index, array) => (
                                 <Item
                                     key={option.value}
                                     title={option.label || t('agentInput.model.default')}

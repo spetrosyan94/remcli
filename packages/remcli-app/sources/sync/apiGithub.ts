@@ -31,9 +31,7 @@ export async function getGitHubOAuthParams(credentials: AuthCredentials): Promis
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
-                'ngrok-skip-browser-warning': '1',
                 'Content-Type': 'application/json',
-                'ngrok-skip-browser-warning': '1'
             }
         });
 
@@ -61,9 +59,7 @@ export async function getAccountProfile(credentials: AuthCredentials): Promise<A
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
-                'ngrok-skip-browser-warning': '1',
                 'Content-Type': 'application/json',
-                'ngrok-skip-browser-warning': '1'
             }
         });
 
@@ -87,7 +83,6 @@ export async function disconnectGitHub(credentials: AuthCredentials): Promise<vo
             method: 'DELETE',
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
-                'ngrok-skip-browser-warning': '1'
             }
         });
 

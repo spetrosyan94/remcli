@@ -942,6 +942,8 @@ export const ru: TranslationStructure = {
         notAvailable: 'Whisper недоступен на этом сервере',
         transcriptionFailed: 'Не удалось распознать аудио',
         emptyTranscription: 'Не удалось распознать речь. Попробуйте ещё раз.',
+        noSpeechTitle: 'Речь не распознана',
+        noSpeechDetected: 'В записи не удалось распознать речь. Попробуйте ещё раз.',
         setupRequired: 'Голосовой ввод недоступен',
         setupRequiredDescription: 'Запустите remcli setup для включения голосового ввода.',
     },

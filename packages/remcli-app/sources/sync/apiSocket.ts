@@ -71,10 +71,7 @@ class ApiSocket {
                 clientType: 'user-scoped' as const
             },
             transports: [...transports],
-            extraHeaders: {
-                // Bypass ngrok free-tier interstitial page for WS/polling requests
-                'ngrok-skip-browser-warning': '1',
-            },
+            extraHeaders: {},
             reconnection: true,
             reconnectionDelay: 1000,
             reconnectionDelayMax: 5000,
@@ -194,7 +191,6 @@ class ApiSocket {
         const url = `${this.config.endpoint}${path}`;
         const headers = {
             'Authorization': `Bearer ${credentials.token}`,
-            'ngrok-skip-browser-warning': '1',
             ...options?.headers
         };
 

@@ -390,7 +390,7 @@ This mechanism allows the P2P server and mobile clients to drive local actions w
 Interactive setup wizard (`src/commands/setup.ts`) that configures:
 1. **Whisper STT model** — selects and downloads a local speech-to-text model.
 2. **AI agent installation** — installs supported agents with cross-platform commands.
-3. **ngrok HTTPS tunnel** — installs system ngrok binary for remote access and web voice input.
+3. **cloudflared HTTPS tunnel** — installs cloudflared binary for remote access and web voice input.
 
 Supported agents:
 
@@ -401,15 +401,15 @@ Supported agents:
 | Codex CLI | `codex` | `npm install -g @openai/codex` | `npm install -g @openai/codex` |
 | Cursor CLI | `cursor` | `curl https://cursor.com/install -fsS \| bash` | `curl https://cursor.com/install -fsS \| bash` |
 
-ngrok installation per platform:
+cloudflared installation per platform:
 
 | Platform | Command |
 |----------|---------|
-| macOS | `brew install ngrok/ngrok/ngrok` |
-| Linux | `snap install ngrok` (fallback: apt) |
-| Windows | `winget install ngrok` |
+| macOS | `brew install cloudflared` |
+| Linux | download `.deb` from GitHub releases |
+| Windows | `winget install Cloudflare.cloudflared` |
 
-**Note**: `resolveNgrokBinary()` in `tunnel.ts` filters PATH to skip `node_modules/.bin` entries, avoiding conflicts with `@expo/ngrok-bin` JS wrapper that uses separate config and doesn't share system authtoken.
+No authtoken is needed — cloudflared quick tunnels work out of the box.
 
 Platform detection uses `process.platform === 'win32'`. Installation runs with `stdio: 'inherit'` so the user sees real-time progress.
 

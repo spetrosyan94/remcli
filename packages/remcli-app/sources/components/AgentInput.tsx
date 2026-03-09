@@ -17,6 +17,7 @@ import { FloatingOverlay } from './FloatingOverlay';
 import { TextInputState, MultiTextInputHandle } from './MultiTextInput';
 import { applySuggestion } from './autocomplete/applySuggestion';
 import { GitStatusBadge, useHasMeaningfulGitStatus } from './GitStatusBadge';
+import { VoiceRecordingBar } from './VoiceRecordingBar';
 import { Modal } from '@/modal';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { useSetting } from '@/sync/storage';
@@ -36,6 +37,9 @@ interface AgentInputProps {
     onMicPress?: () => void;
     isMicActive?: boolean;
     isMicDisabled?: boolean;
+    whisperState?: 'idle' | 'recording' | 'transcribing';
+    elapsedSeconds?: number;
+    onMicStop?: () => void;
     permissionMode?: PermissionMode;
     onPermissionModeChange?: (mode: PermissionMode) => void;
     modelMode?: ModelMode;
@@ -958,19 +962,27 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
 
                 {/* Box 2: Action Area (Input + Send) */}
                 <View style={styles.unifiedPanel}>
-                    {/* Input field */}
+                    {/* Input field or voice recording bar */}
                     <View style={[styles.inputContainer, props.minHeight ? { minHeight: props.minHeight } : undefined]}>
-                        <MultiTextInput
-                            ref={inputRef}
-                            value={props.value}
-                            paddingTop={Platform.OS === 'web' ? 10 : 8}
-                            paddingBottom={Platform.OS === 'web' ? 10 : 8}
-                            onChangeText={props.onChangeText}
-                            placeholder={props.placeholder}
-                            onKeyPress={handleKeyPress}
-                            onStateChange={handleInputStateChange}
-                            maxHeight={120}
-                        />
+                        {(props.whisperState === 'recording' || props.whisperState === 'transcribing') ? (
+                            <VoiceRecordingBar
+                                state={props.whisperState}
+                                elapsedSeconds={props.elapsedSeconds ?? 0}
+                                onStop={() => props.onMicStop?.()}
+                            />
+                        ) : (
+                            <MultiTextInput
+                                ref={inputRef}
+                                value={props.value}
+                                paddingTop={Platform.OS === 'web' ? 10 : 8}
+                                paddingBottom={Platform.OS === 'web' ? 10 : 8}
+                                onChangeText={props.onChangeText}
+                                placeholder={props.placeholder}
+                                onKeyPress={handleKeyPress}
+                                onStateChange={handleInputStateChange}
+                                maxHeight={120}
+                            />
+                        )}
                     </View>
 
                     {/* Action buttons below input */}

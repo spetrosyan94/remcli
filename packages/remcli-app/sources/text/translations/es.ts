@@ -920,6 +920,8 @@ export const es: TranslationStructure = {
         notAvailable: 'Whisper no está disponible en este servidor',
         transcriptionFailed: 'Error al transcribir el audio',
         emptyTranscription: 'No se pudo reconocer el habla. Inténtelo de nuevo.',
+        noSpeechTitle: 'No se detectó voz',
+        noSpeechDetected: 'No se reconoció voz en la grabación. Inténtalo de nuevo.',
         setupRequired: 'Entrada de voz no disponible',
         setupRequiredDescription: 'Ejecute remcli setup para habilitar la entrada de voz.',
     },

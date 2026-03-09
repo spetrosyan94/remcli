@@ -208,6 +208,19 @@ export async function downloadModelWithProgress(
     return modelPath;
 }
 
+/**
+ * Clean Whisper output: remove bracketed markers like [BLANK_AUDIO], (music), etc.
+ * Actual hallucination prevention is done via Whisper parameters (suppress_blank,
+ * suppress_non_speech_tokens, no_speech_thold, logprob_thold).
+ */
+function cleanWhisperOutput(text: string): string {
+    return text
+        .replace(/\[[^\]]*\]/g, '')
+        .replace(/\([^)]*\)/g, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+}
+
 export async function transcribe(audioPath: string): Promise<TranscriptionResult> {
     const wavPath = await ensureWav(audioPath);
     const shouldCleanup = wavPath !== audioPath;
@@ -215,11 +228,18 @@ export async function transcribe(audioPath: string): Promise<TranscriptionResult
     try {
         const whisper = await getWhisperInstance();
         const pcm = readWavAsPcm(wavPath);
-        const task = await whisper.transcribe(pcm, { language: 'auto' });
+        const task = await whisper.transcribe(pcm, {
+            language: 'auto',
+            suppress_blank: true,
+            suppress_non_speech_tokens: true,
+            no_speech_thold: 0.6,
+            logprob_thold: -1.0,
+        });
         const result = await task.result;
 
         // result is an array of segments [{text, from, to, ...}]
-        const text = result.map(seg => seg.text).join(' ').trim();
+        const rawText = result.map(seg => seg.text).join(' ').trim();
+        const text = cleanWhisperOutput(rawText);
         const lastSegment = result[result.length - 1];
         const duration = lastSegment?.to ? lastSegment.to / 1000 : 0;
 

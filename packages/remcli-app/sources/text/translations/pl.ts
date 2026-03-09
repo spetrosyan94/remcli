@@ -943,6 +943,8 @@ export const pl: TranslationStructure = {
         notAvailable: 'Whisper nie jest dostępny na tym serwerze',
         transcriptionFailed: 'Nie udało się transkrybować audio',
         emptyTranscription: 'Nie rozpoznano mowy. Spróbuj ponownie.',
+        noSpeechTitle: 'Nie wykryto mowy',
+        noSpeechDetected: 'Nie rozpoznano mowy w nagraniu. Spróbuj ponownie.',
         setupRequired: 'Wprowadzanie głosowe niedostępne',
         setupRequiredDescription: 'Uruchom remcli setup, aby włączyć wprowadzanie głosowe.',
     },
