@@ -10,7 +10,6 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, unl
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { Whisper } from 'smart-whisper';
 import { decode } from 'node-wav';
 import { configuration } from '@/configuration';
 import { readSetupConfig } from '@/persistence';
@@ -48,6 +47,7 @@ function getModelUrl(modelName?: string): string {
 
 // ─── State ──────────────────────────────────────────────────────
 
+type Whisper = import('smart-whisper').Whisper;
 let whisperInstance: Whisper | null = null;
 
 // ─── Public API ─────────────────────────────────────────────────
@@ -96,7 +96,10 @@ export function isFfmpegAvailable(): boolean {
 
 export function isAvailable(): boolean {
     try {
+        const prevNodeEnv = process.env.NODE_ENV;
+        process.env.NODE_ENV = 'production';
         require('smart-whisper');
+        process.env.NODE_ENV = prevNodeEnv;
         return true;
     } catch {
         return false;
@@ -208,17 +211,56 @@ export async function downloadModelWithProgress(
     return modelPath;
 }
 
+// ─── Anti-hallucination ─────────────────────────────────────────
+
+/** RMS energy threshold — below this the audio is silence/breathing, skip transcription */
+const SILENCE_RMS_THRESHOLD = 0.005;
+
+/** Segment confidence threshold — segments below this are likely hallucinations */
+const MIN_SEGMENT_CONFIDENCE = 0.4;
+
 /**
- * Clean Whisper output: remove bracketed markers like [BLANK_AUDIO], (music), etc.
- * Actual hallucination prevention is done via Whisper parameters (suppress_blank,
- * suppress_non_speech_tokens, no_speech_thold, logprob_thold).
+ * Calculate RMS (root mean square) energy of PCM audio.
+ * Values near 0 = silence, typical speech is 0.01–0.3.
  */
-function cleanWhisperOutput(text: string): string {
-    return text
+function calculateRmsEnergy(pcm: Float32Array): number {
+    let sumSquares = 0;
+    for (let i = 0; i < pcm.length; i++) {
+        sumSquares += pcm[i] * pcm[i];
+    }
+    return Math.sqrt(sumSquares / pcm.length);
+}
+
+/**
+ * Detect hallucination patterns: repeated phrases, gibberish, bracketed markers.
+ * Returns cleaned text or empty string if the entire output is a hallucination.
+ */
+function filterHallucinations(text: string): string {
+    // Remove bracketed/parenthesized markers like [BLANK_AUDIO], (music)
+    let cleaned = text
         .replace(/\[[^\]]*\]/g, '')
         .replace(/\([^)]*\)/g, '')
         .replace(/\s{2,}/g, ' ')
         .trim();
+
+    if (!cleaned) return '';
+
+    // Detect repeated phrase hallucinations ("Thank you. Thank you. Thank you.")
+    // Split into sentences, check if ≥60% are the same phrase
+    const sentences = cleaned.split(/[.!?]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+    if (sentences.length >= 3) {
+        const freq = new Map<string, number>();
+        for (const s of sentences) {
+            freq.set(s, (freq.get(s) || 0) + 1);
+        }
+        const maxRepeat = Math.max(...freq.values());
+        if (maxRepeat / sentences.length >= 0.6) {
+            logger.debug(`[WHISPER] Hallucination detected: repeated phrase (${maxRepeat}/${sentences.length})`);
+            return '';
+        }
+    }
+
+    return cleaned;
 }
 
 export async function transcribe(audioPath: string): Promise<TranscriptionResult> {
@@ -228,21 +270,44 @@ export async function transcribe(audioPath: string): Promise<TranscriptionResult
     try {
         const whisper = await getWhisperInstance();
         const pcm = readWavAsPcm(wavPath);
+
+        // Pre-check: reject silence/breathing before running Whisper
+        const rms = calculateRmsEnergy(pcm);
+        logger.debug(`[WHISPER] Audio RMS energy: ${rms.toFixed(6)}`);
+        if (rms < SILENCE_RMS_THRESHOLD) {
+            logger.debug('[WHISPER] Audio below silence threshold, skipping transcription');
+            return { text: '', language: 'auto', duration: pcm.length / 16000 };
+        }
+
         const task = await whisper.transcribe(pcm, {
             language: 'auto',
             suppress_blank: true,
             suppress_non_speech_tokens: true,
-            no_speech_thold: 0.6,
-            logprob_thold: -1.0,
+            no_speech_thold: 0.8,
+            logprob_thold: -0.7,
+            entropy_thold: 2.4,
+            temperature: 0.0,
+            format: 'detail',
         });
         const result = await task.result;
 
-        // result is an array of segments [{text, from, to, ...}]
-        const rawText = result.map(seg => seg.text).join(' ').trim();
-        const text = cleanWhisperOutput(rawText);
-        const lastSegment = result[result.length - 1];
+        // Filter segments by confidence score
+        const segments = (result as Array<{ text: string; from: number; to: number; confidence: number }>)
+            .filter(seg => {
+                if (seg.confidence < MIN_SEGMENT_CONFIDENCE) {
+                    logger.debug(`[WHISPER] Dropping low-confidence segment (${seg.confidence.toFixed(3)}): "${seg.text.trim()}"`);
+                    return false;
+                }
+                return true;
+            });
+
+        const rawText = segments.map(seg => seg.text).join(' ').trim();
+        const text = filterHallucinations(rawText);
+
+        const lastSegment = segments[segments.length - 1];
         const duration = lastSegment?.to ? lastSegment.to / 1000 : 0;
 
+        logger.debug(`[WHISPER] Transcription: "${text}" (${segments.length} segments, duration=${duration.toFixed(1)}s)`);
         return { text, language: 'auto', duration };
     } finally {
         if (shouldCleanup && existsSync(wavPath)) {
@@ -264,7 +329,19 @@ export async function freeWhisper(): Promise<void> {
 async function getWhisperInstance(): Promise<Whisper> {
     if (!whisperInstance) {
         const modelPath = await ensureModel();
-        whisperInstance = new Whisper(modelPath, { gpu: true });
+
+        // Set NODE_ENV=production before first import so smart-whisper's native
+        // binding calls whisper_log_set() to suppress ggml stderr spam
+        const prevNodeEnv = process.env.NODE_ENV;
+        process.env.NODE_ENV = 'production';
+        const { Whisper: WhisperClass } = await import('smart-whisper');
+        if (prevNodeEnv === undefined) {
+            delete process.env.NODE_ENV;
+        } else {
+            process.env.NODE_ENV = prevNodeEnv;
+        }
+
+        whisperInstance = new WhisperClass(modelPath, { gpu: true });
         logger.debug('[WHISPER] Initialized native bindings with GPU support');
     }
     return whisperInstance;
