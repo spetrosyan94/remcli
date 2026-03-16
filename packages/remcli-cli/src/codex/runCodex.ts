@@ -652,10 +652,23 @@ export async function runCodex(opts: {
                         (startConfig.config as any).experimental_resume = resumeFile;
                     }
                     
-                    await client.startSession(
+                    const startResponse = await client.startSession(
                         startConfig,
                         { signal: abortController.signal }
                     );
+
+                    // Check for MCP-level errors (e.g. unsupported model for ChatGPT account)
+                    if (startResponse.isError) {
+                        const errorText = Array.isArray(startResponse.content)
+                            ? startResponse.content.map((c: any) => c.text || '').join(' ')
+                            : String(startResponse.content);
+                        logger.warn('[Codex] startSession returned error:', errorText);
+                        messageBuffer.addMessage(`Error: ${errorText}`, 'status');
+                        session.sendSessionEvent({ type: 'message', message: `Error: ${errorText}` });
+                        // Don't mark as created — allow retry with different model
+                        continue;
+                    }
+
                     wasCreated = true;
                     first = false;
                     // Fallback: auto-set title in case AI doesn't call change_title

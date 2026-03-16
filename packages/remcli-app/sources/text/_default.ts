@@ -919,6 +919,8 @@ export const en = {
         notAvailable: 'Whisper is not available on this server',
         transcriptionFailed: 'Failed to transcribe audio',
         emptyTranscription: 'Could not recognize speech. Please try again.',
+        noSpeechTitle: 'No Speech Detected',
+        noSpeechDetected: 'No speech was recognized in the recording. Please try again.',
         setupRequired: 'Voice Input Unavailable',
         setupRequiredDescription: 'Run remcli setup to enable voice input.',
     },

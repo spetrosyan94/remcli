@@ -54,11 +54,12 @@ export const AGENT_MODELS: Record<AIAgent, AgentModelConfig> = {
     },
     codex: {
         options: [
-            { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', descriptionKey: 'mostCapable' },
-            { value: 'gpt-5.3', label: 'GPT-5.3', descriptionKey: 'balanced' },
+            { value: 'default', label: '', descriptionKey: 'defaultDesc' },
+            { value: 'o3', label: 'o3', descriptionKey: 'mostCapable' },
+            { value: 'o4-mini', label: 'o4-mini', descriptionKey: 'fast' },
         ],
-        defaultMode: 'gpt-5.3-codex',
-        validModes: ['gpt-5.3-codex', 'gpt-5.3'],
+        defaultMode: 'default',
+        validModes: ['default', 'o3', 'o4-mini'],
     },
     cursor: {
         options: [
