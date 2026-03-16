@@ -95,14 +95,19 @@ export function isFfmpegAvailable(): boolean {
 }
 
 export function isAvailable(): boolean {
+    const prevNodeEnv = process.env.NODE_ENV;
     try {
-        const prevNodeEnv = process.env.NODE_ENV;
         process.env.NODE_ENV = 'production';
         require('smart-whisper');
-        process.env.NODE_ENV = prevNodeEnv;
         return true;
     } catch {
         return false;
+    } finally {
+        if (prevNodeEnv === undefined) {
+            delete process.env.NODE_ENV;
+        } else {
+            process.env.NODE_ENV = prevNodeEnv;
+        }
     }
 }
 
@@ -334,11 +339,15 @@ async function getWhisperInstance(): Promise<Whisper> {
         // binding calls whisper_log_set() to suppress ggml stderr spam
         const prevNodeEnv = process.env.NODE_ENV;
         process.env.NODE_ENV = 'production';
-        const { Whisper: WhisperClass } = await import('smart-whisper');
-        if (prevNodeEnv === undefined) {
-            delete process.env.NODE_ENV;
-        } else {
-            process.env.NODE_ENV = prevNodeEnv;
+        let WhisperClass: typeof import('smart-whisper').Whisper;
+        try {
+            ({ Whisper: WhisperClass } = await import('smart-whisper'));
+        } finally {
+            if (prevNodeEnv === undefined) {
+                delete process.env.NODE_ENV;
+            } else {
+                process.env.NODE_ENV = prevNodeEnv;
+            }
         }
 
         whisperInstance = new WhisperClass(modelPath, { gpu: true });

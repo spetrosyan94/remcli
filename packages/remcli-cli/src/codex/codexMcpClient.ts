@@ -128,7 +128,7 @@ export class CodexMcpClient {
         this.client.setRequestHandler(
             ElicitRequestSchema,
             async (request) => {
-                console.log('[CodexMCP] Received elicitation request:', request.params);
+                logger.debug('[CodexMCP] Received elicitation request:', request.params);
 
                 // Load params
                 const params = request.params as unknown as {

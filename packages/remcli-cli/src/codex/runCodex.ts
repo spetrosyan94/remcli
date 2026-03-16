@@ -199,12 +199,12 @@ export async function runCodex(opts: {
     // Debug helper: log active handles/requests if DEBUG is enabled
     function logActiveHandles(tag: string) {
         if (!process.env.DEBUG) return;
-        const anyProc: any = process as any;
-        const handles = typeof anyProc._getActiveHandles === 'function' ? anyProc._getActiveHandles() : [];
-        const requests = typeof anyProc._getActiveRequests === 'function' ? anyProc._getActiveRequests() : [];
+        const nodeProc = process as NodeJS.Process & { _getActiveHandles?: () => Array<{ constructor?: { name: string } }>; _getActiveRequests?: () => unknown[] };
+        const handles = typeof nodeProc._getActiveHandles === 'function' ? nodeProc._getActiveHandles() : [];
+        const requests = typeof nodeProc._getActiveRequests === 'function' ? nodeProc._getActiveRequests() : [];
         logger.debug(`[codex][handles] ${tag}: handles=${handles.length} requests=${requests.length}`);
         try {
-            const kinds = handles.map((h: any) => (h && h.constructor ? h.constructor.name : typeof h));
+            const kinds = handles.map((h) => (h && h.constructor ? h.constructor.name : typeof h));
             logger.debug(`[codex][handles] kinds=${JSON.stringify(kinds)}`);
         } catch { }
     }
