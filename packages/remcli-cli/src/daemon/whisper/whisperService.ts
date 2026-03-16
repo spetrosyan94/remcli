@@ -221,8 +221,51 @@ export async function downloadModelWithProgress(
 /** RMS energy threshold — below this the audio is silence/breathing, skip transcription */
 const SILENCE_RMS_THRESHOLD = 0.005;
 
+/** Per-segment RMS threshold — segments with energy below this are on silence */
+const SEGMENT_SILENCE_RMS_THRESHOLD = 0.003;
+
 /** Segment confidence threshold — segments below this are likely hallucinations */
 const MIN_SEGMENT_CONFIDENCE = 0.4;
+
+/** Trailing segment confidence threshold — stricter for end-of-audio hallucinations */
+const MIN_TRAILING_CONFIDENCE = 0.5;
+
+/**
+ * Known Whisper hallucination patterns (case-insensitive).
+ * Each segment is checked individually — a match removes only that segment, not the whole transcription.
+ */
+const HALLUCINATION_PATTERNS: RegExp[] = [
+    // Subtitle credits (Russian)
+    /субтитр/i,
+    /редактор/i,
+    /корректор/i,
+    /переводчик/i,
+    /продюсер/i,
+    /монтаж/i,
+    // Subtitle credits (English)
+    /subtitl(?:es?|ed)\s+by/i,
+    /transcribed\s+by/i,
+    /translated\s+by/i,
+    /captioned\s+by/i,
+    /amara\.org/i,
+    // Generic hallucinations (English)
+    /thanks?\s+for\s+watching/i,
+    /thank\s+you\s+for\s+watching/i,
+    /\bsubscribe\b/i,
+    /like\s+and\s+subscribe/i,
+    /please\s+subscribe/i,
+    /hit\s+the\s+bell/i,
+    /see\s+you\s+(next\s+time|in\s+the\s+next)/i,
+    // Generic hallucinations (Russian)
+    /подписывайтесь/i,
+    /спасибо\s+за\s+просмотр/i,
+    /ставьте\s+лайк/i,
+    /до\s+новых\s+встреч/i,
+    // Music/sound symbols
+    /♪/,
+    /♫/,
+    /🎵/,
+];
 
 /**
  * Calculate RMS (root mean square) energy of PCM audio.
@@ -234,6 +277,45 @@ function calculateRmsEnergy(pcm: Float32Array): number {
         sumSquares += pcm[i] * pcm[i];
     }
     return Math.sqrt(sumSquares / pcm.length);
+}
+
+/**
+ * Calculate RMS energy for a specific time range of PCM audio (16kHz mono).
+ */
+function calculateSegmentRmsEnergy(pcm: Float32Array, fromMs: number, toMs: number): number {
+    const sampleRate = 16000;
+    const startSample = Math.max(0, Math.floor((fromMs / 1000) * sampleRate));
+    const endSample = Math.min(pcm.length, Math.ceil((toMs / 1000) * sampleRate));
+    if (endSample <= startSample) return 0;
+
+    let sumSquares = 0;
+    for (let i = startSample; i < endSample; i++) {
+        sumSquares += pcm[i] * pcm[i];
+    }
+    return Math.sqrt(sumSquares / (endSample - startSample));
+}
+
+/**
+ * Check if a segment text matches any known hallucination pattern.
+ */
+function isHallucinationSegment(text: string): boolean {
+    return HALLUCINATION_PATTERNS.some(pattern => pattern.test(text));
+}
+
+/**
+ * Remove trailing segments with confidence below the stricter threshold.
+ * Whisper hallucinations typically appear at the end of recordings during silence.
+ */
+function trimTrailingLowConfidence(
+    segments: Array<{ text: string; from: number; to: number; confidence: number }>
+): Array<{ text: string; from: number; to: number; confidence: number }> {
+    let endIdx = segments.length;
+    while (endIdx > 0 && segments[endIdx - 1].confidence < MIN_TRAILING_CONFIDENCE) {
+        const seg = segments[endIdx - 1];
+        logger.debug(`[WHISPER] Trimming trailing low-confidence segment (${seg.confidence.toFixed(3)}): "${seg.text.trim()}"`);
+        endIdx--;
+    }
+    return segments.slice(0, endIdx);
 }
 
 /**
@@ -296,8 +378,8 @@ export async function transcribe(audioPath: string): Promise<TranscriptionResult
         });
         const result = await task.result;
 
-        // Filter segments by confidence score
-        const segments = (result as Array<{ text: string; from: number; to: number; confidence: number }>)
+        // Step 1: Filter segments by minimum confidence score
+        let segments = (result as Array<{ text: string; from: number; to: number; confidence: number }>)
             .filter(seg => {
                 if (seg.confidence < MIN_SEGMENT_CONFIDENCE) {
                     logger.debug(`[WHISPER] Dropping low-confidence segment (${seg.confidence.toFixed(3)}): "${seg.text.trim()}"`);
@@ -305,6 +387,28 @@ export async function transcribe(audioPath: string): Promise<TranscriptionResult
                 }
                 return true;
             });
+
+        // Step 2: Filter segments on silence (per-segment RMS check)
+        segments = segments.filter(seg => {
+            const segRms = calculateSegmentRmsEnergy(pcm, seg.from, seg.to);
+            if (segRms < SEGMENT_SILENCE_RMS_THRESHOLD) {
+                logger.debug(`[WHISPER] Dropping silence segment (RMS=${segRms.toFixed(6)}): "${seg.text.trim()}"`);
+                return false;
+            }
+            return true;
+        });
+
+        // Step 3: Filter segments matching known hallucination patterns (blacklist)
+        segments = segments.filter(seg => {
+            if (isHallucinationSegment(seg.text)) {
+                logger.debug(`[WHISPER] Dropping hallucination segment (blacklist): "${seg.text.trim()}"`);
+                return false;
+            }
+            return true;
+        });
+
+        // Step 4: Trim trailing low-confidence segments (hallucinations cluster at the end)
+        segments = trimTrailingLowConfidence(segments);
 
         const rawText = segments.map(seg => seg.text).join(' ').trim();
         const text = filterHallucinations(rawText);
