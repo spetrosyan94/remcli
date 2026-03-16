@@ -639,7 +639,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                         {t('agentInput.model.title')}
                                     </Text>
                                     {(() => {
-                                        const agent = (props.agentType || 'claude') as AIAgent;
+                                        const agent = (props.agentType || props.metadata?.flavor || 'claude') as AIAgent;
                                         const config = AGENT_MODELS[agent];
 
                                         return config.options.map((opt) => {
@@ -1083,9 +1083,12 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                             fontWeight: '600',
                                             ...Typography.default('semiBold'),
                                         }}>
-                                            {props.agentType === 'claude' ? t('agentInput.agent.claude') : props.agentType === 'codex' ? t('agentInput.agent.codex') : props.agentType === 'cursor' ? t('agentInput.agent.cursor') : t('agentInput.agent.gemini')}
                                             {(() => {
-                                                const agent = (props.agentType || 'claude') as AIAgent;
+                                                const a = (props.agentType || props.metadata?.flavor || 'claude') as AIAgent;
+                                                return a === 'claude' ? t('agentInput.agent.claude') : a === 'codex' ? t('agentInput.agent.codex') : a === 'cursor' ? t('agentInput.agent.cursor') : t('agentInput.agent.gemini');
+                                            })()}
+                                            {(() => {
+                                                const agent = (props.agentType || props.metadata?.flavor || 'claude') as AIAgent;
                                                 const config = AGENT_MODELS[agent];
                                                 const currentModel = props.modelMode || config.defaultMode;
                                                 if (currentModel === 'default') return null;

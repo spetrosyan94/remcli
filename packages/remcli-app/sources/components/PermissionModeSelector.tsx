@@ -10,7 +10,7 @@ export type ModelMode =
     // Claude
     | 'default' | 'adaptiveUsage' | 'sonnet' | 'opus' | 'haiku'
     // Codex (OpenAI)
-    | 'gpt-5.4' | 'gpt-5.3-codex' | 'gpt-5.2-codex' | 'gpt-5.2' | 'gpt-5.1-codex-max' | 'gpt-5.1-codex-mini'
+    | 'gpt-5.3-codex' | 'gpt-5.2-codex' | 'gpt-5.2' | 'gpt-5.1-codex-max' | 'gpt-5.1-codex-mini'
     // Cursor (multi-provider)
     | 'opus-4.6' | 'composer-1.5'
     // Gemini
