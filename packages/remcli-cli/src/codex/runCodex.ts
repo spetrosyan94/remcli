@@ -168,10 +168,11 @@ export async function runCodex(opts: {
             logger.debug(`[Codex] User message received with no permission mode override, using current: ${currentPermissionMode ?? 'default (effective)'}`);
         }
 
-        // Resolve model; explicit null resets to default (undefined)
+        // Resolve model; explicit null or 'default' resets to undefined (let Codex choose)
         let messageModel = currentModel;
         if (message.meta?.hasOwnProperty('model')) {
-            messageModel = message.meta.model || undefined;
+            const raw = message.meta.model;
+            messageModel = (raw && raw !== 'default') ? raw : undefined;
             currentModel = messageModel;
             logger.debug(`[Codex] Model updated from user message: ${messageModel || 'reset to default'}`);
         } else {
@@ -664,7 +665,7 @@ export async function runCodex(opts: {
                             : String(startResponse.content);
                         logger.warn('[Codex] startSession returned error:', errorText);
                         messageBuffer.addMessage(`Error: ${errorText}`, 'status');
-                        session.sendSessionEvent({ type: 'message', message: `Error: ${errorText}` });
+                        session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
                         // Don't mark as created — allow retry with different model
                         continue;
                     }

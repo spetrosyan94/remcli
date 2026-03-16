@@ -312,7 +312,7 @@ export class ApiSessionClient extends EventEmitter {
     sendSessionEvent(event: {
         type: 'switch', mode: 'local' | 'remote'
     } | {
-        type: 'message', message: string
+        type: 'message', message: string, isError?: boolean
     } | {
         type: 'permission-mode-changed', mode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
     } | {

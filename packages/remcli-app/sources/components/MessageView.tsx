@@ -127,7 +127,7 @@ function AgentEventBlock(props: {
   if (props.event.type === 'message') {
     return (
       <View style={styles.agentEventContainer}>
-        <Text style={styles.agentEventText}>{props.event.message}</Text>
+        <Text style={props.event.isError ? styles.agentEventError : styles.agentEventText}>{props.event.message}</Text>
       </View>
     );
   }
@@ -234,6 +234,11 @@ const styles = StyleSheet.create((theme) => ({
   agentEventText: {
     color: theme.colors.agentEventText,
     fontSize: 14,
+  },
+  agentEventError: {
+    color: theme.colors.textDestructive,
+    fontSize: 14,
+    fontWeight: '500',
   },
   toolContainer: {
     marginHorizontal: 8,
