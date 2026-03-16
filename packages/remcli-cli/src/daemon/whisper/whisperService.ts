@@ -235,13 +235,11 @@ const MIN_TRAILING_CONFIDENCE = 0.5;
  * Each segment is checked individually — a match removes only that segment, not the whole transcription.
  */
 const HALLUCINATION_PATTERNS: RegExp[] = [
-    // Subtitle credits (Russian)
+    // Subtitle credits (Russian) — use multi-word patterns to avoid false positives
     /субтитр/i,
-    /редактор/i,
-    /корректор/i,
-    /переводчик/i,
-    /продюсер/i,
-    /монтаж/i,
+    /редакт\w*\s+(субтитр|перевод|титр)/i,
+    /корректор\s+(субтитр|перевод|титр)/i,
+    /переводчик\s+(субтитр|титр)/i,
     // Subtitle credits (English)
     /subtitl(?:es?|ed)\s+by/i,
     /transcribed\s+by/i,
@@ -251,7 +249,6 @@ const HALLUCINATION_PATTERNS: RegExp[] = [
     // Generic hallucinations (English)
     /thanks?\s+for\s+watching/i,
     /thank\s+you\s+for\s+watching/i,
-    /\bsubscribe\b/i,
     /like\s+and\s+subscribe/i,
     /please\s+subscribe/i,
     /hit\s+the\s+bell/i,
@@ -272,6 +269,7 @@ const HALLUCINATION_PATTERNS: RegExp[] = [
  * Values near 0 = silence, typical speech is 0.01–0.3.
  */
 function calculateRmsEnergy(pcm: Float32Array): number {
+    if (pcm.length === 0) return 0;
     let sumSquares = 0;
     for (let i = 0; i < pcm.length; i++) {
         sumSquares += pcm[i] * pcm[i];
