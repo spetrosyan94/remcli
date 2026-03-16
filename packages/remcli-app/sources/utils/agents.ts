@@ -54,12 +54,13 @@ export const AGENT_MODELS: Record<AIAgent, AgentModelConfig> = {
     },
     codex: {
         options: [
-            { value: 'default', label: '', descriptionKey: 'defaultDesc' },
-            { value: 'o3', label: 'o3', descriptionKey: 'mostCapable' },
-            { value: 'o4-mini', label: 'o4-mini', descriptionKey: 'fast' },
+            { value: 'gpt-5.4', label: 'GPT-5.4', descriptionKey: 'defaultDesc' },
+            { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', descriptionKey: 'mostCapable' },
+            { value: 'gpt-5.2', label: 'GPT-5.2', descriptionKey: 'balanced' },
+            { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini', descriptionKey: 'fast' },
         ],
-        defaultMode: 'default',
-        validModes: ['default', 'o3', 'o4-mini'],
+        defaultMode: 'gpt-5.4',
+        validModes: ['gpt-5.4', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.2', 'gpt-5.1-codex-max', 'gpt-5.1-codex-mini'],
     },
     cursor: {
         options: [
@@ -67,10 +68,10 @@ export const AGENT_MODELS: Record<AIAgent, AgentModelConfig> = {
             { value: 'opus-4.6', label: 'Claude 4.6 Opus', descriptionKey: 'mostCapable' },
             { value: 'composer-1.5', label: 'Composer 1.5', descriptionKey: 'balanced' },
             { value: 'gemini-3-pro', label: 'Gemini 3 Pro', descriptionKey: 'fast' },
-            { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', descriptionKey: 'fast' },
+            { value: 'gpt-5.4', label: 'GPT-5.4', descriptionKey: 'fast' },
         ],
         defaultMode: 'default',
-        validModes: ['default', 'opus-4.6', 'composer-1.5', 'gemini-3-pro', 'gpt-5.3-codex'],
+        validModes: ['default', 'opus-4.6', 'composer-1.5', 'gemini-3-pro', 'gpt-5.4'],
     },
     gemini: {
         options: [
