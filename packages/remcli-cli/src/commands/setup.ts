@@ -7,9 +7,12 @@
  * 3. Saves configuration to ~/.remcli/setup.json
  */
 
-import { select, checkbox, confirm } from '@inquirer/prompts';
+import { select, checkbox, confirm, input } from '@inquirer/prompts';
 import chalk from 'chalk';
 import { execFileSync, execSync } from 'node:child_process';
+import { existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { readSetupConfig, writeSetupConfig } from '@/persistence';
 import { WHISPER_MODELS, downloadModelWithProgress, isModelDownloaded } from '@/daemon/whisper/whisperService';
 import { resolveCloudflaredBinary } from '@/daemon/p2p/tunnel';
@@ -112,25 +115,45 @@ async function stepWhisperModel(): Promise<string> {
     console.log(chalk.gray('  Whisper provides local speech-to-text for voice messages.'));
     console.log(chalk.gray('  Larger models are more accurate but use more disk space.\n'));
 
-    const modelChoices = Object.entries(WHISPER_MODELS).map(([key, info]) => {
-        const downloaded = isModelDownloaded(key);
-        const recommended = key === 'small';
-        const sizeLabel = info.sizeMB >= 1000
-            ? `~${(info.sizeMB / 1000).toFixed(1)}GB`
-            : `~${info.sizeMB}MB`;
+    // Show currently downloaded models
+    const downloadedModels = Object.keys(WHISPER_MODELS).filter(key => isModelDownloaded(key));
+    if (downloadedModels.length > 0) {
+        console.log(chalk.gray(`  Currently downloaded: ${downloadedModels.join(', ')}\n`));
+    }
 
-        let label = `${key} (${sizeLabel})`;
-        if (recommended) label += chalk.cyan(' -- RECOMMENDED');
-        if (downloaded) label += chalk.green(' [downloaded]');
+    const existingConfig = readSetupConfig();
 
-        return { name: label, value: key };
-    });
+    const modelChoices = [
+        // Skip option at the top
+        { name: chalk.gray('Skip (keep current settings)'), value: '__skip__' },
+        ...Object.entries(WHISPER_MODELS).map(([key, info]) => {
+            const downloaded = isModelDownloaded(key);
+            const recommended = key === 'small';
+            const isActive = existingConfig.whisperModel === key;
+            const sizeLabel = info.sizeMB >= 1000
+                ? `~${(info.sizeMB / 1000).toFixed(1)}GB`
+                : `~${info.sizeMB}MB`;
+
+            let label = `${key} (${sizeLabel})`;
+            if (recommended) label += chalk.cyan(' -- RECOMMENDED');
+            if (downloaded && isActive) label += chalk.green(' [active]');
+            else if (downloaded) label += chalk.green(' [downloaded]');
+
+            return { name: label, value: key };
+        }),
+    ];
 
     const selectedModel = await select({
         message: 'Select Whisper model:',
         choices: modelChoices,
-        default: 'small',
+        default: existingConfig.whisperModel || 'small',
     });
+
+    if (selectedModel === '__skip__') {
+        const current = existingConfig.whisperModel || 'base';
+        console.log(chalk.gray(`\n  Keeping current model: ${current}`));
+        return current;
+    }
 
     if (isModelDownloaded(selectedModel)) {
         console.log(chalk.green(`\n  Model "${selectedModel}" is already downloaded.`));
@@ -144,19 +167,140 @@ async function stepWhisperModel(): Promise<string> {
         let lastLineLength = 0;
         await downloadModelWithProgress(selectedModel, (downloaded, total) => {
             const line = `  ${formatProgressBar(downloaded, total)}`;
-            // Clear previous line and write new one
             process.stdout.write(`\r${' '.repeat(lastLineLength)}\r${line}`);
             lastLineLength = line.length;
         });
-        console.log(''); // newline after progress
+        console.log('');
         console.log(chalk.green(`  Model "${selectedModel}" downloaded successfully.`));
     }
 
     return selectedModel;
 }
 
+async function stepTTS(): Promise<{ provider: string; voice: string; voiceProfile: string }> {
+    console.log(chalk.bold('\n\u{1F50A} Step 2: Text-to-Speech (TTS)\n'));
+    console.log(chalk.gray('  TTS enables voice playback of agent responses on your mobile/web client.\n'));
+
+    const existingConfig = readSetupConfig();
+    const currentProvider = existingConfig.ttsProvider || 'edge';
+
+    // Check qwen3 installation status
+    const qwenVenvPath = join(homedir(), '.remcli', 'tts-venv');
+    const qwenInstalled = existsSync(qwenVenvPath);
+    const isAppleSilicon = process.arch === 'arm64' && process.platform === 'darwin';
+
+    // Build labels with status info
+    const edgeLabel = `edge-tts (Microsoft, free, no setup needed)${currentProvider === 'edge' ? chalk.green(' [active]') : chalk.green(' [ready]')}`;
+
+    let qwenLabel = 'qwen3-tts (local, voice cloning, Apple Silicon only)';
+    if (!isAppleSilicon) {
+        qwenLabel += chalk.gray(' [unavailable on this platform]');
+    } else if (qwenInstalled) {
+        qwenLabel += currentProvider === 'qwen3' ? chalk.green(' [active]') : chalk.green(' [installed]');
+    } else {
+        qwenLabel += chalk.yellow(' [needs setup ~5 min]');
+    }
+
+    const provider = await select({
+        message: 'Select TTS provider:',
+        choices: [
+            { name: edgeLabel, value: 'edge' },
+            { name: qwenLabel, value: 'qwen3' },
+            { name: chalk.gray('Skip (keep current settings)'), value: '__skip__' },
+            { name: 'Off', value: 'off' },
+        ],
+        default: currentProvider,
+    });
+
+    if (provider === '__skip__') {
+        console.log(chalk.gray(`\n  Keeping current provider: ${currentProvider}`));
+        return {
+            provider: currentProvider,
+            voice: existingConfig.ttsEdgeVoice || 'ru-RU-DmitryNeural',
+            voiceProfile: existingConfig.ttsQwenVoiceProfile || 'model_1_2',
+        };
+    }
+
+    if (provider === 'off') {
+        console.log(chalk.gray('\n  TTS disabled.'));
+        return { provider: 'off', voice: 'ru-RU-DmitryNeural', voiceProfile: 'model_1_2' };
+    }
+
+    let voice = 'ru-RU-DmitryNeural';
+    let voiceProfile = 'model_1_2';
+
+    if (provider === 'edge') {
+        voice = await select({
+            message: 'Select voice:',
+            choices: [
+                { name: 'ru-RU-DmitryNeural (male, recommended)', value: 'ru-RU-DmitryNeural' },
+                { name: 'ru-RU-SvetlanaNeural (female)', value: 'ru-RU-SvetlanaNeural' },
+                { name: 'Custom (enter voice name)', value: '__custom__' },
+            ],
+            default: 'ru-RU-DmitryNeural',
+        });
+
+        if (voice === '__custom__') {
+            voice = await input({
+                message: 'Enter voice name (e.g., en-US-AriaNeural):',
+                default: 'ru-RU-DmitryNeural',
+            });
+        }
+
+        console.log(chalk.green(`\n  Edge-TTS configured with voice: ${voice}`));
+    }
+
+    if (provider === 'qwen3') {
+        // Check Apple Silicon
+        if (process.arch !== 'arm64' || process.platform !== 'darwin') {
+            console.log(chalk.red('\n  Qwen3-TTS requires Apple Silicon (M1+). Falling back to edge-tts.'));
+            return { provider: 'edge', voice: 'ru-RU-DmitryNeural', voiceProfile };
+        }
+
+        const remcliHome = join(homedir(), '.remcli');
+        const venvPath = join(remcliHome, 'tts-venv');
+
+        // Create venv
+        if (!existsSync(venvPath)) {
+            console.log(chalk.yellow('\n  Creating Python virtual environment...'));
+            try {
+                execSync(`python3 -m venv "${venvPath}"`, { stdio: 'inherit', timeout: 60_000 });
+                console.log(chalk.green('  Virtual environment created.'));
+            } catch {
+                console.log(chalk.red('  Failed to create venv. Falling back to edge-tts.'));
+                return { provider: 'edge', voice: 'ru-RU-DmitryNeural', voiceProfile };
+            }
+        } else {
+            console.log(chalk.green('  Virtual environment already exists.'));
+        }
+
+        // Install mlx-audio
+        console.log(chalk.yellow('  Installing mlx-audio (this may take a few minutes)...'));
+        try {
+            execSync(`"${join(venvPath, 'bin', 'pip')}" install mlx-audio`, { stdio: 'inherit', timeout: 600_000 });
+            console.log(chalk.green('  mlx-audio installed successfully.'));
+        } catch {
+            console.log(chalk.red('  Failed to install mlx-audio. Falling back to edge-tts.'));
+            return { provider: 'edge', voice: 'ru-RU-DmitryNeural', voiceProfile };
+        }
+
+        // Create voices directory
+        const voicesDir = join(remcliHome, 'voices');
+        if (!existsSync(voicesDir)) {
+            mkdirSync(voicesDir, { recursive: true });
+        }
+
+        console.log(chalk.cyan('\n  Voice profiles directory: ~/.remcli/voices/'));
+        console.log(chalk.gray('     Add a profile: mkdir ~/.remcli/voices/<name>/'));
+        console.log(chalk.gray('     Each profile needs: profile.json + ref_audio.ogg (3-10 sec)\n'));
+        console.log(chalk.gray('     Model (~1.7GB) will download automatically on first synthesis.\n'));
+    }
+
+    return { provider, voice, voiceProfile };
+}
+
 async function stepAIAgents(): Promise<string[]> {
-    console.log(chalk.bold('\n\u{1F916} Step 2: AI Agents\n'));
+    console.log(chalk.bold('\n\u{1F916} Step 3: AI Agents\n'));
     console.log(chalk.gray('  Select AI agents to install.\n'));
 
     const agentChoices = AGENTS.map(agent => {
@@ -212,7 +356,7 @@ async function stepAIAgents(): Promise<string[]> {
 }
 
 async function stepCloudflared(): Promise<boolean> {
-    console.log(chalk.bold('\n\u{1F310} Step 3: cloudflared (HTTPS tunnel)\n'));
+    console.log(chalk.bold('\n\u{1F310} Step 4: cloudflared (HTTPS tunnel)\n'));
 
     const installed = resolveCloudflaredBinary() !== null;
 
@@ -284,7 +428,7 @@ async function stepCloudflared(): Promise<boolean> {
     return true;
 }
 
-function stepSummary(whisperModel: string, installedAgents: string[], cloudflaredInstalled: boolean): void {
+function stepSummary(whisperModel: string, installedAgents: string[], cloudflaredInstalled: boolean, ttsConfig?: { provider: string; voice: string }): void {
     console.log(chalk.bold('\n\u{2728} Setup Summary\n'));
 
     // Whisper
@@ -294,6 +438,18 @@ function stepSummary(whisperModel: string, installedAgents: string[], cloudflare
         ? `~${(modelInfo.sizeMB / 1000).toFixed(1)}GB`
         : `~${modelInfo.sizeMB}MB`;
     console.log(chalk.green(`  \u2713 Model: ${whisperModel} (${sizeLabel})`));
+
+    // TTS
+    if (ttsConfig) {
+        console.log(chalk.bold('\n  Text-to-Speech'));
+        if (ttsConfig.provider === 'off') {
+            console.log(chalk.gray('  \u2717 Disabled'));
+        } else if (ttsConfig.provider === 'edge') {
+            console.log(chalk.green(`  \u2713 edge-tts (voice: ${ttsConfig.voice})`));
+        } else if (ttsConfig.provider === 'qwen3') {
+            console.log(chalk.green('  \u2713 qwen3-tts (local, voice cloning)'));
+        }
+    }
 
     // AI Agents
     console.log(chalk.bold('\n  AI Agents'));
@@ -326,30 +482,36 @@ function stepSummary(whisperModel: string, installedAgents: string[], cloudflare
 
 export async function handleSetupCommand(): Promise<void> {
     console.log(chalk.bold.cyan('\n\u{1F680} Remcli Setup Wizard\n'));
-    console.log(chalk.gray('  This wizard will help you configure Whisper STT, AI agents, and cloudflared.\n'));
+    console.log(chalk.gray('  This wizard will help you configure Whisper STT, TTS, AI agents, and cloudflared.\n'));
 
     // Step 1: Whisper model
     const whisperModel = await stepWhisperModel();
 
-    // Step 2: AI agents
+    // Step 2: TTS
+    const ttsConfig = await stepTTS();
+
+    // Step 3: AI agents
     const installedAgents = await stepAIAgents();
 
-    // Step 3: cloudflared
+    // Step 4: cloudflared
     const cloudflaredInstalled = await stepCloudflared();
 
-    // Step 4: Save config
+    // Save config
     const existingConfig = readSetupConfig();
     writeSetupConfig({
         ...existingConfig,
         whisperModel,
+        ttsProvider: ttsConfig.provider as 'off' | 'edge' | 'qwen3',
+        ttsEdgeVoice: ttsConfig.voice,
+        ttsQwenVoiceProfile: ttsConfig.voiceProfile,
         installedAgents: [
             ...new Set([...existingConfig.installedAgents, ...installedAgents]),
         ],
         setupCompletedAt: new Date().toISOString(),
     });
 
-    // Step 5: Summary
-    stepSummary(whisperModel, installedAgents, cloudflaredInstalled);
+    // Summary
+    stepSummary(whisperModel, installedAgents, cloudflaredInstalled, ttsConfig);
 
     console.log(chalk.green('  Setup complete! Run `remcli doctor` to verify.\n'));
 }

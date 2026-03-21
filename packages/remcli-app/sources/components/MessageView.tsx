@@ -1,6 +1,6 @@
 import * as React from "react";
-import { View, Text } from "react-native";
-import { StyleSheet } from 'react-native-unistyles';
+import { ActivityIndicator, Pressable, View, Text } from "react-native";
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { MarkdownView } from "./markdown/MarkdownView";
 import { t } from '@/text';
 import { Message, UserTextMessage, AgentTextMessage, ToolCallMessage } from "@/sync/typesMessage";
@@ -11,12 +11,23 @@ import { AgentEvent } from "@/sync/typesRaw";
 import { sync } from '@/sync/sync';
 import { Option } from './markdown/MarkdownView';
 import { useSetting } from "@/sync/storage";
+import { Ionicons } from '@expo/vector-icons';
+import type { TtsState } from '@/hooks/useTts';
+
+export interface TtsProps {
+  ttsAvailable: boolean;
+  /** The messageId currently being played/synthesized, or null */
+  activeMessageId: string | null;
+  ttsState: TtsState;
+  onTtsPress: (text: string, messageId: string) => void;
+}
 
 export const MessageView = (props: {
   message: Message;
   metadata: Metadata | null;
   sessionId: string;
   getMessageById?: (id: string) => Message | null;
+  tts?: TtsProps;
 }) => {
   return (
     <View style={styles.messageContainer} renderToHardwareTextureAndroid={true}>
@@ -26,6 +37,7 @@ export const MessageView = (props: {
           metadata={props.metadata}
           sessionId={props.sessionId}
           getMessageById={props.getMessageById}
+          tts={props.tts}
         />
       </View>
     </View>
@@ -38,13 +50,14 @@ function RenderBlock(props: {
   metadata: Metadata | null;
   sessionId: string;
   getMessageById?: (id: string) => Message | null;
+  tts?: TtsProps;
 }): React.ReactElement {
   switch (props.message.kind) {
     case 'user-text':
       return <UserTextBlock message={props.message} sessionId={props.sessionId} />;
 
     case 'agent-text':
-      return <AgentTextBlock message={props.message} sessionId={props.sessionId} />;
+      return <AgentTextBlock message={props.message} sessionId={props.sessionId} tts={props.tts} />;
 
     case 'tool-call':
       return <ToolCallBlock
@@ -95,20 +108,62 @@ function UserTextBlock(props: {
 function AgentTextBlock(props: {
   message: AgentTextMessage;
   sessionId: string;
+  tts?: TtsProps;
 }) {
   const experiments = useSetting('experiments');
+  const { theme } = useUnistyles();
   const handleOptionPress = React.useCallback((option: Option) => {
     sync.sendMessage(props.sessionId, option.title);
   }, [props.sessionId]);
+
+  const handleTtsPress = React.useCallback(() => {
+    if (props.tts) {
+      props.tts.onTtsPress(props.message.text, props.message.id);
+    }
+  }, [props.tts, props.message.text, props.message.id]);
 
   // Hide thinking messages unless experiments is enabled
   if (props.message.isThinking && !experiments) {
     return null;
   }
 
+  // Determine TTS button state for this specific message
+  const isThisMessageActive = props.tts?.activeMessageId === props.message.id;
+  const isSynthesizing = isThisMessageActive && props.tts?.ttsState === 'synthesizing';
+  const isPlaying = isThisMessageActive && props.tts?.ttsState === 'playing';
+
   return (
     <View style={styles.agentMessageContainer}>
       <MarkdownView markdown={props.message.text} onOptionPress={handleOptionPress} />
+      {props.tts?.ttsAvailable && !props.message.isThinking && (
+        <View style={styles.ttsButtonRow}>
+          <Pressable
+            onPress={handleTtsPress}
+            hitSlop={12}
+            style={({ pressed }) => [
+              styles.ttsButton,
+              isPlaying && styles.ttsButtonActive,
+              pressed && { opacity: 0.6 },
+            ]}
+          >
+            {isSynthesizing ? (
+              <ActivityIndicator size={16} color={theme.colors.textLink} />
+            ) : (
+              <Ionicons
+                name={isPlaying ? 'volume-high' : 'volume-medium-outline'}
+                size={18}
+                color={isPlaying ? theme.colors.textLink : theme.colors.textSecondary}
+              />
+            )}
+            <Text style={[
+              styles.ttsButtonText,
+              isPlaying && { color: theme.colors.textLink },
+            ]}>
+              {isSynthesizing ? 'Loading...' : isPlaying ? 'Playing' : 'Listen'}
+            </Text>
+          </Pressable>
+        </View>
+      )}
     </View>
   );
 }
@@ -246,5 +301,31 @@ const styles = StyleSheet.create((theme) => ({
   debugText: {
     color: theme.colors.agentEventText,
     fontSize: 12,
+  },
+  ttsButtonRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  ttsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.divider,
+  },
+  ttsButtonActive: {
+    backgroundColor: `${theme.colors.textLink}15`,
+    borderColor: theme.colors.textLink,
+  },
+  ttsButtonText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: theme.colors.textSecondary,
   },
 }));

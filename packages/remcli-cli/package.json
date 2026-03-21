@@ -52,6 +52,7 @@
     "bin",
     "scripts",
     "tools",
+    "src/daemon/tts/*.py",
     "package.json"
   ],
   "scripts": {
@@ -110,6 +111,7 @@
     "http-proxy": "^1.18.1",
     "http-proxy-middleware": "^3.0.5",
     "ink": "^6.5.1",
+    "node-edge-tts": "^1.2.10",
     "node-wav": "^0.0.2",
     "open": "^10.2.0",
     "ps-list": "^8.1.1",

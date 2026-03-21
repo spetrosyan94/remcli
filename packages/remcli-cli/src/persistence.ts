@@ -719,6 +719,9 @@ const SetupConfigSchema = z.object({
     whisperModel: z.string().default('base'),
     installedAgents: z.array(z.string()).default([]),
     setupCompletedAt: z.string().optional(),
+    ttsProvider: z.enum(['off', 'edge', 'qwen3']).default('edge'),
+    ttsEdgeVoice: z.string().default('ru-RU-DmitryNeural'),
+    ttsQwenVoiceProfile: z.string().default('model_1_2'),
 });
 
 export type SetupConfig = z.infer<typeof SetupConfigSchema>;

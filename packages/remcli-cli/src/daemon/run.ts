@@ -29,6 +29,7 @@ import { buildP2PConnectionInfo, buildP2PQRUrl, displayP2PQRCode, displayP2PConn
 import { startCloudflaredTunnel, isCloudflaredAvailable } from './p2p/tunnel';
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { freeWhisper } from './whisper/whisperService';
+import { initTtsProvider, stopTts } from './tts/ttsService';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import { openTerminalWithCommand } from '@/utils/openTerminal';
 
@@ -637,6 +638,14 @@ export async function startDaemon(): Promise<void> {
             webAppDir
         });
         logger.debug(`[DAEMON RUN] P2P server started on port ${p2pServer.port}`);
+
+    // Initialize TTS provider
+    try {
+        await initTtsProvider();
+        logger.debug('[DAEMON RUN] TTS provider initialized');
+    } catch (error) {
+        logger.debug('[DAEMON RUN] TTS provider initialization failed (non-fatal):', error);
+    }
     } catch (error) {
         logger.debug('[DAEMON RUN] Failed to start P2P server:', error);
         throw error;
@@ -957,6 +966,14 @@ export async function startDaemon(): Promise<void> {
         logger.debug('[DAEMON RUN] Whisper native resources freed');
       } catch (error) {
         logger.debug('[DAEMON RUN] Failed to free Whisper resources:', error);
+      }
+
+      // Stop TTS provider
+      try {
+        await stopTts();
+        logger.debug('[DAEMON RUN] TTS provider stopped');
+      } catch (error) {
+        logger.debug('[DAEMON RUN] Failed to stop TTS provider:', error);
       }
 
       // Stop P2P server

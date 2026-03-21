@@ -7,6 +7,8 @@ import { Deferred } from '@/components/Deferred';
 import { EmptyMessages } from '@/components/EmptyMessages';
 import { VoiceAssistantStatusBar } from '@/components/VoiceAssistantStatusBar';
 import { useDraft } from '@/hooks/useDraft';
+import { useTts } from '@/hooks/useTts';
+import { useTtsAvailability } from '@/hooks/useTtsAvailability';
 import { useWhisperAvailability } from '@/hooks/useWhisperAvailability';
 import { useWhisperVoice } from '@/hooks/useWhisperVoice';
 import { isP2PMode } from '@/sync/serverConfig';
@@ -189,6 +191,42 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         [isP2P, whisperAvailable]
     );
 
+    // TTS for P2P mode
+    const { available: ttsAvailable } = useTtsAvailability();
+    const tts = useTts();
+    const [ttsActiveMessageId, setTtsActiveMessageId] = React.useState<string | null>(null);
+
+    const handleTtsPress = React.useCallback((text: string, messageId: string) => {
+        if (tts.ttsState !== 'idle' && ttsActiveMessageId === messageId) {
+            // Stop if same message is playing/synthesizing
+            tts.stop();
+            setTtsActiveMessageId(null);
+        } else {
+            // Start synthesizing new message
+            setTtsActiveMessageId(messageId);
+            tts.synthesize(text, messageId).catch(() => {
+                setTtsActiveMessageId(null);
+            });
+        }
+    }, [tts, ttsActiveMessageId]);
+
+    // Reset active message when TTS goes idle
+    React.useEffect(() => {
+        if (tts.ttsState === 'idle' && ttsActiveMessageId !== null) {
+            setTtsActiveMessageId(null);
+        }
+    }, [tts.ttsState, ttsActiveMessageId]);
+
+    const ttsProps = React.useMemo(() => {
+        if (!isP2P || !ttsAvailable) return undefined;
+        return {
+            ttsAvailable: true,
+            activeMessageId: ttsActiveMessageId,
+            ttsState: tts.ttsState,
+            onTtsPress: handleTtsPress,
+        };
+    }, [isP2P, ttsAvailable, ttsActiveMessageId, tts.ttsState, handleTtsPress]);
+
     // Handle dismissing CLI version warning
     const handleDismissCliWarning = React.useCallback(() => {
         if (machineId && cliVersion) {
@@ -267,7 +305,7 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         <>
             <Deferred>
                 {messages.length > 0 && (
-                    <ChatList session={session} />
+                    <ChatList session={session} tts={ttsProps} />
                 )}
             </Deferred>
         </>

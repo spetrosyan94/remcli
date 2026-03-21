@@ -18,29 +18,13 @@ export async function openTerminalWithCommand(command: string): Promise<void> {
 
     const escaped = escapeAppleScript(command);
 
+    // Always use `do script` without `in window` — this reliably creates a new
+    // Terminal window. The previous approach used `keystroke "t" using command down`
+    // to open a tab, but that keystroke could be sent to the wrong app (e.g. TextEdit)
+    // when Terminal wasn't fully focused yet, causing garbage text in other apps.
     const script = `
-        set termWasRunning to application "Terminal" is running
         tell application "Terminal"
-            if termWasRunning then
-                activate
-                if (count of windows) > 0 then
-                    -- Create a new tab in the existing window via Cmd+T
-                    tell application "System Events"
-                        tell process "Terminal"
-                            keystroke "t" using command down
-                        end tell
-                    end tell
-                    delay 0.3
-                    do script "${escaped}" in front window
-                else
-                    do script "${escaped}"
-                end if
-            else
-                -- Terminal not running: activate creates default window, reuse it
-                activate
-                delay 0.5
-                do script "${escaped}" in front window
-            end if
+            do script "${escaped}"
             activate
         end tell
     `;

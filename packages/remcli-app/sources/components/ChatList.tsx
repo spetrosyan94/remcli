@@ -4,18 +4,19 @@ import { ActivityIndicator, FlatList, Platform, View } from 'react-native';
 import { useCallback } from 'react';
 import { useHeaderHeight } from '@/utils/responsive';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { MessageView } from './MessageView';
+import { MessageView, TtsProps } from './MessageView';
 import { Metadata, Session } from '@/sync/storageTypes';
 import { ChatFooter } from './ChatFooter';
 import { Message } from '@/sync/typesMessage';
 
-export const ChatList = React.memo((props: { session: Session }) => {
+export const ChatList = React.memo((props: { session: Session; tts?: TtsProps }) => {
     const { messages } = useSessionMessages(props.session.id);
     return (
         <ChatListInternal
             metadata={props.session.metadata}
             sessionId={props.session.id}
             messages={messages}
+            tts={props.tts}
         />
     )
 });
@@ -37,11 +38,12 @@ const ChatListInternal = React.memo((props: {
     metadata: Metadata | null,
     sessionId: string,
     messages: Message[],
+    tts?: TtsProps,
 }) => {
     const keyExtractor = useCallback((item: any) => item.id, []);
     const renderItem = useCallback(({ item }: { item: any }) => (
-        <MessageView message={item} metadata={props.metadata} sessionId={props.sessionId} />
-    ), [props.metadata, props.sessionId]);
+        <MessageView message={item} metadata={props.metadata} sessionId={props.sessionId} tts={props.tts} />
+    ), [props.metadata, props.sessionId, props.tts]);
     return (
         <FlatList
             data={props.messages}

@@ -19,6 +19,7 @@ import packageJson from '../../package.json'
 import { execFileSync } from 'node:child_process'
 import { getStatus as getWhisperStatus } from '@/daemon/whisper/whisperService'
 import { readSetupConfig } from '@/persistence'
+import { homedir } from 'node:os'
 
 /**
  * Get relevant environment information for debugging
@@ -281,6 +282,44 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
     } else {
         console.log(chalk.yellow('⚠️  ffmpeg not found. Install: brew install ffmpeg'));
         console.log(chalk.gray('   Required for non-WAV audio files (m4a, webm, etc.)'));
+    }
+
+    // TTS status
+    console.log(chalk.bold('\n🔊 Text-to-Speech'));
+    const setupConfig2 = readSetupConfig();
+    const ttsProvider = setupConfig2.ttsProvider || 'edge';
+    console.log(`  Provider: ${chalk.cyan(ttsProvider)}`);
+
+    if (ttsProvider === 'off') {
+        console.log(chalk.gray('  TTS disabled'));
+    } else if (ttsProvider === 'edge') {
+        console.log(chalk.green('✓ edge-tts (always available via npm)'));
+        console.log(`  Voice: ${chalk.cyan(setupConfig2.ttsEdgeVoice || 'ru-RU-DmitryNeural')}`);
+        if (whisper.ffmpegAvailable) {
+            console.log(chalk.green('✓ ffmpeg available (required for MP3→OGG conversion)'));
+        } else {
+            console.log(chalk.red('❌ ffmpeg not found — edge-tts requires ffmpeg for OGG conversion'));
+        }
+    } else if (ttsProvider === 'qwen3') {
+        const venvPath = join(homedir(), '.remcli', 'tts-venv');
+        const venvExists = existsSync(venvPath);
+        const voicesDir = join(homedir(), '.remcli', 'voices');
+        const voicesDirExists = existsSync(voicesDir);
+
+        if (venvExists) {
+            console.log(chalk.green('✓ Python venv exists'));
+        } else {
+            console.log(chalk.red('❌ Python venv not found at ~/.remcli/tts-venv/'));
+        }
+
+        if (voicesDirExists) {
+            const profiles = readdirSync(voicesDir).filter((f: string) => {
+                return statSync(join(voicesDir, f)).isDirectory();
+            });
+            console.log(chalk.green(`✓ Voices directory: ${profiles.length} profile(s)`));
+        } else {
+            console.log(chalk.yellow('⚠️  No voices directory (~/.remcli/voices/)'));
+        }
     }
 
     // AI Agents status

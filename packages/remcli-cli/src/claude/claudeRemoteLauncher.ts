@@ -10,6 +10,7 @@ import { SDKToLogConverter } from "./utils/sdkToLogConverter";
 import { PLAN_FAKE_REJECT } from "./sdk/prompts";
 import { EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
+import { createAutoTitleSetter } from "@/utils/autoSessionTitle";
 
 interface PermissionsField {
     date: number;
@@ -69,6 +70,11 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
 
     // Create permission handler
     const permissionHandler = new PermissionHandler(session);
+
+    // Auto-title fallback: sets title from first user message.
+    // If Claude calls change_title MCP tool, it overrides this with a better title.
+    // Smaller models (Haiku) often don't call the tool, so this ensures a title is always set.
+    const autoSetTitle = createAutoTitleSetter(session.client);
 
     // Create outgoing message queue
     const messageQueue = new OutgoingMessageQueue(
@@ -310,6 +316,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                         if (pending) {
                             let p = pending;
                             pending = null;
+                            autoSetTitle(p.message);
                             permissionHandler.handleModeChange(p.mode.permissionMode);
                             display.writeMessage(`User: ${p.message}`, 'user');
                             return p;
@@ -324,6 +331,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                                 pending = msg;
                                 return null;
                             }
+                            autoSetTitle(msg.message);
                             modeHash = msg.hash;
                             mode = msg.mode;
                             permissionHandler.handleModeChange(mode.permissionMode);

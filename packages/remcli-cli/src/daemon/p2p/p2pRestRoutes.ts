@@ -14,6 +14,7 @@ import { P2PEventRouter } from './p2pEventRouter';
 import { verifyBearerToken } from './p2pAuth';
 import { logger } from '@/ui/logger';
 import { transcribe, isAvailable as isWhisperAvailable, ensureModel, getStatus as getWhisperStatus } from '../whisper/whisperService';
+import { synthesize as ttsSynthesize, getTtsStatus } from '../tts/ttsService';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -259,6 +260,44 @@ export function registerP2PRestRoutes(
             if (tempPath && existsSync(tempPath)) {
                 try { unlinkSync(tempPath); } catch { /* ignore cleanup errors */ }
             }
+        }
+    });
+
+    // ─── GET /v1/tts/status ────────────────────────────────────────
+    app.get('/v1/tts/status', async () => {
+        return getTtsStatus();
+    });
+
+    // ─── POST /v1/voice/synthesize (TTS) ───────────────────────────
+    typed.post('/v1/voice/synthesize', {
+        schema: {
+            body: z.object({
+                text: z.string().min(1).max(5000),
+                voice: z.string().optional(),
+                lang: z.string().optional(),
+            })
+        }
+    }, async (request, reply) => {
+        const { text, voice, lang } = request.body;
+
+        const status = getTtsStatus();
+        if (!status.available) {
+            reply.code(503);
+            return { error: 'TTS not available. Configure via remcli setup.' };
+        }
+
+        try {
+            logger.debug(`[TTS] Synthesize request: ${text.substring(0, 100)}...`);
+            const audioBuffer = await ttsSynthesize(text, { voice, lang });
+
+            reply.header('Content-Type', 'audio/ogg');
+            reply.header('Content-Length', audioBuffer.length);
+            return reply.send(audioBuffer);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Synthesis failed';
+            logger.debug(`[TTS] Synthesis error: ${message}`);
+            reply.code(500);
+            return { error: message };
         }
     });
 
