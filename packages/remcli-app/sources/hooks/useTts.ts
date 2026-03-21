@@ -26,6 +26,7 @@ export function useTts() {
     const [ttsState, setTtsState] = React.useState<TtsState>('idle');
     const stateRef = React.useRef<TtsState>('idle');
     const audioHandleRef = React.useRef<AudioHandle | null>(null);
+    const abortRef = React.useRef<AbortController | null>(null);
     const cacheRef = React.useRef<Map<string, ArrayBuffer>>(new Map());
 
     const updateState = React.useCallback((state: TtsState) => {
@@ -34,6 +35,12 @@ export function useTts() {
     }, []);
 
     const stop = React.useCallback(async () => {
+        // Abort any in-flight HTTP synthesis request
+        if (abortRef.current) {
+            abortRef.current.abort();
+            abortRef.current = null;
+        }
+        // Stop audio playback
         if (audioHandleRef.current) {
             try {
                 audioHandleRef.current.stop();
@@ -119,13 +126,17 @@ export function useTts() {
 
         updateState('synthesizing');
 
+        // Create abort controller for this synthesis request
+        const controller = new AbortController();
+        abortRef.current = controller;
+
         try {
             // Check cache
             const cacheKey = messageId || text;
             let audioData = cacheRef.current.get(cacheKey);
 
             if (!audioData) {
-                audioData = await synthesizeSpeech(text);
+                audioData = await synthesizeSpeech(text, { signal: controller.signal });
                 // LRU eviction: remove oldest entries when cache exceeds limit
                 if (cacheRef.current.size >= TTS_CACHE_MAX_ENTRIES) {
                     const firstKey = cacheRef.current.keys().next().value;
@@ -138,6 +149,7 @@ export function useTts() {
 
             if (stateRef.current !== 'synthesizing') return; // cancelled during fetch
 
+            abortRef.current = null;
             updateState('playing');
 
             if (Platform.OS === 'web') {
@@ -146,7 +158,13 @@ export function useTts() {
                 await playOnNative(audioData);
             }
         } catch (error) {
+            abortRef.current = null;
             audioHandleRef.current = null;
+            // Don't throw on abort — it's intentional cancellation
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                updateState('idle');
+                return;
+            }
             updateState('idle');
             throw error;
         }
@@ -155,6 +173,9 @@ export function useTts() {
     // Cleanup on unmount
     React.useEffect(() => {
         return () => {
+            if (abortRef.current) {
+                abortRef.current.abort();
+            }
             if (audioHandleRef.current) {
                 try {
                     audioHandleRef.current.stop();

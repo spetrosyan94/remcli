@@ -35,7 +35,7 @@ export async function getTtsStatus(): Promise<TtsStatusResponse> {
 
 export async function synthesizeSpeech(
     text: string,
-    options?: { voice?: string; lang?: string }
+    options?: { voice?: string; lang?: string; signal?: AbortSignal }
 ): Promise<ArrayBuffer> {
     const serverUrl = getServerUrl();
     const credentials = await TokenStorage.getCredentials();
@@ -52,6 +52,7 @@ export async function synthesizeSpeech(
             voice: options?.voice,
             lang: options?.lang,
         }),
+        signal: options?.signal,
     });
 
     if (!response.ok) {
