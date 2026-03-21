@@ -191,41 +191,39 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         [isP2P, whisperAvailable]
     );
 
-    // TTS for P2P mode
+    // TTS for P2P mode — destructure for stable refs in useCallback deps
     const { available: ttsAvailable } = useTtsAvailability();
-    const tts = useTts();
+    const { ttsState, synthesize: ttsSynthesize, stop: ttsStop } = useTts();
     const [ttsActiveMessageId, setTtsActiveMessageId] = React.useState<string | null>(null);
 
     const handleTtsPress = React.useCallback((text: string, messageId: string) => {
-        if (tts.ttsState !== 'idle' && ttsActiveMessageId === messageId) {
-            // Stop if same message is playing/synthesizing
-            tts.stop();
+        if (ttsState !== 'idle' && ttsActiveMessageId === messageId) {
+            ttsStop();
             setTtsActiveMessageId(null);
         } else {
-            // Start synthesizing new message
             setTtsActiveMessageId(messageId);
-            tts.synthesize(text, messageId).catch(() => {
+            ttsSynthesize(text, messageId).catch(() => {
                 setTtsActiveMessageId(null);
             });
         }
-    }, [tts, ttsActiveMessageId]);
+    }, [ttsState, ttsActiveMessageId, ttsStop, ttsSynthesize]);
 
     // Reset active message when TTS goes idle
     React.useEffect(() => {
-        if (tts.ttsState === 'idle' && ttsActiveMessageId !== null) {
+        if (ttsState === 'idle' && ttsActiveMessageId !== null) {
             setTtsActiveMessageId(null);
         }
-    }, [tts.ttsState, ttsActiveMessageId]);
+    }, [ttsState, ttsActiveMessageId]);
 
     const ttsProps = React.useMemo(() => {
         if (!isP2P || !ttsAvailable) return undefined;
         return {
             ttsAvailable: true,
             activeMessageId: ttsActiveMessageId,
-            ttsState: tts.ttsState,
+            ttsState,
             onTtsPress: handleTtsPress,
         };
-    }, [isP2P, ttsAvailable, ttsActiveMessageId, tts.ttsState, handleTtsPress]);
+    }, [isP2P, ttsAvailable, ttsActiveMessageId, ttsState, handleTtsPress]);
 
     // Handle dismissing CLI version warning
     const handleDismissCliWarning = React.useCallback(() => {

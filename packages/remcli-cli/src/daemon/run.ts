@@ -638,17 +638,17 @@ export async function startDaemon(): Promise<void> {
             webAppDir
         });
         logger.debug(`[DAEMON RUN] P2P server started on port ${p2pServer.port}`);
+    } catch (error) {
+        logger.debug('[DAEMON RUN] Failed to start P2P server:', error);
+        throw error;
+    }
 
-    // Initialize TTS provider
+    // Initialize TTS provider (non-fatal — daemon works without TTS)
     try {
         await initTtsProvider();
         logger.debug('[DAEMON RUN] TTS provider initialized');
     } catch (error) {
         logger.debug('[DAEMON RUN] TTS provider initialization failed (non-fatal):', error);
-    }
-    } catch (error) {
-        logger.debug('[DAEMON RUN] Failed to start P2P server:', error);
-        throw error;
     }
 
     // Update daemon state with P2P info

@@ -10,13 +10,12 @@
 import { select, checkbox, confirm, input } from '@inquirer/prompts';
 import chalk from 'chalk';
 import { execFileSync, execSync } from 'node:child_process';
-import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { readSetupConfig, writeSetupConfig } from '@/persistence';
 import { WHISPER_MODELS, downloadModelWithProgress, isModelDownloaded } from '@/daemon/whisper/whisperService';
 import { resolveCloudflaredBinary } from '@/daemon/p2p/tunnel';
-import { projectPath } from '@/projectPath';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -285,28 +284,11 @@ async function stepTTS(): Promise<{ provider: string; voice: string; voiceProfil
             return { provider: 'edge', voice: 'ru-RU-DmitryNeural', voiceProfile };
         }
 
-        // Create voices directory and copy bundled default profile
-        const voicesDir = join(remcliHome, 'voices');
-        const defaultProfileDir = join(voicesDir, 'default');
-        if (!existsSync(defaultProfileDir)) {
-            mkdirSync(defaultProfileDir, { recursive: true });
-            // Copy bundled default voice profile from CLI package
-            try {
-                const bundledDir = join(projectPath(), 'src', 'daemon', 'tts', 'voices', 'default');
-                if (existsSync(join(bundledDir, 'profile.json'))) {
-                    copyFileSync(join(bundledDir, 'profile.json'), join(defaultProfileDir, 'profile.json'));
-                    copyFileSync(join(bundledDir, 'ref_audio.ogg'), join(defaultProfileDir, 'ref_audio.ogg'));
-                    console.log(chalk.green('  Default voice profile installed.'));
-                }
-            } catch {
-                console.log(chalk.yellow('  Could not copy default voice profile (add manually to ~/.remcli/voices/).'));
-            }
-        } else {
-            console.log(chalk.green('  Default voice profile already exists.'));
-        }
-
-        console.log(chalk.cyan('\n  Voice profiles: ~/.remcli/voices/'));
-        console.log(chalk.gray('     Add custom: mkdir ~/.remcli/voices/<name>/ with profile.json + ref_audio'));
+        // Default voice profile is bundled with the CLI and used automatically.
+        // Users can add custom profiles to ~/.remcli/voices/<name>/
+        console.log(chalk.green('\n  Default voice profile is bundled with remcli (no extra setup needed).'));
+        console.log(chalk.cyan('  Custom voice profiles: ~/.remcli/voices/<name>/'));
+        console.log(chalk.gray('     Each profile needs: profile.json + ref_audio (3-10 sec)'));
         console.log(chalk.gray('     Model (~1.7GB) will download automatically on first synthesis.\n'));
     }
 

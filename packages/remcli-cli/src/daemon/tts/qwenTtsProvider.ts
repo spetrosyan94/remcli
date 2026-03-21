@@ -134,9 +134,20 @@ export class QwenTtsProvider implements TtsProvider {
             output: vorbisPath,
         };
 
-        // Load voice profile if available
-        const profileDir = join(homedir(), '.remcli', 'voices', profileName);
-        const profileJsonPath = join(profileDir, 'profile.json');
+        // Load voice profile: check user dir first, then bundled fallback
+        let profileDir = join(homedir(), '.remcli', 'voices', profileName);
+        let profileJsonPath = join(profileDir, 'profile.json');
+
+        if (!existsSync(profileJsonPath)) {
+            // Fallback to bundled voice profile shipped with CLI
+            const bundledDir = join(projectPath(), 'src', 'daemon', 'tts', 'voices', profileName);
+            const bundledPath = join(bundledDir, 'profile.json');
+            if (existsSync(bundledPath)) {
+                profileDir = bundledDir;
+                profileJsonPath = bundledPath;
+                logger.debug(`[TTS:qwen3] Using bundled voice profile: ${profileName}`);
+            }
+        }
 
         if (existsSync(profileJsonPath)) {
             try {
@@ -223,12 +234,13 @@ export class QwenTtsProvider implements TtsProvider {
 
     private waitForReady(): Promise<void> {
         return new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
-                reject(new Error(`Qwen3-TTS worker failed to become ready within ${WORKER_READY_TIMEOUT_MS}ms`));
-            }, WORKER_READY_TIMEOUT_MS);
-
             // Override the pending handler temporarily to catch the ready signal
             const originalHandler = this.handleWorkerLine.bind(this);
+
+            const timeout = setTimeout(() => {
+                this.handleWorkerLine = originalHandler;
+                reject(new Error(`Qwen3-TTS worker failed to become ready within ${WORKER_READY_TIMEOUT_MS}ms`));
+            }, WORKER_READY_TIMEOUT_MS);
             this.handleWorkerLine = (line: string) => {
                 try {
                     const parsed = JSON.parse(line) as { ready?: boolean };
