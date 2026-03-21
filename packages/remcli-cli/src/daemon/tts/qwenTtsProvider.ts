@@ -64,6 +64,12 @@ export class QwenTtsProvider implements TtsProvider {
             logger.debug(`[TTS:qwen3] Worker exited: code=${code}, signal=${signal}`);
             this.workerProcess = null;
             this.stdoutReader = null;
+            // Reject pending request immediately instead of waiting for 60s timeout
+            if (this.pendingReject) {
+                this.pendingReject(new Error(`Qwen3-TTS worker exited unexpectedly: code=${code}, signal=${signal}`));
+                this.pendingResolve = null;
+                this.pendingReject = null;
+            }
         });
 
         // Pipe stderr to debug log

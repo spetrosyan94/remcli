@@ -164,6 +164,10 @@ export function useTts() {
             // Stale: don't touch state if a newer request is already running
             if (generationRef.current !== gen) return;
             abortRef.current = null;
+            // Stop audio player if it was created before the error
+            if (audioHandleRef.current) {
+                try { audioHandleRef.current.stop(); } catch { /* ignore */ }
+            }
             audioHandleRef.current = null;
             // AbortError is intentional cancellation — don't rethrow
             if (error instanceof DOMException && error.name === 'AbortError') {
