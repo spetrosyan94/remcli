@@ -10,12 +10,13 @@
 import { select, checkbox, confirm, input } from '@inquirer/prompts';
 import chalk from 'chalk';
 import { execFileSync, execSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { readSetupConfig, writeSetupConfig } from '@/persistence';
 import { WHISPER_MODELS, downloadModelWithProgress, isModelDownloaded } from '@/daemon/whisper/whisperService';
 import { resolveCloudflaredBinary } from '@/daemon/p2p/tunnel';
+import { projectPath } from '@/projectPath';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -217,17 +218,17 @@ async function stepTTS(): Promise<{ provider: string; voice: string; voiceProfil
         return {
             provider: currentProvider,
             voice: existingConfig.ttsEdgeVoice || 'ru-RU-DmitryNeural',
-            voiceProfile: existingConfig.ttsQwenVoiceProfile || 'model_1_2',
+            voiceProfile: existingConfig.ttsQwenVoiceProfile || 'default',
         };
     }
 
     if (provider === 'off') {
         console.log(chalk.gray('\n  TTS disabled.'));
-        return { provider: 'off', voice: 'ru-RU-DmitryNeural', voiceProfile: 'model_1_2' };
+        return { provider: 'off', voice: 'ru-RU-DmitryNeural', voiceProfile: 'default' };
     }
 
     let voice = 'ru-RU-DmitryNeural';
-    let voiceProfile = 'model_1_2';
+    let voiceProfile = 'default';
 
     if (provider === 'edge') {
         voice = await select({
@@ -284,15 +285,28 @@ async function stepTTS(): Promise<{ provider: string; voice: string; voiceProfil
             return { provider: 'edge', voice: 'ru-RU-DmitryNeural', voiceProfile };
         }
 
-        // Create voices directory
+        // Create voices directory and copy bundled default profile
         const voicesDir = join(remcliHome, 'voices');
-        if (!existsSync(voicesDir)) {
-            mkdirSync(voicesDir, { recursive: true });
+        const defaultProfileDir = join(voicesDir, 'default');
+        if (!existsSync(defaultProfileDir)) {
+            mkdirSync(defaultProfileDir, { recursive: true });
+            // Copy bundled default voice profile from CLI package
+            try {
+                const bundledDir = join(projectPath(), 'src', 'daemon', 'tts', 'voices', 'default');
+                if (existsSync(join(bundledDir, 'profile.json'))) {
+                    copyFileSync(join(bundledDir, 'profile.json'), join(defaultProfileDir, 'profile.json'));
+                    copyFileSync(join(bundledDir, 'ref_audio.ogg'), join(defaultProfileDir, 'ref_audio.ogg'));
+                    console.log(chalk.green('  Default voice profile installed.'));
+                }
+            } catch {
+                console.log(chalk.yellow('  Could not copy default voice profile (add manually to ~/.remcli/voices/).'));
+            }
+        } else {
+            console.log(chalk.green('  Default voice profile already exists.'));
         }
 
-        console.log(chalk.cyan('\n  Voice profiles directory: ~/.remcli/voices/'));
-        console.log(chalk.gray('     Add a profile: mkdir ~/.remcli/voices/<name>/'));
-        console.log(chalk.gray('     Each profile needs: profile.json + ref_audio.ogg (3-10 sec)\n'));
+        console.log(chalk.cyan('\n  Voice profiles: ~/.remcli/voices/'));
+        console.log(chalk.gray('     Add custom: mkdir ~/.remcli/voices/<name>/ with profile.json + ref_audio'));
         console.log(chalk.gray('     Model (~1.7GB) will download automatically on first synthesis.\n'));
     }
 

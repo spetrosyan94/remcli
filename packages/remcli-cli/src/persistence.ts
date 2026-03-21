@@ -721,7 +721,7 @@ const SetupConfigSchema = z.object({
     setupCompletedAt: z.string().optional(),
     ttsProvider: z.enum(['off', 'edge', 'qwen3']).default('edge'),
     ttsEdgeVoice: z.string().default('ru-RU-DmitryNeural'),
-    ttsQwenVoiceProfile: z.string().default('model_1_2'),
+    ttsQwenVoiceProfile: z.string().default('default'),
 });
 
 export type SetupConfig = z.infer<typeof SetupConfigSchema>;

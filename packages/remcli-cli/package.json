@@ -53,6 +53,7 @@
     "scripts",
     "tools",
     "src/daemon/tts/*.py",
+    "src/daemon/tts/voices/**",
     "package.json"
   ],
   "scripts": {

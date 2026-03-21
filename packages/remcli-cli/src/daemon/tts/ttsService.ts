@@ -100,7 +100,7 @@ export function getTtsStatus(): TtsStatus {
         return {
             available: true,
             provider: 'qwen3',
-            voices: ['model_1_2'],
+            voices: ['default'],
         };
     }
 

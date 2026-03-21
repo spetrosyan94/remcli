@@ -121,7 +121,7 @@ export class QwenTtsProvider implements TtsProvider {
         }
 
         const config = readSetupConfig();
-        const profileName = config.ttsQwenVoiceProfile || 'model_1_2';
+        const profileName = config.ttsQwenVoiceProfile || 'default';
         const lang = options.lang || 'ru';
         // Worker outputs OGG Vorbis, we convert to OGG Opus via ffmpeg for iOS compatibility
         const vorbisPath = tmpNameSync({ postfix: '.vorbis.ogg' });

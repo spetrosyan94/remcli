@@ -1,0 +1,7 @@
+{
+  "name": "default",
+  "ref_text": "о заебись, по английский также как и я разговаривает",
+  "ref_audio": "ref_audio.ogg",
+  "ref_duration_sec": 3.6,
+  "model": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit"
+}
