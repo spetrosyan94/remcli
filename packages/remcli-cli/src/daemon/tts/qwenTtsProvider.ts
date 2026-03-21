@@ -176,10 +176,15 @@ export class QwenTtsProvider implements TtsProvider {
             }
 
             // Convert OGG Vorbis → OGG Opus for iOS/Safari compatibility
+            // 48kbps mono Opus at 24kHz — optimized for speech (~6 KB/sec)
             await execFileAsync('ffmpeg', [
                 '-i', vorbisPath,
                 '-c:a', 'libopus',
                 '-b:a', '48k',
+                '-ar', '24000',
+                '-ac', '1',
+                '-application', 'voip',
+                '-loglevel', 'error',
                 '-y',
                 opusPath,
             ]);

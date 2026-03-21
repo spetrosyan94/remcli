@@ -33,10 +33,15 @@ export class EdgeTtsProvider implements TtsProvider {
             logger.debug(`[TTS:edge] MP3 generated: ${mp3Path}`);
 
             // Convert MP3 -> OGG Opus via ffmpeg
+            // 48kbps mono Opus at 24kHz is very good for speech (~6 KB/sec)
             await execFileAsync('ffmpeg', [
                 '-i', mp3Path,
                 '-c:a', 'libopus',
                 '-b:a', '48k',
+                '-ar', '24000',
+                '-ac', '1',
+                '-application', 'voip',
+                '-loglevel', 'error',
                 '-y',
                 oggPath,
             ]);

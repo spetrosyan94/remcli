@@ -3,11 +3,17 @@
  *
  * State machine: idle -> synthesizing -> playing -> idle
  *
+ * Uses a generation counter to prevent race conditions when switching
+ * between messages (press A, then B while A is still synthesizing).
+ * Each synthesize() call increments the generation — stale callbacks
+ * from cancelled requests cannot overwrite state of newer requests.
+ *
  * Platform-specific audio playback:
  * - Web: HTMLAudioElement with blob URL
  * - Native (iOS/Android): expo-audio AudioPlayer with temp file via expo-file-system
  *
  * Includes an in-memory cache keyed by messageId (or text) to avoid re-synthesizing.
+ * Cache is LRU-evicted at 20 entries.
  */
 
 import * as React from 'react';
@@ -27,6 +33,7 @@ export function useTts() {
     const stateRef = React.useRef<TtsState>('idle');
     const audioHandleRef = React.useRef<AudioHandle | null>(null);
     const abortRef = React.useRef<AbortController | null>(null);
+    const generationRef = React.useRef(0);
     const cacheRef = React.useRef<Map<string, ArrayBuffer>>(new Map());
 
     const updateState = React.useCallback((state: TtsState) => {
@@ -35,6 +42,8 @@ export function useTts() {
     }, []);
 
     const stop = React.useCallback(async () => {
+        // Increment generation so any in-flight synthesize() becomes stale
+        generationRef.current++;
         // Abort any in-flight HTTP synthesis request
         if (abortRef.current) {
             abortRef.current.abort();
@@ -51,51 +60,47 @@ export function useTts() {
     }, [updateState]);
 
     // ─── Web playback via HTMLAudioElement ───────────────────────
-    const playOnWeb = React.useCallback(async (audioData: ArrayBuffer) => {
+    const playOnWeb = React.useCallback(async (audioData: ArrayBuffer, gen: number) => {
         const blob = new Blob([audioData], { type: 'audio/ogg' });
         const url = URL.createObjectURL(blob);
-
         const audio = new Audio(url);
 
-        audioHandleRef.current = {
-            stop: () => {
-                audio.pause();
-                audio.currentTime = 0;
-                URL.revokeObjectURL(url);
-            },
+        const cleanup = () => {
+            audio.onended = null;
+            audio.onerror = null;
+            audio.pause();
+            audio.currentTime = 0;
+            URL.revokeObjectURL(url);
         };
 
+        audioHandleRef.current = { stop: cleanup };
+
         audio.onended = () => {
-            URL.revokeObjectURL(url);
+            cleanup();
             audioHandleRef.current = null;
-            updateState('idle');
+            if (generationRef.current === gen) updateState('idle');
         };
         audio.onerror = () => {
-            URL.revokeObjectURL(url);
+            cleanup();
             audioHandleRef.current = null;
-            updateState('idle');
+            if (generationRef.current === gen) updateState('idle');
         };
 
         await audio.play();
     }, [updateState]);
 
     // ─── Native playback via expo-audio + expo-file-system ──────
-    const playOnNative = React.useCallback(async (audioData: ArrayBuffer) => {
+    const playOnNative = React.useCallback(async (audioData: ArrayBuffer, gen: number) => {
         const { File, Paths } = await import('expo-file-system');
         const { AudioModule } = await import('expo-audio');
 
-        // Write ArrayBuffer to a temp file using new expo-file-system API
         const bytes = new Uint8Array(audioData);
         const tempFile = new File(Paths.cache, `tts-${Date.now()}.ogg`);
         tempFile.create({ overwrite: true });
         tempFile.write(bytes);
 
-        // Set audio mode for playback
-        await AudioModule.setAudioModeAsync({
-            playsInSilentMode: true,
-        });
+        await AudioModule.setAudioModeAsync({ playsInSilentMode: true });
 
-        // Create player and play
         const player = new AudioModule.AudioPlayer({ uri: tempFile.uri }, 500, false);
 
         audioHandleRef.current = {
@@ -107,11 +112,10 @@ export function useTts() {
         };
 
         player.addListener('playbackStatusUpdate', (status: { playing: boolean; currentTime: number; duration: number }) => {
-            // Player finished when not playing and has progressed past 0
             if (!status.playing && status.currentTime > 0 && status.duration > 0 && status.currentTime >= status.duration - 0.1) {
                 player.remove();
                 audioHandleRef.current = null;
-                updateState('idle');
+                if (generationRef.current === gen) updateState('idle');
                 try { tempFile.delete(); } catch { /* ignore */ }
             }
         });
@@ -124,9 +128,9 @@ export function useTts() {
             await stop();
         }
 
+        const gen = ++generationRef.current;
         updateState('synthesizing');
 
-        // Create abort controller for this synthesis request
         const controller = new AbortController();
         abortRef.current = controller;
 
@@ -137,30 +141,31 @@ export function useTts() {
 
             if (!audioData) {
                 audioData = await synthesizeSpeech(text, { signal: controller.signal });
-                // LRU eviction: remove oldest entries when cache exceeds limit
+                // LRU eviction
                 if (cacheRef.current.size >= TTS_CACHE_MAX_ENTRIES) {
                     const firstKey = cacheRef.current.keys().next().value;
-                    if (firstKey !== undefined) {
-                        cacheRef.current.delete(firstKey);
-                    }
+                    if (firstKey !== undefined) cacheRef.current.delete(firstKey);
                 }
                 cacheRef.current.set(cacheKey, audioData);
             }
 
-            if (stateRef.current !== 'synthesizing') return; // cancelled during fetch
+            // Stale check: another synthesize() was called while we were fetching
+            if (generationRef.current !== gen) return;
 
             abortRef.current = null;
             updateState('playing');
 
             if (Platform.OS === 'web') {
-                await playOnWeb(audioData);
+                await playOnWeb(audioData, gen);
             } else {
-                await playOnNative(audioData);
+                await playOnNative(audioData, gen);
             }
         } catch (error) {
+            // Stale: don't touch state if a newer request is already running
+            if (generationRef.current !== gen) return;
             abortRef.current = null;
             audioHandleRef.current = null;
-            // Don't throw on abort — it's intentional cancellation
+            // AbortError is intentional cancellation — don't rethrow
             if (error instanceof DOMException && error.name === 'AbortError') {
                 updateState('idle');
                 return;
@@ -173,13 +178,10 @@ export function useTts() {
     // Cleanup on unmount
     React.useEffect(() => {
         return () => {
-            if (abortRef.current) {
-                abortRef.current.abort();
-            }
+            generationRef.current++;
+            if (abortRef.current) abortRef.current.abort();
             if (audioHandleRef.current) {
-                try {
-                    audioHandleRef.current.stop();
-                } catch { /* ignore */ }
+                try { audioHandleRef.current.stop(); } catch { /* ignore */ }
             }
         };
     }, []);
