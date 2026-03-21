@@ -58,9 +58,10 @@ def main():
             last_result = results[-1]
             sr = last_result.sample_rate or model.sample_rate
 
-            # Convert MLX array to numpy (matches reference repo pattern)
+            # Convert MLX array to numpy (matches reference repo pattern exactly)
+            # MLX arrays need np.array() for forced copy/conversion; regular arrays use np.asarray()
             audio = last_result.audio
-            audio_np = np.asarray(audio) if hasattr(audio, '__mlx_array__') or type(audio).__name__ == 'array' else np.asarray(audio)
+            audio_np = np.array(audio) if hasattr(audio, '__mlx_array__') or type(audio).__name__ == 'array' else np.asarray(audio)
             if audio_np.ndim > 1:
                 audio_np = audio_np.squeeze()
 
