@@ -184,7 +184,7 @@ flowchart LR
 ```
 
 The CLI encrypts client content before it leaves the machine using `src/api/encryption.ts`.
-- Session metadata, agent state, messages, machine state, artifacts, and KV values are encrypted client-side.
+- Session metadata, agent state, messages, machine state, and KV values are encrypted client-side.
 - On-wire encoding is base64; see `encryption.md`.
 
 ## Daemon architecture
@@ -212,6 +212,19 @@ graph TB
 ```
 
 The daemon is a long-lived process responsible for running sessions in the background and maintaining machine presence.
+
+### Module layout
+
+`src/daemon/run.ts` is a thin coordinator that wires together focused modules:
+
+| Module | Responsibility |
+|--------|----------------|
+| `run.ts` | Startup/shutdown orchestration: lock file, P2P server, QR code, tunnel, wiring below modules |
+| `sessionSpawner.ts` | Session manager factory: spawn/stop/track child sessions, tmux windows, cleanup |
+| `src/daemon/sessions/listAgentSessions.ts` | Scans on-disk agent session stores (Claude/Codex/Cursor/Gemini) for the resume picker (`list-agent-sessions` RPC) |
+| `machineSocket.ts` | Machine-scoped Socket.IO client connecting to the daemon's own P2P server; registers RPC handlers (spawn-session etc.) |
+| `heartbeat.ts` | Interval loop: prunes dead sessions, auto-updates on CLI version change (spawns fresh daemon, self-terminates), detects foreign daemons, writes heartbeat to state file |
+| `controlServer.ts` | Local-only HTTP IPC on `127.0.0.1` |
 
 ### Lifecycle
 
@@ -317,6 +330,21 @@ When the daemon shuts down, it kills all tracked child processes and the tmux se
 
 Daemon session spawning uses `registerCommonHandlers` to expose a controlled RPC surface (shell commands, file operations, search/diff helpers).
 
+### Session resume
+
+Support for resuming a previous agent session (e.g. tapping "Resume" in the client) varies per agent:
+
+| Agent | Resume | Mechanism |
+|-------|--------|-----------|
+| Claude Code | Full | `--resume <id>`; history from the original session is replayed into the P2P store (`src/claude/utils/replaySessionHistory.ts`) |
+| Cursor | Full | `agent --resume <id>` on each headless query (`src/cursor/cursorQuery.ts`) |
+| Gemini | Full | ACP `session/load` when the agent advertises the `loadSession` capability; falls back to a new session otherwise (`src/agent/acp/AcpBackend.ts`) |
+| Codex | Not supported | `experimental_resume` was removed from the Codex CLI; a fresh session starts with an explicit notice that no context is carried over. Migration to the Codex app-server is planned (`src/codex/runCodex.ts`) |
+
+Agent-specific notes:
+- **Cursor**: the CLI binary is detected as `agent` (fallback: `cursor-agent` for older builds); headless queries run with `--trust` to skip workspace-trust prompts.
+- **Gemini**: ACP mode uses `--acp` on newer builds and falls back to `--experimental-acp` (probed once via `gemini --help`). Since 2026-06-18 Google disabled Gemini CLI access for OAuth (Google-account) users — the CLI surfaces a clear error suggesting API-key auth instead of a generic failure.
+
 ### Machine state
 
 ```mermaid
@@ -383,14 +411,35 @@ RPC is used to send commands over the Socket.IO connection:
 
 This mechanism allows the P2P server and mobile clients to drive local actions without exposing a broad REST surface.
 
+## Daemon services
+
+Optional services hosted by the daemon and exposed over the P2P REST API:
+
+| Service | Endpoints | Notes |
+|---------|-----------|-------|
+| Whisper STT | `GET /v1/whisper/status`, `POST /v1/voice/transcribe` | Local whisper.cpp transcription (`src/daemon/whisper/`) |
+| TTS | `GET /v1/tts/status`, `POST /v1/voice/synthesize` | edge-tts (default) or qwen3-tts; with `ttsEdgeVoice: 'auto'` (config default) the Edge voice is picked per response language (`src/daemon/tts/edgeTtsProvider.ts`) |
+| Concierge | `GET /v1/concierge/status`, `POST /v1/concierge/chat` | Optional local LLM assistant via LM Studio (`src/daemon/concierge/conciergeService.ts`) |
+
+### Local concierge (LM Studio)
+
+Lightweight LLM assistant embedded in the daemon. Disabled by default; enabled via `conciergeEnabled` in `~/.remcli/setup.json` (`conciergeUrl` defaults to `http://127.0.0.1:1234/v1`, `conciergeModel` empty = first model reported by the server). Talks to any OpenAI-compatible API and routes intent into deterministic function calls:
+
+- `list_sessions` — active session list
+- `get_daemon_status` — daemon version/uptime/port/tunnel
+- `spawn_agent_session` — starts an agent session, only on explicit user request
+
+`POST /v1/concierge/chat` returns `{ reply, actions }`; availability is probed cheaply against `{url}/models` (an offline LM Studio returns 503, never crashes the daemon).
+
 ## Setup wizard and diagnostics
 
 ### `remcli setup`
 
 Interactive setup wizard (`src/commands/setup.ts`) that configures:
 1. **Whisper STT model** — selects and downloads a local speech-to-text model.
-2. **AI agent installation** — installs supported agents with cross-platform commands.
-3. **cloudflared HTTPS tunnel** — installs cloudflared binary for remote access and web voice input.
+2. **TTS provider** — edge-tts (free, no setup) or qwen3-tts (local voice cloning, Apple Silicon only).
+3. **AI agent installation** — installs supported agents with cross-platform commands.
+4. **cloudflared HTTPS tunnel** — installs cloudflared binary for remote access and web voice input.
 
 Supported agents:
 
@@ -399,7 +448,7 @@ Supported agents:
 | Claude Code | `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` | `irm https://claude.ai/install.ps1 \| iex` |
 | Gemini CLI | `gemini` | `npm install -g @google/gemini-cli` | `npm install -g @google/gemini-cli` |
 | Codex CLI | `codex` | `npm install -g @openai/codex` | `npm install -g @openai/codex` |
-| Cursor CLI | `cursor` | `curl https://cursor.com/install -fsS \| bash` | `curl https://cursor.com/install -fsS \| bash` |
+| Cursor CLI | `agent` (older builds: `cursor-agent`) | `curl https://cursor.com/install -fsS \| bash` | `curl https://cursor.com/install -fsS \| bash` |
 
 cloudflared installation per platform:
 
@@ -421,13 +470,17 @@ Diagnostics command (`src/ui/doctor.ts`) that checks:
 - Basic info (version, platform, Node.js)
 - Daemon status and processes
 - Whisper STT model status
-- **AI agent availability** — detects all four agents (Claude Code, Gemini CLI, Codex CLI, Cursor CLI) via `which`/`where` and reports installed versions
+- TTS provider status
+- **AI agent availability** — detects all four agents (Claude Code, Gemini CLI, Codex CLI, Cursor CLI) via `which`/`where` and reports installed versions (Cursor: `agent`, fallback `cursor-agent`)
 - Log files and support links
 
 ## Implementation references
 - CLI entry: `packages/remcli-cli/src/index.ts`
-- Daemon: `packages/remcli-cli/src/daemon`
+- Daemon coordinator: `packages/remcli-cli/src/daemon/run.ts`
+- Daemon modules: `packages/remcli-cli/src/daemon/sessionSpawner.ts`, `machineSocket.ts`, `heartbeat.ts`
 - Control server/client: `packages/remcli-cli/src/daemon/controlServer.ts`, `packages/remcli-cli/src/daemon/controlClient.ts`
+- Concierge: `packages/remcli-cli/src/daemon/concierge/conciergeService.ts`
+- TTS: `packages/remcli-cli/src/daemon/tts/`
 - API clients: `packages/remcli-cli/src/api`
 - Persistence: `packages/remcli-cli/src/persistence.ts`
 - Config: `packages/remcli-cli/src/configuration.ts`

@@ -15,4 +15,5 @@ Internal documentation for Remcli — protocol, encryption, and CLI architecture
 - Paths and field names reflect the current implementation in `packages/remcli-cli`.
 - The daemon runs a built-in P2P server (Fastify + Socket.IO) — no separate server package.
 - The daemon also serves the web app build (`packages/remcli-app/dist/`) as static files via `@fastify/static`, with SPA fallback for client-side routing.
+- The client is migrating to a web-only package (`remcli-web`, Vite + React + PWA); `remcli-app` (React Native) is in maintenance mode.
 - Examples are illustrative; the canonical source is the code.

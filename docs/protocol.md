@@ -10,13 +10,13 @@ This document describes the Remcli wire protocol as implemented in the P2P serve
 ## Protocol design motivations
 The protocol is designed to stay minimal, explicit, and resilient under intermittent connectivity. A few guiding principles shape naming, payloads, and versioning:
 
-- **Small surface area over completeness.** Routes and events exist only when they provide a clear sync primitive (e.g., sessions, artifacts, KV). If a capability can be expressed as data within an existing primitive, it should be.
+- **Small surface area over completeness.** Routes and events exist only when they provide a clear sync primitive (e.g., sessions, machines, KV). If a capability can be expressed as data within an existing primitive, it should be.
 - **Explicit event types and short keys.** Update payloads use `t` for the event type and concise field names (`sid`, `id`, `seq`) to keep message size down without hiding meaning. These names are stable because they are used across clients.
 - **Separation of persistent vs. ephemeral.** Anything that must be recoverable after reconnect is an `update` event with a sequence number. Presence and usage are `ephemeral` to avoid state confusion and minimize storage.
 - **Monotonic ordering at the user level.** `UpdatePayload.seq` is a single per-user counter. This makes client reconciliation simple: apply updates in order and you are consistent for that user.
-- **Optimistic concurrency by default.** Versioned fields (metadata, agent state, artifact parts, access keys, KV) require `expectedVersion`. This prevents silent overwrites and keeps conflict resolution client-driven.
+- **Optimistic concurrency by default.** Versioned fields (metadata, agent state, daemon state, KV) require `expectedVersion`. This prevents silent overwrites and keeps conflict resolution client-driven.
 - **Client-side encryption boundaries.** The server never needs to understand plaintext. The protocol therefore treats most payloads as opaque strings or base64 blobs, which keeps server logic simple and privacy guarantees strong.
-- **Backward compatibility over breaking changes.** New routes/events are added rather than mutating existing shapes in incompatible ways. When dual behavior is needed (e.g., machines), the server emits both old and new updates.
+- **Backward compatibility over breaking changes.** New routes/events are added rather than mutating existing shapes in incompatible ways.
 - **Avoid full REST verbs.** Reads are primarily `GET`, while writes/actions are primarily `POST`, with `DELETE` used when the intent is unambiguous. We avoid the full REST palette because many mutations are not cleanly tied to a single entity or involve more than CRUD logic. Keeping to `GET` + `POST` (plus occasional `DELETE`) makes the client simpler and the protocol clearer.
 
 If a new protocol field or event is proposed, it should answer: does this create a durable sync primitive, or can it be encoded inside existing encrypted payloads without expanding the API surface?
@@ -27,9 +27,10 @@ API endpoints (`/v1/*`, `/v2/*`) require `Authorization: Bearer <token>`. The sa
 ## QR code and web app serving
 The daemon displays a QR code in the terminal that encodes a URL:
 ```
-http://<LAN_IP>:<PORT>/terminal/connect#<encodeURIComponent(JSON_PAYLOAD)>
+http://<LAN_IP>:<PORT>/terminal/connect#<base64(JSON)>                  (LAN)
+https://<subdomain>.trycloudflare.com/terminal/connect#<base64(JSON)>   (tunnel)
 ```
-The hash fragment contains the P2P connection JSON (`{mode, host, port, key, v}`). Any phone camera can scan this QR — it opens the browser, which loads the web app from the daemon itself (served via `@fastify/static`). The web app reads the hash, parses the payload, and connects.
+The hash fragment is a base64-encoded compact JSON `{k: <shared secret>, v: <version>}` — host/port are derived from the URL itself, keeping the QR ~30-40% smaller. Any phone camera can scan this QR — it opens the browser, which loads the web app from the daemon itself (served via `@fastify/static`). The web app reads the hash, derives the bearer token, and connects.
 
 ## WebSocket connection
 ### Handshake
@@ -95,38 +96,16 @@ Field names below match on-wire payloads.
 - `new-message`
   - `body`: `{ t: "new-message", sid, message: { id, seq, content, localId, createdAt, updatedAt } }`
 
-- `update-account`
-  - `body`: `{ t: "update-account", id, settings?, github? }`
-
 - `new-machine`
   - `body`: `{ t: "new-machine", machineId, seq, metadata, metadataVersion, daemonState, daemonStateVersion, dataEncryptionKey, active, activeAt, createdAt, updatedAt }`
 
 - `update-machine`
   - `body`: `{ t: "update-machine", machineId, metadata?, daemonState?, activeAt? }`
 
-- `new-artifact`
-  - `body`: `{ t: "new-artifact", artifactId, seq, header, headerVersion, body, bodyVersion, dataEncryptionKey, createdAt, updatedAt }`
-
-- `update-artifact`
-  - `body`: `{ t: "update-artifact", artifactId, header?, body? }`
-
-- `delete-artifact`
-  - `body`: `{ t: "delete-artifact", artifactId }`
-
-- `relationship-updated`
-  - `body`: `{ t: "relationship-updated", uid, status, timestamp }`
-
-- `new-feed-post`
-  - `body`: `{ t: "new-feed-post", id, body, cursor, createdAt }`
-
-- `kv-batch-update`
-  - `body`: `{ t: "kv-batch-update", changes: [{ key, value, version }] }`
-
 ### Ephemeral event types
-- `activity`: `{ type: "activity", id: sessionId, active, activeAt, thinking? }`
+- `activity`: `{ type: "activity", id: sessionId, active, activeAt, thinking }`
 - `machine-activity`: `{ type: "machine-activity", id: machineId, active, activeAt }`
 - `usage`: `{ type: "usage", id: sessionId, key, tokens, cost, timestamp }`
-- `machine-status`: `{ type: "machine-status", machineId, online, timestamp }`
 
 ### Client -> server WebSocket events
 - `ping` -> callback `{}`
@@ -144,7 +123,7 @@ Field names below match on-wire payloads.
   - Creates a new session message (encrypted payload) and emits `new-message` update to other connections.
 
 - `session-alive`
-  - `{ sid, time, thinking? }`
+  - `{ sid, time, thinking?, mode? }`
   - Emits `ephemeral` activity to user-scoped connections.
 
 - `session-end`
@@ -167,26 +146,6 @@ Field names below match on-wire payloads.
   - `{ machineId, daemonState, expectedVersion }`
   - Response: `{ result: "success", version, daemonState }` or `{ result: "version-mismatch", version, daemonState }`
 
-- `artifact-read`
-  - `{ artifactId }`
-  - Response: `{ result: "success", artifact }` or `{ result: "error", message }`
-
-- `artifact-create`
-  - `{ id, header, body, dataEncryptionKey }`
-  - Response: `{ result: "success", artifact }` or `{ result: "error", message }`
-
-- `artifact-update`
-  - `{ artifactId, header?, body? }` where `header` and `body` include `data` + `expectedVersion`
-  - Response: `{ result: "success", header?, body? }` or `{ result: "version-mismatch", header?, body? }`
-
-- `artifact-delete`
-  - `{ artifactId }`
-  - Response: `{ result: "success" }` or `{ result: "error", message }`
-
-- `access-key-get`
-  - `{ sessionId, machineId }`
-  - Response: `{ ok: true, accessKey? }` or `{ ok: false, error }`
-
 - `rpc-register`
   - `{ method }` -> server emits `rpc-registered`
 
@@ -199,10 +158,21 @@ Field names below match on-wire payloads.
 
 ## HTTP endpoints by area
 
+| Area | Endpoint | Description |
+|------|----------|-------------|
+| Health | `GET /health` | Liveness probe (no auth) |
+| Account | `GET /v1/account/settings`, `GET /v1/account/profile`, `POST /v1/account/settings` | Account stubs for client compatibility |
+| KV | `GET /v1/kv`, `GET /v1/kv/:key`, `POST /v1/kv/bulk`, `POST /v1/kv` | Encrypted key-value store (mutate with `version` for optimistic concurrency) |
+| Voice (STT) | `GET /v1/whisper/status`, `POST /v1/voice/transcribe` | Local Whisper transcription |
+| Voice (TTS) | `GET /v1/tts/status`, `POST /v1/voice/synthesize` | TTS status + synthesis: `{ text, voice?, lang? }` → `audio/ogg` (OGG Opus) |
+| Concierge | `GET /v1/concierge/status`, `POST /v1/concierge/chat` | Optional local LLM assistant (LM Studio); chat body: `{ messages: [{ role, content }] }` → `{ reply, actions }` |
+| Sessions | `GET /v1/sessions`, `GET /v2/sessions`, `GET /v2/sessions/active`, `POST /v1/sessions`, `GET /v1/sessions/:sessionId/messages`, `DELETE /v1/sessions/:sessionId` | Session CRUD + message history |
+| Machines | `POST /v1/machines`, `GET /v1/machines`, `GET /v1/machines/:id` | Machine registration and listing |
+
 ## Sequencing and concurrency
 - `UpdatePayload.seq` is the per-user update sequence (monotonic) used for sync ordering.
-- Sessions, machines, and artifacts have their own `seq` fields used by clients for ordering.
-- Versioned fields (metadata, agentState, daemonState, artifact header/body, access keys, KV) use optimistic concurrency with `expectedVersion` and return a version-mismatch response containing the current version/data.
+- Sessions and machines have their own `seq` fields used by clients for ordering.
+- Versioned fields (metadata, agentState, daemonState, KV) use optimistic concurrency with `expectedVersion` and return a version-mismatch response containing the current version/data.
 
 ## Implementation references
 - API routes: `packages/remcli-cli/src/daemon/p2p/p2pRestRoutes.ts`

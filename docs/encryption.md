@@ -149,7 +149,7 @@ This blob is then wrapped with a version byte before being sent/stored:
 [ version (1 = 0) | boxBundle (...) ]
 ```
 
-The resulting bytes are base64-encoded and placed in fields such as `dataEncryptionKey` for sessions/machines/artifacts.
+The resulting bytes are base64-encoded and placed in fields such as `dataEncryptionKey` for sessions/machines.
 
 ## Where encryption is applied
 
@@ -162,10 +162,7 @@ graph TB
         S3[Session messages]
         M1[Machine metadata]
         M2[Daemon state]
-        A1[Artifact header]
-        A2[Artifact body]
         K1[KV store values]
-        AK[Access keys]
     end
 
     subgraph "Server Storage"
@@ -174,19 +171,14 @@ graph TB
 
     S1 & S2 & S3 --> |opaque strings| DB
     M1 & M2 --> |opaque strings| DB
-    A1 & A2 --> |opaque bytes| DB
     K1 --> |opaque bytes| DB
-    AK --> |opaque string| DB
 
     style S1 fill:#e1f5fe
     style S2 fill:#e1f5fe
     style S3 fill:#e1f5fe
     style M1 fill:#e1f5fe
     style M2 fill:#e1f5fe
-    style A1 fill:#e1f5fe
-    style A2 fill:#e1f5fe
     style K1 fill:#e1f5fe
-    style AK fill:#e1f5fe
 ```
 
 The P2P server treats these fields as opaque strings/blobs. The client encrypts them before sending.
@@ -227,15 +219,6 @@ sequenceDiagram
   - `POST /v1/machines`
   - WebSocket `machine-update-metadata` / `machine-update-state`
   - `update-machine` events
-
-### Artifacts
-- `header` and `body` are encrypted bytes encoded as base64 on the wire.
-- Stored in P2P Store.
-- Emitted in `new-artifact` / `update-artifact` events as base64 strings.
-
-### Access keys
-- `AccessKey.data` is treated as an **opaque encrypted string**.
-- The server does not decode it or inspect its contents.
 
 ### Key-value store
 - `UserKVStore.value` is encrypted bytes encoded as base64 on the wire.
@@ -313,19 +296,6 @@ Socket emit: "machine-update-state"
   "machineId": "<machine id>",
   "daemonState": "<base64 encrypted>",
   "expectedVersion": 2
-}
-```
-
-### Artifact create/update (HTTP)
-```http
-POST /v1/artifacts
-```
-```json
-{
-  "id": "<uuid>",
-  "header": "<base64 encrypted>",
-  "body": "<base64 encrypted>",
-  "dataEncryptionKey": "<base64 data key bundle>"
 }
 ```
 
@@ -509,4 +479,4 @@ graph TB
 - Client crypto: `packages/remcli-cli/src/api/encryption.ts`
 - Session message format: `packages/remcli-cli/src/api/types.ts`
 - Server message ingestion: `packages/remcli-cli/src/daemon/p2p/p2pSocketHandlers.ts`
-- Artifact/KV routes: `packages/remcli-cli/src/daemon/p2p/p2pRestRoutes.ts`
+- KV routes: `packages/remcli-cli/src/daemon/p2p/p2pRestRoutes.ts`
