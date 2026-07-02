@@ -1,7 +1,31 @@
-// remcli-web — заглушка i18n. Полноценная локализация (10 локалей) — позже.
+// remcli-web — i18n: русский словарь (полный) + каркас 10 локалей.
+// Полный перевод остальных локалей — позже: overrides сейчас пустые, t() падает на ru.
 // Все UI-тексты берём отсюда через t(); ключи типизированы.
+// Смена языка: setLocale(id) (персист в localStorage) + useLocale() для реактивности.
+import * as React from "react";
 
-const dictionary = {
+/* ---------- Локали (DESIGN.md §Язык интерфейса, 10 шт., дефолт — ru) ---------- */
+
+export type LocaleId = "ru" | "en" | "es" | "pt" | "it" | "ca" | "pl" | "ja" | "zh-Hans" | "zh-Hant";
+
+export const LOCALES: { id: LocaleId; label: string }[] = [
+    { id: "ru", label: "Русский" },
+    { id: "en", label: "English" },
+    { id: "es", label: "Español" },
+    { id: "pt", label: "Português" },
+    { id: "it", label: "Italiano" },
+    { id: "ca", label: "Català" },
+    { id: "pl", label: "Polski" },
+    { id: "ja", label: "日本語" },
+    { id: "zh-Hans", label: "简体中文" },
+    { id: "zh-Hant", label: "繁體中文" },
+];
+
+const LOCALE_STORAGE_KEY = "remcli-locale";
+
+/* ---------- Базовый словарь (ru) ---------- */
+
+const ru = {
     "app.name": "remcli",
 
     "tabs.sessions": "Сессии",
@@ -14,6 +38,10 @@ const dictionary = {
     "status.idle": "ожидает",
     "status.offline": "офлайн",
     "status.error": "ошибка",
+
+    "common.cancel": "Отмена",
+    "common.save": "Сохранить",
+    "common.delete": "Удалить",
 
     "permission.title": "запрос разрешения",
     "permission.danger": "опасная команда · необратимо",
@@ -66,6 +94,10 @@ const dictionary = {
     "connect.manual.addressPlaceholder": "адрес:порт",
     "connect.manual.keyPlaceholder": "ключ подключения",
     "connect.manual.submit": "Подключиться",
+    "connect.manual.invalid": "не удалось разобрать адрес или ключ",
+    "connect.scanner.unsupported": "сканер QR недоступен в этом браузере — введите адрес вручную",
+    "connect.scanner.cameraDenied": "камера недоступна — введите адрес вручную",
+    "connect.footerHint": "адрес и ключ показывает remcli в терминале",
 
     "home.empty.title": "Нет активных сессий",
     "home.empty.hint": "запустите агента — он появится здесь",
@@ -80,6 +112,17 @@ const dictionary = {
     "home.sessions.many": "сессий",
     "home.desktop.pick.title": "Выберите сессию",
     "home.desktop.pick.hint": "или создайте новую — ⌘K",
+    "home.connection.p2p": "p2p",
+    "home.stop.title": "Остановить сессию?",
+    "home.stop.hint": "процесс агента будет завершён",
+    "home.stop.confirm": "Остановить",
+    "home.stop.done": "сессия остановлена",
+    "home.stop.failed": "не удалось остановить сессию",
+    "home.stop.aria": "Остановить сессию",
+
+    "time.now": "сейчас",
+    "time.min": "мин",
+    "time.yesterday": "вчера",
 
     "palette.placeholder": "Поиск сессий и действий…",
     "palette.empty": "ничего не найдено",
@@ -88,6 +131,8 @@ const dictionary = {
     "palette.newSession": "Новая сессия…",
     "palette.openTerminal": "Открыть терминал",
     "palette.stopAll": "Остановить все сессии",
+    "palette.settings": "Открыть настройки",
+    "palette.disconnect": "Отключиться",
 
     "terminal.back": "Назад",
     "terminal.run": "Выполнить",
@@ -111,12 +156,32 @@ const dictionary = {
     "settings.language": "Язык",
     "settings.ttsProvider": "Провайдер TTS",
     "settings.ttsVoice": "Голос",
+    "settings.ttsChecking": "проверяем…",
+    "settings.ttsOff": "выключен",
     "settings.autoSpeak": "Автоозвучка ответов",
     "settings.addMachineQr": "Добавить машину по QR",
     "settings.machine.rename": "Переименовать",
+    "settings.machine.renameTitle": "Переименовать машину",
+    "settings.machine.renamePlaceholder": "имя машины",
     "settings.machine.delete": "Удалить",
+    "settings.machine.deleteTitle": "Удалить машину?",
+    "settings.machine.deleteHint": "машина исчезнет из списка; при следующей активности демона появится снова",
+    "settings.machine.empty": "нет машин — подключитесь по QR",
+    "settings.disconnect": "Отключиться от демона",
     "settings.version": "Версия",
     "settings.daemon": "демон",
+
+    "concierge.title": "консьерж",
+    "concierge.checking": "проверяем консьержа…",
+    "concierge.unavailable": "консьерж недоступен",
+    "concierge.unavailableHint": "включите conciergeEnabled в ~/.remcli/setup.json и запустите LM Studio",
+    "concierge.notConnected": "нет подключения к демону",
+    "concierge.connect": "Подключиться",
+    "concierge.empty.hint": "спросите, что запущено, или попросите запустить агента",
+    "concierge.placeholder": "Сообщение консьержу…",
+    "concierge.thinking": "думает…",
+    "concierge.openSession": "открыть сессию →",
+    "concierge.error": "ошибка",
 
     "new.title": "Новая сессия",
     "new.close": "Закрыть",
@@ -139,8 +204,68 @@ const dictionary = {
     "stub.title": "экран в разработке",
 } as const;
 
-export type I18nKey = keyof typeof dictionary;
+export type I18nKey = keyof typeof ru;
+
+/* ---------- Каркас переводов: локаль → частичный словарь (fallback → ru) ---------- */
+
+type LocaleOverrides = Partial<Record<I18nKey, string>>;
+
+const overrides: Record<Exclude<LocaleId, "ru">, LocaleOverrides> = {
+    "en": {},
+    "es": {},
+    "pt": {},
+    "it": {},
+    "ca": {},
+    "pl": {},
+    "ja": {},
+    "zh-Hans": {},
+    "zh-Hant": {},
+};
+
+/* ---------- Текущая локаль (localStorage + подписка) ---------- */
+
+function isLocaleId(value: string | null): value is LocaleId {
+    return LOCALES.some((locale) => locale.id === value);
+}
+
+let currentLocale: LocaleId = (() => {
+    const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
+    return isLocaleId(stored) ? stored : "ru";
+})();
+
+const localeListeners = new Set<() => void>();
+
+export function getLocale(): LocaleId {
+    return currentLocale;
+}
+
+export function setLocale(id: LocaleId): void {
+    if (currentLocale === id) return;
+    currentLocale = id;
+    localStorage.setItem(LOCALE_STORAGE_KEY, id);
+    localeListeners.forEach((listener) => listener());
+}
+
+/** Код текущего языка — для TTS (`lang`) и Accept-Language-подобных нужд. */
+export function getCurrentLanguage(): string {
+    return currentLocale;
+}
+
+/** Реактивная подписка на локаль (компоненты с t() перерисуются при смене). */
+export function useLocale(): LocaleId {
+    return React.useSyncExternalStore(
+        (onChange) => {
+            localeListeners.add(onChange);
+            return () => localeListeners.delete(onChange);
+        },
+        () => currentLocale,
+    );
+}
 
 export function t(key: I18nKey): string {
-    return dictionary[key];
+    if (currentLocale !== "ru") {
+        const translated = overrides[currentLocale][key];
+        if (translated) return translated;
+    }
+    return ru[key];
 }

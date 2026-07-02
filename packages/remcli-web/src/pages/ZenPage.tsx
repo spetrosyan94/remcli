@@ -1,11 +1,36 @@
-// remcli-web — Zen / Задачи (design/screens/zen.tsx, разметка 1:1). Самый тихий экран.
-// Layout (min-h-dvh, safe-area, таб-бар) даёт TabLayout — здесь только header/main/footer.
+// remcli-web — Zen / Задачи (design/screens/zen.tsx, разметка 1:1).
+// Задачи — в localStorage (src/lib/zenTasks.ts: KV-эндпоинты P2P-демона — заглушки),
+// связанные сессии — живые из стора протокола. «Работать над задачей» → /new
+// с предзаполненным промптом; после спавна NewSessionPage линкует задачу к сессии.
 import { useMemo, useState } from "react";
 import { Check, Play, Plus } from "lucide-react";
 import { useNavigate } from "react-router";
-import { StatusDot } from "@/components/kit";
+import { StatusDot, type AgentId, type Status } from "@/components/kit";
 import { t } from "@/lib/i18n";
-import { sessions, zenTasks, type MockZenTask } from "@/mocks/fixtures";
+import { useSessions, type Session } from "@/lib/protocol";
+import { addZenTask, loadZenTasks, toggleZenTask, type ZenTask } from "@/lib/zenTasks";
+
+function sessionStatus(session: Session): Status {
+    if (!session.active) return "offline";
+    if (Object.keys(session.agentState?.requests ?? {}).length > 0) return "permission";
+    if (session.thinking) return "thinking";
+    return "running";
+}
+
+function sessionAgent(session: Session): AgentId {
+    const flavor = session.metadata?.flavor;
+    return flavor === "codex" || flavor === "gemini" || flavor === "cursor" ? flavor : "claude";
+}
+
+/** Абсолютный путь → «~/…» для показа. */
+function sessionPath(session: Session): string {
+    const path = session.metadata?.path ?? "";
+    const homeDir = session.metadata?.homeDir;
+    if (!homeDir || !path.startsWith(homeDir)) return path;
+    const rest = path.slice(homeDir.length);
+    if (rest === "") return "~";
+    return rest.startsWith("/") || rest.startsWith("\\") ? `~${rest}` : path;
+}
 
 function TaskCheckbox({ isDone, onToggle }: { isDone: boolean; onToggle: () => void }) {
     if (isDone) {
@@ -32,7 +57,9 @@ function TaskCheckbox({ isDone, onToggle }: { isDone: boolean; onToggle: () => v
 
 export function ZenPage() {
     const navigate = useNavigate();
-    const [tasks, setTasks] = useState<MockZenTask[]>(zenTasks);
+    const sessions = useSessions();
+    const [tasks, setTasks] = useState<ZenTask[]>(() => loadZenTasks());
+    const [newTitle, setNewTitle] = useState("");
 
     // выполненные — вниз списка, как в эталоне
     const orderedTasks = useMemo(
@@ -41,8 +68,12 @@ export function ZenPage() {
     );
     const openCount = tasks.filter((task) => !task.isDone).length;
 
-    const toggleTask = (id: string) => {
-        setTasks((prev) => prev.map((task) => (task.id === id ? { ...task, isDone: !task.isDone } : task)));
+    const submitNewTask = (event: React.FormEvent) => {
+        event.preventDefault();
+        const title = newTitle.trim();
+        if (title === "") return;
+        setTasks(addZenTask(title));
+        setNewTitle("");
     };
 
     return (
@@ -66,7 +97,7 @@ export function ZenPage() {
                     if (task.isDone) {
                         return (
                             <div key={task.id} className={`flex items-start gap-3 px-2 py-3.5 opacity-45${rowBorder}`}>
-                                <TaskCheckbox isDone onToggle={() => toggleTask(task.id)} />
+                                <TaskCheckbox isDone onToggle={() => setTasks(toggleZenTask(task.id))} />
                                 <span className="text-[14.5px] leading-snug text-muted-foreground line-through">{task.title}</span>
                             </div>
                         );
@@ -76,7 +107,7 @@ export function ZenPage() {
                     if (linkedSession) {
                         return (
                             <div key={task.id} className={`flex items-start gap-3 px-2 py-3.5${rowBorder}`}>
-                                <TaskCheckbox isDone={false} onToggle={() => toggleTask(task.id)} />
+                                <TaskCheckbox isDone={false} onToggle={() => setTasks(toggleZenTask(task.id))} />
                                 <div className="flex flex-1 flex-col gap-2">
                                     <span className="text-[14.5px] leading-snug">{task.title}</span>
                                     <button
@@ -84,45 +115,44 @@ export function ZenPage() {
                                         onClick={() => navigate(`/session/${linkedSession.id}`)}
                                         className="flex w-fit items-center gap-1.5 rounded-[7px] border border-border bg-card px-2.5 py-1 font-mono text-[10.5px] text-muted-foreground"
                                     >
-                                        <StatusDot status={linkedSession.status} className="size-[5px]" /> {linkedSession.path} · {linkedSession.agent}
+                                        <StatusDot status={sessionStatus(linkedSession)} className="size-[5px]" />
+                                        {sessionPath(linkedSession)} · {sessionAgent(linkedSession)}
                                     </button>
                                 </div>
                             </div>
                         );
                     }
 
-                    // задача без сессии → CTA «работать» (запускает new-session с prefill)
-                    if (task.hasWorkCta) {
-                        return (
-                            <div key={task.id} className={`flex items-start gap-3 px-2 py-3.5${rowBorder}`}>
-                                <TaskCheckbox isDone={false} onToggle={() => toggleTask(task.id)} />
-                                <div className="flex flex-1 flex-col gap-2">
-                                    <span className="text-[14.5px] leading-snug">{task.title}</span>
-                                    <button
-                                        type="button"
-                                        onClick={() => navigate("/new", { state: { zenTaskTitle: task.title } })}
-                                        className="flex h-8 w-fit items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-semibold text-primary-foreground"
-                                    >
-                                        <Play className="size-2.5 fill-current" /> {t("zen.workOnTask")}
-                                    </button>
-                                </div>
-                            </div>
-                        );
-                    }
-
+                    // задача без живой сессии → CTA «работать» (new-session с prefill промпта)
                     return (
                         <div key={task.id} className={`flex items-start gap-3 px-2 py-3.5${rowBorder}`}>
-                            <TaskCheckbox isDone={false} onToggle={() => toggleTask(task.id)} />
-                            <span className="text-[14.5px] leading-snug">{task.title}</span>
+                            <TaskCheckbox isDone={false} onToggle={() => setTasks(toggleZenTask(task.id))} />
+                            <div className="flex flex-1 flex-col gap-2">
+                                <span className="text-[14.5px] leading-snug">{task.title}</span>
+                                <button
+                                    type="button"
+                                    onClick={() => navigate("/new", { state: { zenTaskTitle: task.title, zenTaskId: task.id } })}
+                                    className="flex h-8 w-fit items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-semibold text-primary-foreground"
+                                >
+                                    <Play className="size-2.5 fill-current" /> {t("zen.workOnTask")}
+                                </button>
+                            </div>
                         </div>
                     );
                 })}
             </main>
 
             <footer className="px-4 pb-3 pt-2.5">
-                <div className="flex h-12 items-center gap-2.5 rounded-xl border border-border bg-card px-4 text-sm text-muted-foreground">
-                    <Plus className="size-3.5 text-accent" /> {t("zen.newTask")}
-                </div>
+                <form onSubmit={submitNewTask}
+                    className="flex h-12 items-center gap-2.5 rounded-xl border border-border bg-card px-4 text-sm">
+                    <Plus className="size-3.5 shrink-0 text-accent" />
+                    <input
+                        value={newTitle}
+                        onChange={(event) => setNewTitle(event.target.value)}
+                        placeholder={t("zen.newTask")}
+                        className="h-full w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+                    />
+                </form>
             </footer>
         </div>
     );

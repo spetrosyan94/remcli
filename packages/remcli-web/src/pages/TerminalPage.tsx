@@ -1,87 +1,25 @@
-// remcli-web — Терминал сессии (см. design/screens/terminal.tsx, разметка 1:1).
+// remcli-web — Терминал сессии: честная заглушка.
+// В P2P-протоколе демона (p2pSocketHandlers.ts / p2pRestRoutes.ts) нет терминальных
+// событий или PTY-RPC — интерактивный терминал доступен только с хоста. Экран
+// показывает контекст сессии (путь/хост из стора) и объясняет ограничение.
 // ВСЕГДА тёмный (класс dark + фон #050507), независимо от темы.
-import * as React from "react";
-import { ArrowLeft, CornerDownLeft } from "lucide-react";
+import { ArrowLeft, TerminalSquare } from "lucide-react";
 import { useNavigate, useParams } from "react-router";
-import { Caret } from "@/components/kit";
 import { t } from "@/lib/i18n";
-import {
-    terminalHeaderInfo,
-    terminalOutputLines,
-    terminalPromptSegments,
-    terminalQuickKeys,
-    type MockTerminalOutputLine,
-    type MockTerminalSegment,
-    type TerminalTone,
-} from "@/mocks/fixtures";
+import { useSession, type Session } from "@/lib/protocol";
 
-const toneClasses: Record<TerminalTone, string> = {
-    ok: "text-emerald-400",
-    branch: "text-cyan-400",
-    warn: "text-amber-400",
-    muted: "text-zinc-500",
-};
-
-function TerminalSegments({ segments }: { segments: MockTerminalSegment[] }) {
-    return (
-        <>
-            {segments.map((segment, index) =>
-                segment.tone ? (
-                    <span key={index} className={toneClasses[segment.tone]}>{segment.text}</span>
-                ) : (
-                    <React.Fragment key={index}>{segment.text}</React.Fragment>
-                ),
-            )}
-        </>
-    );
-}
-
-function TerminalLine({ line }: { line: MockTerminalOutputLine }) {
-    const className = [line.isMuted ? "text-zinc-500" : "", line.hasTopGap ? "mt-2" : ""]
-        .filter(Boolean)
-        .join(" ");
-    return (
-        <div className={className || undefined}>
-            <TerminalSegments segments={line.segments} />
-            {line.hasCaret ? <Caret /> : null}
-        </div>
-    );
+function displayPath(session: Session): string {
+    const path = session.metadata?.path ?? session.id;
+    const home = session.metadata?.homeDir;
+    return home && path.startsWith(home) ? `~${path.slice(home.length)}` : path;
 }
 
 export function TerminalPage() {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
-    const [lines, setLines] = React.useState<MockTerminalOutputLine[]>(terminalOutputLines);
-    const [command, setCommand] = React.useState("");
-    const outputRef = React.useRef<HTMLElement>(null);
+    const session = useSession(id ?? "");
 
-    React.useEffect(() => {
-        const output = outputRef.current;
-        if (output) {
-            output.scrollTop = output.scrollHeight;
-        }
-    }, [lines]);
-
-    const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-        const trimmed = command.trim();
-        if (!trimmed) {
-            return;
-        }
-        setLines((prev) => {
-            const executed: MockTerminalOutputLine = {
-                id: `term-cmd-${Date.now()}`,
-                hasTopGap: true,
-                segments: [...terminalPromptSegments, { text: ` ${trimmed}` }],
-            };
-            const caretIndex = prev.findIndex((line) => line.hasCaret);
-            if (caretIndex === -1) {
-                return [...prev, executed];
-            }
-            return [...prev.slice(0, caretIndex), executed, ...prev.slice(caretIndex)];
-        });
-        setCommand("");
-    };
+    const host = session?.metadata?.host;
 
     return (
         // принудительный dark: класс dark + свой фон #050507
@@ -95,43 +33,32 @@ export function TerminalPage() {
                     <ArrowLeft className="size-[17px]" />
                 </button>
                 <div className="flex flex-1 flex-col">
-                    <span className="font-mono text-[13.5px] font-semibold">{terminalHeaderInfo.cwd}</span>
-                    <span className="font-mono text-[10px] text-muted-foreground">{terminalHeaderInfo.ptyLabel}</span>
+                    <span className="truncate font-mono text-[13.5px] font-semibold">
+                        {session ? displayPath(session) : t("chat.notFound")}
+                    </span>
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                        {host ? `${host} · tty` : "tty"}
+                    </span>
                 </div>
-                <span className="flex items-center gap-1.5 rounded-full border border-accent/25 bg-accent/[0.08] px-2.5 py-1 font-mono text-[10px] text-accent">
-                    <span className="size-1.5 rounded-full bg-status-running" /> {t("terminal.live")}
-                </span>
             </header>
 
-            {/* вывод */}
-            <main ref={outputRef} className="flex-1 overflow-y-auto px-4 py-3.5 font-mono text-[11.5px] leading-[1.75] text-zinc-300">
-                {lines.map((line) => (
-                    <TerminalLine key={line.id} line={line} />
-                ))}
+            {/* заглушка: терминальных событий в P2P-протоколе нет */}
+            <main className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
+                <TerminalSquare className="size-8 text-zinc-600" />
+                <span className="font-mono text-[12.5px] text-zinc-400">
+                    Терминал доступен только с хоста
+                </span>
+                <span className="max-w-[420px] font-mono text-[11px] leading-relaxed text-zinc-600">
+                    P2P-протокол демона не передаёт терминальные события — откройте tmux-сессию
+                    на машине, где запущен `remcli`.
+                </span>
+                <button
+                    onClick={() => navigate(id ? `/session/${id}` : "/")}
+                    className="mt-2 h-9 rounded-[9px] border border-border px-3.5 font-mono text-[12px] text-muted-foreground"
+                >
+                    {t("terminal.back")}
+                </button>
             </main>
-
-            {/* ввод команды + быстрые клавиши */}
-            <footer className="border-t border-border px-3.5 pb-[max(12px,env(safe-area-inset-bottom))] pt-2">
-                <form className="flex items-center gap-2" onSubmit={handleSubmit}>
-                    <div className="flex h-11 flex-1 items-center gap-2 rounded-xl border border-input bg-card px-3 font-mono text-[13px]">
-                        <span className="text-emerald-400">$</span>
-                        <input
-                            className="flex-1 bg-transparent outline-none placeholder:text-muted-foreground"
-                            placeholder={t("terminal.placeholder")}
-                            value={command}
-                            onChange={(event) => setCommand(event.target.value)}
-                        />
-                    </div>
-                    <button type="submit" aria-label={t("terminal.run")} className="flex size-11 items-center justify-center rounded-xl bg-secondary">
-                        <CornerDownLeft className="size-4" />
-                    </button>
-                </form>
-                <div className="mt-2 flex gap-1.5 font-mono text-[10.5px] text-muted-foreground">
-                    {terminalQuickKeys.map((key) => (
-                        <button key={key} className="rounded-[7px] border border-border bg-card px-2.5 py-1.5">{key}</button>
-                    ))}
-                </div>
-            </footer>
         </div>
     );
 }

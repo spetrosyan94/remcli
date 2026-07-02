@@ -1,15 +1,17 @@
 // remcli-web — Command Palette (⌘K / кнопка поиска). Оверлей поверх любого экрана.
-// Референс: design/screens/palette.tsx (разметка/классы 1:1); сессии + действия.
+// Референс: design/screens/palette.tsx (разметка/классы 1:1); живые сессии из P2P-стора,
+// действия: новая сессия · настройки · отключиться (logout + редирект на /connect).
 // shadcn <Command> (cmdk) в Radix Dialog; появление: scale 0.98→1 + fade 160ms (MOTION.md §7).
 import * as React from "react";
 import { Command as CommandPrimitive } from "cmdk";
-import { Plus, Search, Square, Terminal } from "lucide-react";
+import { Plus, Search, Settings, Unplug } from "lucide-react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { useNavigate } from "react-router";
 import { AgentIcon, StatusDot } from "@/components/kit";
+import { sessionAgent, sessionPath, sessionStatus } from "@/components/app/sessionDisplay";
 import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
 import { t } from "@/lib/i18n";
-import { sessions } from "@/mocks/fixtures";
+import { logoutProtocolClient, useSessions } from "@/lib/protocol";
 
 /** Подсветка совпадения в пути сессии: <mark class="bg-transparent text-accent"> — как в референсе. */
 function HighlightedPath({ path, query }: { path: string; query: string }) {
@@ -40,6 +42,7 @@ export function CommandPalette() {
     const [isOpen, setIsOpen] = React.useState(false);
     const [query, setQuery] = React.useState("");
     const navigate = useNavigate();
+    const sessions = useSessions();
 
     React.useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
@@ -66,14 +69,16 @@ export function CommandPalette() {
     // как в референсе (query="deplo" → 1 сессия + все 3 действия). Матчинг — substring, как в <mark>.
     const normalizedQuery = query.trim().toLowerCase();
     const filteredSessions = React.useMemo(
-        () => (normalizedQuery ? sessions.filter((session) => session.path.toLowerCase().includes(normalizedQuery)) : sessions),
-        [normalizedQuery],
+        () => (normalizedQuery
+            ? sessions.filter((session) => sessionPath(session).toLowerCase().includes(normalizedQuery))
+            : sessions),
+        [sessions, normalizedQuery],
     );
 
-    // Действие «Открыть терминал <папка>» — для верхней (самой срочной) сессии, как в референсе.
-    const terminalSession = sessions[0];
-    const terminalDirName = terminalSession.path.split("/").pop() ?? terminalSession.path;
-    const openTerminalLabel = `${t("palette.openTerminal")} ${terminalDirName}`;
+    const disconnect = () => {
+        logoutProtocolClient();
+        navigate("/connect", { replace: true });
+    };
 
     return (
         <DialogPrimitive.Root open={isOpen} onOpenChange={handleOpenChange}>
@@ -109,15 +114,15 @@ export function CommandPalette() {
                                     {filteredSessions.map((session) => (
                                         <CommandItem
                                             key={session.id}
-                                            value={session.path}
+                                            value={session.id}
                                             onSelect={() => closeAnd(() => navigate(`/session/${session.id}`))}
                                             className={paletteItemClass}
                                         >
-                                            <AgentIcon agent={session.agent} className="size-6 rounded-[7px] text-[10px]" />
+                                            <AgentIcon agent={sessionAgent(session)} className="size-6 rounded-[7px] text-[10px]" />
                                             <span className="flex-1 truncate font-mono text-[12.5px]">
-                                                <HighlightedPath path={session.path} query={query} />
+                                                <HighlightedPath path={sessionPath(session)} query={query} />
                                             </span>
-                                            <StatusDot status={session.status} className="size-[7px]" />
+                                            <StatusDot status={sessionStatus(session)} className="size-[7px]" />
                                             <span className="hidden font-mono text-[10px] text-muted-foreground/70 group-data-[selected=true]:inline">⏎</span>
                                         </CommandItem>
                                     ))}
@@ -137,21 +142,20 @@ export function CommandPalette() {
                                     <kbd className="font-mono text-[10px] text-muted-foreground/70">⌘N</kbd>
                                 </CommandItem>
                                 <CommandItem
-                                    value={openTerminalLabel}
-                                    onSelect={() => closeAnd(() => navigate(`/session/${terminalSession.id}/terminal`))}
+                                    value={t("palette.settings")}
+                                    onSelect={() => closeAnd(() => navigate("/settings"))}
                                     className={paletteItemClass}
                                 >
-                                    <span className="flex size-6 items-center justify-center rounded-[7px] bg-secondary"><Terminal className="size-3.5 text-muted-foreground" /></span>
-                                    <span className="flex-1 text-[13px] text-foreground/85">{openTerminalLabel}</span>
-                                    <kbd className="font-mono text-[10px] text-muted-foreground/70">⌘T</kbd>
+                                    <span className="flex size-6 items-center justify-center rounded-[7px] bg-secondary"><Settings className="size-3.5 text-muted-foreground" /></span>
+                                    <span className="flex-1 text-[13px] text-foreground/85">{t("palette.settings")}</span>
                                 </CommandItem>
                                 <CommandItem
-                                    value={t("palette.stopAll")}
-                                    onSelect={() => handleOpenChange(false)}
+                                    value={t("palette.disconnect")}
+                                    onSelect={() => closeAnd(disconnect)}
                                     className={paletteItemClass}
                                 >
-                                    <span className="flex size-6 items-center justify-center rounded-[7px] bg-secondary"><Square className="size-3 fill-status-error text-status-error" /></span>
-                                    <span className="flex-1 text-[13px] text-foreground/85">{t("palette.stopAll")}</span>
+                                    <span className="flex size-6 items-center justify-center rounded-[7px] bg-secondary"><Unplug className="size-3.5 text-status-error" /></span>
+                                    <span className="flex-1 text-[13px] text-foreground/85">{t("palette.disconnect")}</span>
                                 </CommandItem>
                             </CommandGroup>
                         </CommandList>

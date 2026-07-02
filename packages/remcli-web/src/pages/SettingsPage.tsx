@@ -1,10 +1,22 @@
 // remcli-web — Настройки (design/screens/settings.tsx, разметка 1:1). Сгруппированные списки.
-// Layout (safe-area + таб-бар) даёт TabLayout; данные — @/mocks/fixtures.
+// Layout (safe-area + таб-бар) даёт TabLayout; данные — живой P2P-стор (@/lib/protocol):
+// машины (rename через machine-update-metadata, удаление локально), TTS-статус демона,
+// язык (10 локалей, @/lib/i18n), отключение (logout → /connect).
 import * as React from "react";
-import { ChevronRight, MoreHorizontal, QrCode } from "lucide-react";
+import { ChevronRight, LogOut, MoreHorizontal, QrCode } from "lucide-react";
 import { useNavigate } from "react-router";
+import { toast } from "sonner";
 import { Segmented, StatusDot } from "@/components/kit";
 import { useTheme, type Theme } from "@/components/theme/ThemeProvider";
+import { Button } from "@/components/ui/button";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -13,14 +25,32 @@ import {
     DropdownMenuRadioItem,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { t } from "@/lib/i18n";
-import { connectionInfo, machines, settingsLocales, settingsTtsProviders } from "@/mocks/fixtures";
+import { Input } from "@/components/ui/input";
+import { LOCALES, setLocale, t, useLocale } from "@/lib/i18n";
+import {
+    forgetMachine,
+    logoutProtocolClient,
+    machineSetDisplayName,
+    useMachines,
+    type Machine,
+} from "@/lib/protocol";
+import {
+    getAutoSpeakEnabled,
+    getStoredTtsVoice,
+    setAutoSpeakEnabled,
+    setStoredTtsVoice,
+    useTtsAvailability,
+} from "@/lib/voice/tts";
 
-const THEME_OPTIONS: { label: string; value: Theme }[] = [
-    { label: t("settings.theme.light"), value: "light" },
-    { label: t("settings.theme.dark"), value: "dark" },
-    { label: t("settings.theme.system"), value: "system" },
+const THEME_OPTIONS: { labelKey: "settings.theme.light" | "settings.theme.dark" | "settings.theme.system"; value: Theme }[] = [
+    { labelKey: "settings.theme.light", value: "light" },
+    { labelKey: "settings.theme.dark", value: "dark" },
+    { labelKey: "settings.theme.system", value: "system" },
 ];
+
+function machineName(machine: Machine): string {
+    return machine.metadata?.displayName || machine.metadata?.host || machine.id;
+}
 
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
     return (
@@ -79,19 +109,71 @@ function ToggleSwitch({ isOn, onToggle }: { isOn: boolean; onToggle: () => void 
 export function SettingsPage() {
     const navigate = useNavigate();
     const { theme, setTheme } = useTheme();
-    const [locale, setLocale] = React.useState(settingsLocales[0].label);
-    const [providerId, setProviderId] = React.useState(settingsTtsProviders[0].id);
-    const [voice, setVoice] = React.useState(settingsTtsProviders[0].voices[0]);
-    const [isAutoSpeak, setIsAutoSpeak] = React.useState(false);
+    const locale = useLocale();
+    const machines = useMachines();
+    const tts = useTtsAvailability();
 
-    const provider = settingsTtsProviders.find((p) => p.id === providerId) ?? settingsTtsProviders[0];
-    const themeLabel = THEME_OPTIONS.find((o) => o.value === theme)?.label ?? t("settings.theme.dark");
+    const [voice, setVoice] = React.useState<string | null>(getStoredTtsVoice);
+    const [isAutoSpeak, setIsAutoSpeak] = React.useState(getAutoSpeakEnabled);
+    const [renameTarget, setRenameTarget] = React.useState<Machine | null>(null);
+    const [renameValue, setRenameValue] = React.useState("");
+    const [isRenaming, setIsRenaming] = React.useState(false);
+    const [deleteTarget, setDeleteTarget] = React.useState<Machine | null>(null);
 
-    const selectProvider = (label: string) => {
-        const next = settingsTtsProviders.find((p) => p.label === label);
-        if (!next) return;
-        setProviderId(next.id);
-        setVoice(next.voices[0]);
+    const themeLabel = t(THEME_OPTIONS.find((o) => o.value === theme)?.labelKey ?? "settings.theme.dark");
+    const localeLabel = LOCALES.find((l) => l.id === locale)?.label ?? locale;
+
+    // Провайдер задаётся конфигом демона (~/.remcli/setup.json) — показываем статус
+    const providerValue = tts.isChecking && !tts.status
+        ? t("settings.ttsChecking")
+        : tts.status
+            ? (tts.status.available ? tts.status.provider : t("settings.ttsOff"))
+            : t("tts.unavailable");
+    const voices = tts.status?.voices ?? [];
+    const voiceValue = voice && voices.includes(voice) ? voice : voices[0] ?? "—";
+
+    // Версия демона — из метаданных самой свежей машины
+    const daemonVersion = machines.find((m) => m.metadata?.remcliCliVersion)?.metadata?.remcliCliVersion;
+
+    const selectVoice = (next: string) => {
+        setVoice(next);
+        setStoredTtsVoice(next);
+    };
+
+    const toggleAutoSpeak = () => {
+        setIsAutoSpeak((current) => {
+            setAutoSpeakEnabled(!current);
+            return !current;
+        });
+    };
+
+    const openRename = (machine: Machine) => {
+        setRenameTarget(machine);
+        setRenameValue(machineName(machine));
+    };
+
+    const submitRename = async () => {
+        if (!renameTarget || isRenaming) return;
+        setIsRenaming(true);
+        try {
+            await machineSetDisplayName(renameTarget.id, renameValue);
+            setRenameTarget(null);
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : t("status.error"));
+        } finally {
+            setIsRenaming(false);
+        }
+    };
+
+    const submitDelete = () => {
+        if (!deleteTarget) return;
+        forgetMachine(deleteTarget.id);
+        setDeleteTarget(null);
+    };
+
+    const disconnect = () => {
+        logoutProtocolClient();
+        navigate("/connect", { replace: true });
     };
 
     return (
@@ -103,43 +185,62 @@ export function SettingsPage() {
                     <Row label={t("settings.theme")}>
                         <div className="w-44">
                             <Segmented
-                                options={THEME_OPTIONS.map((o) => o.label)}
+                                options={THEME_OPTIONS.map((o) => t(o.labelKey))}
                                 value={themeLabel}
                                 onChange={(label) => {
-                                    const next = THEME_OPTIONS.find((o) => o.label === label);
+                                    const next = THEME_OPTIONS.find((o) => t(o.labelKey) === label);
                                     if (next) setTheme(next.value);
                                 }}
                             />
                         </div>
                     </Row>
-                    <PickerRow label={t("settings.language")} value={locale} options={settingsLocales.map((l) => l.label)} onSelect={setLocale} /> {/* 10 локалей */}
+                    <PickerRow
+                        label={t("settings.language")}
+                        value={localeLabel}
+                        options={LOCALES.map((l) => l.label)}
+                        onSelect={(label) => {
+                            const next = LOCALES.find((l) => l.label === label);
+                            if (next) setLocale(next.id);
+                        }}
+                    /> {/* 10 локалей */}
                 </Group>
 
                 <Group label={t("settings.group.voice")}>
-                    <PickerRow label={t("settings.ttsProvider")} value={provider.label} options={settingsTtsProviders.map((p) => p.label)} onSelect={selectProvider} />
-                    <PickerRow label={t("settings.ttsVoice")} value={voice} options={provider.voices} onSelect={setVoice} />
+                    <Row label={t("settings.ttsProvider")} value={providerValue} />
+                    {voices.length > 0 && (
+                        <PickerRow label={t("settings.ttsVoice")} value={voiceValue} options={voices} onSelect={selectVoice} />
+                    )}
                     <Row label={t("settings.autoSpeak")}>
-                        <ToggleSwitch isOn={isAutoSpeak} onToggle={() => setIsAutoSpeak((v) => !v)} />
+                        <ToggleSwitch isOn={isAutoSpeak} onToggle={toggleAutoSpeak} />
                     </Row>
                 </Group>
 
                 <Group label={t("settings.group.machines")}>
+                    {machines.length === 0 && (
+                        <div className="flex min-h-12 items-center px-3.5 py-2.5">
+                            <span className="font-mono text-xs text-muted-foreground">{t("settings.machine.empty")}</span>
+                        </div>
+                    )}
                     {machines.map((machine) => (
                         <div key={machine.id} className="flex min-h-12 items-center gap-2.5 px-3.5 py-2.5">
-                            <StatusDot status={machine.isOnline ? "running" : "offline"} className="size-[7px]" />
-                            <span className={`flex-1 font-mono text-[12.5px] ${machine.isOnline ? "" : "text-muted-foreground"}`}>{machine.name}</span>
+                            <StatusDot status={machine.active ? "running" : "offline"} className="size-[7px]" />
+                            <span className={`flex-1 font-mono text-[12.5px] ${machine.active ? "" : "text-muted-foreground"}`}>{machineName(machine)}</span>
                             <span className="font-mono text-[10px] text-muted-foreground/70">
-                                {machine.isOnline ? `${machine.transport} · ${machine.latencyLabel}` : t("status.offline")}
+                                {machine.active ? t("home.machine.online") : t("status.offline")}
                             </span>
                             <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
-                                    <button type="button" aria-label={machine.name} className="flex items-center">
+                                    <button type="button" aria-label={machineName(machine)} className="flex items-center">
                                         <MoreHorizontal className="size-4 text-muted-foreground/60" />
                                     </button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end">
-                                    <DropdownMenuItem className="font-mono text-xs">{t("settings.machine.rename")}</DropdownMenuItem>
-                                    <DropdownMenuItem variant="destructive" className="font-mono text-xs">{t("settings.machine.delete")}</DropdownMenuItem>
+                                    <DropdownMenuItem className="font-mono text-xs" onSelect={() => openRename(machine)}>
+                                        {t("settings.machine.rename")}
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem variant="destructive" className="font-mono text-xs" onSelect={() => setDeleteTarget(machine)}>
+                                        {t("settings.machine.delete")}
+                                    </DropdownMenuItem>
                                 </DropdownMenuContent>
                             </DropdownMenu>
                         </div>
@@ -151,9 +252,50 @@ export function SettingsPage() {
                 </Group>
 
                 <Group label={t("settings.group.about")}>
-                    <Row label={t("settings.version")} value={`${connectionInfo.appVersion} · ${t("settings.daemon")} ${connectionInfo.daemonVersion}`} />
+                    <Row label={t("settings.version")} value={daemonVersion ? `${t("settings.daemon")} v${daemonVersion}` : "—"} />
+                    <button type="button" onClick={disconnect} className="flex min-h-12 w-full items-center gap-2.5 px-3.5 py-2.5 text-status-error">
+                        <LogOut className="size-[13px]" />
+                        <span className="text-[13px] font-medium">{t("settings.disconnect")}</span>
+                    </button>
                 </Group>
             </main>
+
+            {/* Переименование машины (machine-update-metadata, OCC retry) */}
+            <Dialog open={renameTarget !== null} onOpenChange={(isOpen) => { if (!isOpen) setRenameTarget(null); }}>
+                <DialogContent className="max-w-sm">
+                    <DialogHeader>
+                        <DialogTitle className="text-base">{t("settings.machine.renameTitle")}</DialogTitle>
+                    </DialogHeader>
+                    <Input
+                        value={renameValue}
+                        onChange={(event) => setRenameValue(event.target.value)}
+                        placeholder={t("settings.machine.renamePlaceholder")}
+                        className="font-mono text-sm"
+                        onKeyDown={(event) => { if (event.key === "Enter") void submitRename(); }}
+                        autoFocus
+                    />
+                    <DialogFooter>
+                        <Button variant="outline" size="sm" onClick={() => setRenameTarget(null)}>{t("common.cancel")}</Button>
+                        <Button size="sm" disabled={isRenaming} onClick={() => void submitRename()}>{t("common.save")}</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Удаление машины (локально: у демона нет DELETE /v1/machines) */}
+            <Dialog open={deleteTarget !== null} onOpenChange={(isOpen) => { if (!isOpen) setDeleteTarget(null); }}>
+                <DialogContent className="max-w-sm">
+                    <DialogHeader>
+                        <DialogTitle className="text-base">{t("settings.machine.deleteTitle")}</DialogTitle>
+                        <DialogDescription className="font-mono text-xs">
+                            {deleteTarget ? machineName(deleteTarget) : ""} · {t("settings.machine.deleteHint")}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                        <Button variant="outline" size="sm" onClick={() => setDeleteTarget(null)}>{t("common.cancel")}</Button>
+                        <Button variant="destructive" size="sm" onClick={submitDelete}>{t("common.delete")}</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </>
     );
 }

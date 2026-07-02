@@ -1,56 +1,178 @@
-// remcli-web — Onboarding / Подключение по design/screens/connect.tsx (эталоны: pages/connect.html, connect-states.html).
-// Состояния: idle · scanning · connecting · error · manual. Камера пока мок:
-// «Сканировать QR-код» → имитация скана по таймеру → подключение → Home.
+// remcli-web — Onboarding / Подключение (design/screens/connect.tsx, connect-states.html).
+// Реальный флоу P2P: hash из QR-ссылки демона (/terminal/connect#base64({k,v})) → авто-коннект;
+// камера getUserMedia + BarcodeDetector (фолбэк — ручной ввод URL+ключа);
+// startProtocolClient + live-статус сокета → редирект на / либо состояние error.
 import * as React from "react";
 import { Loader2, QrCode, X } from "lucide-react";
 import { useNavigate } from "react-router";
 import { Caret } from "@/components/kit";
 import { t } from "@/lib/i18n";
-import { connectMock, connectionInfo } from "@/mocks/fixtures";
+import {
+    logoutProtocolClient,
+    parseConnectData,
+    parseConnectUrl,
+    parseManualInput,
+    startProtocolClient,
+    useConnectionStatus,
+    type P2PQRPayload,
+} from "@/lib/protocol";
 
 type ConnectState = "idle" | "scanning" | "connecting" | "error" | "manual";
 
+const CONNECT_TIMEOUT_MS = 15_000;
+const SCAN_INTERVAL_MS = 350;
+
+/* ---------- BarcodeDetector (нет в lib.dom — минимальная типизация) ---------- */
+
+interface DetectedBarcode {
+    rawValue: string;
+}
+
+interface QrDetector {
+    detect(source: HTMLVideoElement): Promise<DetectedBarcode[]>;
+}
+
+type QrDetectorCtor = new (options?: { formats?: string[] }) => QrDetector;
+
+function createQrDetector(): QrDetector | null {
+    const ctor = (window as Window & { BarcodeDetector?: QrDetectorCtor }).BarcodeDetector;
+    if (!ctor) return null;
+    try {
+        return new ctor({ formats: ["qr_code"] });
+    } catch {
+        return null;
+    }
+}
+
+function hasCameraApi(): boolean {
+    return typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
+}
+
+/** Адрес для отображения в состояниях connecting/error. */
+function payloadTarget(payload: P2PQRPayload): string {
+    return payload.port === 0 ? payload.host : `${payload.host}:${payload.port}`;
+}
+
 export function ConnectPage() {
     const navigate = useNavigate();
+    const connectionStatus = useConnectionStatus();
     const [state, setState] = React.useState<ConnectState>("idle");
-    const [willFail, setWillFail] = React.useState(false);
-    const [address, setAddress] = React.useState(connectMock.manualAddress);
-    const [target, setTarget] = React.useState(connectMock.host);
+    const [payload, setPayload] = React.useState<P2PQRPayload | null>(null);
+    const [address, setAddress] = React.useState("");
+    const [secretKey, setSecretKey] = React.useState("");
+    const [manualError, setManualError] = React.useState<string | null>(null);
+    const [scannerNotice, setScannerNotice] = React.useState<string | null>(null);
+    const videoRef = React.useRef<HTMLVideoElement | null>(null);
 
+    const target = payload ? payloadTarget(payload) : address;
+
+    const beginConnect = React.useCallback((next: P2PQRPayload) => {
+        setPayload(next);
+        setState("connecting");
+    }, []);
+
+    // QR-ссылка демона: /connect#… или /terminal/connect#… — читаем hash и сразу подключаемся.
     React.useEffect(() => {
-        if (state === "scanning") {
-            // мок камеры: «нашли» QR по таймеру
-            const timerId = window.setTimeout(() => {
-                setTarget(connectMock.host);
-                setWillFail(false);
-                setState("connecting");
-            }, connectMock.scanDurationMs);
-            return () => window.clearTimeout(timerId);
+        if (window.location.hash.length <= 1) return;
+        const parsed = parseConnectUrl(window.location.href);
+        // Убираем секрет из адресной строки и истории
+        window.history.replaceState(null, "", window.location.pathname);
+        if (parsed) beginConnect(parsed);
+    }, [beginConnect]);
+
+    // Подключение: стартуем протокол-клиент при входе в состояние connecting.
+    React.useEffect(() => {
+        if (state !== "connecting" || !payload) return;
+        startProtocolClient(payload).catch(() => {
+            logoutProtocolClient();
+            setState("error");
+        });
+    }, [state, payload]);
+
+    // Live-статус сокета: connected → Home; error/таймаут → состояние error.
+    React.useEffect(() => {
+        if (state !== "connecting") return undefined;
+        if (connectionStatus === "connected") {
+            navigate("/", { replace: true });
+            return undefined;
         }
-        if (state === "connecting") {
-            const timerId = window.setTimeout(() => {
-                if (willFail) {
-                    setState("error");
-                } else {
-                    navigate("/", { replace: true });
+        if (connectionStatus === "error") {
+            logoutProtocolClient();
+            setState("error");
+            return undefined;
+        }
+        const timeoutId = window.setTimeout(() => {
+            logoutProtocolClient();
+            setState("error");
+        }, CONNECT_TIMEOUT_MS);
+        return () => window.clearTimeout(timeoutId);
+    }, [state, connectionStatus, navigate]);
+
+    // Камера-скан: getUserMedia + BarcodeDetector, опрос кадров по таймеру.
+    React.useEffect(() => {
+        if (state !== "scanning") return undefined;
+        const detector = createQrDetector();
+        if (!detector || !hasCameraApi()) {
+            setScannerNotice(t("connect.scanner.unsupported"));
+            setState("manual");
+            return undefined;
+        }
+        let isActive = true;
+        let stream: MediaStream | null = null;
+        let intervalId = 0;
+        const stop = () => {
+            window.clearInterval(intervalId);
+            stream?.getTracks().forEach((track) => track.stop());
+        };
+        navigator.mediaDevices
+            .getUserMedia({ video: { facingMode: "environment" } })
+            .then((mediaStream) => {
+                if (!isActive) {
+                    mediaStream.getTracks().forEach((track) => track.stop());
+                    return;
                 }
-            }, connectMock.connectDurationMs);
-            return () => window.clearTimeout(timerId);
-        }
-        return undefined;
-    }, [state, willFail, navigate]);
+                stream = mediaStream;
+                const video = videoRef.current;
+                if (!video) return;
+                video.srcObject = mediaStream;
+                void video.play().catch(() => undefined);
+                intervalId = window.setInterval(() => {
+                    detector
+                        .detect(video)
+                        .then((codes) => {
+                            if (!isActive) return;
+                            for (const code of codes) {
+                                const parsed = parseConnectData(code.rawValue);
+                                if (parsed) {
+                                    isActive = false;
+                                    stop();
+                                    beginConnect(parsed);
+                                    return;
+                                }
+                            }
+                        })
+                        .catch(() => undefined); // кадр ещё не готов — пропускаем
+                }, SCAN_INTERVAL_MS);
+            })
+            .catch(() => {
+                if (!isActive) return;
+                setScannerNotice(t("connect.scanner.cameraDenied"));
+                setState("manual");
+            });
+        return () => {
+            isActive = false;
+            stop();
+        };
+    }, [state, beginConnect]);
 
     const startManualConnect = () => {
-        // мок: ручной адрес «не отвечает» → демонстрируем состояние error
-        setTarget(address);
-        setWillFail(true);
-        setState("connecting");
-    };
-
-    const retryConnect = () => {
-        // мок: повторная попытка успешна
-        setWillFail(false);
-        setState("connecting");
+        const parsed = parseManualInput(address, secretKey);
+        if (!parsed) {
+            setManualError(t("connect.manual.invalid"));
+            return;
+        }
+        setManualError(null);
+        beginConnect(parsed);
     };
 
     return (
@@ -73,7 +195,13 @@ export function ConnectPage() {
                 {state === "scanning" && (
                     <div className="mt-8 w-full overflow-hidden rounded-[20px] border border-border bg-background">
                         <div className="relative flex h-[210px] items-center justify-center bg-card">
-                            <div className="absolute inset-0 bg-[repeating-linear-gradient(45deg,hsl(var(--muted))_0_14px,hsl(var(--card))_14px_28px)]" />
+                            <video
+                                ref={videoRef}
+                                autoPlay
+                                playsInline
+                                muted
+                                className="absolute inset-0 size-full object-cover"
+                            />
                             <div className="relative size-[150px] rounded-[18px] border-2 border-accent/80 shadow-[0_0_0_2000px_rgba(0,0,0,0.45)]" />
                             <span className="absolute bottom-3 font-mono text-[10px] text-muted-foreground">{t("connect.scanner.hint")}</span>
                             <button
@@ -90,8 +218,8 @@ export function ConnectPage() {
                 {state === "connecting" && (
                     <div className="mt-8 flex w-full items-center gap-3 rounded-2xl border border-border bg-card px-4 py-4">
                         <Loader2 className="size-4 animate-spin text-accent" />
-                        <div className="flex flex-col gap-0.5">
-                            <span className="text-[13.5px] font-semibold">{t("connect.connectingTo")} {target}</span>
+                        <div className="flex min-w-0 flex-col gap-0.5">
+                            <span className="truncate text-[13.5px] font-semibold">{t("connect.connectingTo")} {target}</span>
                             <span className="font-mono text-[11px] text-muted-foreground">{t("connect.handshake")}<Caret /></span>
                         </div>
                     </div>
@@ -103,11 +231,11 @@ export function ConnectPage() {
                             <span className="size-2 rounded-full bg-status-error" />
                             <span className="text-[13.5px] font-semibold">{t("connect.error.title")}</span>
                         </div>
-                        <p className="font-mono text-[11px] leading-relaxed text-muted-foreground">
+                        <p className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground">
                             {t("connect.error.timeout").replace("{address}", target)}<br />{t("connect.error.hint")}
                         </p>
                         <div className="flex gap-2">
-                            <button onClick={retryConnect} className="h-10 flex-1 rounded-[9px] bg-primary text-[13px] font-semibold text-primary-foreground">{t("connect.retry")}</button>
+                            <button onClick={() => setState("connecting")} className="h-10 flex-1 rounded-[9px] bg-primary text-[13px] font-semibold text-primary-foreground">{t("connect.retry")}</button>
                             <button onClick={() => setState("scanning")} className="h-10 flex-1 rounded-[9px] border border-border text-[13px] font-medium text-muted-foreground">{t("connect.rescan")}</button>
                         </div>
                     </div>
@@ -116,6 +244,9 @@ export function ConnectPage() {
                 {state === "manual" && (
                     <div className="mt-8 flex w-full flex-col gap-2.5 rounded-2xl border border-border bg-card px-4 py-4">
                         <span className="text-[13px] font-semibold">{t("connect.manual.title")}</span>
+                        {scannerNotice && (
+                            <p className="font-mono text-[11px] leading-relaxed text-status-permission">{scannerNotice}</p>
+                        )}
                         <input
                             className="h-11 rounded-[10px] border border-input bg-muted px-3 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15"
                             placeholder={t("connect.manual.addressPlaceholder")}
@@ -125,7 +256,12 @@ export function ConnectPage() {
                         <input
                             className="h-11 rounded-[10px] border border-input bg-muted px-3 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15"
                             placeholder={t("connect.manual.keyPlaceholder")}
+                            value={secretKey}
+                            onChange={(event) => setSecretKey(event.target.value)}
                         />
+                        {manualError && (
+                            <p className="font-mono text-[11px] text-status-error">{manualError}</p>
+                        )}
                         <button onClick={startManualConnect} className="h-11 rounded-[10px] bg-primary text-sm font-semibold text-primary-foreground">{t("connect.manual.submit")}</button>
                     </div>
                 )}
@@ -137,7 +273,7 @@ export function ConnectPage() {
                     <QrCode className="size-[17px]" /> {t("connect.scanQr")}
                 </button>
                 <button onClick={() => setState("manual")} className="h-12 rounded-xl border border-border text-sm font-medium text-muted-foreground">{t("connect.enterManually")}</button>
-                <span className="mt-0.5 text-center font-mono text-[10px] text-muted-foreground/50">{t("connect.daemonHint")}{connectionInfo.daemonVersion}</span>
+                <span className="mt-0.5 text-center font-mono text-[10px] text-muted-foreground/50">{t("connect.footerHint")}</span>
             </div>
         </div>
     );
