@@ -20,6 +20,19 @@ export const GEMINI_MODEL_ENV = 'GEMINI_MODEL';
 export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-pro';
 
 /**
+ * Models accepted by `remcli gemini model set`.
+ * Includes the Gemini 3 preview tier and 'auto' (let the CLI pick).
+ */
+export const VALID_GEMINI_MODELS = [
+  'gemini-3-pro-preview',
+  'gemini-3-flash-preview',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'auto',
+] as const;
+
+/**
  * Instruction for changing chat title
  * Used in system prompts to instruct agents to call change_title function
  */

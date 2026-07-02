@@ -59,6 +59,7 @@ import { ConversationHistory } from '@/gemini/utils/conversationHistory';
 export async function runGemini(opts: {
   credentials: Credentials;
   startedBy?: 'daemon' | 'terminal';
+  resumeSessionId?: string;
 }): Promise<void> {
   //
   // Define session
@@ -928,6 +929,9 @@ export async function runGemini(opts: {
               // Pass model from message - if undefined, will use local config/env/default
               // If explicitly null, will skip local config and use env/default
               model: modelToUse,
+              // Resume a prior Gemini session on the very first backend creation only.
+              // Mode-change restarts (above) always create a fresh session.
+              resumeSessionId: opts.resumeSessionId,
             });
             geminiBackend = backendResult.backend;
 

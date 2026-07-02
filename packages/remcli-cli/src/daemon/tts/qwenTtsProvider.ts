@@ -35,6 +35,7 @@ export class QwenTtsProvider implements TtsProvider {
     private pendingRequestId: string | null = null;
     private pendingResolve: ((value: WorkerResponse) => void) | null = null;
     private pendingReject: ((reason: Error) => void) | null = null;
+    private readyReject: ((reason: Error) => void) | null = null;
     private requestQueue: Array<{ resolve: (buf: Buffer) => void; reject: (err: Error) => void; run: () => Promise<Buffer> }> = [];
     private processing = false;
 
@@ -60,12 +61,22 @@ export class QwenTtsProvider implements TtsProvider {
         this.workerProcess.on('error', (error) => {
             logger.debug('[TTS:qwen3] Worker process error:', error);
             this.workerProcess = null;
+            // If this fires while we're still waiting for the ready signal, reject
+            // startup immediately instead of hanging for WORKER_READY_TIMEOUT_MS.
+            if (this.readyReject) {
+                this.readyReject(new Error(`Qwen3-TTS worker process error during startup: ${error.message}`));
+            }
         });
 
         this.workerProcess.on('exit', (code, signal) => {
             logger.debug(`[TTS:qwen3] Worker exited: code=${code}, signal=${signal}`);
             this.workerProcess = null;
             this.stdoutReader = null;
+            // If the worker dies before signalling readiness, reject startup
+            // immediately instead of hanging for WORKER_READY_TIMEOUT_MS.
+            if (this.readyReject) {
+                this.readyReject(new Error(`Qwen3-TTS worker exited during startup: code=${code}, signal=${signal}`));
+            }
             // Reject pending request immediately instead of waiting for 60s timeout
             if (this.pendingReject) {
                 this.pendingReject(new Error(`Qwen3-TTS worker exited unexpectedly: code=${code}, signal=${signal}`));
@@ -251,16 +262,28 @@ export class QwenTtsProvider implements TtsProvider {
             // Override the pending handler temporarily to catch the ready signal
             const originalHandler = this.handleWorkerLine.bind(this);
 
-            const timeout = setTimeout(() => {
+            const cleanup = () => {
+                clearTimeout(timeout);
                 this.handleWorkerLine = originalHandler;
+                this.readyReject = null;
+            };
+
+            const timeout = setTimeout(() => {
+                cleanup();
                 reject(new Error(`Qwen3-TTS worker failed to become ready within ${WORKER_READY_TIMEOUT_MS}ms`));
             }, WORKER_READY_TIMEOUT_MS);
+
+            // Allow the process 'exit'/'error' handlers to abort startup instantly.
+            this.readyReject = (error: Error) => {
+                cleanup();
+                reject(error);
+            };
+
             this.handleWorkerLine = (line: string) => {
                 try {
                     const parsed = JSON.parse(line) as { ready?: boolean };
                     if (parsed.ready) {
-                        clearTimeout(timeout);
-                        this.handleWorkerLine = originalHandler;
+                        cleanup();
                         resolve();
                         return;
                     }

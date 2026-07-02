@@ -50,4 +50,4 @@ plans/
 .dev/worktree/*
 
 # Development planning notes (keep local, don't commit)
-notes/
+notes/__pycache__/

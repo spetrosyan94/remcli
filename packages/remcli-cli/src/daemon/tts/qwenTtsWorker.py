@@ -43,6 +43,7 @@ def main():
         line = line.strip()
         if not line:
             continue
+        req_id = None
         try:
             req = json.loads(line)
             req_id = req.get("id")
@@ -81,7 +82,14 @@ def main():
 
             print(json.dumps({"id": req_id, "ok": True, "path": output_path}), flush=True)
         except Exception as e:
-            print(json.dumps({"id": req_id, "ok": False, "error": str(e)}), flush=True)
+            # Only emit a correlated error response when we know the request id.
+            # If parsing failed before req_id was set, we can't match the response to
+            # a pending request on the client side, so log to stderr and keep the
+            # resident worker alive instead of risking a NameError crash.
+            if req_id is not None:
+                print(json.dumps({"id": req_id, "ok": False, "error": str(e)}), flush=True)
+            else:
+                print(f"[qwenTtsWorker] Failed to handle request: {e}", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

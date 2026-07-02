@@ -40,6 +40,7 @@ import type { CursorMode, CursorStreamEvent } from './types';
 export async function runCursor(opts: {
     credentials: Credentials;
     startedBy?: 'daemon' | 'terminal';
+    resumeSessionId?: string;
 }): Promise<void> {
     //
     // Define session
@@ -150,7 +151,12 @@ export async function runCursor(opts: {
 
     let abortController = new AbortController();
     let shouldExit = false;
-    let cursorSessionId: string | null = null;
+    // Seed with the resume target so the first cursorQuery is spawned with --resume.
+    // Cursor rewrites the session id via the `init` system event, updating this afterwards.
+    let cursorSessionId: string | null = opts.resumeSessionId ?? null;
+    if (cursorSessionId) {
+        logger.debug(`[Cursor] Resuming session: ${cursorSessionId}`);
+    }
 
     async function handleAbort() {
         logger.debug('[Cursor] Abort requested');

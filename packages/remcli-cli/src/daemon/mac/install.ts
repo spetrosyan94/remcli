@@ -14,8 +14,10 @@
 
 import { writeFileSync, chmodSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
+import { join } from 'node:path';
 import { logger } from '@/ui/logger';
 import { trimIdent } from '@/utils/trimIdent';
+import { projectPath } from '@/projectPath';
 import os from 'os';
 
 const PLIST_LABEL = 'com.remcli-cli.daemon';
@@ -31,9 +33,15 @@ export async function install(): Promise<void> {
             execSync(`launchctl unload ${PLIST_FILE}`, { stdio: 'inherit' });
         }
 
-        // Get the path to the remcli CLI executable
-        const remcliPath = process.argv[0]; // Node.js executable
-        const scriptPath = process.argv[1]; // Script path
+        // Build the daemon launch command.
+        //
+        // We mirror spawnRemcliCLI(): run the actual CLI entrypoint (dist/index.mjs)
+        // directly with Node and the same flags the wrapper uses, then pass the
+        // `daemon start-sync` subcommand. This exact argv is required — both the
+        // router in index.ts and configuration.isDaemonProcess match on
+        // argv === ['daemon', 'start-sync'] to enter daemon mode.
+        const nodePath = process.execPath; // Node.js executable
+        const entrypoint = join(projectPath(), 'dist', 'index.mjs');
 
         // Create plist content
         const plistContent = trimIdent(`
@@ -43,20 +51,17 @@ export async function install(): Promise<void> {
             <dict>
                 <key>Label</key>
                 <string>${PLIST_LABEL}</string>
-                
+
                 <key>ProgramArguments</key>
                 <array>
-                    <string>${remcliPath}</string>
-                    <string>${scriptPath}</string>
-                    <string>remcli-daemon</string>
+                    <string>${nodePath}</string>
+                    <string>--no-warnings</string>
+                    <string>--no-deprecation</string>
+                    <string>${entrypoint}</string>
+                    <string>daemon</string>
+                    <string>start-sync</string>
                 </array>
-                
-                <key>EnvironmentVariables</key>
-                <dict>
-                    <key>REMCLI_DAEMON_MODE</key>
-                    <string>true</string>
-                </dict>
-                
+
                 <key>RunAtLoad</key>
                 <true/>
                 

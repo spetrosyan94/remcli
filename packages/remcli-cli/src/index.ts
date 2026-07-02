@@ -111,20 +111,23 @@ async function ensureDaemonRunning(): Promise<void> {
     // Handle codex command
     try {
       const { runCodex } = await import('@/codex/runCodex');
-      
-      // Parse startedBy argument
+
+      // Parse startedBy / resume arguments
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+      let resumeSessionId: string | undefined = undefined;
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--started-by') {
           startedBy = args[++i] as 'daemon' | 'terminal';
+        } else if (args[i] === '--resume') {
+          resumeSessionId = args[++i];
         }
       }
-      
+
       await ensureDaemonRunning();
       const {
         credentials
       } = await setupP2PForSession();
-      await runCodex({credentials, startedBy});
+      await runCodex({credentials, startedBy, resumeSessionId});
       // Do not force exit here; allow instrumentation to show lingering handles
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
@@ -139,11 +142,14 @@ async function ensureDaemonRunning(): Promise<void> {
     try {
       const { runCursor } = await import('@/cursor/runCursor');
 
-      // Parse startedBy argument
+      // Parse startedBy / resume arguments
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+      let resumeSessionId: string | undefined = undefined;
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--started-by') {
           startedBy = args[++i] as 'daemon' | 'terminal';
+        } else if (args[i] === '--resume') {
+          resumeSessionId = args[++i];
         }
       }
 
@@ -152,7 +158,7 @@ async function ensureDaemonRunning(): Promise<void> {
         credentials
       } = await setupP2PForSession();
 
-      await runCursor({credentials, startedBy});
+      await runCursor({credentials, startedBy, resumeSessionId});
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {
@@ -168,8 +174,9 @@ async function ensureDaemonRunning(): Promise<void> {
     // Handle "remcli gemini model set <model>" command
     if (geminiSubcommand === 'model' && args[2] === 'set' && args[3]) {
       const modelName = args[3];
-      const validModels = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
-      
+      const { VALID_GEMINI_MODELS } = await import('@/gemini/constants');
+      const validModels: readonly string[] = VALID_GEMINI_MODELS;
+
       if (!validModels.includes(modelName)) {
         console.error(`Invalid model: ${modelName}`);
         console.error(`Available models: ${validModels.join(', ')}`);
@@ -339,21 +346,24 @@ async function ensureDaemonRunning(): Promise<void> {
     // Handle gemini command (ACP-based agent)
     try {
       const { runGemini } = await import('@/gemini/runGemini');
-      
-      // Parse startedBy argument
+
+      // Parse startedBy / resume arguments
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+      let resumeSessionId: string | undefined = undefined;
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--started-by') {
           startedBy = args[++i] as 'daemon' | 'terminal';
+        } else if (args[i] === '--resume') {
+          resumeSessionId = args[++i];
         }
       }
-      
+
       await ensureDaemonRunning();
       const {
         credentials
       } = await setupP2PForSession();
 
-      await runGemini({credentials, startedBy});
+      await runGemini({credentials, startedBy, resumeSessionId});
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {
@@ -367,18 +377,6 @@ async function ensureDaemonRunning(): Promise<void> {
     console.log(chalk.yellow('Note: "remcli logout" is deprecated. Use "remcli auth logout" instead.\n'));
     try {
       await handleAuthCommand(['logout']);
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
-    }
-    return;
-  } else if (subcommand === 'notify') {
-    // Handle notification command
-    try {
-      await handleNotifyCommand(args.slice(1));
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {
@@ -643,7 +641,6 @@ ${chalk.bold('Usage:')}
   remcli gemini            Start Gemini mode (ACP)
   remcli setup             Setup wizard (Whisper, AI agents)
   remcli connect           Connect AI vendor API keys
-  remcli notify            Send push notification
   remcli daemon            Manage background service that allows
                             to spawn new sessions away from your computer
   remcli doctor            System diagnostics & troubleshooting
@@ -705,58 +702,3 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
     }
   }
 })();
-
-
-/**
- * Handle notification command
- */
-async function handleNotifyCommand(args: string[]): Promise<void> {
-  let message = ''
-  let title = ''
-  let showHelp = false
-
-  // Parse arguments
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]
-
-    if (arg === '-p' && i + 1 < args.length) {
-      message = args[++i]
-    } else if (arg === '-t' && i + 1 < args.length) {
-      title = args[++i]
-    } else if (arg === '-h' || arg === '--help') {
-      showHelp = true
-    } else {
-      console.error(chalk.red(`Unknown argument for notify command: ${arg}`))
-      process.exit(1)
-    }
-  }
-
-  if (showHelp) {
-    console.log(`
-${chalk.bold('remcli notify')} - Send notification
-
-${chalk.bold('Usage:')}
-  remcli notify -p <message> [-t <title>]    Send notification with custom message and optional title
-  remcli notify -h, --help                   Show this help
-
-${chalk.bold('Options:')}
-  -p <message>    Notification message (required)
-  -t <title>      Notification title (optional, defaults to "Remcli")
-
-${chalk.bold('Examples:')}
-  remcli notify -p "Deployment complete!"
-  remcli notify -p "System update complete" -t "Server Status"
-  remcli notify -t "Alert" -p "Database connection restored"
-`)
-    return
-  }
-
-  if (!message) {
-    console.error(chalk.red('Error: Message is required. Use -p "your message" to specify the notification text.'))
-    console.log(chalk.gray('Run "remcli notify --help" for usage information.'))
-    process.exit(1)
-  }
-
-  console.log(chalk.yellow('⚠️  Push notifications are not available in P2P mode.'))
-  console.log(chalk.gray('  Push notifications require a cloud server which has been removed.'))
-}

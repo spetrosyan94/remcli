@@ -8,6 +8,7 @@
  * the --experimental-acp flag for ACP mode.
  */
 
+import { execFileSync } from 'node:child_process';
 import { AcpBackend, type AcpBackendOptions, type AcpPermissionHandler } from '../acp/AcpBackend';
 import type { AgentBackend, McpServerConfig, AgentFactoryOptions } from '../core';
 import { agentRegistry } from '../core';
@@ -45,9 +46,38 @@ export interface GeminiBackendOptions extends AgentFactoryOptions {
   
   /** MCP servers to make available to the agent */
   mcpServers?: Record<string, McpServerConfig>;
-  
+
   /** Optional permission handler for tool approval */
   permissionHandler?: AcpPermissionHandler;
+
+  /** If set, resume an existing Gemini session (via ACP session/load) instead of creating a new one */
+  resumeSessionId?: string;
+}
+
+/**
+ * Resolve the correct ACP flag for the installed Gemini CLI.
+ *
+ * Newer Gemini CLIs expose `--acp` and deprecate `--experimental-acp`; older
+ * builds only understand `--experimental-acp`. We probe `gemini --help` once and
+ * cache the result rather than parsing version numbers.
+ */
+let cachedGeminiAcpFlag: string | null = null;
+function resolveGeminiAcpFlag(command: string): string {
+  if (cachedGeminiAcpFlag) {
+    return cachedGeminiAcpFlag;
+  }
+  let flag = '--experimental-acp';
+  try {
+    const help = execFileSync(command, ['--help'], { encoding: 'utf8', timeout: 5000 });
+    if (/(^|\s)--acp(\s|$)/m.test(help)) {
+      flag = '--acp';
+    }
+  } catch (error) {
+    logger.debug('[Gemini] Could not probe gemini --help for ACP flag, falling back to --experimental-acp:', error);
+  }
+  cachedGeminiAcpFlag = flag;
+  logger.debug(`[Gemini] Using ACP flag: ${flag}`);
+  return flag;
 }
 
 /**
@@ -101,10 +131,11 @@ export function createGeminiBackend(options: GeminiBackendOptions): GeminiBacken
   // If options.model is explicitly null, skip local config and use env/default
   const model = determineGeminiModel(options.model, localConfig);
 
-  // Build args - use only --experimental-acp flag
+  // Build args - use the ACP flag supported by the installed gemini CLI
+  // (--acp on newer builds, --experimental-acp on older ones)
   // Model is passed via GEMINI_MODEL env var (gemini CLI reads it automatically)
   // We don't use --model flag to avoid potential stdout conflicts with ACP protocol
-  const geminiArgs = ['--experimental-acp'];
+  const geminiArgs = [resolveGeminiAcpFlag(geminiCommand)];
 
   // Get Google Cloud Project from local config (for Workspace accounts)
   // Only use if: no email stored (global), or email matches current user
@@ -143,6 +174,7 @@ export function createGeminiBackend(options: GeminiBackendOptions): GeminiBacken
     },
     mcpServers: options.mcpServers,
     permissionHandler: options.permissionHandler,
+    resumeSessionId: options.resumeSessionId,
     transportHandler: geminiTransport,
     // Check if prompt instructs the agent to change title (for auto-approval of change_title tool)
     hasChangeTitleInstruction: (prompt: string) => {

@@ -10,13 +10,11 @@ import { logger } from '@/ui/logger';
 import { Credentials, readSettings } from '@/persistence';
 import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
-import os from 'node:os';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import { projectPath } from '@/projectPath';
-import { resolve, join } from 'node:path';
+import { join } from 'node:path';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
-import fs from 'node:fs';
 import { startRemcliServer } from '@/claude/utils/startRemcliServer';
 import { MessageBuffer } from "@/ui/ink/messageBuffer";
 import { CodexDisplay } from "@/ui/ink/CodexDisplay";
@@ -66,6 +64,7 @@ export function emitReadyIfIdle({ pending, queueSize, shouldExit, sendReady, not
 export async function runCodex(opts: {
     credentials: Credentials;
     startedBy?: 'daemon' | 'terminal';
+    resumeSessionId?: string;
 }): Promise<void> {
     // Use shared PermissionMode type for cross-agent compatibility
     type PermissionMode = import('@/api/types').PermissionMode;
@@ -86,7 +85,7 @@ export async function runCodex(opts: {
     const api = await ApiClient.create(opts.credentials);
 
     // Log startup options
-    logger.debug(`[codex] Starting with options: startedBy=${opts.startedBy || 'terminal'}`);
+    logger.debug(`[codex] Starting with options: startedBy=${opts.startedBy || 'terminal'}, resume=${opts.resumeSessionId || 'none'}`);
 
     //
     // Machine
@@ -223,7 +222,6 @@ export async function runCodex(opts: {
 
     let abortController = new AbortController();
     let shouldExit = false;
-    let storedSessionIdForResume: string | null = null;
 
     /**
      * Handles aborting the current task/inference without exiting the process.
@@ -233,12 +231,6 @@ export async function runCodex(opts: {
     async function handleAbort() {
         logger.debug('[Codex] Abort requested - stopping current task');
         try {
-            // Store the current session ID before aborting for potential resume
-            if (client.hasActiveSession()) {
-                storedSessionIdForResume = client.storeSessionForResume();
-                logger.debug('[Codex] Stored session for resume:', storedSessionIdForResume);
-            }
-            
             abortController.abort();
             reasoningProcessor.abort();
             logger.debug('[Codex] Abort completed - session remains active');
@@ -342,47 +334,23 @@ export async function runCodex(opts: {
 
     const client = new CodexMcpClient();
 
-    // Helper: find Codex session transcript for a given sessionId
-    function findCodexResumeFile(sessionId: string | null): string | null {
-        if (!sessionId) return null;
-        try {
-            const codexHomeDir = process.env.CODEX_HOME || join(os.homedir(), '.codex');
-            const rootDir = join(codexHomeDir, 'sessions');
-
-            // Recursively collect all files under the sessions directory
-            function collectFilesRecursive(dir: string, acc: string[] = []): string[] {
-                let entries: fs.Dirent[];
-                try {
-                    entries = fs.readdirSync(dir, { withFileTypes: true });
-                } catch {
-                    return acc;
-                }
-                for (const entry of entries) {
-                    const full = join(dir, entry.name);
-                    if (entry.isDirectory()) {
-                        collectFilesRecursive(full, acc);
-                    } else if (entry.isFile()) {
-                        acc.push(full);
-                    }
-                }
-                return acc;
-            }
-
-            const candidates = collectFilesRecursive(rootDir)
-                .filter(full => full.endsWith(`-${sessionId}.jsonl`))
-                .filter(full => {
-                    try { return fs.statSync(full).isFile(); } catch { return false; }
-                })
-                .sort((a, b) => {
-                    const sa = fs.statSync(a).mtimeMs;
-                    const sb = fs.statSync(b).mtimeMs;
-                    return sb - sa; // newest first
-                });
-            return candidates[0] || null;
-        } catch {
-            return null;
-        }
+    // NOTE: Codex context restoration is intentionally NOT implemented here.
+    // The `experimental_resume` config key was removed from the Codex CLI in late 2025
+    // (openai/codex #4393, #4435), so there is no supported way to rehydrate a previous
+    // transcript through the MCP interface. A restart therefore always begins a fresh
+    // Codex session. Migration to the Codex app-server (which supports resume) is tracked
+    // separately.
+    //
+    // If the daemon spawned us with `--resume <id>` (user tapped "Resume" on a Codex
+    // session in the app), be honest about the fact that a fresh session is starting and
+    // no previous context is carried over — otherwise the resume silently degrades.
+    if (opts.resumeSessionId) {
+        const resumeNotice = 'Started a new Codex session. Codex does not carry over previous context (resume is not supported by the Codex CLI yet).';
+        logger.debug(`[codex] Resume requested for ${opts.resumeSessionId}, but context restoration is unsupported — starting fresh`);
+        messageBuffer.addMessage(resumeNotice, 'status');
+        session.sendSessionEvent({ type: 'message', message: resumeNotice });
     }
+
     permissionHandler = new CodexPermissionHandler(session);
     const reasoningProcessor = new ReasoningProcessor((message) => {
         // Filter out tool-call/tool-call-result — only forward reasoning text to mobile
@@ -522,8 +490,6 @@ export async function runCodex(opts: {
         let wasCreated = false;
         let currentModeHash: string | null = null;
         let pending: { message: string; mode: EnhancedMode; isolate: boolean; hash: string } | null = null;
-        // If we restart (e.g., mode change), use this to carry a resume file
-        let nextExperimentalResume: string | null = null;
 
         while (!shouldExit) {
             logActiveHandles('loop-top');
@@ -555,20 +521,8 @@ export async function runCodex(opts: {
             if (wasCreated && currentModeHash && message.hash !== currentModeHash) {
                 logger.debug('[Codex] Mode changed – restarting Codex session');
                 messageBuffer.addMessage('═'.repeat(40), 'status');
-                messageBuffer.addMessage('Starting new Codex session (mode changed)...', 'status');
-                // Capture previous sessionId and try to find its transcript to resume
-                try {
-                    const prevSessionId = client.getSessionId();
-                    nextExperimentalResume = findCodexResumeFile(prevSessionId);
-                    if (nextExperimentalResume) {
-                        logger.debug(`[Codex] Found resume file for session ${prevSessionId}: ${nextExperimentalResume}`);
-                        messageBuffer.addMessage('Resuming previous context…', 'status');
-                    } else {
-                        logger.debug('[Codex] No resume file found for previous session');
-                    }
-                } catch (e) {
-                    logger.debug('[Codex] Error while searching resume file', e);
-                }
+                messageBuffer.addMessage('Starting new Codex session (mode changed). Note: Codex does not carry over previous context.', 'status');
+                session.sendSessionEvent({ type: 'message', message: 'Started a new Codex session (mode changed). Codex does not carry over previous context.' });
                 client.clearSession();
                 wasCreated = false;
                 currentModeHash = null;
@@ -627,32 +581,10 @@ export async function runCodex(opts: {
                     if (message.mode.model) {
                         startConfig.model = message.mode.model;
                     }
-                    
-                    // Check for resume file from multiple sources
-                    let resumeFile: string | null = null;
-                    
-                    // Priority 1: Explicit resume file from mode change
-                    if (nextExperimentalResume) {
-                        resumeFile = nextExperimentalResume;
-                        nextExperimentalResume = null; // consume once
-                        logger.debug('[Codex] Using resume file from mode change:', resumeFile);
-                    }
-                    // Priority 2: Resume from stored abort session
-                    else if (storedSessionIdForResume) {
-                        const abortResumeFile = findCodexResumeFile(storedSessionIdForResume);
-                        if (abortResumeFile) {
-                            resumeFile = abortResumeFile;
-                            logger.debug('[Codex] Using resume file from aborted session:', resumeFile);
-                            messageBuffer.addMessage('Resuming from aborted session...', 'status');
-                        }
-                        storedSessionIdForResume = null; // consume once
-                    }
-                    
-                    // Apply resume file if found
-                    if (resumeFile) {
-                        (startConfig.config as any).experimental_resume = resumeFile;
-                    }
-                    
+
+                    // NOTE: No `experimental_resume` here — the key was removed from the Codex
+                    // CLI in late 2025 (openai/codex #4393, #4435). Each start is a fresh session.
+
                     const startResponse = await client.startSession(
                         startConfig,
                         { signal: abortController.signal }
@@ -694,11 +626,6 @@ export async function runCodex(opts: {
                 } else {
                     messageBuffer.addMessage('Process exited unexpectedly', 'status');
                     session.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
-                    // For unexpected exits, try to store session for potential recovery
-                    if (client.hasActiveSession()) {
-                        storedSessionIdForResume = client.storeSessionForResume();
-                        logger.debug('[Codex] Stored session after unexpected error:', storedSessionIdForResume);
-                    }
                 }
             } finally {
                 // Reset permission handler, reasoning processor, and diff processor

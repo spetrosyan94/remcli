@@ -17,7 +17,9 @@ import {
   type RequestPermissionRequest,
   type RequestPermissionResponse,
   type InitializeRequest,
+  type InitializeResponse,
   type NewSessionRequest,
+  type LoadSessionRequest,
   type PromptRequest,
   type ContentBlock,
 } from '@agentclientprotocol/sdk';
@@ -160,6 +162,13 @@ export interface AcpBackendOptions {
 
   /** Optional callback to check if prompt has change_title instruction */
   hasChangeTitleInstruction?: (prompt: string) => boolean;
+
+  /**
+   * If set, resume this existing agent session (via ACP session/load) instead of
+   * creating a fresh one. Requires the agent to advertise the `loadSession`
+   * capability during initialize; otherwise we transparently fall back to newSession.
+   */
+  resumeSessionId?: string;
 }
 
 /**
@@ -658,7 +667,7 @@ export class AcpBackend implements AgentBackend {
       const initTimeout = this.transport.getInitTimeout();
       logger.debug(`[AcpBackend] Initializing connection (timeout: ${initTimeout}ms)...`);
 
-      await withRetry(
+      const initResult: InitializeResponse = await withRetry(
         async () => {
           let timeoutHandle: NodeJS.Timeout | null = null;
           try {
@@ -692,7 +701,7 @@ export class AcpBackend implements AgentBackend {
       );
       logger.debug(`[AcpBackend] Initialize completed`);
 
-      // Create a new session with retry
+      // Shared MCP server list for both loadSession and newSession
       const mcpServers = this.options.mcpServers
         ? Object.entries(this.options.mcpServers).map(([name, config]) => ({
             name,
@@ -704,47 +713,82 @@ export class AcpBackend implements AgentBackend {
           }))
         : [];
 
-      const newSessionRequest: NewSessionRequest = {
-        cwd: this.options.cwd,
-        mcpServers: mcpServers as unknown as NewSessionRequest['mcpServers'],
+      // Run an ACP call with the standard init timeout + retry wrapper
+      const withTimeoutAndRetry = <T>(operationName: string, call: () => Promise<T>): Promise<T> =>
+        withRetry(
+          async () => {
+            let timeoutHandle: NodeJS.Timeout | null = null;
+            try {
+              return await Promise.race([
+                call().then((res) => {
+                  if (timeoutHandle) {
+                    clearTimeout(timeoutHandle);
+                    timeoutHandle = null;
+                  }
+                  return res;
+                }),
+                new Promise<never>((_, reject) => {
+                  timeoutHandle = setTimeout(() => {
+                    reject(new Error(`${operationName} timeout after ${initTimeout}ms - ${this.transport.agentName} did not respond`));
+                  }, initTimeout);
+                }),
+              ]);
+            } finally {
+              if (timeoutHandle) {
+                clearTimeout(timeoutHandle);
+              }
+            }
+          },
+          {
+            operationName,
+            maxAttempts: RETRY_CONFIG.maxAttempts,
+            baseDelayMs: RETRY_CONFIG.baseDelayMs,
+            maxDelayMs: RETRY_CONFIG.maxDelayMs,
+          }
+        );
+
+      const createNewSession = async (): Promise<void> => {
+        const newSessionRequest: NewSessionRequest = {
+          cwd: this.options.cwd,
+          mcpServers: mcpServers as unknown as NewSessionRequest['mcpServers'],
+        };
+        logger.debug(`[AcpBackend] Creating new session...`);
+        const sessionResponse = await withTimeoutAndRetry('NewSession', () =>
+          this.connection!.newSession(newSessionRequest)
+        );
+        this.acpSessionId = sessionResponse.sessionId;
+        logger.debug(`[AcpBackend] Session created: ${this.acpSessionId}`);
       };
 
-      logger.debug(`[AcpBackend] Creating new session...`);
+      // Resume an existing session if requested and the agent supports session/load.
+      // Otherwise (or on failure) fall back to a fresh session.
+      const canLoadSession = initResult?.agentCapabilities?.loadSession === true;
+      const resumeSessionId = this.options.resumeSessionId;
 
-      const sessionResponse = await withRetry(
-        async () => {
-          let timeoutHandle: NodeJS.Timeout | null = null;
-          try {
-            const result = await Promise.race([
-              this.connection!.newSession(newSessionRequest).then((res) => {
-                if (timeoutHandle) {
-                  clearTimeout(timeoutHandle);
-                  timeoutHandle = null;
-                }
-                return res;
-              }),
-              new Promise<never>((_, reject) => {
-                timeoutHandle = setTimeout(() => {
-                  reject(new Error(`New session timeout after ${initTimeout}ms - ${this.transport.agentName} did not respond`));
-                }, initTimeout);
-              }),
-            ]);
-            return result;
-          } finally {
-            if (timeoutHandle) {
-              clearTimeout(timeoutHandle);
-            }
-          }
-        },
-        {
-          operationName: 'NewSession',
-          maxAttempts: RETRY_CONFIG.maxAttempts,
-          baseDelayMs: RETRY_CONFIG.baseDelayMs,
-          maxDelayMs: RETRY_CONFIG.maxDelayMs,
+      if (resumeSessionId && canLoadSession) {
+        try {
+          const loadRequest: LoadSessionRequest = {
+            sessionId: resumeSessionId,
+            cwd: this.options.cwd,
+            mcpServers: mcpServers as unknown as LoadSessionRequest['mcpServers'],
+          };
+          logger.debug(`[AcpBackend] Loading existing session: ${resumeSessionId}`);
+          await withTimeoutAndRetry('LoadSession', () =>
+            this.connection!.loadSession(loadRequest)
+          );
+          // loadSession rehydrates the session under the same id it was given
+          this.acpSessionId = resumeSessionId;
+          logger.debug(`[AcpBackend] Session loaded: ${this.acpSessionId}`);
+        } catch (error) {
+          logger.debug(`[AcpBackend] loadSession failed, falling back to new session:`, error);
+          await createNewSession();
         }
-      );
-      this.acpSessionId = sessionResponse.sessionId;
-      logger.debug(`[AcpBackend] Session created: ${this.acpSessionId}`);
+      } else {
+        if (resumeSessionId && !canLoadSession) {
+          logger.debug('[AcpBackend] resumeSessionId provided but agent does not advertise loadSession capability - starting a new session');
+        }
+        await createNewSession();
+      }
 
       this.emitIdleStatus();
 
