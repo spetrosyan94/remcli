@@ -12,7 +12,7 @@ export function DiffView({ file, added, removed, lines }: { file: string; added:
         del: "bg-status-error/10 text-red-700 dark:text-red-300",
     };
     return (
-        <div className="overflow-hidden rounded-[9px] border border-border font-mono text-[11.5px]">
+        <div className="select-text overflow-hidden rounded-[9px] border border-border font-mono text-[11.5px]">
             <div className="flex items-center gap-2 border-b border-border bg-card px-3 py-2">
                 <span>{file}</span>
                 <span className="ml-auto text-status-running">+{added}</span>

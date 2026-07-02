@@ -84,3 +84,33 @@
         text-rendering: optimizeLegibility;
     }
 }
+
+/* ─── Native-like поведение (mobile web ≈ натив) ─────────────────────
+   Приложение должно ощущаться нативным в standalone/Safari:
+   без выделения текста по long-press на контролах, без callout-меню
+   Safari («Открыть в новой вкладке»), без серой вспышки тапа, без
+   pull-to-refresh. Выделение текста ЯВНО возвращается контенту чата
+   и полям ввода через .select-text / input / textarea. */
+html {
+    -webkit-text-size-adjust: 100%;
+}
+body {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+    touch-action: pan-x pan-y; /* жесты зума отключены, скролл живой */
+}
+input,
+textarea,
+[contenteditable="true"],
+.select-text,
+.select-text * {
+    -webkit-user-select: text;
+    user-select: text;
+}
+a,
+button {
+    -webkit-touch-callout: none; /* long-press по ссылкам/кнопкам не открывает меню Safari */
+}

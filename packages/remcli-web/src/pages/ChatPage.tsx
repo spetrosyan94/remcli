@@ -707,7 +707,7 @@ export function ChatPage() {
                                     <>
                                         <AgentMeta agent={agent}>{item.timeLabel}</AgentMeta>
                                         {item.texts.map((text, index) => (
-                                            <p key={index} className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">
+                                            <p key={index} className="select-text whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">
                                                 {text}
                                             </p>
                                         ))}

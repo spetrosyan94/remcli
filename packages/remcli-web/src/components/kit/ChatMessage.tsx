@@ -15,7 +15,7 @@ export function AgentMeta({ agent, children }: { agent: AgentId; children: React
 
 export function UserMessage({ children }: { children: React.ReactNode }) {
     return (
-        <div className="max-w-[85%] self-end rounded-2xl rounded-br-[4px] bg-secondary px-3.5 py-2 text-sm leading-normal">
+        <div className="select-text max-w-[85%] self-end rounded-2xl rounded-br-[4px] bg-secondary px-3.5 py-2 text-sm leading-normal">
             {children}
         </div>
     );

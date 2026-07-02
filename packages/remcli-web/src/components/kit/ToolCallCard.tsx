@@ -18,7 +18,7 @@ export function ToolCallCard(props: {
                 {state === "error" && <span className="text-[10.5px] text-status-error">{errorText ?? "exit 1"}</span>}
             </div>
             {expanded && children && (
-                <div className="border-t border-border bg-zinc-950/60 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground dark:bg-zinc-950">
+                <div className="select-text border-t border-border bg-zinc-950/60 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground dark:bg-zinc-950">
                     {children}
                 </div>
             )}
