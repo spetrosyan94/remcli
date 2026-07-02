@@ -128,6 +128,7 @@ export const zhHant: Dictionary = {
     "zen.workOnTask": "處理此任務",
     "zen.newTask": "新任務…",
     "zen.toggleTask": "切換任務",
+    "zen.syncFailed": "任務同步失敗",
 
     "settings.title": "設定",
     "settings.group.appearance": "外觀",
@@ -151,6 +152,8 @@ export const zhHant: Dictionary = {
     "settings.machine.delete": "刪除",
     "settings.machine.deleteTitle": "刪除機器？",
     "settings.machine.deleteHint": "機器將從清單中消失；daemon 下次活動時會再次出現",
+    "settings.machine.deleteOwn": "這是守護程序所在的機器，無法刪除",
+    "settings.machine.deleteFailed": "刪除機器失敗",
     "settings.machine.empty": "沒有機器 — 請透過 QR 連線",
     "settings.disconnect": "中斷與 daemon 的連線",
     "settings.version": "版本",

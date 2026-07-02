@@ -40,7 +40,8 @@ export {
     loadSessionMessages,
     sendSessionMessage,
     machineSetDisplayName,
-    forgetMachine
+    machineDelete,
+    subscribeKvChanges
 } from '@/lib/protocol/client';
 
 export {
@@ -79,6 +80,9 @@ export {
     deleteSession,
     fetchMachines,
     fetchMachine,
+    deleteMachine,
+    kvGet,
+    kvMutate,
     fetchTtsStatus,
     synthesizeSpeech,
     fetchWhisperStatus,
@@ -86,7 +90,11 @@ export {
     fetchConciergeStatus,
     conciergeChat,
     type RestConfig,
-    type MessagesPage
+    type MessagesPage,
+    type DeleteMachineResult,
+    type KvItem,
+    type KvMutation,
+    type KvMutateResponse
 } from '@/lib/protocol/rest';
 
 export {
@@ -109,6 +117,7 @@ export type {
     ApiMessage,
     ApiSession,
     ApiMachine,
+    KvChange,
     PermissionMode,
     AgentKind,
     AgentSessionInfo,

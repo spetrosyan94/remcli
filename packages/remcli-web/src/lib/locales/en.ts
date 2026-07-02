@@ -128,6 +128,7 @@ export const en: Dictionary = {
     "zen.workOnTask": "Work on task",
     "zen.newTask": "new task…",
     "zen.toggleTask": "toggle task",
+    "zen.syncFailed": "failed to sync tasks",
 
     "settings.title": "Settings",
     "settings.group.appearance": "appearance",
@@ -151,6 +152,8 @@ export const en: Dictionary = {
     "settings.machine.delete": "Delete",
     "settings.machine.deleteTitle": "Delete machine?",
     "settings.machine.deleteHint": "the machine will disappear from the list; it will reappear the next time the daemon is active",
+    "settings.machine.deleteOwn": "this is the daemon's own machine — it cannot be deleted",
+    "settings.machine.deleteFailed": "failed to delete the machine",
     "settings.machine.empty": "no machines — connect via QR",
     "settings.disconnect": "Disconnect from daemon",
     "settings.version": "Version",

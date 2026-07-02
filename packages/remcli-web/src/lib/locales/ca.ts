@@ -128,6 +128,7 @@ export const ca: Dictionary = {
     "zen.workOnTask": "Treballa en la tasca",
     "zen.newTask": "tasca nova…",
     "zen.toggleTask": "commuta la tasca",
+    "zen.syncFailed": "no s'han pogut sincronitzar les tasques",
 
     "settings.title": "Configuració",
     "settings.group.appearance": "aparença",
@@ -151,6 +152,8 @@ export const ca: Dictionary = {
     "settings.machine.delete": "Elimina",
     "settings.machine.deleteTitle": "Eliminar la màquina?",
     "settings.machine.deleteHint": "la màquina desapareixerà de la llista; reapareixerà la propera vegada que el daemon estigui actiu",
+    "settings.machine.deleteOwn": "aquesta és la màquina del mateix daemon — no es pot eliminar",
+    "settings.machine.deleteFailed": "no s'ha pogut eliminar la màquina",
     "settings.machine.empty": "cap màquina — connecta't per QR",
     "settings.disconnect": "Desconnecta del daemon",
     "settings.version": "Versió",

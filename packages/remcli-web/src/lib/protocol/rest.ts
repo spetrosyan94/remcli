@@ -90,6 +90,85 @@ export async function fetchMachine(config: RestConfig, machineId: string): Promi
     return data.machine;
 }
 
+export type DeleteMachineResult =
+    | { ok: true }
+    | { ok: false; status: number; error: string };
+
+/**
+ * Delete a machine on the daemon. 200 {ok:true} on success, 403 when the
+ * machine is the daemon's own machine, 404 when unknown — 403/404 come back
+ * as a typed result instead of throwing so the UI can explain each case.
+ */
+export async function deleteMachine(config: RestConfig, machineId: string): Promise<DeleteMachineResult> {
+    const response = await request(config, `/v1/machines/${encodeURIComponent(machineId)}`, {
+        method: 'DELETE'
+    });
+    if (response.ok) {
+        return { ok: true };
+    }
+    const body = await response.json().catch(() => ({})) as { error?: string };
+    return { ok: false, status: response.status, error: body.error || `Delete failed: ${response.status}` };
+}
+
+// ─── KV store ────────────────────────────────────────────────────
+// Wire format mirrors remcli-app sources/sync/apiKv.ts (the daemon implements
+// the same /v1/kv* contract): values are opaque strings, OCC via version
+// numbers (-1 creates a key, mismatch → 409 with the current value).
+
+export interface KvItem {
+    key: string;
+    value: string;
+    version: number;
+}
+
+export interface KvMutation {
+    key: string;
+    value: string | null; // null deletes the key
+    version: number;      // -1 for new keys
+}
+
+export interface KvMutateSuccess {
+    success: true;
+    results: Array<{ key: string; version: number }>;
+}
+
+export interface KvMutateConflict {
+    success: false;
+    errors: Array<{ key: string; error: 'version-mismatch'; version: number; value: string | null }>;
+}
+
+export type KvMutateResponse = KvMutateSuccess | KvMutateConflict;
+
+/** Single KV value; null when the key does not exist (404). */
+export async function kvGet(config: RestConfig, key: string): Promise<KvItem | null> {
+    const response = await request(config, `/v1/kv/${encodeURIComponent(key)}`);
+    if (response.status === 404) {
+        return null;
+    }
+    if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error || `KV get failed: ${response.status} ${key}`);
+    }
+    return await response.json() as KvItem;
+}
+
+/** OCC mutate: a 409 returns `{ success: false, errors }` instead of throwing. */
+export async function kvMutate(config: RestConfig, mutations: KvMutation[]): Promise<KvMutateResponse> {
+    const response = await request(config, '/v1/kv', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mutations })
+    });
+    if (response.status === 409) {
+        return await response.json() as KvMutateConflict;
+    }
+    if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error || `KV mutate failed: ${response.status}`);
+    }
+    return await response.json() as KvMutateSuccess;
+}
+
 // ─── TTS ─────────────────────────────────────────────────────────
 
 export async function fetchTtsStatus(config: RestConfig): Promise<TtsStatus> {
@@ -154,12 +233,12 @@ export async function fetchConciergeStatus(config: RestConfig): Promise<Concierg
 export async function conciergeChat(
     config: RestConfig,
     messages: ConciergeChatMessage[],
-    options?: { signal?: AbortSignal }
+    options?: { lang?: string; signal?: AbortSignal }
 ): Promise<ConciergeChatResponse> {
     return requestJson<ConciergeChatResponse>(config, '/v1/concierge/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages }),
+        body: JSON.stringify({ messages, lang: options?.lang }),
         signal: options?.signal
     });
 }

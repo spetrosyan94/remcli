@@ -129,6 +129,7 @@ export const ru = {
     "zen.workOnTask": "Работать над задачей",
     "zen.newTask": "новая задача…",
     "zen.toggleTask": "переключить задачу",
+    "zen.syncFailed": "не удалось синхронизировать задачи",
 
     "settings.title": "Настройки",
     "settings.group.appearance": "внешний вид",
@@ -152,6 +153,8 @@ export const ru = {
     "settings.machine.delete": "Удалить",
     "settings.machine.deleteTitle": "Удалить машину?",
     "settings.machine.deleteHint": "машина исчезнет из списка; при следующей активности демона появится снова",
+    "settings.machine.deleteOwn": "это машина текущего демона — её нельзя удалить",
+    "settings.machine.deleteFailed": "не удалось удалить машину",
     "settings.machine.empty": "нет машин — подключитесь по QR",
     "settings.disconnect": "Отключиться от демона",
     "settings.version": "Версия",

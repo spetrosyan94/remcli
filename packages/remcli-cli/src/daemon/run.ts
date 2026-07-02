@@ -417,6 +417,10 @@ export async function startDaemon(): Promise<void> {
         logger.debug('[DAEMON RUN] Failed to stop TTS provider:', error);
       }
 
+      // Flush pending KV mutations to disk (debounce timer is unref-ed and may not fire before exit)
+      p2pStore.flushKvToDisk();
+      logger.debug('[DAEMON RUN] KV store flushed to disk');
+
       // Stop P2P server
       try {
         await p2pServer.stop();

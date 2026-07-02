@@ -1,7 +1,8 @@
 // remcli-web — Настройки (design/screens/settings.tsx, разметка 1:1). Сгруппированные списки.
 // Layout (safe-area + таб-бар) даёт TabLayout; данные — живой P2P-стор (@/lib/protocol):
-// машины (rename через machine-update-metadata, удаление локально), TTS-статус демона,
-// язык (10 локалей, @/lib/i18n), отключение (logout → /connect).
+// машины (rename через machine-update-metadata, удаление — DELETE /v1/machines/:id,
+// 403 для машины самого демона), TTS-статус демона, язык (10 локалей, @/lib/i18n),
+// отключение (logout → /connect).
 import * as React from "react";
 import { ChevronRight, LogOut, MoreHorizontal, QrCode } from "lucide-react";
 import { useNavigate } from "react-router";
@@ -28,8 +29,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { LOCALES, setLocale, t, useLocale } from "@/lib/i18n";
 import {
-    forgetMachine,
     logoutProtocolClient,
+    machineDelete,
     machineSetDisplayName,
     useMachines,
     type Machine,
@@ -119,6 +120,7 @@ export function SettingsPage() {
     const [renameValue, setRenameValue] = React.useState("");
     const [isRenaming, setIsRenaming] = React.useState(false);
     const [deleteTarget, setDeleteTarget] = React.useState<Machine | null>(null);
+    const [isDeleting, setIsDeleting] = React.useState(false);
 
     const themeLabel = t(THEME_OPTIONS.find((o) => o.value === theme)?.labelKey ?? "settings.theme.dark");
     const localeLabel = LOCALES.find((l) => l.id === locale)?.label ?? locale;
@@ -165,10 +167,22 @@ export function SettingsPage() {
         }
     };
 
-    const submitDelete = () => {
-        if (!deleteTarget) return;
-        forgetMachine(deleteTarget.id);
-        setDeleteTarget(null);
+    // DELETE /v1/machines/:id; 403 — машина самого демона, удалить нельзя (объясняем)
+    const submitDelete = async () => {
+        if (!deleteTarget || isDeleting) return;
+        setIsDeleting(true);
+        try {
+            const result = await machineDelete(deleteTarget.id);
+            if (result.ok || result.status === 404) {
+                setDeleteTarget(null);
+                return;
+            }
+            toast.error(result.status === 403 ? t("settings.machine.deleteOwn") : result.error);
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : t("settings.machine.deleteFailed"));
+        } finally {
+            setIsDeleting(false);
+        }
     };
 
     const disconnect = () => {
@@ -281,7 +295,7 @@ export function SettingsPage() {
                 </DialogContent>
             </Dialog>
 
-            {/* Удаление машины (локально: у демона нет DELETE /v1/machines) */}
+            {/* Удаление машины (DELETE /v1/machines/:id, 'delete-machine' разлетается всем клиентам) */}
             <Dialog open={deleteTarget !== null} onOpenChange={(isOpen) => { if (!isOpen) setDeleteTarget(null); }}>
                 <DialogContent className="max-w-sm">
                     <DialogHeader>
@@ -292,7 +306,7 @@ export function SettingsPage() {
                     </DialogHeader>
                     <DialogFooter>
                         <Button variant="outline" size="sm" onClick={() => setDeleteTarget(null)}>{t("common.cancel")}</Button>
-                        <Button variant="destructive" size="sm" onClick={submitDelete}>{t("common.delete")}</Button>
+                        <Button variant="destructive" size="sm" disabled={isDeleting} onClick={() => void submitDelete()}>{t("common.delete")}</Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>

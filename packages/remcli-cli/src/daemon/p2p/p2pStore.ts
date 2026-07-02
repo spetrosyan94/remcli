@@ -2,10 +2,17 @@
  * P2P in-memory data store
  * Replaces PostgreSQL for local P2P mode
  * Stores sessions, messages, machines with sequence numbering
- * Data lives only in memory — each daemon session generates a new shared secret
+ * Sessions/messages/machines live only in memory — each daemon session generates
+ * a new shared secret. The KV store is the exception: it survives daemon restarts
+ * via a debounced, atomically-written JSON file (~/.remcli/kv-store.json).
  */
 
 import { randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { z } from 'zod';
+import { configuration } from '@/configuration';
+import { logger } from '@/ui/logger';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -48,6 +55,41 @@ export interface P2PMachine {
     updatedAt: number;
 }
 
+export interface P2PKvItem {
+    key: string;
+    value: string;
+    version: number;
+}
+
+export interface KvMutation {
+    key: string;
+    value: string | null;  // null deletes the key
+    version: number;       // -1 for new keys (key must not exist)
+}
+
+export interface KvChange {
+    key: string;
+    value: string | null;
+    version: number;
+}
+
+export type KvMutateResult =
+    | { success: true; results: Array<{ key: string; version: number }>; changes: KvChange[] }
+    | { success: false; errors: Array<{ key: string; error: 'version-mismatch'; version: number; value: string | null }> };
+
+/** Version reported for keys that do not exist — matches the client's "new key" sentinel. */
+const KV_MISSING_VERSION = -1;
+/** Debounce window for KV disk persistence. */
+const KV_PERSIST_DEBOUNCE_MS = 500;
+
+const KvFileSchema = z.object({
+    items: z.array(z.object({
+        key: z.string(),
+        value: z.string(),
+        version: z.number().int()
+    }))
+});
+
 // ─── Store ───────────────────────────────────────────────────────
 
 export class P2PStore {
@@ -57,6 +99,24 @@ export class P2PStore {
     private userSeq = 0;
     private sessionSeqs = new Map<string, number>();
     private sessionDeletedListeners: Array<(sessionId: string) => void> = [];
+    private kvItems = new Map<string, P2PKvItem>();
+    private readonly kvFilePath: string | null;
+    private kvPersistTimer: NodeJS.Timeout | null = null;
+    /** The daemon's own machine — protected from deletion via REST. */
+    private ownMachineId: string | null = null;
+    /** Machines explicitly deleted by the user — must not silently reappear. */
+    private deletedMachineIds = new Set<string>();
+
+    /**
+     * @param options.kvFilePath Where to persist the KV store.
+     *   `undefined` (default) → `<remcliHomeDir>/kv-store.json`; `null` → in-memory only (tests).
+     */
+    constructor(options?: { kvFilePath?: string | null }) {
+        this.kvFilePath = options?.kvFilePath === undefined
+            ? join(configuration.remcliHomeDir, 'kv-store.json')
+            : options.kvFilePath;
+        this.loadKvFromDisk();
+    }
 
     /**
      * Register a listener invoked whenever a session is deleted.
@@ -278,7 +338,11 @@ export class P2PStore {
         metadata: string,
         daemonState: string | null,
         dataEncryptionKey: string | null
-    ): P2PMachine {
+    ): P2PMachine | null {
+        // A machine explicitly deleted by the user must not be resurrected automatically.
+        if (this.deletedMachineIds.has(id)) {
+            return null;
+        }
         const existing = this.machines.get(id);
         if (existing) {
             existing.metadata = metadata;
@@ -380,4 +444,145 @@ export class P2PStore {
         };
     }
 
+    /**
+     * Mark a machine as the daemon's own. The only machine-scoped client is the
+     * daemon's self-connection (bootstrapMachineSocket), so the P2P server calls
+     * this when such a connection arrives. The own machine cannot be deleted.
+     */
+    markOwnMachine(id: string): void {
+        this.ownMachineId = id;
+    }
+
+    isOwnMachine(id: string): boolean {
+        return this.ownMachineId === id;
+    }
+
+    /**
+     * Delete a machine and tombstone its id so it is not auto-recreated
+     * (tombstones live for the daemon's lifetime — the store is per-run anyway).
+     */
+    deleteMachine(id: string): boolean {
+        const existed = this.machines.delete(id);
+        if (existed) {
+            this.deletedMachineIds.add(id);
+        }
+        return existed;
+    }
+
+    // ─── Key-Value store (persisted) ─────────────────────────────
+
+    kvGet(key: string): P2PKvItem | undefined {
+        return this.kvItems.get(key);
+    }
+
+    kvList(prefix?: string, limit?: number): P2PKvItem[] {
+        let items = Array.from(this.kvItems.values());
+        if (prefix) {
+            items = items.filter(item => item.key.startsWith(prefix));
+        }
+        items.sort((a, b) => a.key.localeCompare(b.key));
+        return limit !== undefined ? items.slice(0, limit) : items;
+    }
+
+    kvBulkGet(keys: string[]): P2PKvItem[] {
+        const values: P2PKvItem[] = [];
+        for (const key of keys) {
+            const item = this.kvItems.get(key);
+            if (item) values.push(item);
+        }
+        return values;
+    }
+
+    /**
+     * Atomically apply a batch of KV mutations with optimistic concurrency control.
+     * Version semantics match the app client (`apiKv.ts`): `-1` means "key must not
+     * exist"; any mismatch fails the WHOLE batch and reports the current version and
+     * value for each conflicting key so the client can rebase.
+     */
+    kvMutate(mutations: KvMutation[]): KvMutateResult {
+        const errors: Array<{ key: string; error: 'version-mismatch'; version: number; value: string | null }> = [];
+        for (const mutation of mutations) {
+            const current = this.kvItems.get(mutation.key);
+            const currentVersion = current ? current.version : KV_MISSING_VERSION;
+            if (mutation.version !== currentVersion) {
+                errors.push({
+                    key: mutation.key,
+                    error: 'version-mismatch',
+                    version: currentVersion,
+                    value: current ? current.value : null
+                });
+            }
+        }
+        if (errors.length > 0) {
+            return { success: false, errors };
+        }
+
+        const results: Array<{ key: string; version: number }> = [];
+        const changes: KvChange[] = [];
+        for (const mutation of mutations) {
+            if (mutation.value === null) {
+                this.kvItems.delete(mutation.key);
+                results.push({ key: mutation.key, version: KV_MISSING_VERSION });
+                changes.push({ key: mutation.key, value: null, version: KV_MISSING_VERSION });
+            } else {
+                const newVersion = mutation.version === KV_MISSING_VERSION ? 1 : mutation.version + 1;
+                this.kvItems.set(mutation.key, { key: mutation.key, value: mutation.value, version: newVersion });
+                results.push({ key: mutation.key, version: newVersion });
+                changes.push({ key: mutation.key, value: mutation.value, version: newVersion });
+            }
+        }
+        this.scheduleKvPersist();
+        return { success: true, results, changes };
+    }
+
+    /**
+     * Write the KV store to disk immediately (atomic temp + rename).
+     * Cancels any pending debounced write. Safe to call at any time.
+     */
+    flushKvToDisk(): void {
+        if (!this.kvFilePath) return;
+        if (this.kvPersistTimer) {
+            clearTimeout(this.kvPersistTimer);
+            this.kvPersistTimer = null;
+        }
+        try {
+            mkdirSync(dirname(this.kvFilePath), { recursive: true });
+            const tempPath = `${this.kvFilePath}.tmp`;
+            writeFileSync(tempPath, JSON.stringify({ items: Array.from(this.kvItems.values()) }, null, 2), 'utf-8');
+            renameSync(tempPath, this.kvFilePath);
+        } catch (error) {
+            logger.debug('[P2P STORE] Failed to persist KV store:', error);
+        }
+    }
+
+    private scheduleKvPersist(): void {
+        if (!this.kvFilePath || this.kvPersistTimer) return;
+        this.kvPersistTimer = setTimeout(() => {
+            this.kvPersistTimer = null;
+            this.flushKvToDisk();
+        }, KV_PERSIST_DEBOUNCE_MS);
+        // A pending KV write must not keep the daemon process alive on shutdown.
+        this.kvPersistTimer.unref();
+    }
+
+    private loadKvFromDisk(): void {
+        if (!this.kvFilePath) return;
+        try {
+            const content = readFileSync(this.kvFilePath, 'utf-8');
+            const parsed = KvFileSchema.safeParse(JSON.parse(content));
+            if (!parsed.success) {
+                logger.debug(`[P2P STORE] KV store file has invalid shape, starting empty: ${this.kvFilePath}`);
+                return;
+            }
+            for (const item of parsed.data.items) {
+                this.kvItems.set(item.key, item);
+            }
+        } catch (error) {
+            // Missing file is the normal first-run case; corrupted JSON starts empty.
+            const isMissing = error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT';
+            if (!isMissing) {
+                logger.debug('[P2P STORE] Failed to load KV store, starting empty:', error);
+            }
+        }
+    }
 }

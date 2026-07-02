@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { tmpNameSync } from 'tmp';
 import { writeFileSync, unlinkSync, existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { P2PStore } from './p2pStore';
 import { P2PEventRouter } from './p2pEventRouter';
 import { verifyBearerToken } from './p2pAuth';
@@ -115,39 +116,77 @@ export function registerP2PRestRoutes(
         return { success: true };
     });
 
-    // ─── GET /v1/kv (stub for P2P — returns empty list) ────────────
-    typed.get('/v1/kv', async () => {
-        return { items: [] };
+    // ─── GET /v1/kv (list, optional prefix/limit) ──────────────────
+    typed.get('/v1/kv', {
+        schema: {
+            querystring: z.object({
+                prefix: z.string().optional(),
+                limit: z.coerce.number().int().min(1).max(1000).optional()
+            })
+        }
+    }, async (request) => {
+        const { prefix, limit } = request.query;
+        return { items: store.kvList(prefix, limit) };
     });
 
-    // ─── GET /v1/kv/:key (stub for P2P) ────────────────────────────
+    // ─── GET /v1/kv/:key ───────────────────────────────────────────
     typed.get('/v1/kv/:key', {
         schema: {
             params: z.object({
                 key: z.string()
             })
         }
-    }, async (_request, reply) => {
-        reply.code(404);
-        return { error: 'Key not found' };
+    }, async (request, reply) => {
+        const item = store.kvGet(request.params.key);
+        if (!item) {
+            reply.code(404);
+            return { error: 'Key not found' };
+        }
+        return item;
     });
 
-    // ─── POST /v1/kv/bulk (stub for P2P) ───────────────────────────
-    typed.post('/v1/kv/bulk', async () => {
-        return { values: [] };
+    // ─── POST /v1/kv/bulk (get up to 100 keys) ─────────────────────
+    typed.post('/v1/kv/bulk', {
+        schema: {
+            body: z.object({
+                keys: z.array(z.string()).max(100)
+            })
+        }
+    }, async (request) => {
+        return { values: store.kvBulkGet(request.body.keys) };
     });
 
-    // ─── POST /v1/kv (stub for P2P — mutate) ──────────────────────
-    typed.post('/v1/kv', async (request) => {
-        const body = request.body as { mutations?: Array<{ key: string }> };
-        const mutations = body.mutations || [];
-        return {
-            success: true,
-            results: mutations.map((m: { key: string }) => ({
-                key: m.key,
-                version: 1
-            }))
-        };
+    // ─── POST /v1/kv (atomic batch mutate with OCC) ────────────────
+    typed.post('/v1/kv', {
+        schema: {
+            body: z.object({
+                mutations: z.array(z.object({
+                    key: z.string(),
+                    value: z.string().nullable(),
+                    version: z.number().int()
+                })).max(100)
+            })
+        }
+    }, async (request, reply) => {
+        const result = store.kvMutate(request.body.mutations);
+        if (!result.success) {
+            reply.code(409);
+            return { success: false, errors: result.errors };
+        }
+
+        if (result.changes.length > 0) {
+            router.emitUpdate({
+                id: randomUUID(),
+                seq: store.allocateUserSeq(),
+                body: {
+                    t: 'kv-batch-update',
+                    changes: result.changes
+                },
+                createdAt: Date.now()
+            }, { type: 'user-scoped-only' });
+        }
+
+        return { success: true, results: result.results };
     });
 
     // ─── GET /v1/whisper/status ──────────────────────────────────
@@ -269,6 +308,7 @@ export function registerP2PRestRoutes(
                     role: z.enum(['user', 'assistant']),
                     content: z.string().min(1).max(10000),
                 })).min(1).max(50),
+                lang: z.string().min(1).max(35).optional(),
             }),
         },
     }, async (request, reply) => {
@@ -291,6 +331,8 @@ export function registerP2PRestRoutes(
                 model: probe.model,
                 messages: request.body.messages,
                 deps: conciergeDeps,
+                lang: request.body.lang,
+                extraPrompt: config.conciergeExtraPrompt,
             });
             logger.debug(`[CONCIERGE] Chat reply produced, ${actions.length} action(s)`);
             return { reply: text, actions };
@@ -392,7 +434,7 @@ export function registerP2PRestRoutes(
 
         // Broadcast new session event
         const update = {
-            id: require('node:crypto').randomUUID(),
+            id: randomUUID(),
             seq: store.allocateUserSeq(),
             body: {
                 t: 'new-session',
@@ -463,7 +505,7 @@ export function registerP2PRestRoutes(
 
         // Broadcast delete event
         const update = {
-            id: require('node:crypto').randomUUID(),
+            id: randomUUID(),
             seq: store.allocateUserSeq(),
             body: {
                 t: 'delete-session',
@@ -486,14 +528,19 @@ export function registerP2PRestRoutes(
                 dataEncryptionKey: z.string().nullable().optional()
             })
         }
-    }, async (request) => {
+    }, async (request, reply) => {
         const { id, metadata, daemonState, dataEncryptionKey } = request.body;
 
         const machine = store.getOrCreateMachine(id, metadata, daemonState || null, dataEncryptionKey || null);
+        if (!machine) {
+            // Machine was explicitly deleted by the user — do not resurrect it.
+            reply.code(410);
+            return { error: 'Machine was deleted' };
+        }
 
         // Broadcast new/update machine event
         const update = {
-            id: require('node:crypto').randomUUID(),
+            id: randomUUID(),
             seq: store.allocateUserSeq(),
             body: {
                 t: 'new-machine',
@@ -536,6 +583,40 @@ export function registerP2PRestRoutes(
             return { error: 'Machine not found' };
         }
         return { machine: machineToResponse(machine) };
+    });
+
+    // ─── DELETE /v1/machines/:id ─────────────────────────────────
+    typed.delete('/v1/machines/:id', {
+        schema: {
+            params: z.object({
+                id: z.string()
+            })
+        }
+    }, async (request, reply) => {
+        const { id } = request.params;
+
+        if (!store.getMachine(id)) {
+            reply.code(404);
+            return { error: 'Machine not found' };
+        }
+        if (store.isOwnMachine(id)) {
+            reply.code(403);
+            return { error: 'Cannot delete the machine this daemon is running on' };
+        }
+
+        store.deleteMachine(id);
+
+        router.emitUpdate({
+            id: randomUUID(),
+            seq: store.allocateUserSeq(),
+            body: {
+                t: 'delete-machine',
+                machineId: id
+            },
+            createdAt: Date.now()
+        }, { type: 'user-scoped-only' });
+
+        return { ok: true };
     });
 
     logger.debug('[P2P REST] All routes registered');

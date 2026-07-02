@@ -128,6 +128,7 @@ export const pt: Dictionary = {
     "zen.workOnTask": "Trabalhar na tarefa",
     "zen.newTask": "nova tarefa…",
     "zen.toggleTask": "alternar tarefa",
+    "zen.syncFailed": "não foi possível sincronizar as tarefas",
 
     "settings.title": "Configurações",
     "settings.group.appearance": "aparência",
@@ -151,6 +152,8 @@ export const pt: Dictionary = {
     "settings.machine.delete": "Excluir",
     "settings.machine.deleteTitle": "Excluir máquina?",
     "settings.machine.deleteHint": "a máquina sumirá da lista; reaparecerá na próxima vez que o daemon estiver ativo",
+    "settings.machine.deleteOwn": "esta é a máquina do próprio daemon — não pode ser removida",
+    "settings.machine.deleteFailed": "não foi possível remover a máquina",
     "settings.machine.empty": "nenhuma máquina — conecte-se via QR",
     "settings.disconnect": "Desconectar do daemon",
     "settings.version": "Versão",

@@ -128,6 +128,7 @@ export const ja: Dictionary = {
     "zen.workOnTask": "タスクに取り組む",
     "zen.newTask": "新しいタスク…",
     "zen.toggleTask": "タスクを切り替え",
+    "zen.syncFailed": "タスクを同期できませんでした",
 
     "settings.title": "設定",
     "settings.group.appearance": "外観",
@@ -151,6 +152,8 @@ export const ja: Dictionary = {
     "settings.machine.delete": "削除",
     "settings.machine.deleteTitle": "マシンを削除しますか？",
     "settings.machine.deleteHint": "マシンは一覧から消えます。デーモンが次に動作すると再び表示されます",
+    "settings.machine.deleteOwn": "これはデーモン自身のマシンのため削除できません",
+    "settings.machine.deleteFailed": "マシンを削除できませんでした",
     "settings.machine.empty": "マシンがありません — QR で接続してください",
     "settings.disconnect": "デーモンから切断",
     "settings.version": "バージョン",

@@ -149,6 +149,13 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
 
         logger.debug(`[P2P SERVER] New connection: type=${connectionType}, sessionId=${sessionId}, machineId=${machineId}`);
 
+        // The only machine-scoped client is the daemon's own self-connection
+        // (bootstrapMachineSocket) — remember its machine id so DELETE /v1/machines/:id
+        // can refuse to delete the machine the daemon itself runs on.
+        if (connectionType === 'machine-scoped' && machineId) {
+            store.markOwnMachine(machineId);
+        }
+
         const connection: P2PClientConnection = {
             socket,
             connectionType,

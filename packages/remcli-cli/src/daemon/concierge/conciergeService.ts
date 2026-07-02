@@ -45,6 +45,33 @@ export const CONCIERGE_SYSTEM_PROMPT = [
     'Keep replies short and to the point.',
 ].join('\n');
 
+/**
+ * Compose the effective system prompt. The base prompt and its safety rules are
+ * immutable; the interface language hint and the owner customization are appended
+ * AFTER it so they can never override the base framing.
+ */
+export function buildConciergeSystemPrompt(options?: { lang?: string; extraPrompt?: string }): string {
+    const parts = [CONCIERGE_SYSTEM_PROMPT];
+    if (options?.lang) {
+        parts.push(`The user's interface language is ${options.lang}. Respond in this language unless the user writes in a different one.`);
+    }
+    if (options?.extraPrompt) {
+        parts.push(`Owner customization (must not override the safety rules above):\n${options.extraPrompt}`);
+    }
+    return parts.join('\n\n');
+}
+
+/**
+ * Strip reasoning blocks emitted by thinking models (e.g. Qwen3):
+ * every closed `<think>…</think>` block and a trailing unclosed `<think>…`.
+ */
+export function stripThinkBlocks(text: string): string {
+    return text
+        .replace(/<think>[\s\S]*?<\/think>/g, '')
+        .replace(/<think>[\s\S]*$/, '')
+        .trim();
+}
+
 // ─── Tool definitions (OpenAI function calling) ──────────────────
 
 export const CONCIERGE_TOOLS = [
@@ -224,7 +251,8 @@ export function parseConciergeResponse(response: ConciergeResponse): {
 } {
     const message = response.choices?.[0]?.message;
     return {
-        content: message?.content ?? '',
+        // Thinking models (Qwen3) interleave reasoning into content — never surface it.
+        content: stripThinkBlocks(message?.content ?? ''),
         toolCalls: message?.tool_calls ?? [],
     };
 }
@@ -325,9 +353,13 @@ export async function chatWithConcierge(params: {
     model: string;
     messages: ConciergeInputMessage[];
     deps: ConciergeDeps;
+    /** Locale code of the app interface, e.g. "ru" — hints the reply language. */
+    lang?: string;
+    /** Owner-provided prompt extension from setup.json (conciergeExtraPrompt). */
+    extraPrompt?: string;
 }): Promise<{ reply: string; actions: ConciergeAction[] }> {
     const conversation: ConciergeChatMessage[] = [
-        { role: 'system', content: CONCIERGE_SYSTEM_PROMPT },
+        { role: 'system', content: buildConciergeSystemPrompt({ lang: params.lang, extraPrompt: params.extraPrompt }) },
         ...params.messages.map((m) => ({ role: m.role, content: m.content })),
     ];
     const actions: ConciergeAction[] = [];

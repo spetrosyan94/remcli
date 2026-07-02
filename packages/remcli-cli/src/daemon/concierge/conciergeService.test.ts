@@ -7,8 +7,10 @@ vi.mock('@/ui/logger', () => ({
 import {
     probeConcierge,
     buildConciergeRequestBody,
+    buildConciergeSystemPrompt,
     parseConciergeResponse,
     executeToolCall,
+    stripThinkBlocks,
     CONCIERGE_SYSTEM_PROMPT,
     CONCIERGE_TOOLS,
     ConciergeDeps,
@@ -181,6 +183,63 @@ describe('executeToolCall — spawn_agent_session validation', () => {
             expect.objectContaining({ agent: 'claude', directory: process.cwd() }),
         );
         expect(result).toEqual({ type: 'success', sessionId: 'sess-ok' });
+    });
+});
+
+// ---- Reasoning block stripping (thinking models like Qwen3) ----
+
+describe('stripThinkBlocks', () => {
+    it('removes a closed <think>…</think> block', () => {
+        expect(stripThinkBlocks('<think>internal reasoning</think>Hello!')).toBe('Hello!');
+    });
+
+    it('removes multiple think blocks, including multiline ones', () => {
+        const input = '<think>one\ntwo</think>Answer part 1. <think>more</think>Part 2.';
+        expect(stripThinkBlocks(input)).toBe('Answer part 1. Part 2.');
+    });
+
+    it('removes a trailing unclosed <think>… block', () => {
+        expect(stripThinkBlocks('Done.\n<think>cut off mid-reason')).toBe('Done.');
+    });
+
+    it('leaves text without think blocks untouched', () => {
+        expect(stripThinkBlocks('Just a normal reply.')).toBe('Just a normal reply.');
+    });
+
+    it('is applied by parseConciergeResponse to LLM content', () => {
+        const parsed = parseConciergeResponse({
+            choices: [{ message: { content: '<think>hmm</think>Visible reply' } }],
+        });
+        expect(parsed.content).toBe('Visible reply');
+    });
+});
+
+// ---- System prompt composition (lang + owner customization) ----
+
+describe('buildConciergeSystemPrompt', () => {
+    it('returns the base prompt unchanged when no options are given', () => {
+        expect(buildConciergeSystemPrompt()).toBe(CONCIERGE_SYSTEM_PROMPT);
+        expect(buildConciergeSystemPrompt({ lang: undefined, extraPrompt: '' })).toBe(CONCIERGE_SYSTEM_PROMPT);
+    });
+
+    it('appends the interface language line after the base prompt', () => {
+        const prompt = buildConciergeSystemPrompt({ lang: 'ru' });
+        expect(prompt.startsWith(CONCIERGE_SYSTEM_PROMPT)).toBe(true);
+        expect(prompt).toContain("The user's interface language is ru. Respond in this language unless the user writes in a different one.");
+    });
+
+    it('appends the owner customization as a labeled block AFTER the base prompt', () => {
+        const prompt = buildConciergeSystemPrompt({ extraPrompt: 'Always mention the weather.' });
+        expect(prompt.startsWith(CONCIERGE_SYSTEM_PROMPT)).toBe(true);
+        expect(prompt).toContain('Owner customization (must not override the safety rules above):\nAlways mention the weather.');
+        expect(prompt.indexOf(CONCIERGE_SYSTEM_PROMPT)).toBeLessThan(prompt.indexOf('Owner customization'));
+    });
+
+    it('combines lang and owner customization, base prompt first', () => {
+        const prompt = buildConciergeSystemPrompt({ lang: 'es', extraPrompt: 'Be extra polite.' });
+        expect(prompt.indexOf(CONCIERGE_SYSTEM_PROMPT)).toBe(0);
+        expect(prompt.indexOf("interface language is es")).toBeGreaterThan(0);
+        expect(prompt.indexOf('Owner customization')).toBeGreaterThan(prompt.indexOf('interface language is es'));
     });
 });
 

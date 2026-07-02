@@ -1,14 +1,16 @@
 // remcli-web — Zen / Задачи (design/screens/zen.tsx, разметка 1:1).
-// Задачи — в localStorage (src/lib/zenTasks.ts: KV-эндпоинты P2P-демона — заглушки),
-// связанные сессии — живые из стора протокола. «Работать над задачей» → /new
-// с предзаполненным промптом; после спавна NewSessionPage линкует задачу к сессии.
-import { useMemo, useState } from "react";
-import { Check, Play, Plus } from "lucide-react";
+// Задачи — в KV демона (src/lib/zenTasks.ts: /v1/kv, ключ zen-tasks, OCC-ретраи,
+// live-синк через kv-batch-update), связанные сессии — живые из стора протокола.
+// «Работать над задачей» → /new с предзаполненным промптом; после спавна
+// NewSessionPage линкует задачу к сессии.
+import { useEffect, useMemo, useState } from "react";
+import { Check, Loader2, Play, Plus } from "lucide-react";
 import { useNavigate } from "react-router";
+import { toast } from "sonner";
 import { StatusDot, type AgentId, type Status } from "@/components/kit";
 import { t } from "@/lib/i18n";
 import { useSessions, type Session } from "@/lib/protocol";
-import { addZenTask, loadZenTasks, toggleZenTask, type ZenTask } from "@/lib/zenTasks";
+import { addZenTask, loadZenTasks, subscribeZenTasks, toggleZenTask, type ZenTask } from "@/lib/zenTasks";
 
 function sessionStatus(session: Session): Status {
     if (!session.active) return "offline";
@@ -58,8 +60,30 @@ function TaskCheckbox({ isDone, onToggle }: { isDone: boolean; onToggle: () => v
 export function ZenPage() {
     const navigate = useNavigate();
     const sessions = useSessions();
-    const [tasks, setTasks] = useState<ZenTask[]>(() => loadZenTasks());
+    const [tasks, setTasks] = useState<ZenTask[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
     const [newTitle, setNewTitle] = useState("");
+
+    // загрузка из KV демона + live-синк между устройствами (kv-batch-update)
+    useEffect(() => {
+        let isCancelled = false;
+        loadZenTasks()
+            .then((next) => { if (!isCancelled) setTasks(next); })
+            .catch(() => { if (!isCancelled) toast.error(t("zen.syncFailed")); })
+            .finally(() => { if (!isCancelled) setIsLoading(false); });
+        const unsubscribe = subscribeZenTasks((next) => {
+            if (!isCancelled) setTasks(next);
+        });
+        return () => {
+            isCancelled = true;
+            unsubscribe();
+        };
+    }, []);
+
+    // OCC-мутация в KV: применяем результат, при ошибке — тост (состояние не трогаем)
+    const applyMutation = (mutation: Promise<ZenTask[]>) => {
+        mutation.then(setTasks).catch(() => toast.error(t("zen.syncFailed")));
+    };
 
     // выполненные — вниз списка, как в эталоне
     const orderedTasks = useMemo(
@@ -72,7 +96,7 @@ export function ZenPage() {
         event.preventDefault();
         const title = newTitle.trim();
         if (title === "") return;
-        setTasks(addZenTask(title));
+        applyMutation(addZenTask(title));
         setNewTitle("");
     };
 
@@ -86,6 +110,11 @@ export function ZenPage() {
             </header>
 
             <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4">
+                {isLoading && (
+                    <div className="flex justify-center py-6">
+                        <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                    </div>
+                )}
                 {orderedTasks.map((task, index) => {
                     const isLast = index === orderedTasks.length - 1;
                     const rowBorder = isLast ? "" : " border-b border-border/60";
@@ -97,7 +126,7 @@ export function ZenPage() {
                     if (task.isDone) {
                         return (
                             <div key={task.id} className={`flex items-start gap-3 px-2 py-3.5 opacity-45${rowBorder}`}>
-                                <TaskCheckbox isDone onToggle={() => setTasks(toggleZenTask(task.id))} />
+                                <TaskCheckbox isDone onToggle={() => applyMutation(toggleZenTask(task.id))} />
                                 <span className="text-[14.5px] leading-snug text-muted-foreground line-through">{task.title}</span>
                             </div>
                         );
@@ -107,7 +136,7 @@ export function ZenPage() {
                     if (linkedSession) {
                         return (
                             <div key={task.id} className={`flex items-start gap-3 px-2 py-3.5${rowBorder}`}>
-                                <TaskCheckbox isDone={false} onToggle={() => setTasks(toggleZenTask(task.id))} />
+                                <TaskCheckbox isDone={false} onToggle={() => applyMutation(toggleZenTask(task.id))} />
                                 <div className="flex flex-1 flex-col gap-2">
                                     <span className="text-[14.5px] leading-snug">{task.title}</span>
                                     <button
@@ -126,7 +155,7 @@ export function ZenPage() {
                     // задача без живой сессии → CTA «работать» (new-session с prefill промпта)
                     return (
                         <div key={task.id} className={`flex items-start gap-3 px-2 py-3.5${rowBorder}`}>
-                            <TaskCheckbox isDone={false} onToggle={() => setTasks(toggleZenTask(task.id))} />
+                            <TaskCheckbox isDone={false} onToggle={() => applyMutation(toggleZenTask(task.id))} />
                             <div className="flex flex-1 flex-col gap-2">
                                 <span className="text-[14.5px] leading-snug">{task.title}</span>
                                 <button

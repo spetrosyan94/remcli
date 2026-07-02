@@ -84,6 +84,23 @@ export const ApiUpdateNewMachineSchema = z.object({
     updatedAt: z.number(),
 });
 
+export const ApiDeleteMachineSchema = z.object({
+    t: z.literal('delete-machine'),
+    machineId: z.string(),
+});
+
+// KV live updates (mirror of remcli-app apiTypes.ts ApiKvBatchUpdateSchema)
+export const ApiKvBatchUpdateSchema = z.object({
+    t: z.literal('kv-batch-update'),
+    changes: z.array(z.object({
+        key: z.string(),
+        value: z.string().nullable(),
+        version: z.number()
+    }))
+});
+
+export type KvChange = z.infer<typeof ApiKvBatchUpdateSchema>['changes'][number];
+
 export const ApiUpdateSchema = z.discriminatedUnion('t', [
     ApiUpdateNewMessageSchema,
     ApiUpdateNewSessionSchema,
@@ -91,6 +108,8 @@ export const ApiUpdateSchema = z.discriminatedUnion('t', [
     ApiUpdateSessionStateSchema,
     ApiUpdateMachineStateSchema,
     ApiUpdateNewMachineSchema,
+    ApiDeleteMachineSchema,
+    ApiKvBatchUpdateSchema,
 ]);
 
 export type ApiUpdateNewMessage = z.infer<typeof ApiUpdateNewMessageSchema>;

@@ -17,9 +17,11 @@ import {
 import { createEncryption, type Cipher, type Encryption } from '@/lib/protocol/encryption';
 import { normalizeRawMessage, type NormalizedMessage, type RawRecord } from '@/lib/protocol/messages';
 import {
+    deleteMachine,
     fetchMachines,
     fetchMessages,
     fetchSessions,
+    type DeleteMachineResult,
     type RestConfig
 } from '@/lib/protocol/rest';
 import {
@@ -42,6 +44,7 @@ import {
     type ApiMachine,
     type ApiMessage,
     type ApiSession,
+    type KvChange,
     type Machine,
     type MachineMetadata,
     type PermissionMode,
@@ -366,14 +369,38 @@ export async function machineSetDisplayName(machineId: string, displayName: stri
     throw new Error(`Failed to update machine metadata after ${maxRetries} retries`);
 }
 
-/**
- * Remove a machine from the local store (the daemon has no DELETE machines
- * endpoint — the machine re-appears on the next refetch if its daemon is alive).
- */
-export function forgetMachine(machineId: string): void {
+/** Drop a machine's ciphers and store entry (delete-machine event / local delete). */
+function evictMachine(machineId: string): void {
     context?.machineCiphers.delete(machineId);
     context?.machineDataCiphers.delete(machineId);
     useProtocolStore.getState().removeMachine(machineId);
+}
+
+/**
+ * Delete a machine on the daemon (DELETE /v1/machines/:id). On success (or 404 —
+ * already gone) the machine is evicted locally right away; the daemon also
+ * broadcasts a 'delete-machine' update to every connected client. 403 means the
+ * daemon's own machine — surfaced as a typed result for the UI to explain.
+ */
+export async function machineDelete(machineId: string): Promise<DeleteMachineResult> {
+    const ctx = requireContext();
+    const result = await deleteMachine(restConfigOf(ctx), machineId);
+    if (result.ok || result.status === 404) {
+        evictMachine(machineId);
+    }
+    return result;
+}
+
+// ─── KV live updates (kv-batch-update) ───────────────────────────
+
+const kvListeners = new Set<(changes: KvChange[]) => void>();
+
+/** Subscribe to live KV changes broadcast by the daemon (cross-device sync, e.g. zen tasks). */
+export function subscribeKvChanges(listener: (changes: KvChange[]) => void): () => void {
+    kvListeners.add(listener);
+    return () => {
+        kvListeners.delete(listener);
+    };
 }
 
 // ─── Socket event handlers ───────────────────────────────────────
@@ -448,6 +475,19 @@ async function handleUpdate(ctx: ClientContext, data: unknown): Promise<void> {
 
     if (update.body.t === 'new-machine') {
         await refreshMachines();
+        return;
+    }
+
+    if (update.body.t === 'delete-machine') {
+        evictMachine(update.body.machineId);
+        return;
+    }
+
+    if (update.body.t === 'kv-batch-update') {
+        const changes = update.body.changes;
+        for (const listener of kvListeners) {
+            listener(changes);
+        }
         return;
     }
 

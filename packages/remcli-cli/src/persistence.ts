@@ -727,6 +727,9 @@ const SetupConfigSchema = z.object({
     conciergeEnabled: z.boolean().default(false),
     conciergeUrl: z.string().default('http://127.0.0.1:1234/v1'),
     conciergeModel: z.string().default(''), // Empty means "first available model reported by the server".
+    // Owner prompt extension: appended AFTER the base system prompt as a clearly
+    // labeled block that must not override the base safety rules. Empty = off.
+    conciergeExtraPrompt: z.string().default(''),
 });
 
 export type SetupConfig = z.infer<typeof SetupConfigSchema>;

@@ -128,6 +128,7 @@ export const zhHans: Dictionary = {
     "zen.workOnTask": "处理该任务",
     "zen.newTask": "新任务…",
     "zen.toggleTask": "切换任务",
+    "zen.syncFailed": "任务同步失败",
 
     "settings.title": "设置",
     "settings.group.appearance": "外观",
@@ -151,6 +152,8 @@ export const zhHans: Dictionary = {
     "settings.machine.delete": "删除",
     "settings.machine.deleteTitle": "删除机器？",
     "settings.machine.deleteHint": "机器将从列表中消失；守护进程下次活动时会再次出现",
+    "settings.machine.deleteOwn": "这是守护进程所在的机器，无法删除",
+    "settings.machine.deleteFailed": "删除机器失败",
     "settings.machine.empty": "没有机器 — 请通过二维码连接",
     "settings.disconnect": "断开与守护进程的连接",
     "settings.version": "版本",

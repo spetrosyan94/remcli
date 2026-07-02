@@ -44,14 +44,12 @@ if (!fs.existsSync(envrcPath)) {
 
 console.log('\n✨ Setup complete!\n');
 console.log('📋 Next steps:\n');
-console.log('1. Authenticate with stable version:');
-console.log('   npm run stable auth login\n');
-console.log('2. Authenticate with dev version (can use same or different account):');
-console.log('   npm run dev auth login\n');
-console.log('3. Start daemons:');
-console.log('   npm run stable:daemon:start  # Stable version');
-console.log('   npm run dev:daemon:start     # Dev version\n');
+console.log('1. Build the CLI:');
+console.log('   npm run build\n');
+console.log('2. Start the daemon (stable data dir ~/.remcli):');
+console.log('   node ./bin/remcli.mjs daemon start\n');
+console.log('3. Or use the dev data dir (~/.remcli-dev):');
+console.log('   REMCLI_HOME_DIR=~/.remcli-dev REMCLI_VARIANT=dev node ./bin/remcli.mjs daemon start\n');
 console.log('4. Check status:');
-console.log('   npm run stable:daemon:status');
-console.log('   npm run dev:daemon:status\n');
-console.log('💡 All commands are in package.json scripts for easy discovery!');
+console.log('   node ./bin/remcli.mjs daemon status\n');
+console.log('💡 Use .envrc.example with direnv to switch to the dev variant automatically.');

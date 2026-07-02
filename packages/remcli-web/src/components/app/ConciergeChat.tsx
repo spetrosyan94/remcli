@@ -1,11 +1,12 @@
 // remcli-web — Консьерж: чат с локальным LLM-ассистентом демона (роут /concierge).
-// GET /v1/concierge/status при входе; POST /v1/concierge/chat со всей историей.
+// GET /v1/concierge/status при входе; POST /v1/concierge/chat со всей историей
+// + lang (код локали приложения — консьерж отвечает на языке пользователя).
 // Actions ответа рендерятся mono-строками; spawn_agent_session → ссылка на новую сессию.
 import * as React from "react";
 import { ArrowLeft, Loader2, Send } from "lucide-react";
 import { Link, useNavigate } from "react-router";
 import { Caret, UserMessage } from "@/components/kit";
-import { t } from "@/lib/i18n";
+import { getCurrentLanguage, t } from "@/lib/i18n";
 import {
     conciergeChat,
     fetchConciergeStatus,
@@ -96,7 +97,7 @@ export function ConciergeChat() {
         setIsSending(true);
         try {
             const history: ConciergeChatMessage[] = nextFeed.map(({ role, content }) => ({ role, content }));
-            const response = await conciergeChat(restConfig, history);
+            const response = await conciergeChat(restConfig, history, { lang: getCurrentLanguage() });
             setFeed((current) => [...current, {
                 id: `c-${Date.now()}-a`,
                 role: "assistant",
