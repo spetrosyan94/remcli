@@ -419,7 +419,7 @@ Optional services hosted by the daemon and exposed over the P2P REST API:
 |---------|-----------|-------|
 | Whisper STT | `GET /v1/whisper/status`, `POST /v1/voice/transcribe` | Local whisper.cpp transcription (`src/daemon/whisper/`) |
 | TTS | `GET /v1/tts/status`, `POST /v1/voice/synthesize` | edge-tts (default) or qwen3-tts; with `ttsEdgeVoice: 'auto'` (config default) the Edge voice is picked per response language (`src/daemon/tts/edgeTtsProvider.ts`) |
-| Concierge | `GET /v1/concierge/status`, `POST /v1/concierge/chat` | Optional local LLM assistant via LM Studio (`src/daemon/concierge/conciergeService.ts`) |
+| Concierge | `GET /v1/concierge/status`, `POST /v1/concierge/chat` | Optional local LLM assistant ("Jarvis") via LM Studio (`src/daemon/concierge/conciergeService.ts`). Persona + soft rules: `CONCIERGE_SYSTEM_PROMPT`; hard guardrails in code (3-tool whitelist, agent/directory validation before spawn, 4 rounds × 5 tool calls, single spawn per conversation). Owner prompt suffix: `conciergeExtraPrompt` in setup.json (cannot override base rules) |
 
 ### Local concierge (LM Studio)
 
