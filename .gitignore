@@ -51,3 +51,4 @@ plans/
 
 # Development planning notes (keep local, don't commit)
 notes/__pycache__/
+packages/remcli-cli/web-dist/

@@ -1,7 +1,0 @@
-<svg width="176" height="40" viewBox="0 0 176 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M6.9 13.5 L13.4 20 L6.9 26.5" stroke="#FAFAFA" stroke-opacity="0.26" stroke-width="4"></path>
-  <path d="M15.3 11.6 L23.7 20 L15.3 28.4" stroke="#FAFAFA" stroke-width="4"></path>
-  <rect x="27" y="24.4" width="7.5" height="4" fill="#34D399"></rect>
-  <text x="44" y="27.5" font-family="&#39;Geist Mono&#39;,&#39;JetBrains Mono&#39;,ui-monospace,monospace" font-size="22" font-weight="600" letter-spacing="-0.02em" fill="#FAFAFA">remcli</text>
-  <rect x="132" y="24.4" width="9" height="4" fill="#34D399"></rect>
-</svg>
