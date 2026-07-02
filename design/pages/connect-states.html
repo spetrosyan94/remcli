@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>remcli — Connect — состояния</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#08080A;display:flex;flex-direction:column;align-items:center;padding:32px 16px;font-family:Geist,sans-serif;}
+@keyframes kBlink{0%,49%{opacity:1}50%,100%{opacity:0}}
+@keyframes kPulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes kBar{0%,100%{transform:scaleY(.25)}50%{transform:scaleY(1)}}
+@keyframes kSpin{to{transform:rotate(360deg)}}
+</style>
+</head><body>
+<!-- 1b onboarding states -->
+    <div id="1b" style="display:flex;flex-direction:column;gap:9px">
+      <div style="display:flex;align-items:baseline;gap:8px"><a href="#1b" style="font-family:'Geist Mono',monospace;font-size:10.5px;font-weight:600;padding:3px 7px;background:#26262B;color:#FAFAFA;border-radius:5px;text-decoration:none">1b</a><span style="font-size:12px;color:#A1A1AA">Подключение: сканер · процесс · ошибка · ручной ввод</span></div>
+      <div style="width:390px;display:flex;flex-direction:column;gap:14px">
+        <div style="background:#09090B;border:1px solid #26262B;border-radius:20px;overflow:hidden">
+          <div style="height:210px;background:#0E0E11;position:relative;display:flex;align-items:center;justify-content:center">
+            <div style="position:absolute;inset:0;background:repeating-linear-gradient(45deg,#101014 0 14px,#0C0C0F 14px 28px)"></div>
+            <div style="position:relative;width:150px;height:150px;border-radius:18px;border:2px solid rgba(52,211,153,0.8);box-shadow:0 0 0 2000px rgba(0,0,0,0.45)"></div>
+            <span style="position:absolute;bottom:12px;font-family:'Geist Mono',monospace;font-size:10px;color:#71717A">камера · наведите на QR из `remcli serve`</span>
+            <button style="position:absolute;top:12px;right:12px;width:34px;height:34px;border-radius:10px;background:rgba(24,24,27,0.8);border:1px solid #2E2E33;color:#A1A1AA;font-size:15px">✕</button>
+          </div>
+        </div>
+        <div style="background:#0E0E11;border:1px solid #26262B;border-radius:16px;padding:16px 18px;display:flex;align-items:center;gap:13px">
+          <span style="width:16px;height:16px;border-radius:50%;border:2px solid #26262B;border-top-color:#34D399;animation:kSpin 0.8s linear infinite;flex:none"></span>
+          <div style="display:flex;flex-direction:column;gap:3px">
+            <span style="font-size:13.5px;font-weight:600;color:#FAFAFA">Подключаемся к mbp.local</span>
+            <span style="font-family:'Geist Mono',monospace;font-size:11px;color:#71717A">рукопожатие → e2e-ключи → сессии<span style="display:inline-block;width:6px;height:11px;background:#34D399;margin-left:4px;vertical-align:-1px;animation:kBlink 1.1s steps(2) infinite"></span></span>
+          </div>
+        </div>
+        <div style="background:#160D0D;border:1px solid rgba(248,113,113,0.4);border-radius:16px;padding:16px 18px;display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;align-items:center;gap:9px"><span style="width:8px;height:8px;border-radius:50%;background:#F87171"></span><span style="font-size:13.5px;font-weight:600;color:#FAFAFA">Не удалось подключиться</span></div>
+          <span style="font-family:'Geist Mono',monospace;font-size:11px;line-height:1.6;color:#8B8B93">timeout: 10.0.1.14:7350 не отвечает.<br/>Проверьте, что демон запущен и вы в одной сети.</span>
+          <div style="display:flex;gap:8px">
+            <button style="flex:1;height:40px;border-radius:9px;background:#FAFAFA;color:#09090B;font-size:13px;font-weight:600;border:none;font-family:Geist,sans-serif">Повторить</button>
+            <button style="flex:1;height:40px;border-radius:9px;background:transparent;color:#A1A1AA;font-size:13px;font-weight:500;border:1px solid #2E2E33;font-family:Geist,sans-serif">Сканировать заново</button>
+          </div>
+        </div>
+        <div style="background:#0E0E11;border:1px solid #26262B;border-radius:16px;padding:16px 18px;display:flex;flex-direction:column;gap:10px">
+          <span style="font-size:13px;font-weight:600;color:#FAFAFA">Ручной ввод</span>
+          <div style="height:44px;border-radius:10px;background:#1A1A1E;border:1px solid #26262B;display:flex;align-items:center;padding:0 13px;font-family:'Geist Mono',monospace;font-size:13px;color:#FAFAFA">10.0.1.14:7350</div>
+          <div style="height:44px;border-radius:10px;background:#1A1A1E;border:1px solid #34D399;box-shadow:0 0 0 3px rgba(52,211,153,0.12);display:flex;align-items:center;padding:0 13px;font-family:'Geist Mono',monospace;font-size:13px;color:#FAFAFA">ключ: 7Q2M-XXH4-<span style="display:inline-block;width:7px;height:15px;background:#34D399;margin-left:2px;animation:kBlink 1.1s steps(2) infinite"></span></div>
+          <button style="height:44px;border-radius:10px;background:#FAFAFA;color:#09090B;font-size:14px;font-weight:600;border:none;font-family:Geist,sans-serif">Подключиться</button>
+        </div>
+      </div>
+    </div>
+</body></html>

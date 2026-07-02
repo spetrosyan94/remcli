@@ -3,7 +3,8 @@
     "private": true,
     "workspaces": [
         "packages/remcli-app",
-        "packages/remcli-cli"
+        "packages/remcli-cli",
+        "packages/remcli-web"
     ],
     "scripts": {
         "setup": "npm install && npm -w remcli run build && node packages/remcli-cli/bin/remcli.mjs setup",

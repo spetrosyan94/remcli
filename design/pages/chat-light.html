@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>remcli — Chat · light</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#08080A;display:flex;flex-direction:column;align-items:center;padding:32px 16px;font-family:Geist,sans-serif;}
+@keyframes kBlink{0%,49%{opacity:1}50%,100%{opacity:0}}
+@keyframes kPulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes kBar{0%,100%{transform:scaleY(.25)}50%{transform:scaleY(1)}}
+@keyframes kSpin{to{transform:rotate(360deg)}}
+</style>
+</head><body>
+<!-- 2b Chat light -->
+    <div id="2b" style="display:flex;flex-direction:column;gap:9px">
+      <div style="display:flex;align-items:baseline;gap:8px"><a href="#2b" style="font-family:'Geist Mono',monospace;font-size:10.5px;font-weight:600;padding:3px 7px;background:#26262B;color:#FAFAFA;border-radius:5px;text-decoration:none">2b</a><span style="font-size:12px;color:#A1A1AA">Chat · light</span></div>
+      <div style="width:390px;height:844px;background:#FAFAFA;border:1px solid #26262B;border-radius:28px;overflow:hidden;display:flex;flex-direction:column">
+        <div style="height:54px;flex:none"></div>
+        <div style="display:flex;align-items:center;gap:10px;padding:2px 14px 10px;border-bottom:1px solid #E4E4E7;flex:none">
+          <button style="width:38px;height:38px;border-radius:10px;background:transparent;border:none;display:flex;align-items:center;justify-content:center"><svg width="17" height="17" viewBox="0 0 17 17"><path d="M10.5 3 L5 8.5 L10.5 14" stroke="#18181B" stroke-width="1.8" fill="none"/></svg></button>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1px">
+            <span style="font-family:'Geist Mono',monospace;font-size:13.5px;font-weight:600;color:#18181B">~/dev/remcli</span>
+            <span style="display:flex;align-items:center;gap:6px;font-family:'Geist Mono',monospace;font-size:10px;color:#71717A"><span style="width:6px;height:6px;border-radius:50%;background:#0891B2;animation:kPulse 1.2s ease-in-out infinite"></span>claude · opus-4.1 · думает</span>
+          </div>
+          <span style="display:flex;align-items:center;gap:5px;padding:5px 9px;border-radius:8px;background:#EFEFF1;font-family:'Geist Mono',monospace;font-size:10.5px;color:#18181B">ask<svg width="8" height="8" viewBox="0 0 10 10"><path d="M2 3.5 L5 6.5 L8 3.5" stroke="#71717A" stroke-width="1.5" fill="none"/></svg></span>
+          <button style="width:38px;height:38px;border-radius:10px;background:transparent;border:none;color:#52525B;font-size:17px;letter-spacing:1px">⋯</button>
+        </div>
+        <div style="flex:1;overflow:hidden;padding:14px 14px 8px;display:flex;flex-direction:column;gap:13px">
+          <div style="align-self:flex-end;max-width:85%;background:#EFEFF1;border-radius:14px 14px 4px 14px;padding:9px 13px;font-size:14px;line-height:1.5;color:#18181B">Добавь шифрование в канал и прогони тесты</div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:7px;font-family:'Geist Mono',monospace;font-size:10.5px;color:#71717A"><span style="width:18px;height:18px;border-radius:5px;background:rgba(217,119,87,0.12);color:#C05B3C;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700">cl</span>claude · 12:41</div>
+            <div style="font-size:14px;line-height:1.55;color:#3F3F46">Смотрю текущий транспорт и оборачиваю отправку в <span style="font-family:'Geist Mono',monospace;font-size:12.5px;background:#EFEFF1;padding:1px 5px;border-radius:5px;color:#047857">seal()</span>.</div>
+            <div style="display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:9px;background:#FFFFFF;border:1px solid #E4E4E7;font-family:'Geist Mono',monospace;font-size:12px">
+              <svg width="10" height="10" viewBox="0 0 10 10"><path d="M3 2 L7 5 L3 8" stroke="#A1A1AA" stroke-width="1.6" fill="none"/></svg>
+              <span style="color:#71717A">Read</span><span style="color:#18181B;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">src/transport/webrtc.ts</span>
+              <svg width="13" height="13" viewBox="0 0 14 14"><path d="M2.5 7.5 L5.5 10.5 L11.5 4" stroke="#059669" stroke-width="2" fill="none"/></svg>
+            </div>
+            <div style="border-radius:9px;border:1px solid #E4E4E7;overflow:hidden;font-family:'Geist Mono',monospace;font-size:11.5px;background:#FFFFFF">
+              <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #F0F0F2"><span style="color:#18181B">src/transport/webrtc.ts</span><span style="margin-left:auto;color:#059669">+12</span><span style="color:#DC2626">−4</span></div>
+              <div style="line-height:1.75;padding:5px 0">
+                <div style="padding:0 12px;color:#71717A">&nbsp;&nbsp;const chan = peer.channel;</div>
+                <div style="padding:0 12px;background:rgba(220,38,38,0.06);color:#B91C1C"><span>−</span> chan.send(raw);</div>
+                <div style="padding:0 12px;background:rgba(5,150,105,0.07);color:#047857"><span>+</span> chan.send(seal(raw, key));</div>
+              </div>
+            </div>
+          </div>
+          <div style="border-radius:12px;border:1px solid rgba(217,119,6,0.4);background:#FFFBEB;overflow:hidden;box-shadow:0 8px 24px rgba(217,119,6,0.08)">
+            <div style="display:flex;align-items:center;gap:8px;padding:10px 13px;border-bottom:1px solid rgba(217,119,6,0.18)">
+              <span style="width:7px;height:7px;border-radius:50%;background:#D97706"></span>
+              <span style="font-family:'Geist Mono',monospace;font-size:11px;font-weight:600;color:#B45309">запрос разрешения · bash</span>
+              <span style="margin-left:auto;font-family:'Geist Mono',monospace;font-size:10px;color:#A1A1AA">12:42</span>
+            </div>
+            <div style="margin:12px 13px;padding:10px 12px;border-radius:8px;background:#18181B;font-family:'Geist Mono',monospace;font-size:12px;line-height:1.6;color:#E4E4E7"><span style="color:#34D399">$</span> pnpm test -- --run crypto<br/><span style="color:#71717A"># прогонит тесты шифрования</span></div>
+            <div style="display:flex;gap:8px;padding:0 13px 12px">
+              <button style="flex:1.4;height:46px;border-radius:11px;background:#059669;color:#FFFFFF;font-family:Geist,sans-serif;font-size:14.5px;font-weight:600;border:none">Разрешить</button>
+              <button style="flex:1;height:46px;border-radius:11px;background:#FFFFFF;color:#DC2626;font-family:Geist,sans-serif;font-size:14.5px;font-weight:500;border:1px solid rgba(220,38,38,0.3)">Запретить</button>
+            </div>
+            <button style="display:block;width:100%;padding:0 13px 12px;background:none;border:none;font-family:'Geist Mono',monospace;font-size:11px;color:#A1A1AA;text-align:center">всегда разрешать pnpm test в этой сессии</button>
+          </div>
+          <div style="display:flex;align-items:center;gap:9px;font-family:'Geist Mono',monospace;font-size:11.5px;color:#71717A"><span style="width:18px;height:18px;border-radius:5px;background:rgba(217,119,87,0.12);color:#C05B3C;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700">cl</span>думает<span style="display:inline-block;width:8px;height:14px;background:#0891B2;animation:kBlink 0.9s steps(2) infinite"></span></div>
+        </div>
+        <div style="flex:none;padding:8px 14px 10px;border-top:1px solid #E4E4E7;display:flex;align-items:flex-end;gap:8px">
+          <div style="flex:1;min-height:44px;border-radius:12px;background:#FFFFFF;border:1px solid #E4E4E7;display:flex;align-items:center;padding:0 14px;font-size:14px;color:#A1A1AA">Сообщение агенту…</div>
+          <button style="width:44px;height:44px;border-radius:12px;background:#FFFFFF;border:1px solid #E4E4E7;display:flex;align-items:center;justify-content:center;flex:none"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="6" y="1.5" width="4" height="8" rx="2" stroke="#52525B" stroke-width="1.6" fill="none"/><path d="M3.5 8 C3.5 10.5 5.5 12.3 8 12.3 C10.5 12.3 12.5 10.5 12.5 8" stroke="#52525B" stroke-width="1.6" fill="none"/><path d="M8 12.5 L8 15" stroke="#52525B" stroke-width="1.6"/></svg></button>
+          <button style="width:44px;height:44px;border-radius:12px;background:#18181B;border:none;display:flex;align-items:center;justify-content:center;flex:none"><svg width="15" height="15" viewBox="0 0 15 15"><path d="M2 7.5 L13 2 L9.5 13 L7 8.5 Z" fill="#FAFAFA"/></svg></button>
+        </div>
+        <div style="height:26px;flex:none;display:flex;align-items:center;justify-content:center"><span style="width:134px;height:5px;border-radius:3px;background:#D4D4D8"></span></div>
+      </div>
+    </div>
+  
+</body></html>

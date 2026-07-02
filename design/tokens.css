@@ -1,0 +1,67 @@
+/* remcli — design tokens (shadcn/ui theme format)
+   UI: Geist · Mono: Geist Mono · база zinc, акцент emerald */
+
+:root {
+  --background: 0 0% 98%;            /* #FAFAFA */
+  --foreground: 240 6% 10%;          /* #18181B */
+  --card: 0 0% 100%;                 /* #FFFFFF */
+  --card-foreground: 240 6% 10%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 6% 10%;
+  --primary: 240 6% 10%;             /* чёрная кнопка */
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 5% 96%;           /* #F4F4F5 */
+  --secondary-foreground: 240 6% 10%;
+  --muted: 240 5% 96%;
+  --muted-foreground: 240 4% 46%;    /* #71717A */
+  --accent: 160 84% 30%;             /* #059669 — emerald, брендовый */
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 72% 51%;          /* #DC2626 */
+  --destructive-foreground: 0 0% 100%;
+  --border: 240 6% 90%;              /* #E4E4E7 */
+  --input: 240 6% 90%;
+  --ring: 160 84% 30%;
+
+  /* статусы агента */
+  --status-running: 160 84% 30%;     /* #059669 */
+  --status-thinking: 192 91% 36%;    /* #0891B2 */
+  --status-permission: 32 95% 44%;   /* #D97706 */
+  --status-idle: 240 4% 46%;         /* #71717A */
+  --status-offline: 240 5% 65%;      /* #A1A1AA, полый дот */
+  --status-error: 0 72% 51%;         /* #DC2626 */
+
+  --radius: 0.5rem;                  /* 8px; sm=6, card=12, sheet=16 */
+  --font-sans: "Geist", system-ui, sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
+}
+
+.dark {
+  --background: 240 10% 4%;          /* #09090B */
+  --foreground: 0 0% 98%;            /* #FAFAFA */
+  --card: 240 7% 8%;                 /* #131316 */
+  --card-foreground: 0 0% 98%;
+  --popover: 240 7% 8%;
+  --popover-foreground: 0 0% 98%;
+  --primary: 0 0% 98%;               /* белая кнопка */
+  --primary-foreground: 240 10% 4%;
+  --secondary: 240 6% 13%;           /* #1F1F23 */
+  --secondary-foreground: 0 0% 98%;
+  --muted: 240 6% 11%;               /* #1A1A1E — input/muted */
+  --muted-foreground: 240 4% 46%;
+  --accent: 158 64% 52%;             /* #34D399 */
+  --accent-foreground: 158 84% 10%;  /* #052E1E */
+  --destructive: 0 91% 71%;          /* #F87171 */
+  --destructive-foreground: 0 63% 11%;
+  --border: 240 6% 16%;              /* #26262B */
+  --input: 240 6% 11%;
+  --ring: 158 64% 52%;
+
+  --status-running: 158 64% 52%;     /* #34D399 */
+  --status-thinking: 187 86% 53%;    /* #22D3EE */
+  --status-permission: 43 96% 56%;   /* #FBBF24 */
+  --status-idle: 240 4% 46%;         /* #71717A */
+  --status-offline: 240 4% 33%;      /* #52525B, полый дот */
+  --status-error: 0 91% 71%;         /* #F87171 */
+}
+
+/* PWA: theme-color dark #09090B · light #FAFAFA. Терминал всегда dark (#050507). */

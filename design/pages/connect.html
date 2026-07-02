@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>remcli — Connect / Onboarding</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#08080A;display:flex;flex-direction:column;align-items:center;padding:32px 16px;font-family:Geist,sans-serif;}
+@keyframes kBlink{0%,49%{opacity:1}50%,100%{opacity:0}}
+@keyframes kPulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes kBar{0%,100%{transform:scaleY(.25)}50%{transform:scaleY(1)}}
+@keyframes kSpin{to{transform:rotate(360deg)}}
+</style>
+</head><body>
+<!-- 1a Onboarding -->
+    <div id="1a" style="display:flex;flex-direction:column;gap:9px">
+      <div style="display:flex;align-items:baseline;gap:8px"><a href="#1a" style="font-family:'Geist Mono',monospace;font-size:10.5px;font-weight:600;padding:3px 7px;background:#26262B;color:#FAFAFA;border-radius:5px;text-decoration:none">1a</a><span style="font-size:12px;color:#A1A1AA">Onboarding / Подключение</span></div>
+      <div style="width:390px;height:844px;background:#09090B;border:1px solid #26262B;border-radius:28px;overflow:hidden;display:flex;flex-direction:column">
+        <div style="height:54px;display:flex;align-items:center;justify-content:space-between;padding:0 26px;flex:none">
+          <span style="font-size:15px;font-weight:600;color:#FAFAFA;width:50px">9:41</span>
+          <span style="width:118px;height:34px;border-radius:20px;background:#000000;border:1px solid #1A1A1E"></span>
+          <span style="display:flex;align-items:center;gap:5px;width:50px;justify-content:flex-end"><svg width="16" height="11" viewBox="0 0 16 11"><rect x="0" y="6" width="3" height="5" rx="1" fill="#FAFAFA"/><rect x="4.5" y="4" width="3" height="7" rx="1" fill="#FAFAFA"/><rect x="9" y="1.5" width="3" height="9.5" rx="1" fill="#FAFAFA"/></svg><svg width="23" height="11" viewBox="0 0 23 11"><rect x="0.5" y="0.5" width="19" height="10" rx="3" stroke="#FAFAFA" stroke-opacity="0.4" fill="none"/><rect x="2" y="2" width="13" height="7" rx="1.5" fill="#FAFAFA"/><rect x="20.5" y="3.5" width="2" height="4" rx="1" fill="#FAFAFA" fill-opacity="0.4"/></svg></span>
+        </div>
+        <div style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:0;padding:0 32px">
+          <svg width="72" height="72" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#FAFAFA" stroke-opacity="0.26" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#34D399"><animate attributeName="opacity" values="1;1;0;0;1" keyTimes="0;0.5;0.55;0.95;1" dur="1.2s" repeatCount="indefinite"/></rect></svg>
+          <span style="font-family:'Geist Mono',monospace;font-size:26px;font-weight:600;color:#FAFAFA;margin-top:18px">remcli<span style="color:#34D399">_</span></span>
+          <span style="font-size:15px;line-height:1.5;color:#A1A1AA;text-align:center;margin-top:12px">Пульт для ваших AI-агентов.<br/>Телефон — в руке, код — дома.</span>
+          <div style="display:flex;flex-direction:column;gap:11px;margin-top:34px;font-family:'Geist Mono',monospace;font-size:12px;color:#8B8B93">
+            <div style="display:flex;align-items:center;gap:10px"><span style="color:#34D399">›</span>P2P: телефон ↔ ваш компьютер, напрямую</div>
+            <div style="display:flex;align-items:center;gap:10px"><span style="color:#34D399">›</span>E2E-шифрование всего трафика</div>
+            <div style="display:flex;align-items:center;gap:10px"><span style="color:#34D399">›</span>Без облака и аккаунтов — QR и есть логин</div>
+          </div>
+        </div>
+        <div style="flex:none;display:flex;flex-direction:column;gap:10px;padding:0 20px 14px">
+          <button style="height:52px;border-radius:12px;background:#FAFAFA;color:#09090B;font-family:Geist,sans-serif;font-size:16px;font-weight:600;border:none;display:flex;align-items:center;justify-content:center;gap:9px"><svg width="17" height="17" viewBox="0 0 17 17"><rect x="1" y="1" width="6" height="6" rx="1.2" stroke="#09090B" stroke-width="1.6" fill="none"/><rect x="10" y="1" width="6" height="6" rx="1.2" stroke="#09090B" stroke-width="1.6" fill="none"/><rect x="1" y="10" width="6" height="6" rx="1.2" stroke="#09090B" stroke-width="1.6" fill="none"/><rect x="10" y="10" width="2.6" height="2.6" fill="#09090B"/><rect x="13.4" y="13.4" width="2.6" height="2.6" fill="#09090B"/></svg>Сканировать QR-код</button>
+          <button style="height:48px;border-radius:12px;background:transparent;color:#A1A1AA;font-family:Geist,sans-serif;font-size:14px;font-weight:500;border:1px solid #2E2E33">Ввести адрес вручную</button>
+          <span style="font-family:'Geist Mono',monospace;font-size:10px;color:#3F3F46;text-align:center;margin-top:2px">демон: remcli serve · v0.4.2</span>
+        </div>
+        <div style="height:28px;flex:none;display:flex;align-items:center;justify-content:center"><span style="width:134px;height:5px;border-radius:3px;background:#3F3F46"></span></div>
+      </div>
+    </div>
+</body></html>

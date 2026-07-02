@@ -1,0 +1,86 @@
+/* remcli-web — глобальные стили. Токены темы — src/styles/tokens.css (копия design/tokens.css). */
+@import "tailwindcss";
+@import "./styles/tokens.css";
+
+@plugin "tailwindcss-animate";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    /* шрифты — Geist / Geist Mono (design/README.md) */
+    --font-sans: "Geist", system-ui, sans-serif;
+    --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
+
+    /* shadcn-палитра из HSL-токенов */
+    --color-background: hsl(var(--background));
+    --color-foreground: hsl(var(--foreground));
+    --color-card: hsl(var(--card));
+    --color-card-foreground: hsl(var(--card-foreground));
+    --color-popover: hsl(var(--popover));
+    --color-popover-foreground: hsl(var(--popover-foreground));
+    --color-primary: hsl(var(--primary));
+    --color-primary-foreground: hsl(var(--primary-foreground));
+    --color-secondary: hsl(var(--secondary));
+    --color-secondary-foreground: hsl(var(--secondary-foreground));
+    --color-muted: hsl(var(--muted));
+    --color-muted-foreground: hsl(var(--muted-foreground));
+    --color-accent: hsl(var(--accent));
+    --color-accent-foreground: hsl(var(--accent-foreground));
+    --color-destructive: hsl(var(--destructive));
+    --color-destructive-foreground: hsl(var(--destructive-foreground));
+    --color-border: hsl(var(--border));
+    --color-input: hsl(var(--input));
+    --color-ring: hsl(var(--ring));
+
+    /* статусы агента (карта статусов — design/DESIGN.md) */
+    --color-status-running: hsl(var(--status-running));
+    --color-status-thinking: hsl(var(--status-thinking));
+    --color-status-permission: hsl(var(--status-permission));
+    --color-status-idle: hsl(var(--status-idle));
+    --color-status-offline: hsl(var(--status-offline));
+    --color-status-error: hsl(var(--status-error));
+
+    /* радиусы: 6 / 8 / 12 / 16+ */
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 4px);
+
+    /* анимации статусов (design/README.md, MOTION.md) */
+    --animate-blink: blink 1.1s steps(2) infinite;
+    --animate-blink-think: blink 0.9s steps(2) infinite;
+    --animate-pulse-run: pulseDot 2s ease-in-out infinite;
+    --animate-pulse-think: pulseDot 1.2s ease-in-out infinite;
+    --animate-bar: bar 0.9s ease-in-out infinite;
+
+    @keyframes blink {
+        0%, 49% { opacity: 1; }
+        50%, 100% { opacity: 0; }
+    }
+    @keyframes pulseDot {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.35; }
+    }
+    @keyframes bar {
+        0%, 100% { transform: scaleY(0.25); }
+        50% { transform: scaleY(1); }
+    }
+}
+
+@layer base {
+    * {
+        border-color: hsl(var(--border));
+    }
+    html,
+    body {
+        overscroll-behavior: none;
+    }
+    body {
+        min-height: 100dvh;
+        background-color: hsl(var(--background));
+        color: hsl(var(--foreground));
+        font-family: var(--font-sans);
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+    }
+}
