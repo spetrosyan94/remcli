@@ -16,34 +16,27 @@ import { isAbsolute, resolve } from 'node:path';
 import { stat } from 'node:fs/promises';
 
 import { logger } from '@/ui/logger';
-import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
+import {
+    CONCIERGE_SYSTEM_PROMPT,
+    CONCIERGE_TOOLS,
+    LLM_TIMEOUT_MS,
+    MAX_TOOL_CALLS_PER_ROUND,
+    MAX_TOOL_ITERATIONS,
+    PROBE_TIMEOUT_MS,
+    WHITELISTED_AGENTS,
+} from '@/daemon/concierge/constants';
+import {
+    AssistantToolCall,
+    ConciergeAction,
+    ConciergeChatMessage,
+    ConciergeConfig,
+    ConciergeDeps,
+    ConciergeInputMessage,
+    ConciergeRequestBody,
+    ConciergeResponse,
+} from '@/daemon/concierge/types';
 
-// ─── Constants ───────────────────────────────────────────────────
-
-/** Maximum LLM round trips before we force a plain-text answer (no tools offered). */
-const MAX_TOOL_ITERATIONS = 4;
-const MAX_TOOL_CALLS_PER_ROUND = 5;
-/** Per-request timeout for a single LLM completion call. */
-const LLM_TIMEOUT_MS = 30_000;
-/** Timeout for the cheap availability probe against `/models`. */
-const PROBE_TIMEOUT_MS = 1_500;
-
-const WHITELISTED_AGENTS = ['claude', 'codex', 'gemini', 'cursor'] as const;
-
-export const CONCIERGE_SYSTEM_PROMPT = [
-    'You are Jarvis — the remcli concierge, a small assistant embedded in the remcli daemon.',
-    'Introduce yourself as Jarvis. Keep a calm, competent, slightly witty butler tone (think of a loyal AI majordomo), but never let style get in the way of brevity or accuracy.',
-    'Greet the user briefly and warmly on first contact.',
-    "Always answer in the user's language.",
-    'You can ONLY do the following:',
-    '  1. Report the status of running agent sessions and of the daemon itself.',
-    '  2. Start an agent session (claude, codex, gemini or cursor) ONLY when the user explicitly asks for it.',
-    '  3. Explain how to use remcli.',
-    'NEVER invent or guess data. To know what is running or the daemon status you MUST call the provided tools.',
-    'When the user explicitly asks to start an agent, call spawn_agent_session with an absolute directory path.',
-    'For anything beyond these capabilities (writing code, debugging, editing files), advise the user to start a full agent session instead of trying to do it yourself.',
-    'Keep replies short and to the point.',
-].join('\n');
+// ─── System prompt composition ───────────────────────────────────
 
 /**
  * Compose the effective system prompt. The base prompt and its safety rules are
@@ -70,120 +63,6 @@ export function stripThinkBlocks(text: string): string {
         .replace(/<think>[\s\S]*?<\/think>/g, '')
         .replace(/<think>[\s\S]*$/, '')
         .trim();
-}
-
-// ─── Tool definitions (OpenAI function calling) ──────────────────
-
-export const CONCIERGE_TOOLS = [
-    {
-        type: 'function' as const,
-        function: {
-            name: 'list_sessions',
-            description: 'List the agent sessions currently tracked by the daemon (id, agent, directory, status).',
-            parameters: { type: 'object', properties: {}, required: [] },
-        },
-    },
-    {
-        type: 'function' as const,
-        function: {
-            name: 'get_daemon_status',
-            description: 'Get daemon status: version, uptime in seconds, P2P port and tunnel URL.',
-            parameters: { type: 'object', properties: {}, required: [] },
-        },
-    },
-    {
-        type: 'function' as const,
-        function: {
-            name: 'spawn_agent_session',
-            description: 'Start a new AI agent session in a directory. Call only when the user explicitly asks to start an agent.',
-            parameters: {
-                type: 'object',
-                properties: {
-                    agent: {
-                        type: 'string',
-                        enum: [...WHITELISTED_AGENTS],
-                        description: 'Which agent to start.',
-                    },
-                    directory: {
-                        type: 'string',
-                        description: 'Absolute path to the project directory. Must already exist.',
-                    },
-                },
-                required: ['agent', 'directory'],
-            },
-        },
-    },
-];
-
-// ─── Types ───────────────────────────────────────────────────────
-
-export interface ConciergeConfig {
-    /** Base URL of the OpenAI-compatible server, e.g. http://127.0.0.1:1234/v1 */
-    url: string;
-    /** Model id, or empty string to auto-select the first available model. */
-    model: string;
-}
-
-export interface ConciergeSessionInfo {
-    id: string;
-    agent: string;
-    directory: string;
-    status: string;
-}
-
-export interface ConciergeDaemonStatus {
-    version: string;
-    uptimeSec: number;
-    port: number;
-    tunnelUrl: string | null;
-}
-
-/** Deterministic daemon capabilities the concierge is allowed to use. */
-export interface ConciergeDeps {
-    listSessions: () => ConciergeSessionInfo[];
-    spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
-    getDaemonStatus: () => ConciergeDaemonStatus;
-}
-
-/** A message from the client history (only user/assistant turns). */
-export interface ConciergeInputMessage {
-    role: 'user' | 'assistant';
-    content: string;
-}
-
-/** What the concierge actually did, surfaced to the UI. */
-export interface ConciergeAction {
-    tool: string;
-    result: unknown;
-}
-
-interface AssistantToolCall {
-    id: string;
-    type: 'function';
-    function: { name: string; arguments: string };
-}
-
-type ConciergeChatMessage =
-    | { role: 'system' | 'user'; content: string }
-    | { role: 'assistant'; content: string; tool_calls?: AssistantToolCall[] }
-    | { role: 'tool'; tool_call_id: string; content: string };
-
-interface ConciergeRequestBody {
-    model: string;
-    messages: ConciergeChatMessage[];
-    tools?: typeof CONCIERGE_TOOLS;
-    tool_choice?: 'auto';
-    temperature: number;
-    stream: false;
-}
-
-interface ConciergeResponse {
-    choices?: Array<{
-        message?: {
-            content?: string | null;
-            tool_calls?: AssistantToolCall[];
-        };
-    }>;
 }
 
 // ─── URL helpers ─────────────────────────────────────────────────

@@ -16,7 +16,8 @@ import { verifyBearerToken } from './p2pAuth';
 import { logger } from '@/ui/logger';
 import { transcribe, isAvailable as isWhisperAvailable, ensureModel, getStatus as getWhisperStatus } from '../whisper/whisperService';
 import { synthesize as ttsSynthesize, getTtsStatus } from '../tts/ttsService';
-import { probeConcierge, chatWithConcierge, ConciergeDeps } from '../concierge/conciergeService';
+import { probeConcierge, chatWithConcierge } from '../concierge/conciergeService';
+import { ConciergeDeps } from '../concierge/types';
 import { readSetupConfig } from '@/persistence';
 
 // ─── Types ───────────────────────────────────────────────────────

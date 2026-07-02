@@ -24,7 +24,7 @@ import { startCloudflaredTunnel, isCloudflaredAvailable } from './p2p/tunnel';
 import { freeWhisper } from './whisper/whisperService';
 import { initTtsProvider, stopTts } from './tts/ttsService';
 import { createSessionManager } from './sessionSpawner';
-import { ConciergeDeps } from './concierge/conciergeService';
+import { ConciergeDeps } from './concierge/types';
 import { bootstrapMachineSocket } from './machineSocket';
 import { startHeartbeatLoop } from './heartbeat';
 

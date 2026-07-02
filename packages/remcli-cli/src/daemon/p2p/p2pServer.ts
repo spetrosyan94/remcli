@@ -18,7 +18,7 @@ import { P2PEventRouter, P2PClientConnection, ConnectionType } from './p2pEventR
 import { registerSocketHandlers } from './p2pSocketHandlers';
 import { registerP2PRestRoutes } from './p2pRestRoutes';
 import { verifyBearerToken } from './p2pAuth';
-import { ConciergeDeps } from '../concierge/conciergeService';
+import { ConciergeDeps } from '../concierge/types';
 import { logger } from '@/ui/logger';
 
 // ─── Types ───────────────────────────────────────────────────────

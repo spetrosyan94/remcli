@@ -11,10 +11,9 @@ import {
     parseConciergeResponse,
     executeToolCall,
     stripThinkBlocks,
-    CONCIERGE_SYSTEM_PROMPT,
-    CONCIERGE_TOOLS,
-    ConciergeDeps,
 } from './conciergeService';
+import { CONCIERGE_SYSTEM_PROMPT, CONCIERGE_TOOLS } from './constants';
+import { ConciergeDeps } from './types';
 
 // ---- Helpers ----
 
