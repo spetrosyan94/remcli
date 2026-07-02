@@ -17,6 +17,7 @@ import { P2PEventRouter, P2PClientConnection, ConnectionType } from './p2pEventR
 import { registerSocketHandlers } from './p2pSocketHandlers';
 import { registerP2PRestRoutes } from './p2pRestRoutes';
 import { verifyBearerToken } from './p2pAuth';
+import { ConciergeDeps } from '../concierge/conciergeService';
 import { logger } from '@/ui/logger';
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -27,6 +28,7 @@ export interface P2PServerConfig {
     sharedSecret: Uint8Array;  // 32 bytes from QR code
     store: P2PStore;
     webAppDir?: string;        // Path to web app build (static files)
+    conciergeDeps?: ConciergeDeps; // Optional local concierge capabilities
 }
 
 export interface P2PServer {
@@ -75,7 +77,7 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
     });
 
     // Register REST routes
-    registerP2PRestRoutes(app, store, router, sharedSecret);
+    registerP2PRestRoutes(app, store, router, sharedSecret, config.conciergeDeps);
 
     // Serve web app static files if available
     if (config.webAppDir && existsSync(config.webAppDir)) {

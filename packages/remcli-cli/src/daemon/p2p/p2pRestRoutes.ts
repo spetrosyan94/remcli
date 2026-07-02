@@ -15,6 +15,8 @@ import { verifyBearerToken } from './p2pAuth';
 import { logger } from '@/ui/logger';
 import { transcribe, isAvailable as isWhisperAvailable, ensureModel, getStatus as getWhisperStatus } from '../whisper/whisperService';
 import { synthesize as ttsSynthesize, getTtsStatus } from '../tts/ttsService';
+import { probeConcierge, chatWithConcierge, ConciergeDeps } from '../concierge/conciergeService';
+import { readSetupConfig } from '@/persistence';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -60,7 +62,8 @@ export function registerP2PRestRoutes(
     app: FastifyInstance,
     store: P2PStore,
     router: P2PEventRouter,
-    sharedSecret: Uint8Array
+    sharedSecret: Uint8Array,
+    conciergeDeps?: ConciergeDeps
 ): void {
     const typed = app.withTypeProvider<ZodTypeProvider>();
 
@@ -243,6 +246,57 @@ export function registerP2PRestRoutes(
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Synthesis failed';
             logger.debug(`[TTS] Synthesis error: ${message}`);
+            reply.code(500);
+            return { error: message };
+        }
+    });
+
+    // ─── GET /v1/concierge/status ──────────────────────────────────
+    typed.get('/v1/concierge/status', async () => {
+        const config = readSetupConfig();
+        if (!config.conciergeEnabled || !conciergeDeps) {
+            return { enabled: false, available: false, model: null };
+        }
+        const probe = await probeConcierge({ url: config.conciergeUrl, model: config.conciergeModel });
+        return { enabled: true, available: probe.available, model: probe.model ?? null };
+    });
+
+    // ─── POST /v1/concierge/chat ────────────────────────────────────
+    typed.post('/v1/concierge/chat', {
+        schema: {
+            body: z.object({
+                messages: z.array(z.object({
+                    role: z.enum(['user', 'assistant']),
+                    content: z.string().min(1).max(10000),
+                })).min(1).max(50),
+            }),
+        },
+    }, async (request, reply) => {
+        const config = readSetupConfig();
+        if (!config.conciergeEnabled || !conciergeDeps) {
+            reply.code(503);
+            return { error: 'Concierge is disabled. Enable it via remcli setup.' };
+        }
+
+        const probe = await probeConcierge({ url: config.conciergeUrl, model: config.conciergeModel });
+        if (!probe.available || !probe.model) {
+            reply.code(503);
+            return { error: 'Concierge LLM is not reachable. Ensure LM Studio is running with a loaded model.' };
+        }
+
+        try {
+            logger.debug(`[CONCIERGE] Chat request: ${request.body.messages.length} message(s), model ${probe.model}`);
+            const { reply: text, actions } = await chatWithConcierge({
+                url: config.conciergeUrl,
+                model: probe.model,
+                messages: request.body.messages,
+                deps: conciergeDeps,
+            });
+            logger.debug(`[CONCIERGE] Chat reply produced, ${actions.length} action(s)`);
+            return { reply: text, actions };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Concierge chat failed';
+            logger.debug(`[CONCIERGE] Chat error: ${message}`);
             reply.code(500);
             return { error: message };
         }

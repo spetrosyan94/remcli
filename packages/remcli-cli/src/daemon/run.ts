@@ -24,6 +24,7 @@ import { startCloudflaredTunnel, isCloudflaredAvailable } from './p2p/tunnel';
 import { freeWhisper } from './whisper/whisperService';
 import { initTtsProvider, stopTts } from './tts/ttsService';
 import { createSessionManager } from './sessionSpawner';
+import { ConciergeDeps } from './concierge/conciergeService';
 import { bootstrapMachineSocket } from './machineSocket';
 import { startHeartbeatLoop } from './heartbeat';
 
@@ -236,6 +237,25 @@ export async function startDaemon(): Promise<void> {
         console.log('  Warning: Web app build not found. Run "npm run build:web" first for QR→browser flow.');
     }
 
+    // Local concierge capabilities — deterministic daemon data the assistant may route into.
+    // Reads mutable `fileState` for port/tunnel at call time (populated after P2P server starts).
+    const daemonStartMs = Date.now();
+    const conciergeDeps: ConciergeDeps = {
+        listSessions: () => sessionManager.getChildren().map((s) => ({
+            id: s.remcliSessionId ?? `PID-${s.pid}`,
+            agent: s.remcliSessionMetadataFromLocalWebhook?.flavor ?? 'unknown',
+            directory: s.remcliSessionMetadataFromLocalWebhook?.path ?? 'unknown',
+            status: s.remcliSessionMetadataFromLocalWebhook?.lifecycleState ?? 'running',
+        })),
+        spawnSession: sessionManager.spawnSession,
+        getDaemonStatus: () => ({
+            version: packageJson.version,
+            uptimeSec: Math.floor((Date.now() - daemonStartMs) / 1000),
+            port: fileState.p2pPort ?? 0,
+            tunnelUrl: fileState.tunnelUrl ?? null,
+        }),
+    };
+
     // Start P2P server
     let p2pServer: P2PServer;
     try {
@@ -244,7 +264,8 @@ export async function startDaemon(): Promise<void> {
             host: '0.0.0.0',
             sharedSecret,
             store: p2pStore,
-            webAppDir
+            webAppDir,
+            conciergeDeps
         });
         logger.debug(`[DAEMON RUN] P2P server started on port ${p2pServer.port}`);
     } catch (error) {

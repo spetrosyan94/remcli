@@ -722,6 +722,11 @@ const SetupConfigSchema = z.object({
     ttsProvider: z.enum(['off', 'edge', 'qwen3']).default('edge'),
     ttsEdgeVoice: z.string().default('auto'),
     ttsQwenVoiceProfile: z.string().default('default'),
+    // Local concierge: optional lightweight LLM assistant via LM Studio (OpenAI-compatible API).
+    // Off by default — an unreachable endpoint is a normal, non-fatal condition.
+    conciergeEnabled: z.boolean().default(false),
+    conciergeUrl: z.string().default('http://127.0.0.1:1234/v1'),
+    conciergeModel: z.string().default(''), // Empty means "first available model reported by the server".
 });
 
 export type SetupConfig = z.infer<typeof SetupConfigSchema>;
