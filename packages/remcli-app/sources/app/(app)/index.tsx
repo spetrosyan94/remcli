@@ -3,16 +3,13 @@ import { useAuth } from "@/auth/AuthContext";
 import { Text, View, Image, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as React from 'react';
-import { encodeBase64 } from "@/encryption/base64";
-import { authGetToken } from "@/auth/authGetToken";
-import { router, useRouter } from "expo-router";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { getRandomBytesAsync } from "expo-crypto";
 import { useIsLandscape } from "@/utils/responsive";
 import { Typography } from "@/constants/Typography";
-import { trackAccountCreated, trackAccountRestored } from '@/track';
 import { HomeHeaderNotAuth } from "@/components/HomeHeader";
 import { MainView } from "@/components/MainView";
+import { useConnectTerminal } from "@/hooks/useConnectTerminal";
+import { Modal } from "@/modal";
 import { t } from '@/text';
 
 export default function Home() {
@@ -31,23 +28,83 @@ function Authenticated() {
 
 function NotAuthenticated() {
     const { theme } = useUnistyles();
-    const auth = useAuth();
-    const router = useRouter();
     const isLandscape = useIsLandscape();
     const insets = useSafeAreaInsets();
+    const isMobile = Platform.OS === 'android' || Platform.OS === 'ios';
+    const { connectTerminal, connectWithUrl, isLoading } = useConnectTerminal();
 
-    const createAccount = async () => {
-        try {
-            const secret = await getRandomBytesAsync(32);
-            const token = await authGetToken(secret);
-            if (token && secret) {
-                await auth.login(token, encodeBase64(secret, 'base64url'));
-                trackAccountCreated();
+    // Manual URL entry — fallback for connecting a terminal without scanning
+    // (the only option on web, where the camera scanner is unavailable).
+    const enterUrlManually = async () => {
+        const url = await Modal.prompt(
+            t('modals.authenticateTerminal'),
+            t('modals.pasteUrlFromTerminal'),
+            {
+                placeholder: 'remcli://terminal?...',
+                cancelText: t('common.cancel'),
+                confirmText: t('common.authenticate')
             }
-        } catch (error) {
-            console.error('Error creating account', error);
+        );
+        if (url?.trim()) {
+            connectWithUrl(url.trim());
         }
-    }
+    };
+
+    const connectButtons = isMobile ? (
+        <>
+            <View style={styles.buttonContainer}>
+                <RoundButton
+                    title={t('connectButton.authenticate')}
+                    onPress={connectTerminal}
+                    loading={isLoading}
+                />
+            </View>
+            <View style={styles.buttonContainerSecondary}>
+                <RoundButton
+                    size="normal"
+                    title={t('connect.enterUrlManually')}
+                    onPress={enterUrlManually}
+                    display="inverted"
+                />
+            </View>
+        </>
+    ) : (
+        <View style={styles.buttonContainer}>
+            <RoundButton
+                title={t('connect.enterUrlManually')}
+                onPress={enterUrlManually}
+                loading={isLoading}
+            />
+        </View>
+    );
+
+    const landscapeConnectButtons = isMobile ? (
+        <>
+            <View style={styles.landscapeButtonContainer}>
+                <RoundButton
+                    title={t('connectButton.authenticate')}
+                    onPress={connectTerminal}
+                    loading={isLoading}
+                />
+            </View>
+            <View style={styles.landscapeButtonContainerSecondary}>
+                <RoundButton
+                    size="normal"
+                    title={t('connect.enterUrlManually')}
+                    onPress={enterUrlManually}
+                    display="inverted"
+                />
+            </View>
+        </>
+    ) : (
+        <View style={styles.landscapeButtonContainer}>
+            <RoundButton
+                title={t('connect.enterUrlManually')}
+                onPress={enterUrlManually}
+                loading={isLoading}
+            />
+        </View>
+    );
 
     const portraitLayout = (
         <View style={styles.portraitContainer}>
@@ -62,47 +119,7 @@ function NotAuthenticated() {
             <Text style={styles.subtitle}>
                 {t('welcome.subtitle')}
             </Text>
-            {Platform.OS !== 'android' && Platform.OS !== 'ios' ? (
-                <>
-                    <View style={styles.buttonContainer}>
-                        <RoundButton
-                            title={t('welcome.loginWithMobileApp')}
-                            onPress={() => {
-                                trackAccountRestored();
-                                router.push('/restore');
-                            }}
-                        />
-                    </View>
-                    <View style={styles.buttonContainerSecondary}>
-                        <RoundButton
-                            size="normal"
-                            title={t('welcome.createAccount')}
-                            action={createAccount}
-                            display="inverted"
-                        />
-                    </View>
-                </>
-            ) : (
-                <>
-                    <View style={styles.buttonContainer}>
-                        <RoundButton
-                            title={t('welcome.createAccount')}
-                            action={createAccount}
-                        />
-                    </View>
-                    <View style={styles.buttonContainerSecondary}>
-                        <RoundButton
-                            size="normal"
-                            title={t('welcome.linkOrRestoreAccount')}
-                            onPress={() => {
-                                trackAccountRestored();
-                                router.push('/restore');
-                            }}
-                            display="inverted"
-                        />
-                    </View>
-                </>
-            )}
+            {connectButtons}
         </View>
     );
 
@@ -123,46 +140,7 @@ function NotAuthenticated() {
                     <Text style={styles.landscapeSubtitle}>
                         {t('welcome.subtitle')}
                     </Text>
-                    {Platform.OS !== 'android' && Platform.OS !== 'ios'
-                        ? (<>
-                            <View style={styles.landscapeButtonContainer}>
-                                <RoundButton
-                                    title={t('welcome.loginWithMobileApp')}
-                                    onPress={() => {
-                                        trackAccountRestored();
-                                        router.push('/restore');
-                                    }}
-                                />
-                            </View>
-                            <View style={styles.landscapeButtonContainerSecondary}>
-                                <RoundButton
-                                    size="normal"
-                                    title={t('welcome.createAccount')}
-                                    action={createAccount}
-                                    display="inverted"
-                                />
-                            </View>
-                        </>)
-                        : (<>
-                            <View style={styles.landscapeButtonContainer}>
-                                <RoundButton
-                                    title={t('welcome.createAccount')}
-                                    action={createAccount}
-                                />
-                            </View>
-                            <View style={styles.landscapeButtonContainerSecondary}>
-                                <RoundButton
-                                    size="normal"
-                                    title={t('welcome.linkOrRestoreAccount')}
-                                    onPress={() => {
-                                        trackAccountRestored();
-                                        router.push('/restore');
-                                    }}
-                                    display="inverted"
-                                />
-                            </View>
-                        </>)
-                    }
+                    {landscapeConnectButtons}
                 </View>
             </View>
         </View>

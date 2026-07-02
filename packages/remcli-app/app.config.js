@@ -89,29 +89,12 @@ export default {
             "expo-mail-composer",
             "expo-secure-store",
             "expo-web-browser",
-            "react-native-vision-camera",
             "@more-tech/react-native-libsodium",
             "react-native-audio-api",
-            "@livekit/react-native-expo-plugin",
-            "@config-plugins/react-native-webrtc",
             [
                 "expo-audio",
                 {
                     microphonePermission: "Allow $(PRODUCT_NAME) to access your microphone for voice conversations."
-                }
-            ],
-            [
-                "expo-location",
-                {
-                    locationAlwaysAndWhenInUsePermission: "Allow $(PRODUCT_NAME) to improve AI quality by using your location.",
-                    locationAlwaysPermission: "Allow $(PRODUCT_NAME) to improve AI quality by using your location.",
-                    locationWhenInUsePermission: "Allow $(PRODUCT_NAME) to improve AI quality by using your location."
-                }
-            ],
-            [
-                "expo-calendar",
-                {
-                    "calendarPermission": "Allow $(PRODUCT_NAME) to access your calendar to improve AI quality."
                 }
             ],
             [
@@ -122,12 +105,7 @@ export default {
                     recordAudioAndroid: true
                 }
             ],
-            [
-                "expo-notifications",
-                {
-                    "enableBackgroundRemoteNotifications": true
-                }
-            ],
+            "expo-notifications",
             [
                 'expo-splash-screen',
                 {

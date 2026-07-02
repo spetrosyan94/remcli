@@ -644,7 +644,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
 
                                         return config.options.map((opt) => {
                                             const displayLabel = opt.label || t('agentInput.model.default');
-                                            const displayDesc = t(`agentInput.model.${opt.descriptionKey}` as any);
+                                            const displayDesc = t(`agentInput.model.${opt.descriptionKey}`);
                                             const isSelected = (props.modelMode || config.defaultMode) === opt.value;
                                             return (
                                                 <Pressable

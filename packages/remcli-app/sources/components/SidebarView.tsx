@@ -7,13 +7,10 @@ import { useHeaderHeight } from '@/utils/responsive';
 import { Typography } from '@/constants/Typography';
 import { StatusDot } from './StatusDot';
 import { FABWide } from './FABWide';
-import { VoiceAssistantStatusBar } from './VoiceAssistantStatusBar';
-import { useRealtimeStatus } from '@/sync/storage';
 import { MainView } from './MainView';
 import { Image } from 'expo-image';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { t } from '@/text';
-import { useInboxHasContent } from '@/hooks/useInboxHasContent';
 import { Ionicons } from '@expo/vector-icons';
 
 const stylesheet = StyleSheet.create((theme, runtime) => ({
@@ -82,9 +79,6 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
     settingsButton: {
         color: theme.colors.header.tint,
     },
-    notificationButton: {
-        position: 'relative',
-    },
     badge: {
         position: 'absolute',
         top: -4,
@@ -118,15 +112,6 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
     statusDefault: {
         color: theme.colors.status.default,
     },
-    indicatorDot: {
-        position: 'absolute',
-        top: 0,
-        right: -2,
-        width: 6,
-        height: 6,
-        borderRadius: 3,
-        backgroundColor: theme.colors.text,
-    },
 }));
 
 export const SidebarView = React.memo(() => {
@@ -136,8 +121,6 @@ export const SidebarView = React.memo(() => {
     const router = useRouter();
     const headerHeight = useHeaderHeight();
     const socketStatus = useSocketStatus();
-    const realtimeStatus = useRealtimeStatus();
-    const inboxHasContent = useInboxHasContent();
     const settings = useSettings();
 
     // Compute connection status once per render (theme-reactive, no stale memoization)
@@ -250,21 +233,6 @@ export const SidebarView = React.memo(() => {
                             </Pressable>
                         )}
                         <Pressable
-                            onPress={() => router.push('/(app)/inbox')}
-                            hitSlop={15}
-                            style={styles.notificationButton}
-                        >
-                            <Image
-                                source={require('@/assets/images/brutalist/Brutalism 27.png')}
-                                contentFit="contain"
-                                style={[{ width: 32, height: 32 }]}
-                                tintColor={theme.colors.header.tint}
-                            />
-                            {inboxHasContent && (
-                                <View style={styles.indicatorDot} />
-                            )}
-                        </Pressable>
-                        <Pressable
                             onPress={() => router.push('/settings')}
                             hitSlop={15}
                         >
@@ -290,9 +258,6 @@ export const SidebarView = React.memo(() => {
                         </View>
                     )}
                 </View>
-                {realtimeStatus !== 'disconnected' && (
-                    <VoiceAssistantStatusBar variant="sidebar" />
-                )}
                 <MainView variant="sidebar" />
             </View>
             <FABWide onPress={handleNewSession} />

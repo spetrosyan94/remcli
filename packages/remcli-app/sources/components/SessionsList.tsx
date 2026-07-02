@@ -173,11 +173,6 @@ const stylesheet = StyleSheet.create((theme) => ({
     draftIconOverlay: {
         color: theme.colors.textSecondary,
     },
-    artifactsSection: {
-        paddingHorizontal: 16,
-        paddingBottom: 12,
-        backgroundColor: theme.colors.groupped.background,
-    },
     swipeAction: {
         width: 112,
         height: '100%',

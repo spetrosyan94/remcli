@@ -20,16 +20,8 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
 export const ja: TranslationStructure = {
     tabs: {
         // Tab navigation labels
-        inbox: '受信トレイ',
         sessions: 'ターミナル',
         settings: '設定',
-    },
-
-    inbox: {
-        // Inbox screen
-        emptyTitle: '受信トレイは空です',
-        emptyDescription: '友達と接続してセッションを共有しましょう',
-        updates: '更新',
     },
 
     common: {
@@ -63,15 +55,6 @@ export const ja: TranslationStructure = {
         delete: '削除',
         optional: '任意',
         saveAs: '名前を付けて保存',
-    },
-
-    profile: {
-        userProfile: 'ユーザープロフィール',
-        details: '詳細',
-        firstName: '名',
-        lastName: '姓',
-        username: 'ユーザー名',
-        status: 'ステータス',
     },
 
     profiles: {
@@ -137,7 +120,6 @@ export const ja: TranslationStructure = {
         github: 'GitHub',
         machines: 'マシン',
         features: '機能',
-        social: 'ソーシャル',
         account: 'アカウント',
         accountSubtitle: 'アカウントの詳細を管理',
         appearance: '外観',
@@ -156,16 +138,12 @@ export const ja: TranslationStructure = {
         privacyPolicy: 'プライバシーポリシー',
         termsOfService: '利用規約',
         eula: 'EULA',
-        supportUs: '開発を支援',
-        supportUsSubtitlePro: 'ご支援ありがとうございます！',
-        supportUsSubtitle: 'プロジェクト開発を支援',
+        supportUs: '開発を支援',        supportUsSubtitle: 'プロジェクト開発を支援',
         scanQrCodeToAuthenticate: 'QRコードをスキャンして認証',
         githubConnected: ({ login }: { login: string }) => `@${login}として接続中`,
         connectGithubAccount: 'GitHubアカウントを接続',
         claudeAuthSuccess: 'Claudeへの接続に成功しました',
         exchangingTokens: 'トークンを交換中...',
-        usage: '使用状況',
-        usageSubtitle: 'API使用量とコストを確認',
         profiles: 'プロファイル',
         profilesSubtitle: 'セッション用の環境変数プロファイルを管理',
 
@@ -263,8 +241,6 @@ export const ja: TranslationStructure = {
         tokenExchangeFailed: '認可コードの交換に失敗しました',
         oauthAuthorizationDenied: '認可が拒否されました',
         webViewLoadFailed: '認証ページの読み込みに失敗しました',
-        failedToLoadProfile: 'ユーザープロフィールの読み込みに失敗しました',
-        userNotFound: 'ユーザーが見つかりません',
         sessionDeleted: 'セッションは削除されました',
         sessionDeletedDescription: 'このセッションは完全に削除されました',
 
@@ -281,12 +257,6 @@ export const ja: TranslationStructure = {
             `${service}の切断に失敗しました`,
         connectServiceFailed: ({ service }: { service: string }) =>
             `${service}の接続に失敗しました。再試行してください。`,
-        failedToLoadFriends: '友達リストの読み込みに失敗しました',
-        failedToAcceptRequest: '友達リクエストの承認に失敗しました',
-        failedToRejectRequest: '友達リクエストの拒否に失敗しました',
-        failedToRemoveFriend: '友達の削除に失敗しました',
-        searchFailed: '検索に失敗しました。再試行してください。',
-        failedToSendRequest: '友達リクエストの送信に失敗しました',
     },
 
     newSession: {
@@ -726,7 +696,6 @@ export const ja: TranslationStructure = {
         linkNewDevice: '新しいデバイスをリンク',
         restoreWithSecretKey: 'シークレットキーで復元',
         whatsNew: "新機能",
-        friends: '友達',
     },
 
     welcome: {
@@ -818,107 +787,6 @@ export const ja: TranslationStructure = {
         codeCopied: 'コードをコピーしました',
         copyFailed: 'コピーに失敗しました',
         mermaidRenderFailed: 'Mermaidダイアグラムのレンダリングに失敗しました',
-    },
-
-    artifacts: {
-        // Artifacts feature
-        title: 'アーティファクト',
-        countSingular: '1件のアーティファクト',
-        countPlural: ({ count }: { count: number }) => `${count}件のアーティファクト`,
-        empty: 'アーティファクトはまだありません',
-        emptyDescription: '最初のアーティファクトを作成して始めましょう',
-        new: '新規アーティファクト',
-        edit: 'アーティファクトを編集',
-        delete: '削除',
-        updateError: 'アーティファクトの更新に失敗しました。再試行してください。',
-        notFound: 'アーティファクトが見つかりません',
-        discardChanges: '変更を破棄しますか？',
-        discardChangesDescription: '保存されていない変更があります。破棄してもよろしいですか？',
-        deleteConfirm: 'アーティファクトを削除しますか？',
-        deleteConfirmDescription: 'この操作は取り消せません',
-        titleLabel: 'タイトル',
-        titlePlaceholder: 'アーティファクトのタイトルを入力',
-        bodyLabel: 'コンテンツ',
-        bodyPlaceholder: 'ここにコンテンツを書いてください...',
-        emptyFieldsError: 'タイトルまたはコンテンツを入力してください',
-        createError: 'アーティファクトの作成に失敗しました。再試行してください。',
-        save: '保存',
-        saving: '保存中...',
-        loading: 'アーティファクトを読み込み中...',
-        error: 'アーティファクトの読み込みに失敗しました',
-    },
-
-    friends: {
-        // Friends feature
-        title: '友達',
-        manageFriends: '友達とつながりを管理',
-        searchTitle: '友達を探す',
-        pendingRequests: '友達リクエスト',
-        myFriends: 'マイフレンド',
-        noFriendsYet: "まだ友達がいません",
-        findFriends: '友達を探す',
-        remove: '削除',
-        pendingRequest: '保留中',
-        sentOn: ({ date }: { date: string }) => `送信日: ${date}`,
-        accept: '承認',
-        reject: '拒否',
-        addFriend: '友達を追加',
-        alreadyFriends: '既に友達です',
-        requestPending: 'リクエスト保留中',
-        searchInstructions: '友達を検索するにはユーザー名を入力してください',
-        searchPlaceholder: 'ユーザー名を入力...',
-        searching: '検索中...',
-        userNotFound: 'ユーザーが見つかりません',
-        noUserFound: 'そのユーザー名のユーザーが見つかりません',
-        checkUsername: 'ユーザー名を確認して再試行してください',
-        howToFind: '友達を見つける方法',
-        findInstructions: 'ユーザー名で友達を検索します。友達リクエストを送信するには、両方のユーザーがGitHubを接続している必要があります。',
-        requestSent: '友達リクエストが送信されました！',
-        requestAccepted: '友達リクエストが承認されました！',
-        requestRejected: '友達リクエストが拒否されました',
-        friendRemoved: '友達が削除されました',
-        confirmRemove: '友達を削除',
-        confirmRemoveMessage: 'この友達を削除してもよろしいですか？',
-        cannotAddYourself: '自分自身に友達リクエストを送信することはできません',
-        bothMustHaveGithub: '友達になるには、両方のユーザーがGitHubを接続している必要があります',
-        status: {
-            none: '未接続',
-            requested: 'リクエスト送信済み',
-            pending: 'リクエスト保留中',
-            friend: '友達',
-            rejected: '拒否済み',
-        },
-        acceptRequest: 'リクエストを承認',
-        removeFriend: '友達を削除',
-        removeFriendConfirm: ({ name }: { name: string }) => `${name}さんを友達から削除してもよろしいですか？`,
-        requestSentDescription: ({ name }: { name: string }) => `${name}さんに友達リクエストが送信されました`,
-        requestFriendship: '友達リクエストを送信',
-        cancelRequest: '友達リクエストをキャンセル',
-        cancelRequestConfirm: ({ name }: { name: string }) => `${name}さんへの友達リクエストをキャンセルしますか？`,
-        denyRequest: '友達リクエストを拒否',
-        nowFriendsWith: ({ name }: { name: string }) => `${name}さんと友達になりました`,
-    },
-
-    usage: {
-        // Usage panel strings
-        today: '今日',
-        last7Days: '過去7日間',
-        last30Days: '過去30日間',
-        totalTokens: '合計トークン',
-        totalCost: '合計コスト',
-        tokens: 'トークン',
-        cost: 'コスト',
-        usageOverTime: '使用量の推移',
-        byModel: 'モデル別',
-        noData: '使用データがありません',
-    },
-
-    feed: {
-        // Feed notifications for friend requests and acceptances
-        friendRequestFrom: ({ name }: { name: string }) => `${name}さんから友達リクエストが届きました`,
-        friendRequestGeneric: '新しい友達リクエスト',
-        friendAccepted: ({ name }: { name: string }) => `${name}さんと友達になりました`,
-        friendAcceptedGeneric: '友達リクエストが承認されました',
     },
 
     whisper: {

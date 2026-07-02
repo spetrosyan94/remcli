@@ -6,7 +6,6 @@ import { ChatList } from '@/components/ChatList';
 import { useLoadMoreMessages } from '@/hooks/useLoadMoreMessages';
 import { Deferred } from '@/components/Deferred';
 import { EmptyMessages } from '@/components/EmptyMessages';
-import { VoiceAssistantStatusBar } from '@/components/VoiceAssistantStatusBar';
 import { useDraft } from '@/hooks/useDraft';
 import { useTts } from '@/hooks/useTts';
 import { useTtsAvailability } from '@/hooks/useTtsAvailability';
@@ -15,12 +14,11 @@ import { useWhisperVoice } from '@/hooks/useWhisperVoice';
 import { isP2PMode } from '@/sync/serverConfig';
 import { gitStatusSync } from '@/sync/gitStatusSync';
 import { sessionAbort } from '@/sync/ops';
-import { storage, useIsDataReady, useLocalSetting, useRealtimeStatus, useSessionMessages, useSessionUsage, useSetting } from '@/sync/storage';
+import { storage, useIsDataReady, useLocalSetting, useSessionMessages, useSessionUsage, useSetting } from '@/sync/storage';
 import { useSession } from '@/sync/storage';
 import { Session } from '@/sync/storageTypes';
 import { sync } from '@/sync/sync';
 import { t } from '@/text';
-import { tracking, trackMessageSent } from '@/track';
 import type { ModelMode } from '@/components/PermissionModeSelector';
 import { isRunningOnMac } from '@/utils/platform';
 import { useDeviceType, useHeaderHeight, useIsLandscape, useIsTablet } from '@/utils/responsive';
@@ -44,7 +42,6 @@ export const SessionView = React.memo((props: { id: string }) => {
     const isLandscape = useIsLandscape();
     const deviceType = useDeviceType();
     const headerHeight = useHeaderHeight();
-    const realtimeStatus = useRealtimeStatus();
     const isTablet = useIsTablet();
 
     // Compute header props based on session state
@@ -122,15 +119,11 @@ export const SessionView = React.memo((props: { id: string }) => {
                         {...headerProps}
                         onBackPress={() => router.back()}
                     />
-                    {/* Voice status bar below header - not on tablet (shown in sidebar) */}
-                    {!isTablet && realtimeStatus !== 'disconnected' && (
-                        <VoiceAssistantStatusBar variant="full" />
-                    )}
                 </View>
             )}
 
             {/* Content based on state */}
-            <View style={{ flex: 1, paddingTop: !(isLandscape && deviceType === 'phone' && Platform.OS !== 'web') ? safeArea.top + headerHeight + (!isTablet && realtimeStatus !== 'disconnected' ? 48 : 0) : 0 }}>
+            <View style={{ flex: 1, paddingTop: !(isLandscape && deviceType === 'phone' && Platform.OS !== 'web') ? safeArea.top + headerHeight : 0 }}>
                 {!isDataReady ? (
                     // Loading state
                     <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
@@ -160,7 +153,6 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
     const isLandscape = useIsLandscape();
     const deviceType = useDeviceType();
     const [message, setMessage] = React.useState('');
-    const realtimeStatus = useRealtimeStatus();
     const { messages, isLoaded } = useSessionMessages(sessionId);
     const { loadMore, loading: loadingMore } = useLoadMoreMessages(sessionId);
     const acknowledgedCliVersions = useLocalSetting('acknowledgedCliVersions');
@@ -266,10 +258,8 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         if (useWhisperMode) {
             if (whisperState === 'idle') {
                 await startWhisper();
-                tracking?.capture('whisper_recording_started', { sessionId });
             } else if (whisperState === 'recording') {
                 await stopWhisper(sessionId);
-                tracking?.capture('whisper_recording_stopped', { sessionId });
             }
             // Do nothing during 'transcribing' state
             return;
@@ -280,7 +270,6 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
     const handleMicStop = React.useCallback(async () => {
         if (whisperState === 'recording') {
             await stopWhisper(sessionId);
-            tracking?.capture('whisper_recording_stopped', { sessionId });
         }
     }, [whisperState, stopWhisper, sessionId]);
 
@@ -299,7 +288,7 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
 
         // Initialize git status sync for this session
         gitStatusSync.getSync(sessionId);
-    }, [sessionId, realtimeStatus]);
+    }, [sessionId]);
 
     let content = (
         <>
@@ -343,7 +332,6 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
                     setMessage('');
                     clearDraft();
                     sync.sendMessage(sessionId, message);
-                    trackMessageSent();
                 }
             }}
             onMicPress={isP2P ? micButtonState.onMicPress : undefined}

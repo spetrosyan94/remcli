@@ -19,16 +19,8 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
 export const zhHans: TranslationStructure = {
     tabs: {
         // Tab navigation labels
-        inbox: '收件箱',
         sessions: '终端',
         settings: '设置',
-    },
-
-    inbox: {
-        // Inbox screen
-        emptyTitle: '收件箱为空',
-        emptyDescription: '与好友建立连接，开始共享会话',
-        updates: '更新',
     },
 
     common: {
@@ -62,15 +54,6 @@ export const zhHans: TranslationStructure = {
         retry: '重试',
         delete: '删除',
         optional: '可选的',
-    },
-
-    profile: {
-        userProfile: '用户资料',
-        details: '详情',
-        firstName: '名',
-        lastName: '姓',
-        username: '用户名',
-        status: '状态',
     },
 
 
@@ -107,7 +90,6 @@ export const zhHans: TranslationStructure = {
         github: 'GitHub',
         machines: '设备',
         features: '功能',
-        social: '社交',
         account: '账户',
         accountSubtitle: '管理您的账户详情',
         appearance: '外观',
@@ -126,16 +108,12 @@ export const zhHans: TranslationStructure = {
         privacyPolicy: '隐私政策',
         termsOfService: '服务条款',
         eula: '最终用户许可协议',
-        supportUs: '支持我们',
-        supportUsSubtitlePro: '感谢您的支持！',
-        supportUsSubtitle: '支持项目开发',
+        supportUs: '支持我们',        supportUsSubtitle: '支持项目开发',
         scanQrCodeToAuthenticate: '扫描二维码进行认证',
         githubConnected: ({ login }: { login: string }) => `已连接为 @${login}`,
         connectGithubAccount: '连接您的 GitHub 账户',
         claudeAuthSuccess: '成功连接到 Claude',
         exchangingTokens: '正在交换令牌...',
-        usage: '使用情况',
-        usageSubtitle: '查看 API 使用情况和费用',
         profiles: '配置文件',
         profilesSubtitle: '管理环境配置文件和变量',
 
@@ -233,8 +211,6 @@ export const zhHans: TranslationStructure = {
         tokenExchangeFailed: '交换授权码失败',
         oauthAuthorizationDenied: '授权被拒绝',
         webViewLoadFailed: '加载认证页面失败',
-        failedToLoadProfile: '无法加载用户资料',
-        userNotFound: '未找到用户',
         sessionDeleted: '会话已被删除',
         sessionDeletedDescription: '此会话已被永久删除',
 
@@ -251,12 +227,6 @@ export const zhHans: TranslationStructure = {
             `断开连接 ${service} 失败`,
         connectServiceFailed: ({ service }: { service: string }) =>
             `连接 ${service} 失败。请重试。`,
-        failedToLoadFriends: '加载好友列表失败',
-        failedToAcceptRequest: '接受好友请求失败',
-        failedToRejectRequest: '拒绝好友请求失败',
-        failedToRemoveFriend: '删除好友失败',
-        searchFailed: '搜索失败。请重试。',
-        failedToSendRequest: '发送好友请求失败',
     },
 
     newSession: {
@@ -696,7 +666,6 @@ export const zhHans: TranslationStructure = {
         linkNewDevice: '链接新设备', 
         restoreWithSecretKey: '通过密钥恢复',
         whatsNew: "更新日志",
-        friends: '好友',
     },
 
     welcome: {
@@ -790,98 +759,6 @@ export const zhHans: TranslationStructure = {
         mermaidRenderFailed: '渲染 mermaid 图表失败',
     },
 
-    artifacts: {
-        title: '工件',
-        countSingular: '1 个工件',
-        countPlural: ({ count }: { count: number }) => `${count} 个工件`,
-        empty: '暂无工件',
-        emptyDescription: '创建您的第一个工件来保存和组织内容',
-        new: '新建工件',
-        edit: '编辑工件',
-        delete: '删除',
-        updateError: '更新工件失败。请重试。',
-        notFound: '未找到工件',
-        discardChanges: '放弃更改？',
-        discardChangesDescription: '您有未保存的更改。确定要放弃它们吗？',
-        deleteConfirm: '删除工件？',
-        deleteConfirmDescription: '此工件将被永久删除。',
-        titlePlaceholder: '工件标题',
-        bodyPlaceholder: '在此输入内容...',
-        save: '保存',
-        saving: '保存中...',
-        loading: '加载中...',
-        error: '加载工件失败',
-        titleLabel: '标题',
-        bodyLabel: '内容',
-        emptyFieldsError: '请输入标题或内容',
-        createError: '创建工件失败。请重试。',
-    },
-
-    friends: {
-        // Friends feature
-        title: '好友',
-        manageFriends: '管理您的好友和连接',
-        searchTitle: '查找好友',
-        pendingRequests: '好友请求',
-        myFriends: '我的好友',
-        noFriendsYet: '您还没有好友',
-        findFriends: '查找好友',
-        remove: '删除',
-        pendingRequest: '待处理',
-        sentOn: ({ date }: { date: string }) => `发送于 ${date}`,
-        accept: '接受',
-        reject: '拒绝',
-        addFriend: '添加好友',
-        alreadyFriends: '已是好友',
-        requestPending: '请求待处理',
-        searchInstructions: '输入用户名搜索好友',
-        searchPlaceholder: '输入用户名...',
-        searching: '搜索中...',
-        userNotFound: '未找到用户',
-        noUserFound: '未找到该用户名的用户',
-        checkUsername: '请检查用户名后重试',
-        howToFind: '如何查找好友',
-        findInstructions: '通过用户名搜索好友。您和您的好友都需要连接 GitHub 才能发送好友请求。',
-        requestSent: '好友请求已发送！',
-        requestAccepted: '好友请求已接受！',
-        requestRejected: '好友请求已拒绝',
-        friendRemoved: '好友已删除',
-        confirmRemove: '删除好友',
-        confirmRemoveMessage: '确定要删除这位好友吗？',
-        cannotAddYourself: '您不能向自己发送好友请求',
-        bothMustHaveGithub: '双方都必须连接 GitHub 才能成为好友',
-        status: {
-            none: '未连接',
-            requested: '请求已发送',
-            pending: '请求待处理',
-            friend: '好友',
-            rejected: '已拒绝',
-        },
-        acceptRequest: '接受请求',
-        removeFriend: '移除好友',
-        removeFriendConfirm: ({ name }: { name: string }) => `确定要将 ${name} 从好友列表中移除吗？`,
-        requestSentDescription: ({ name }: { name: string }) => `您的好友请求已发送给 ${name}`,
-        requestFriendship: '请求加为好友',
-        cancelRequest: '取消好友请求',
-        cancelRequestConfirm: ({ name }: { name: string }) => `取消发送给 ${name} 的好友请求？`,
-        denyRequest: '拒绝请求',
-        nowFriendsWith: ({ name }: { name: string }) => `您现在与 ${name} 是好友了`,
-    },
-
-    usage: {
-        // Usage panel strings
-        today: '今天',
-        last7Days: '过去 7 天',
-        last30Days: '过去 30 天',
-        totalTokens: '总令牌数',
-        totalCost: '总费用',
-        tokens: '令牌',
-        cost: '费用',
-        usageOverTime: '使用趋势',
-        byModel: '按模型',
-        noData: '暂无使用数据',
-    },
-
     profiles: {
         title: '配置文件',
         subtitle: '管理您的配置文件',
@@ -910,14 +787,6 @@ export const zhHans: TranslationStructure = {
             confirm: '删除',
             cancel: '取消',
         },
-    },
-
-    feed: {
-        // Feed notifications for friend requests and acceptances
-        friendRequestFrom: ({ name }: { name: string }) => `${name} 向您发送了好友请求`,
-        friendRequestGeneric: '新的好友请求',
-        friendAccepted: ({ name }: { name: string }) => `您现在与 ${name} 成为了好友`,
-        friendAcceptedGeneric: '好友请求已接受',
     },
 
     whisper: {

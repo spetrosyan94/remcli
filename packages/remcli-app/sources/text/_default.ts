@@ -17,16 +17,8 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
 export const en = {
     tabs: {
         // Tab navigation labels
-        inbox: 'Inbox',
         sessions: 'Terminals',
         settings: 'Settings',
-    },
-
-    inbox: {
-        // Inbox screen
-        emptyTitle: 'Empty Inbox',
-        emptyDescription: 'Connect with friends to start sharing sessions',
-        updates: 'Updates',
     },
 
     common: {
@@ -62,15 +54,6 @@ export const en = {
         optional: 'optional',
     },
 
-    profile: {
-        userProfile: 'User Profile',
-        details: 'Details',
-        firstName: 'First Name',
-        lastName: 'Last Name',
-        username: 'Username',
-        status: 'Status',
-    },
-
     status: {
         connected: 'connected',
         connecting: 'connecting',
@@ -104,7 +87,6 @@ export const en = {
         github: 'GitHub',
         machines: 'Machines',
         features: 'Features',
-        social: 'Social',
         account: 'Account',
         accountSubtitle: 'Manage your account details',
         appearance: 'Appearance',
@@ -123,16 +105,12 @@ export const en = {
         privacyPolicy: 'Privacy Policy',
         termsOfService: 'Terms of Service',
         eula: 'EULA',
-        supportUs: 'Support us',
-        supportUsSubtitlePro: 'Thank you for your support!',
-        supportUsSubtitle: 'Support project development',
+        supportUs: 'Support us',        supportUsSubtitle: 'Support project development',
         scanQrCodeToAuthenticate: 'Scan QR code to authenticate',
         githubConnected: ({ login }: { login: string }) => `Connected as @${login}`,
         connectGithubAccount: 'Connect your GitHub account',
         claudeAuthSuccess: 'Successfully connected to Claude',
         exchangingTokens: 'Exchanging tokens...',
-        usage: 'Usage',
-        usageSubtitle: 'View your API usage and costs',
         profiles: 'Profiles',
         profilesSubtitle: 'Manage environment variable profiles for sessions',
 
@@ -230,8 +208,6 @@ export const en = {
         tokenExchangeFailed: 'Failed to exchange authorization code',
         oauthAuthorizationDenied: 'Authorization was denied',
         webViewLoadFailed: 'Failed to load authentication page',
-        failedToLoadProfile: 'Failed to load user profile',
-        userNotFound: 'User not found',
         sessionDeleted: 'Session has been deleted',
         sessionDeletedDescription: 'This session has been permanently removed',
 
@@ -248,12 +224,6 @@ export const en = {
             `Failed to disconnect ${service}`,
         connectServiceFailed: ({ service }: { service: string }) =>
             `Failed to connect ${service}. Please try again.`,
-        failedToLoadFriends: 'Failed to load friends list',
-        failedToAcceptRequest: 'Failed to accept friend request',
-        failedToRejectRequest: 'Failed to reject friend request',
-        failedToRemoveFriend: 'Failed to remove friend',
-        searchFailed: 'Search failed. Please try again.',
-        failedToSendRequest: 'Failed to send friend request',
     },
 
     newSession: {
@@ -693,7 +663,6 @@ export const en = {
         linkNewDevice: 'Link New Device', 
         restoreWithSecretKey: 'Restore with Secret Key',
         whatsNew: "What's New",
-        friends: 'Friends',
     },
 
     welcome: {
@@ -785,107 +754,6 @@ export const en = {
         codeCopied: 'Code copied',
         copyFailed: 'Copy failed',
         mermaidRenderFailed: 'Failed to render mermaid diagram',
-    },
-
-    artifacts: {
-        // Artifacts feature
-        title: 'Artifacts',
-        countSingular: '1 artifact',
-        countPlural: ({ count }: { count: number }) => `${count} artifacts`,
-        empty: 'No artifacts yet',
-        emptyDescription: 'Create your first artifact to get started',
-        new: 'New Artifact',
-        edit: 'Edit Artifact',
-        delete: 'Delete',
-        updateError: 'Failed to update artifact. Please try again.',
-        notFound: 'Artifact not found',
-        discardChanges: 'Discard changes?',
-        discardChangesDescription: 'You have unsaved changes. Are you sure you want to discard them?',
-        deleteConfirm: 'Delete artifact?',
-        deleteConfirmDescription: 'This action cannot be undone',
-        titleLabel: 'TITLE',
-        titlePlaceholder: 'Enter a title for your artifact',
-        bodyLabel: 'CONTENT',
-        bodyPlaceholder: 'Write your content here...',
-        emptyFieldsError: 'Please enter a title or content',
-        createError: 'Failed to create artifact. Please try again.',
-        save: 'Save',
-        saving: 'Saving...',
-        loading: 'Loading artifacts...',
-        error: 'Failed to load artifact',
-    },
-
-    friends: {
-        // Friends feature
-        title: 'Friends',
-        manageFriends: 'Manage your friends and connections',
-        searchTitle: 'Find Friends',
-        pendingRequests: 'Friend Requests',
-        myFriends: 'My Friends',
-        noFriendsYet: "You don't have any friends yet",
-        findFriends: 'Find Friends',
-        remove: 'Remove',
-        pendingRequest: 'Pending',
-        sentOn: ({ date }: { date: string }) => `Sent on ${date}`,
-        accept: 'Accept',
-        reject: 'Reject',
-        addFriend: 'Add Friend',
-        alreadyFriends: 'Already Friends',
-        requestPending: 'Request Pending',
-        searchInstructions: 'Enter a username to search for friends',
-        searchPlaceholder: 'Enter username...',
-        searching: 'Searching...',
-        userNotFound: 'User not found',
-        noUserFound: 'No user found with that username',
-        checkUsername: 'Please check the username and try again',
-        howToFind: 'How to Find Friends',
-        findInstructions: 'Search for friends by their username. Both you and your friend need to have GitHub connected to send friend requests.',
-        requestSent: 'Friend request sent!',
-        requestAccepted: 'Friend request accepted!',
-        requestRejected: 'Friend request rejected',
-        friendRemoved: 'Friend removed',
-        confirmRemove: 'Remove Friend',
-        confirmRemoveMessage: 'Are you sure you want to remove this friend?',
-        cannotAddYourself: 'You cannot send a friend request to yourself',
-        bothMustHaveGithub: 'Both users must have GitHub connected to become friends',
-        status: {
-            none: 'Not connected',
-            requested: 'Request sent',
-            pending: 'Request pending',
-            friend: 'Friends',
-            rejected: 'Rejected',
-        },
-        acceptRequest: 'Accept Request',
-        removeFriend: 'Remove Friend',
-        removeFriendConfirm: ({ name }: { name: string }) => `Are you sure you want to remove ${name} as a friend?`,
-        requestSentDescription: ({ name }: { name: string }) => `Your friend request has been sent to ${name}`,
-        requestFriendship: 'Request friendship',
-        cancelRequest: 'Cancel friendship request',
-        cancelRequestConfirm: ({ name }: { name: string }) => `Cancel your friendship request to ${name}?`,
-        denyRequest: 'Deny friendship',
-        nowFriendsWith: ({ name }: { name: string }) => `You are now friends with ${name}`,
-    },
-
-    usage: {
-        // Usage panel strings
-        today: 'Today',
-        last7Days: 'Last 7 days',
-        last30Days: 'Last 30 days',
-        totalTokens: 'Total Tokens',
-        totalCost: 'Total Cost',
-        tokens: 'Tokens',
-        cost: 'Cost',
-        usageOverTime: 'Usage over time',
-        byModel: 'By Model',
-        noData: 'No usage data available',
-    },
-
-    feed: {
-        // Feed notifications for friend requests and acceptances
-        friendRequestFrom: ({ name }: { name: string }) => `${name} sent you a friend request`,
-        friendRequestGeneric: 'New friend request',
-        friendAccepted: ({ name }: { name: string }) => `You are now friends with ${name}`,
-        friendAcceptedGeneric: 'Friend request accepted',
     },
 
     profiles: {

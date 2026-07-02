@@ -17,11 +17,7 @@ import { sync } from '@/sync/sync';
 import { useUnistyles } from 'react-native-unistyles';
 import { Switch } from '@/components/Switch';
 import { useConnectAccount } from '@/hooks/useConnectAccount';
-import { getDisplayName, getAvatarUrl } from '@/sync/profile';
-import { Image } from 'expo-image';
-import { useRemcliAction } from '@/hooks/useRemcliAction';
-import { disconnectGitHub } from '@/sync/apiGithub';
-import { disconnectService } from '@/sync/apiServices';
+import { getDisplayName } from '@/sync/profile';
 
 export default React.memo(() => {
     const { theme } = useUnistyles();
@@ -39,41 +35,6 @@ export default React.memo(() => {
 
     // Profile display values
     const displayName = getDisplayName(profile);
-    const githubUsername = profile.github?.login;
-
-    // GitHub disconnection
-    const [disconnecting, handleDisconnectGitHub] = useRemcliAction(async () => {
-        const confirmed = await Modal.confirm(
-            t('modals.disconnectGithub'),
-            t('modals.disconnectGithubConfirm'),
-            { confirmText: t('modals.disconnect'), destructive: true }
-        );
-        if (confirmed) {
-            await disconnectGitHub(auth.credentials!);
-        }
-    });
-
-    // Service disconnection
-    const [disconnectingService, setDisconnectingService] = useState<string | null>(null);
-    const handleDisconnectService = async (service: string, displayName: string) => {
-        const confirmed = await Modal.confirm(
-            t('modals.disconnectService', { service: displayName }),
-            t('modals.disconnectServiceConfirm', { service: displayName }),
-            { confirmText: t('modals.disconnect'), destructive: true }
-        );
-        if (confirmed) {
-            setDisconnectingService(service);
-            try {
-                await disconnectService(auth.credentials!, service);
-                await sync.refreshProfile();
-                // The profile will be updated via sync
-            } catch (error) {
-                Modal.alert(t('common.error'), t('errors.disconnectServiceFailed', { service: displayName }));
-            } finally {
-                setDisconnectingService(null);
-            }
-        }
-    };
 
     const handleShowSecret = () => {
         setShowSecret(!showSecret);
@@ -136,85 +97,15 @@ export default React.memo(() => {
                 </ItemGroup>
 
                 {/* Profile Section */}
-                {(displayName || githubUsername || profile.avatar) && (
+                {displayName && (
                     <ItemGroup title={t('settingsAccount.profile')}>
-                        {displayName && (
-                            <Item
-                                title={t('settingsAccount.name')}
-                                detail={displayName}
-                                showChevron={false}
-                            />
-                        )}
-                        {githubUsername && (
-                            <Item
-                                title={t('settingsAccount.github')}
-                                detail={`@${githubUsername}`}
-                                subtitle={t('settingsAccount.tapToDisconnect')}
-                                onPress={handleDisconnectGitHub}
-                                loading={disconnecting}
-                                showChevron={false}
-                                icon={profile.avatar?.url ? (
-                                    <Image
-                                        source={{ uri: profile.avatar.url }}
-                                        style={{ width: 29, height: 29, borderRadius: 14.5 }}
-                                        placeholder={{ thumbhash: profile.avatar.thumbhash }}
-                                        contentFit="cover"
-                                        transition={200}
-                                        cachePolicy="memory-disk"
-                                    />
-                                ) : (
-                                    <Ionicons name="logo-github" size={29} color={theme.colors.textSecondary} />
-                                )}
-                            />
-                        )}
+                        <Item
+                            title={t('settingsAccount.name')}
+                            detail={displayName}
+                            showChevron={false}
+                        />
                     </ItemGroup>
                 )}
-
-                {/* Connected Services Section */}
-                {profile.connectedServices && profile.connectedServices.length > 0 && (() => {
-                    // Map of service IDs to display names and icons
-                    const knownServices = {
-                        anthropic: { name: 'Claude Code', icon: require('@/assets/images/icon-claude.png'), tintColor: null },
-                        gemini: { name: 'Google Gemini', icon: require('@/assets/images/icon-gemini.png'), tintColor: null },
-                        openai: { name: 'OpenAI Codex', icon: require('@/assets/images/icon-gpt.png'), tintColor: theme.colors.text }
-                    };
-                    
-                    // Filter to only known services
-                    const displayServices = profile.connectedServices.filter(
-                        service => service in knownServices
-                    );
-                    
-                    if (displayServices.length === 0) return null;
-                    
-                    return (
-                        <ItemGroup title={t('settings.connectedAccounts')}>
-                            {displayServices.map(service => {
-                                const serviceInfo = knownServices[service as keyof typeof knownServices];
-                                const isDisconnecting = disconnectingService === service;
-                                return (
-                                    <Item
-                                        key={service}
-                                        title={serviceInfo.name}
-                                        detail={t('settingsAccount.statusActive')}
-                                        subtitle={t('settingsAccount.tapToDisconnect')}
-                                        onPress={() => handleDisconnectService(service, serviceInfo.name)}
-                                        loading={isDisconnecting}
-                                        disabled={isDisconnecting}
-                                        showChevron={false}
-                                        icon={
-                                            <Image
-                                                source={serviceInfo.icon}
-                                                style={{ width: 29, height: 29 }}
-                                                tintColor={serviceInfo.tintColor}
-                                                contentFit="contain"
-                                            />
-                                        }
-                                    />
-                                );
-                            })}
-                        </ItemGroup>
-                    );
-                })()}
 
                 {/* Backup Section */}
                 <ItemGroup

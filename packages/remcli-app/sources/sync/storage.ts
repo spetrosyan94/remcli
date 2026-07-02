@@ -13,14 +13,8 @@ import { loadSettings, loadLocalSettings, saveLocalSettings, saveSettings, loadP
 import type { PermissionMode, ModelMode } from '@/components/PermissionModeSelector';
 import React from "react";
 import { sync } from "./sync";
-import { getCurrentRealtimeSessionId, getVoiceSession } from '@/realtime/RealtimeSession';
 import { isMutableTool } from "@/components/tools/knownTools";
 import { projectManager } from "./projectManager";
-import { DecryptedArtifact } from "./artifactTypes";
-
-// Debounce timer for realtimeMode changes
-let realtimeModeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-const REALTIME_MODE_DEBOUNCE_MS = 150;
 
 /**
  * Centralized session online state resolver
@@ -69,9 +63,6 @@ interface StorageState {
     sessionMessages: Record<string, SessionMessages>;
     sessionGitStatus: Record<string, GitStatus | null>;
     machines: Record<string, Machine>;
-    artifacts: Record<string, DecryptedArtifact>;  // New artifacts storage
-    realtimeStatus: 'disconnected' | 'connecting' | 'connected' | 'error';
-    realtimeMode: 'idle' | 'speaking';
     socketStatus: 'disconnected' | 'connecting' | 'connected' | 'error';
     socketLastConnectedAt: number | null;
     socketLastDisconnectedAt: number | null;
@@ -93,19 +84,11 @@ interface StorageState {
     applyGitStatus: (sessionId: string, status: GitStatus | null) => void;
     applyNativeUpdateStatus: (status: { available: boolean; updateUrl?: string } | null) => void;
     isMutableToolCall: (sessionId: string, callId: string) => boolean;
-    setRealtimeStatus: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => void;
-    setRealtimeMode: (mode: 'idle' | 'speaking', immediate?: boolean) => void;
-    clearRealtimeModeDebounce: () => void;
     setSocketStatus: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => void;
     getActiveSessions: () => Session[];
     updateSessionDraft: (sessionId: string, draft: string | null) => void;
     updateSessionPermissionMode: (sessionId: string, mode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'read-only' | 'safe-yolo' | 'yolo') => void;
     updateSessionModelMode: (sessionId: string, mode: ModelMode) => void;
-    // Artifact methods
-    applyArtifacts: (artifacts: DecryptedArtifact[]) => void;
-    addArtifact: (artifact: DecryptedArtifact) => void;
-    updateArtifact: (artifact: DecryptedArtifact) => void;
-    deleteArtifact: (artifactId: string) => void;
     deleteSession: (sessionId: string) => void;
     // Project management methods
     getProjects: () => import('./projectManager').Project[];
@@ -227,15 +210,12 @@ export const storage = create<StorageState>()((set, get) => {
         profile,
         sessions: {},
         machines: {},
-        artifacts: {},  // Initialize artifacts
         todoState: null,  // Initialize todo state
         todosLoaded: false,  // Initialize todos loaded state
         sessionsData: null,  // Legacy - to be removed
         sessionListViewData: null,
         sessionMessages: {},
         sessionGitStatus: {},
-        realtimeStatus: 'disconnected',
-        realtimeMode: 'idle',
         socketStatus: 'disconnected',
         socketLastConnectedAt: null,
         socketLastDisconnectedAt: null,
@@ -340,36 +320,6 @@ export const storage = create<StorageState>()((set, get) => {
                 const existingSessionMessages = updatedSessionMessages[session.id];
                 if (existingSessionMessages && newSession.agentState &&
                     (!oldSession || newSession.agentStateVersion > (oldSession.agentStateVersion || 0))) {
-
-                    // Check for NEW permission requests before processing
-                    const currentRealtimeSessionId = getCurrentRealtimeSessionId();
-                    const voiceSession = getVoiceSession();
-
-                    // console.log('[REALTIME DEBUG] Permission check:', {
-                    //     currentRealtimeSessionId,
-                    //     sessionId: session.id,
-                    //     match: currentRealtimeSessionId === session.id,
-                    //     hasVoiceSession: !!voiceSession,
-                    //     oldRequests: Object.keys(oldSession?.agentState?.requests || {}),
-                    //     newRequests: Object.keys(newSession.agentState?.requests || {})
-                    // });
-
-                    if (currentRealtimeSessionId === session.id && voiceSession) {
-                        const oldRequests = oldSession?.agentState?.requests || {};
-                        const newRequests = newSession.agentState?.requests || {};
-
-                        // Find NEW permission requests only
-                        for (const [requestId, request] of Object.entries(newRequests)) {
-                            if (!oldRequests[requestId]) {
-                                // This is a NEW permission request
-                                const toolName = request.tool;
-                                // console.log('[REALTIME DEBUG] Sending permission notification for:', toolName);
-                                voiceSession.sendTextMessage(
-                                    `Claude is requesting permission to use the ${toolName} tool`
-                                );
-                            }
-                        }
-                    }
 
                     // Process new AgentState through reducer
                     const reducerResult = reducer(existingSessionMessages.reducerState, [], newSession.agentState);
@@ -640,35 +590,6 @@ export const storage = create<StorageState>()((set, get) => {
             ...state,
             nativeUpdateStatus: status
         })),
-        setRealtimeStatus: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => set((state) => ({
-            ...state,
-            realtimeStatus: status
-        })),
-        setRealtimeMode: (mode: 'idle' | 'speaking', immediate?: boolean) => {
-            if (immediate) {
-                // Clear any pending debounce and set immediately
-                if (realtimeModeDebounceTimer) {
-                    clearTimeout(realtimeModeDebounceTimer);
-                    realtimeModeDebounceTimer = null;
-                }
-                set((state) => ({ ...state, realtimeMode: mode }));
-            } else {
-                // Debounce mode changes to avoid flickering
-                if (realtimeModeDebounceTimer) {
-                    clearTimeout(realtimeModeDebounceTimer);
-                }
-                realtimeModeDebounceTimer = setTimeout(() => {
-                    realtimeModeDebounceTimer = null;
-                    set((state) => ({ ...state, realtimeMode: mode }));
-                }, REALTIME_MODE_DEBOUNCE_MS);
-            }
-        },
-        clearRealtimeModeDebounce: () => {
-            if (realtimeModeDebounceTimer) {
-                clearTimeout(realtimeModeDebounceTimer);
-                realtimeModeDebounceTimer = null;
-            }
-        },
         setSocketStatus: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => set((state) => {
             const now = Date.now();
             const updates: Partial<StorageState> = {
@@ -819,50 +740,6 @@ export const storage = create<StorageState>()((set, get) => {
                 sessionListViewData
             };
         }),
-        // Artifact methods
-        applyArtifacts: (artifacts: DecryptedArtifact[]) => set((state) => {
-            console.log(`🗂️ Storage.applyArtifacts: Applying ${artifacts.length} artifacts`);
-            const mergedArtifacts = { ...state.artifacts };
-            artifacts.forEach(artifact => {
-                mergedArtifacts[artifact.id] = artifact;
-            });
-            console.log(`🗂️ Storage.applyArtifacts: Total artifacts after merge: ${Object.keys(mergedArtifacts).length}`);
-            
-            return {
-                ...state,
-                artifacts: mergedArtifacts
-            };
-        }),
-        addArtifact: (artifact: DecryptedArtifact) => set((state) => {
-            const updatedArtifacts = {
-                ...state.artifacts,
-                [artifact.id]: artifact
-            };
-            
-            return {
-                ...state,
-                artifacts: updatedArtifacts
-            };
-        }),
-        updateArtifact: (artifact: DecryptedArtifact) => set((state) => {
-            const updatedArtifacts = {
-                ...state.artifacts,
-                [artifact.id]: artifact
-            };
-            
-            return {
-                ...state,
-                artifacts: updatedArtifacts
-            };
-        }),
-        deleteArtifact: (artifactId: string) => set((state) => {
-            const { [artifactId]: _, ...remainingArtifacts } = state.artifacts;
-            
-            return {
-                ...state,
-                artifacts: remainingArtifacts
-            };
-        }),
         deleteSession: (sessionId: string) => set((state) => {
             // Remove session from sessions
             const { [sessionId]: deletedSession, ...remainingSessions } = state.sessions;
@@ -1007,54 +884,6 @@ export function useSessionProjectGitStatus(sessionId: string | null) {
 
 export function useLocalSetting<K extends keyof LocalSettings>(name: K): LocalSettings[K] {
     return storage(useShallow((state) => state.localSettings[name]));
-}
-
-// Artifact hooks
-export function useArtifacts(): DecryptedArtifact[] {
-    return storage(useShallow((state) => {
-        if (!state.isDataReady) return [];
-        // Filter out draft artifacts from the main list
-        return Object.values(state.artifacts)
-            .filter(artifact => !artifact.draft)
-            .sort((a, b) => b.updatedAt - a.updatedAt);
-    }));
-}
-
-export function useAllArtifacts(): DecryptedArtifact[] {
-    return storage(useShallow((state) => {
-        if (!state.isDataReady) return [];
-        // Return all artifacts including drafts
-        return Object.values(state.artifacts).sort((a, b) => b.updatedAt - a.updatedAt);
-    }));
-}
-
-export function useDraftArtifacts(): DecryptedArtifact[] {
-    return storage(useShallow((state) => {
-        if (!state.isDataReady) return [];
-        // Return only draft artifacts
-        return Object.values(state.artifacts)
-            .filter(artifact => artifact.draft === true)
-            .sort((a, b) => b.updatedAt - a.updatedAt);
-    }));
-}
-
-export function useArtifact(artifactId: string): DecryptedArtifact | null {
-    return storage(useShallow((state) => state.artifacts[artifactId] ?? null));
-}
-
-export function useArtifactsCount(): number {
-    return storage(useShallow((state) => {
-        // Count only non-draft artifacts
-        return Object.values(state.artifacts).filter(a => !a.draft).length;
-    }));
-}
-
-export function useRealtimeStatus(): 'disconnected' | 'connecting' | 'connected' | 'error' {
-    return storage(useShallow((state) => state.realtimeStatus));
-}
-
-export function useRealtimeMode(): 'idle' | 'speaking' {
-    return storage(useShallow((state) => state.realtimeMode));
 }
 
 export function useSocketStatus() {

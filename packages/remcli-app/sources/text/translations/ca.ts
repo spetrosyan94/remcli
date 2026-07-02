@@ -17,16 +17,8 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
 export const ca: TranslationStructure = {
     tabs: {
         // Tab navigation labels
-        inbox: 'Safata',
         sessions: 'Terminals',
         settings: 'Configuració',
-    },
-
-    inbox: {
-        // Inbox screen
-        emptyTitle: 'Safata buida',
-        emptyDescription: 'Connecta\'t amb amics per començar a compartir sessions',
-        updates: 'Actualitzacions',
     },
 
     common: {
@@ -60,15 +52,6 @@ export const ca: TranslationStructure = {
         retry: 'Torna-ho a provar',
         delete: 'Elimina',
         optional: 'Opcional',
-    },
-
-    profile: {
-        userProfile: 'Perfil d\'usuari',
-        details: 'Detalls',
-        firstName: 'Nom',
-        lastName: 'Cognoms',
-        username: 'Nom d\'usuari',
-        status: 'Estat',
     },
 
 
@@ -105,7 +88,6 @@ export const ca: TranslationStructure = {
         github: 'GitHub',
         machines: 'Màquines',
         features: 'Funcions',
-        social: 'Social',
         account: 'Compte',
         accountSubtitle: 'Gestiona els detalls del teu compte',
         appearance: 'Aparença',
@@ -124,16 +106,12 @@ export const ca: TranslationStructure = {
         privacyPolicy: 'Política de privadesa',
         termsOfService: 'Condicions del servei',
         eula: 'EULA',
-        supportUs: 'Dona\'ns suport',
-        supportUsSubtitlePro: 'Gràcies pel teu suport!',
-        supportUsSubtitle: 'Dona suport al desenvolupament del projecte',
+        supportUs: 'Dona\'ns suport',        supportUsSubtitle: 'Dona suport al desenvolupament del projecte',
         scanQrCodeToAuthenticate: 'Escaneja el codi QR per autenticar-te',
         githubConnected: ({ login }: { login: string }) => `Connectat com a @${login}`,
         connectGithubAccount: 'Connecta el teu compte de GitHub',
         claudeAuthSuccess: 'Connexió amb Claude realitzada amb èxit',
         exchangingTokens: 'Intercanviant tokens...',
-        usage: 'Ús',
-        usageSubtitle: "Veure l'ús de l'API i costos",
         profiles: 'Perfils',
         profilesSubtitle: 'Gestiona els perfils d\'entorn i variables',
 
@@ -231,8 +209,6 @@ export const ca: TranslationStructure = {
         tokenExchangeFailed: 'Ha fallat l\'intercanvi del codi d\'autorització',
         oauthAuthorizationDenied: 'L\'autorització ha estat denegada',
         webViewLoadFailed: 'Ha fallat la càrrega de la pàgina d\'autenticació',
-        failedToLoadProfile: 'No s\'ha pogut carregar el perfil d\'usuari',
-        userNotFound: 'Usuari no trobat',
         sessionDeleted: 'La sessió s\'ha eliminat',
         sessionDeletedDescription: 'Aquesta sessió s\'ha eliminat permanentment',
 
@@ -249,12 +225,6 @@ export const ca: TranslationStructure = {
             `Ha fallat la desconnexió de ${service}`,
         connectServiceFailed: ({ service }: { service: string }) =>
             `No s'ha pogut connectar ${service}. Si us plau, torna-ho a provar.`,
-        failedToLoadFriends: 'No s\'ha pogut carregar la llista d\'amics',
-        failedToAcceptRequest: 'No s\'ha pogut acceptar la sol·licitud d\'amistat',
-        failedToRejectRequest: 'No s\'ha pogut rebutjar la sol·licitud d\'amistat',
-        failedToRemoveFriend: 'No s\'ha pogut eliminar l\'amic',
-        searchFailed: 'La cerca ha fallat. Si us plau, torna-ho a provar.',
-        failedToSendRequest: 'No s\'ha pogut enviar la sol·licitud d\'amistat',
     },
 
     newSession: {
@@ -694,7 +664,6 @@ export const ca: TranslationStructure = {
         linkNewDevice: 'Enllaça un nou dispositiu', 
         restoreWithSecretKey: 'Restaura amb clau secreta',
         whatsNew: 'Novetats',
-        friends: 'Amics',
     },
 
     welcome: {
@@ -788,98 +757,6 @@ export const ca: TranslationStructure = {
         mermaidRenderFailed: 'Error al renderitzar el diagrama mermaid',
     },
 
-    artifacts: {
-        title: 'Artefactes',
-        countSingular: '1 artefacte',
-        countPlural: ({ count }: { count: number }) => `${count} artefactes`,
-        empty: 'Encara no hi ha artefactes',
-        emptyDescription: 'Crea el teu primer artefacte per desar i organitzar contingut',
-        new: 'Nou artefacte',
-        edit: 'Edita artefacte',
-        delete: 'Elimina',
-        updateError: 'No s\'ha pogut actualitzar l\'artefacte. Si us plau, torna-ho a provar.',
-        notFound: 'Artefacte no trobat',
-        discardChanges: 'Descartar els canvis?',
-        discardChangesDescription: 'Tens canvis sense desar. Estàs segur que vols descartar-los?',
-        deleteConfirm: 'Eliminar artefacte?',
-        deleteConfirmDescription: 'Aquest artefacte s\'eliminarà permanentment.',
-        titlePlaceholder: 'Títol de l\'artefacte',
-        bodyPlaceholder: 'Escriu aquí el contingut...',
-        save: 'Desa',
-        saving: 'Desant...',
-        loading: 'Carregant...',
-        error: 'Error en carregar els artefactes',
-        titleLabel: 'TÍTOL',
-        bodyLabel: 'CONTINGUT',
-        emptyFieldsError: 'Si us plau, introdueix un títol o contingut',
-        createError: 'No s\'ha pogut crear l\'artefacte. Si us plau, torna-ho a provar.',
-    },
-
-    friends: {
-        // Friends feature
-        title: 'Amics',
-        manageFriends: 'Gestiona els teus amics i connexions',
-        searchTitle: 'Buscar amics',
-        pendingRequests: 'Sol·licituds d\'amistat',
-        myFriends: 'Els meus amics',
-        noFriendsYet: 'Encara no tens amics',
-        findFriends: 'Buscar amics',
-        remove: 'Eliminar',
-        pendingRequest: 'Pendent',
-        sentOn: ({ date }: { date: string }) => `Enviat el ${date}`,
-        accept: 'Acceptar',
-        reject: 'Rebutjar',
-        addFriend: 'Afegir amic',
-        alreadyFriends: 'Ja sou amics',
-        requestPending: 'Sol·licitud pendent',
-        searchInstructions: 'Introdueix un nom d\'usuari per buscar amics',
-        searchPlaceholder: 'Introdueix nom d\'usuari...',
-        searching: 'Buscant...',
-        userNotFound: 'Usuari no trobat',
-        noUserFound: 'No s\'ha trobat cap usuari amb aquest nom',
-        checkUsername: 'Si us plau, verifica el nom d\'usuari i torna-ho a provar',
-        howToFind: 'Com trobar amics',
-        findInstructions: 'Cerca amics pel seu nom d\'usuari. Tant tu com el teu amic heu de tenir GitHub connectat per enviar sol·licituds d\'amistat.',
-        requestSent: 'Sol·licitud d\'amistat enviada!',
-        requestAccepted: 'Sol·licitud d\'amistat acceptada!',
-        requestRejected: 'Sol·licitud d\'amistat rebutjada',
-        friendRemoved: 'Amic eliminat',
-        confirmRemove: 'Eliminar amic',
-        confirmRemoveMessage: 'Estàs segur que vols eliminar aquest amic?',
-        cannotAddYourself: 'No pots enviar-te una sol·licitud d\'amistat a tu mateix',
-        bothMustHaveGithub: 'Ambdós usuaris han de tenir GitHub connectat per ser amics',
-        status: {
-            none: 'No connectat',
-            requested: 'Sol·licitud enviada',
-            pending: 'Sol·licitud pendent',
-            friend: 'Amics',
-            rejected: 'Rebutjada',
-        },
-        acceptRequest: 'Acceptar sol·licitud',
-        removeFriend: 'Eliminar dels amics',
-        removeFriendConfirm: ({ name }: { name: string }) => `Estàs segur que vols eliminar ${name} dels teus amics?`,
-        requestSentDescription: ({ name }: { name: string }) => `La teva sol·licitud d\'amistat ha estat enviada a ${name}`,
-        requestFriendship: 'Sol·licitar amistat',
-        cancelRequest: 'Cancel·lar sol·licitud d\'amistat',
-        cancelRequestConfirm: ({ name }: { name: string }) => `Cancel·lar la teva sol·licitud d\'amistat a ${name}?`,
-        denyRequest: 'Rebutjar sol·licitud',
-        nowFriendsWith: ({ name }: { name: string }) => `Ara ets amic de ${name}`,
-    },
-
-    usage: {
-        // Usage panel strings
-        today: 'Avui',
-        last7Days: 'Últims 7 dies',
-        last30Days: 'Últims 30 dies',
-        totalTokens: 'Tokens totals',
-        totalCost: 'Cost total',
-        tokens: 'Tokens',
-        cost: 'Cost',
-        usageOverTime: 'Ús al llarg del temps',
-        byModel: 'Per model',
-        noData: "No hi ha dades d'ús disponibles",
-    },
-
     profiles: {
         title: 'Perfils',
         subtitle: 'Gestiona els teus perfils de configuració',
@@ -908,14 +785,6 @@ export const ca: TranslationStructure = {
             confirm: 'Eliminar',
             cancel: 'Cancel·lar',
         },
-    },
-
-    feed: {
-        // Feed notifications for friend requests and acceptances
-        friendRequestFrom: ({ name }: { name: string }) => `${name} t'ha enviat una sol·licitud d'amistat`,
-        friendRequestGeneric: 'Nova sol·licitud d\'amistat',
-        friendAccepted: ({ name }: { name: string }) => `Ara ets amic de ${name}`,
-        friendAcceptedGeneric: 'Sol·licitud d\'amistat acceptada',
     },
 
     whisper: {

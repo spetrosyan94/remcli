@@ -17,16 +17,8 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
 export const es: TranslationStructure = {
     tabs: {
         // Tab navigation labels
-        inbox: 'Bandeja',
         sessions: 'Terminales',
         settings: 'Configuración',
-    },
-
-    inbox: {
-        // Inbox screen
-        emptyTitle: 'Bandeja vacía',
-        emptyDescription: 'Conéctate con amigos para empezar a compartir sesiones',
-        updates: 'Actualizaciones',
     },
 
     common: {
@@ -60,15 +52,6 @@ export const es: TranslationStructure = {
         retry: 'Reintentar',
         delete: 'Eliminar',
         optional: 'opcional',
-    },
-
-    profile: {
-        userProfile: 'Perfil de usuario',
-        details: 'Detalles',
-        firstName: 'Nombre',
-        lastName: 'Apellido',
-        username: 'Nombre de usuario',
-        status: 'Estado',
     },
 
 
@@ -105,7 +88,6 @@ export const es: TranslationStructure = {
         github: 'GitHub',
         machines: 'Máquinas',
         features: 'Características',
-        social: 'Social',
         account: 'Cuenta',
         accountSubtitle: 'Gestiona los detalles de tu cuenta',
         appearance: 'Apariencia',
@@ -124,16 +106,12 @@ export const es: TranslationStructure = {
         privacyPolicy: 'Política de privacidad',
         termsOfService: 'Términos de servicio',
         eula: 'EULA',
-        supportUs: 'Apóyanos',
-        supportUsSubtitlePro: '¡Gracias por su apoyo!',
-        supportUsSubtitle: 'Apoya el desarrollo del proyecto',
+        supportUs: 'Apóyanos',        supportUsSubtitle: 'Apoya el desarrollo del proyecto',
         scanQrCodeToAuthenticate: 'Escanea el código QR para autenticarte',
         githubConnected: ({ login }: { login: string }) => `Conectado como @${login}`,
         connectGithubAccount: 'Conecta tu cuenta de GitHub',
         claudeAuthSuccess: 'Conectado exitosamente con Claude',
         exchangingTokens: 'Intercambiando tokens...',
-        usage: 'Uso',
-        usageSubtitle: 'Ver tu uso de API y costos',
         profiles: 'Perfiles',
         profilesSubtitle: 'Gestionar perfiles de variables de entorno para sesiones',
 
@@ -231,8 +209,6 @@ export const es: TranslationStructure = {
         tokenExchangeFailed: 'Falló al intercambiar el código de autorización',
         oauthAuthorizationDenied: 'La autorización fue denegada',
         webViewLoadFailed: 'Falló al cargar la página de autenticación',
-        failedToLoadProfile: 'No se pudo cargar el perfil de usuario',
-        userNotFound: 'Usuario no encontrado',
         sessionDeleted: 'La sesión ha sido eliminada',
         sessionDeletedDescription: 'Esta sesión ha sido eliminada permanentemente',
 
@@ -249,12 +225,6 @@ export const es: TranslationStructure = {
             `Falló al desconectar ${service}`,
         connectServiceFailed: ({ service }: { service: string }) =>
             `No se pudo conectar ${service}. Por favor, inténtalo de nuevo.`,
-        failedToLoadFriends: 'No se pudo cargar la lista de amigos',
-        failedToAcceptRequest: 'No se pudo aceptar la solicitud de amistad',
-        failedToRejectRequest: 'No se pudo rechazar la solicitud de amistad',
-        failedToRemoveFriend: 'No se pudo eliminar al amigo',
-        searchFailed: 'La búsqueda falló. Por favor, intenta de nuevo.',
-        failedToSendRequest: 'No se pudo enviar la solicitud de amistad',
     },
 
     newSession: {
@@ -694,7 +664,6 @@ export const es: TranslationStructure = {
         linkNewDevice: 'Vincular nuevo dispositivo', 
         restoreWithSecretKey: 'Restaurar con clave secreta',
         whatsNew: 'Novedades',
-        friends: 'Amigos',
     },
 
     welcome: {
@@ -786,107 +755,6 @@ export const es: TranslationStructure = {
         codeCopied: 'Código copiado',
         copyFailed: 'Error al copiar',
         mermaidRenderFailed: 'Error al renderizar el diagrama mermaid',
-    },
-
-    artifacts: {
-        // Artifacts feature
-        title: 'Artefactos',
-        countSingular: '1 artefacto',
-        countPlural: ({ count }: { count: number }) => `${count} artefactos`,
-        empty: 'No hay artefactos aún',
-        emptyDescription: 'Crea tu primer artefacto para comenzar',
-        new: 'Nuevo artefacto',
-        edit: 'Editar artefacto',
-        delete: 'Eliminar',
-        updateError: 'No se pudo actualizar el artefacto. Por favor, intenta de nuevo.',
-        notFound: 'Artefacto no encontrado',
-        discardChanges: '¿Descartar cambios?',
-        discardChangesDescription: 'Tienes cambios sin guardar. ¿Estás seguro de que quieres descartarlos?',
-        deleteConfirm: '¿Eliminar artefacto?',
-        deleteConfirmDescription: 'Esta acción no se puede deshacer',
-        titleLabel: 'TÍTULO',
-        titlePlaceholder: 'Ingresa un título para tu artefacto',
-        bodyLabel: 'CONTENIDO',
-        bodyPlaceholder: 'Escribe tu contenido aquí...',
-        emptyFieldsError: 'Por favor, ingresa un título o contenido',
-        createError: 'No se pudo crear el artefacto. Por favor, intenta de nuevo.',
-        save: 'Guardar',
-        saving: 'Guardando...',
-        loading: 'Cargando artefactos...',
-        error: 'Error al cargar el artefacto',
-    },
-
-    friends: {
-        // Friends feature
-        title: 'Amigos',
-        manageFriends: 'Administra tus amigos y conexiones',
-        searchTitle: 'Buscar amigos',
-        pendingRequests: 'Solicitudes de amistad',
-        myFriends: 'Mis amigos',
-        noFriendsYet: 'Aún no tienes amigos',
-        findFriends: 'Buscar amigos',
-        remove: 'Eliminar',
-        pendingRequest: 'Pendiente',
-        sentOn: ({ date }: { date: string }) => `Enviado el ${date}`,
-        accept: 'Aceptar',
-        reject: 'Rechazar',
-        addFriend: 'Agregar amigo',
-        alreadyFriends: 'Ya son amigos',
-        requestPending: 'Solicitud pendiente',
-        searchInstructions: 'Ingresa un nombre de usuario para buscar amigos',
-        searchPlaceholder: 'Ingresa nombre de usuario...',
-        searching: 'Buscando...',
-        userNotFound: 'Usuario no encontrado',
-        noUserFound: 'No se encontró ningún usuario con ese nombre',
-        checkUsername: 'Por favor, verifica el nombre de usuario e intenta de nuevo',
-        howToFind: 'Cómo encontrar amigos',
-        findInstructions: 'Busca amigos por su nombre de usuario. Tanto tú como tu amigo deben tener GitHub conectado para enviar solicitudes de amistad.',
-        requestSent: '¡Solicitud de amistad enviada!',
-        requestAccepted: '¡Solicitud de amistad aceptada!',
-        requestRejected: 'Solicitud de amistad rechazada',
-        friendRemoved: 'Amigo eliminado',
-        confirmRemove: 'Eliminar amigo',
-        confirmRemoveMessage: '¿Estás seguro de que quieres eliminar a este amigo?',
-        cannotAddYourself: 'No puedes enviarte una solicitud de amistad a ti mismo',
-        bothMustHaveGithub: 'Ambos usuarios deben tener GitHub conectado para ser amigos',
-        status: {
-            none: 'No conectado',
-            requested: 'Solicitud enviada',
-            pending: 'Solicitud pendiente',
-            friend: 'Amigos',
-            rejected: 'Rechazada',
-        },
-        acceptRequest: 'Aceptar solicitud',
-        removeFriend: 'Eliminar de amigos',
-        removeFriendConfirm: ({ name }: { name: string }) => `¿Estás seguro de que quieres eliminar a ${name} de tus amigos?`,
-        requestSentDescription: ({ name }: { name: string }) => `Tu solicitud de amistad ha sido enviada a ${name}`,
-        requestFriendship: 'Solicitar amistad',
-        cancelRequest: 'Cancelar solicitud de amistad',
-        cancelRequestConfirm: ({ name }: { name: string }) => `¿Cancelar tu solicitud de amistad a ${name}?`,
-        denyRequest: 'Rechazar solicitud',
-        nowFriendsWith: ({ name }: { name: string }) => `Ahora eres amigo de ${name}`,
-    },
-
-    usage: {
-        // Usage panel strings
-        today: 'Hoy',
-        last7Days: 'Últimos 7 días',
-        last30Days: 'Últimos 30 días',
-        totalTokens: 'Tokens totales',
-        totalCost: 'Costo total',
-        tokens: 'Tokens',
-        cost: 'Costo',
-        usageOverTime: 'Uso a lo largo del tiempo',
-        byModel: 'Por modelo',
-        noData: 'No hay datos de uso disponibles',
-    },
-
-    feed: {
-        // Feed notifications for friend requests and acceptances
-        friendRequestFrom: ({ name }: { name: string }) => `${name} te envió una solicitud de amistad`,
-        friendRequestGeneric: 'Nueva solicitud de amistad',
-        friendAccepted: ({ name }: { name: string }) => `Ahora eres amigo de ${name}`,
-        friendAcceptedGeneric: 'Solicitud de amistad aceptada',
     },
 
     profiles: {
