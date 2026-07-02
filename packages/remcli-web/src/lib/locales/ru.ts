@@ -24,6 +24,7 @@ export const ru = {
     "permission.danger": "опасная команда · необратимо",
     "permission.allow": "Разрешить",
     "permission.deny": "Запретить",
+    "permission.alwaysHint": "A — всегда",
 
     "chat.thinking": "думает",
     "chat.copy": "копировать",
@@ -37,6 +38,8 @@ export const ru = {
     "chat.aria.dictate": "Диктовка",
     "chat.aria.send": "Отправить",
     "chat.alwaysAllow": "всегда разрешать · {tool}",
+    "chat.alwaysAllowCommand": "всегда разрешать {command} в этой сессии",
+    "chat.inputHint": "⏎ отправить · ⇧⏎ строка",
     "chat.loadEarlier": "показать раньше",
     "chat.ended": "— сессия завершена —",
     "chat.resumeFailed": "не удалось продолжить сессию",

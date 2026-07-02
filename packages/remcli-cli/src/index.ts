@@ -469,6 +469,44 @@ async function ensureDaemonRunning(): Promise<void> {
         displayP2PConnectionStatus(state.p2pHost || '0.0.0.0', state.p2pPort);
       }
       process.exit(0)
+    } else if (daemonSubcommand === 'rekey') {
+      // Reset the persistent pairing secret: delete the pairing file and restart the daemon
+      const { clearPairing } = await import('./daemon/p2p/p2pPairing');
+
+      const wasRunning = await checkIfDaemonRunningAndCleanupStaleState();
+      if (wasRunning) {
+        await stopDaemon();
+      }
+
+      const removed = clearPairing();
+      console.log(removed
+        ? 'Pairing secret removed — a fresh secret will be generated.'
+        : 'No pairing file found — a fresh secret will be generated on next daemon start.');
+
+      if (wasRunning) {
+        const child = spawnRemcliCLI(['daemon', 'start-sync'], {
+          detached: true,
+          stdio: 'ignore',
+          env: process.env
+        });
+        child.unref();
+
+        // Wait for daemon to write state file (up to 5 seconds)
+        let restarted = false;
+        for (let i = 0; i < 50; i++) {
+          if (await checkIfDaemonRunningAndCleanupStaleState()) {
+            restarted = true;
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        console.log(restarted
+          ? 'Daemon restarted with a new pairing secret.'
+          : 'Daemon did not restart — start it manually: remcli daemon start');
+      }
+
+      console.log('All previously paired devices must rescan the QR code: remcli daemon qr');
+      process.exit(0)
     } else if (daemonSubcommand === 'status') {
       // Show daemon-specific doctor output
       await runDoctorCommand('daemon')
@@ -506,6 +544,7 @@ ${chalk.bold('Usage:')}
   remcli daemon stop               Stop the daemon (sessions stay alive)
   remcli daemon status             Show daemon status
   remcli daemon qr                 Show P2P connection QR code
+  remcli daemon rekey              Reset pairing secret (all devices must rescan QR)
   remcli daemon list               List active sessions
 
   If you want to kill all remcli related processes run 

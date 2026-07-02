@@ -5,6 +5,7 @@
 import * as React from "react";
 import { Route, Routes } from "react-router";
 import { CommandPalette } from "@/components/app/CommandPalette";
+import { LaunchSplash } from "@/components/app/LaunchSplash";
 import { RequireConnection } from "@/components/app/RequireConnection";
 import { TabLayout } from "@/components/app/TabLayout";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -56,6 +57,8 @@ export function App() {
             </React.Suspense>
             <CommandPalette />
             <Toaster />
+            {/* Сплэш холодного старта (QR-коннект / restore) — поверх всего, сам решает, показываться ли */}
+            <LaunchSplash />
         </React.Fragment>
     );
 }

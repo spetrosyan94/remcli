@@ -23,6 +23,7 @@ export const zhHant: Dictionary = {
     "permission.danger": "危險指令 · 不可復原",
     "permission.allow": "允許",
     "permission.deny": "拒絕",
+    "permission.alwaysHint": "A — 一律允許",
 
     "chat.thinking": "思考中",
     "chat.copy": "複製",
@@ -36,6 +37,8 @@ export const zhHant: Dictionary = {
     "chat.aria.dictate": "語音輸入",
     "chat.aria.send": "傳送",
     "chat.alwaysAllow": "一律允許 · {tool}",
+    "chat.alwaysAllowCommand": "在此工作階段中一律允許 {command}",
+    "chat.inputHint": "⏎ 傳送 · ⇧⏎ 換行",
     "chat.loadEarlier": "顯示較早訊息",
     "chat.ended": "— 工作階段已結束 —",
     "chat.resumeFailed": "無法恢復工作階段",

@@ -17,7 +17,8 @@ import { projectPath } from '@/projectPath';
 import { isTmuxAvailable } from '@/utils/tmux';
 import { P2PStore } from './p2p/p2pStore';
 import { startP2PServer, P2PServer } from './p2p/p2pServer';
-import { generateSharedSecret, encodeSharedSecret, deriveBearerToken } from './p2p/p2pAuth';
+import { encodeSharedSecret, deriveBearerToken } from './p2p/p2pAuth';
+import { loadOrCreatePairing, updatePairingPort } from './p2p/p2pPairing';
 import { getLanIPAddress } from './p2p/networkUtils';
 import { buildP2PConnectionInfo, buildP2PQRUrl, displayP2PQRCode, displayP2PConnectionStatus } from './p2p/p2pQRCode';
 import { startCloudflaredTunnel, isCloudflaredAvailable } from './p2p/tunnel';
@@ -194,10 +195,12 @@ export async function startDaemon(): Promise<void> {
       logger.debug('[DAEMON RUN] Sleep prevention enabled');
     }
 
-    // Generate P2P shared secret for this daemon session
-    const sharedSecret = generateSharedSecret();
+    // Load persistent P2P pairing (shared secret + preferred port) — survives daemon restarts,
+    // so phones paired via QR keep working without a rescan
+    const pairing = loadOrCreatePairing();
+    const sharedSecret = pairing.secret;
     const bearerToken = deriveBearerToken(sharedSecret);
-    logger.debug('[DAEMON RUN] P2P shared secret generated');
+    logger.debug('[DAEMON RUN] P2P pairing loaded (persistent shared secret)');
 
     // Session manager owns tracked child sessions and tmux session cleanup
     const sessionManager = createSessionManager();
@@ -225,9 +228,9 @@ export async function startDaemon(): Promise<void> {
     // ─── P2P Server ──────────────────────────────────────────────
     // Load P2P store from disk
     const p2pStore = new P2PStore();
-    // Start with a fresh store — each daemon session generates a new shared secret,
-    // so old sessions/machines encrypted with the previous key are unusable.
-    logger.debug('[DAEMON RUN] P2P store initialized (fresh — new shared secret)');
+    // Sessions/messages live in memory only, but the pairing shared secret persists
+    // across restarts (see p2pPairing) — paired phones reconnect without a rescan.
+    logger.debug('[DAEMON RUN] P2P store initialized (in-memory, persistent pairing secret)');
 
     // Determine LAN IP address
     const lanIP = getLanIPAddress() || '0.0.0.0';
@@ -261,9 +264,26 @@ export async function startDaemon(): Promise<void> {
         }),
     };
 
-    // Start P2P server
+    // Start P2P server — prefer the persisted port so QR codes stay valid across restarts
+    // (pairing.port is 0 on first run → random available port)
     let p2pServer: P2PServer;
     try {
+        p2pServer = await startP2PServer({
+            port: pairing.port,
+            host: '0.0.0.0',
+            sharedSecret,
+            store: p2pStore,
+            webAppDir,
+            conciergeDeps
+        });
+    } catch (error) {
+        const isPortTaken = pairing.port !== 0 && (error as NodeJS.ErrnoException)?.code === 'EADDRINUSE';
+        if (!isPortTaken) {
+            logger.debug('[DAEMON RUN] Failed to start P2P server:', error);
+            throw error;
+        }
+        logger.debug(`[DAEMON RUN] Saved P2P port ${pairing.port} is busy, falling back to a random port`);
+        console.log(`  Warning: saved P2P port ${pairing.port} is busy — bound a new random port. Phones must rescan the QR code.`);
         p2pServer = await startP2PServer({
             port: 0,  // Random available port
             host: '0.0.0.0',
@@ -272,10 +292,10 @@ export async function startDaemon(): Promise<void> {
             webAppDir,
             conciergeDeps
         });
-        logger.debug(`[DAEMON RUN] P2P server started on port ${p2pServer.port}`);
-    } catch (error) {
-        logger.debug('[DAEMON RUN] Failed to start P2P server:', error);
-        throw error;
+    }
+    logger.debug(`[DAEMON RUN] P2P server started on port ${p2pServer.port}`);
+    if (p2pServer.port !== pairing.port) {
+        updatePairingPort(pairing, p2pServer.port);
     }
 
     // Initialize TTS provider (non-fatal — daemon works without TTS)

@@ -4,7 +4,7 @@
 // startProtocolClient + live-статус сокета → редирект на / либо состояние error.
 import * as React from "react";
 import { Loader2, QrCode, X } from "lucide-react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { Caret, Logo } from "@/components/kit";
 import { t } from "@/lib/i18n";
 import {
@@ -55,9 +55,13 @@ function payloadTarget(payload: P2PQRPayload): string {
 
 export function ConnectPage() {
     const navigate = useNavigate();
+    const location = useLocation();
     const connectionStatus = useConnectionStatus();
-    const [state, setState] = React.useState<ConnectState>("idle");
-    const [payload, setPayload] = React.useState<P2PQRPayload | null>(null);
+    // Упавший restore (LaunchSplash): приходим сразу в состояние error с payload
+    // сохранённого подключения — кнопка «повторить» переподключается к нему.
+    const failedPayload = (location.state as { failedPayload?: P2PQRPayload | null } | null)?.failedPayload ?? null;
+    const [state, setState] = React.useState<ConnectState>(failedPayload ? "error" : "idle");
+    const [payload, setPayload] = React.useState<P2PQRPayload | null>(failedPayload);
     const [address, setAddress] = React.useState("");
     const [secretKey, setSecretKey] = React.useState("");
     const [manualError, setManualError] = React.useState<string | null>(null);

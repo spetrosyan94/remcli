@@ -8,7 +8,8 @@ export function ListenButton({ state = "idle", time, onClick }: {
     time?: string;
     onClick?: () => void;
 }) {
-    const base = "inline-flex h-7 items-center gap-1.5 rounded-lg border px-2.5 font-mono text-[10.5px]";
+    // hover/нажатия — 120ms (MOTION.md --dur-micro)
+    const base = "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 font-mono text-[10.5px] transition-colors duration-[120ms]";
     if (state === "playing")
         return (
             <button onClick={onClick} className={`${base} border-accent/35 bg-accent/10 text-accent`}>
@@ -25,7 +26,7 @@ export function ListenButton({ state = "idle", time, onClick }: {
     if (state === "error")
         return <button onClick={onClick} className={`${base} border-status-error/35 text-status-error`}>{t("tts.unavailable")}</button>;
     return (
-        <button onClick={onClick} className={`${base} border-border text-muted-foreground`}>
+        <button onClick={onClick} className={`${base} border-border text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground`}>
             <svg width="10" height="10" viewBox="0 0 12 12"><path d="M2 4.5v3h2.5L7.5 10V2L4.5 4.5H2Z" fill="currentColor" /></svg>
             {t("tts.listen")}
         </button>

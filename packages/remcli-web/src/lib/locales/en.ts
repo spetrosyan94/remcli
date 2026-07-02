@@ -23,6 +23,7 @@ export const en: Dictionary = {
     "permission.danger": "dangerous command · irreversible",
     "permission.allow": "Allow",
     "permission.deny": "Deny",
+    "permission.alwaysHint": "A — always",
 
     "chat.thinking": "thinking",
     "chat.copy": "copy",
@@ -36,6 +37,8 @@ export const en: Dictionary = {
     "chat.aria.dictate": "Dictate",
     "chat.aria.send": "Send",
     "chat.alwaysAllow": "always allow · {tool}",
+    "chat.alwaysAllowCommand": "always allow {command} in this session",
+    "chat.inputHint": "⏎ send · ⇧⏎ new line",
     "chat.loadEarlier": "show earlier",
     "chat.ended": "— session ended —",
     "chat.resumeFailed": "failed to resume the session",

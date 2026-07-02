@@ -12,6 +12,7 @@ import {
     Segmented, statusLabel, StatusDot, ThinkingRow, ToolCallCard, UserMessage, VoiceRecordBar,
     type AgentId, type DiffLine, type Status,
 } from "@/components/kit";
+import { SessionsSidebar } from "@/components/app/SessionsSidebar";
 import { t } from "@/lib/i18n";
 import {
     fetchWhisperStatus, getRestConfig, isClientStarted, loadSessionMessages,
@@ -637,11 +638,14 @@ export function ChatPage() {
     const recorderState = recorder.recorderState;
 
     return (
-        <div className="flex h-dvh flex-col bg-background pt-[env(safe-area-inset-top)] text-foreground">
+        <div className="flex h-dvh flex-col bg-background pt-[env(safe-area-inset-top)] text-foreground lg:grid lg:grid-cols-[288px_1fr] lg:grid-rows-[minmax(0,1fr)]">
+            {/* десктоп (3a): постоянный сайдбар сессий, активная — подсвечена */}
+            <SessionsSidebar activeSessionId={session.id} className="hidden lg:flex" />
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {/* шапка: проект · агент/хост/статус · режим разрешений · меню */}
-            <header className="flex items-center gap-2.5 border-b border-border px-3.5 pb-2.5">
+            <header className="flex items-center gap-2.5 border-b border-border px-3.5 pb-2.5 lg:pt-2.5">
                 <button aria-label={t("chat.aria.back")} onClick={() => navigate(-1)}
-                    className="flex size-[38px] items-center justify-center rounded-[10px]">
+                    className="flex size-[38px] items-center justify-center rounded-[10px] lg:hidden">
                     <ArrowLeft className="size-[17px]" />
                 </button>
                 <div className="flex min-w-0 flex-1 flex-col">
@@ -745,7 +749,7 @@ export function ChatPage() {
                                             </span>
                                         )}
                                         <button onClick={() => void navigator.clipboard.writeText(groupText)}
-                                            className="h-7 rounded-[7px] px-2.5 font-mono text-[10.5px] text-muted-foreground/60">
+                                            className="h-7 cursor-pointer rounded-[7px] px-2.5 font-mono text-[10.5px] text-muted-foreground/60 transition-colors duration-[120ms] hover:bg-muted hover:text-foreground">
                                             {t("chat.copy")}
                                         </button>
                                     </div>
@@ -763,7 +767,7 @@ export function ChatPage() {
                                 command={permission.command}
                                 comment={permission.comment}
                                 danger={permission.isDanger}
-                                alwaysLabel={permission.isDanger ? undefined : t("chat.alwaysAllow", { tool: permission.tool })}
+                                alwaysLabel={permission.isDanger ? undefined : t("chat.alwaysAllowCommand", { command: permission.command })}
                                 onAllow={() => answerPermission(permission, "allow")}
                                 onDeny={() => answerPermission(permission, "deny")}
                                 onAlways={() => answerPermission(permission, "always")}
@@ -799,16 +803,22 @@ export function ChatPage() {
                 <div className="mx-auto w-full max-w-[720px]">
                     {recorderState === "idle" ? (
                         <div className="flex items-end gap-2">
-                            <textarea rows={1} placeholder={t("chat.placeholder")}
-                                value={draft}
-                                onChange={(event) => setDraft(event.target.value)}
-                                onKeyDown={(event) => {
-                                    if (event.key === "Enter" && !event.shiftKey) {
-                                        event.preventDefault();
-                                        sendDraft();
-                                    }
-                                }}
-                                className="min-h-11 flex-1 resize-none rounded-xl border border-input bg-muted px-3.5 py-3 text-sm outline-none placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15" />
+                            <div className="relative min-w-0 flex-1">
+                                <textarea rows={1} placeholder={t("chat.placeholder")}
+                                    value={draft}
+                                    onChange={(event) => setDraft(event.target.value)}
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter" && !event.shiftKey) {
+                                            event.preventDefault();
+                                            sendDraft();
+                                        }
+                                    }}
+                                    className="block min-h-11 w-full resize-none rounded-xl border border-input bg-muted px-3.5 py-3 text-sm outline-none placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15 lg:pr-40" />
+                                {/* десктоп: хинт горячих клавиш внутри поля (desktop.html) */}
+                                <span className="pointer-events-none absolute inset-y-0 right-3.5 hidden items-center font-mono text-[10px] text-muted-foreground/50 lg:flex">
+                                    {t("chat.inputHint")}
+                                </span>
+                            </div>
                             {isWhisperAvailable && (
                                 <button aria-label={t("chat.aria.dictate")} onClick={() => void recorder.start()}
                                     className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-border">
@@ -834,6 +844,7 @@ export function ChatPage() {
                     )}
                 </div>
             </footer>
+            </div>
         </div>
     );
 }

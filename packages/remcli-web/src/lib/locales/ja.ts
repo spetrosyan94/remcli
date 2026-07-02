@@ -23,6 +23,7 @@ export const ja: Dictionary = {
     "permission.danger": "危険なコマンド · 取り消し不可",
     "permission.allow": "許可",
     "permission.deny": "拒否",
+    "permission.alwaysHint": "A — 常に許可",
 
     "chat.thinking": "思考中",
     "chat.copy": "コピー",
@@ -36,6 +37,8 @@ export const ja: Dictionary = {
     "chat.aria.dictate": "音声入力",
     "chat.aria.send": "送信",
     "chat.alwaysAllow": "常に許可 · {tool}",
+    "chat.alwaysAllowCommand": "このセッションで {command} を常に許可",
+    "chat.inputHint": "⏎ 送信 · ⇧⏎ 改行",
     "chat.loadEarlier": "以前の履歴を表示",
     "chat.ended": "— セッション終了 —",
     "chat.resumeFailed": "セッションを再開できませんでした",
