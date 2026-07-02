@@ -6,7 +6,7 @@ import * as React from "react";
 import { ChevronRight, Monitor, Plus, Search, Sparkles, Square } from "lucide-react";
 import { NavLink, useNavigate } from "react-router";
 import { toast } from "sonner";
-import { ConnectionBanner, EmptyState, statusLabel, AgentIcon, SessionCard, StatusDot } from "@/components/kit";
+import { ConnectionBanner, EmptyState, Logo, statusLabel, AgentIcon, SessionCard, StatusDot } from "@/components/kit";
 import type { Status } from "@/components/kit";
 import {
     formatTimeLabel,
@@ -24,6 +24,7 @@ import {
     getRestConfig,
     machineStopSession,
     useConnectionStatus,
+    useLatencyMs,
     useMachines,
     useSessions,
     type Session,
@@ -43,6 +44,13 @@ function sortPermissionFirst(list: Session[]): Session[] {
 
 function sessionsCountLabel(count: number): string {
     return `${count} ${tPlural("home.sessions", count)}`;
+}
+
+/** Текст пилюли соединения: «p2p · 12ms» (эталон design/screens/home.tsx);
+ * латентность — GET /health раз в ~30s (стор протокола), до первого замера — «p2p». */
+function connectionPillLabel(isConnected: boolean, latencyMs: number | null): string {
+    if (!isConnected) return t("status.offline");
+    return latencyMs !== null ? `${t("home.connection.p2p")} · ${latencyMs}ms` : t("home.connection.p2p");
 }
 
 /** ~/dev/remcli → remcli (компактные строки сайдбара, desktop.html) */
@@ -290,6 +298,7 @@ function MobileHome({ groups, controls, isConciergeAvailable }: {
 }) {
     const navigate = useNavigate();
     const connectionStatus = useConnectionStatus();
+    const latencyMs = useLatencyMs();
     const banner = useConnectionBanner();
     const isGraceOver = useInitialGraceOver();
     const isConnected = connectionStatus === "connected";
@@ -300,12 +309,12 @@ function MobileHome({ groups, controls, isConciergeAvailable }: {
         <div className="flex min-h-0 flex-1 flex-col lg:hidden">
             {/* шапка */}
             <header className="flex items-center gap-2.5 px-5 pb-3 pt-2.5">
-                <img src="/logo.svg" alt="" className="size-[22px]" />
+                <Logo className="size-[22px] text-foreground" />
                 <span className="font-mono text-base font-semibold">{t("app.name")}</span>
                 <span className={`ml-auto flex items-center gap-1.5 rounded-full border px-2.5 py-1 ${isConnected ? "border-accent/25 bg-accent/[0.08]" : "border-border bg-card"}`}>
                     <StatusDot status={isConnected ? "running" : "error"} className="size-1.5" />
                     <span className={`font-mono text-[10px] ${isConnected ? "text-accent" : "text-muted-foreground"}`}>
-                        {isConnected ? t("home.connection.p2p") : t("status.offline")}
+                        {connectionPillLabel(isConnected, latencyMs)}
                     </span>
                 </span>
                 <button
@@ -429,18 +438,19 @@ function sidebarRowFrame(status: Status): string {
 function DesktopHome({ groups, controls }: { groups: MachineGroup[]; controls: StopControls }) {
     const navigate = useNavigate();
     const connectionStatus = useConnectionStatus();
+    const latencyMs = useLatencyMs();
     const banner = useConnectionBanner();
     const isConnected = connectionStatus === "connected";
     return (
         <div className="hidden min-h-0 flex-1 lg:grid lg:grid-cols-[288px_1fr]">
             <aside className="flex min-h-0 flex-col border-r border-border bg-card/50">
                 <div className="flex items-center gap-[9px] px-4 pb-3 pt-4">
-                    <img src="/logo.svg" alt="" className="size-5" />
+                    <Logo className="size-5 text-foreground" />
                     <span className="font-mono text-sm font-semibold">{t("app.name")}</span>
                     <span className="ml-auto flex items-center gap-[5px]">
                         <StatusDot status={isConnected ? "running" : "error"} className="size-1.5" />
                         <span className={`font-mono text-[9.5px] ${isConnected ? "text-accent" : "text-muted-foreground"}`}>
-                            {isConnected ? t("home.connection.p2p") : t("status.offline")}
+                            {connectionPillLabel(isConnected, latencyMs)}
                         </span>
                     </span>
                 </div>

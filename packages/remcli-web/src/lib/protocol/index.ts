@@ -39,6 +39,9 @@ export {
     refreshMachines,
     loadSessionMessages,
     sendSessionMessage,
+    // fixture-aware обёртки над socket.ts (в fixture-режиме — локальный ответ)
+    sessionAllow,
+    sessionDeny,
     machineSetDisplayName,
     machineDelete,
     subscribeKvChanges
@@ -48,6 +51,7 @@ export {
     useProtocolStore,
     useConnectionStatus,
     useIsAuthenticated,
+    useLatencyMs,
     useMachines,
     useMachine,
     useSessions,
@@ -61,8 +65,6 @@ export {
     machineListAgentSessions,
     machineStopSession,
     machineStopDaemon,
-    sessionAllow,
-    sessionDeny,
     sessionAbort,
     sessionSwitch,
     sessionKill,

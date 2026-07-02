@@ -125,7 +125,7 @@ export function ZenPage() {
                     // выполненная
                     if (task.isDone) {
                         return (
-                            <div key={task.id} className={`flex items-start gap-3 px-2 py-3.5 opacity-45${rowBorder}`}>
+                            <div key={task.id} className={"flex items-start gap-3 px-2 py-3.5 opacity-45" + rowBorder}>
                                 <TaskCheckbox isDone onToggle={() => applyMutation(toggleZenTask(task.id))} />
                                 <span className="text-[14.5px] leading-snug text-muted-foreground line-through">{task.title}</span>
                             </div>

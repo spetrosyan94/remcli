@@ -8,6 +8,12 @@
  */
 
 import {
+    fixtureAnswerPermission,
+    fixtureLoadSessionMessages,
+    fixtureRestConfig,
+    initFixturesIfEnabled
+} from '@/lib/fixtures';
+import {
     connectP2P,
     disconnectP2P,
     restoreCredentials,
@@ -21,6 +27,7 @@ import {
     fetchMachines,
     fetchMessages,
     fetchSessions,
+    measureHealthLatency,
     type DeleteMachineResult,
     type RestConfig
 } from '@/lib/protocol/rest';
@@ -29,6 +36,8 @@ import {
     onSocketReconnected,
     onSocketStatusChange,
     sendEncryptedMessage,
+    sessionAllow as socketSessionAllow,
+    sessionDeny as socketSessionDeny,
     socketConnect,
     socketDisconnect,
     socketEmitWithAck
@@ -81,12 +90,21 @@ interface ClientContext {
 
 let context: ClientContext | null = null;
 
+/**
+ * Fixture-режим (?fixtures=1 / localStorage remcli-fixtures=1) — единственная
+ * точка входа гварда: при инициализации модуля (до первого рендера React)
+ * стор наполняется детерминированными данными из src/lib/fixtures/, а все
+ * сетевые входы ниже проверяют isFixturesActive и работают локально.
+ */
+const isFixturesActive = initFixturesIfEnabled();
+
 export function isClientStarted(): boolean {
-    return context !== null;
+    return isFixturesActive || context !== null;
 }
 
 /** REST config for direct API calls (TTS, Whisper, concierge). Null when not connected. */
 export function getRestConfig(): RestConfig | null {
+    if (isFixturesActive) return fixtureRestConfig();
     if (!context) return null;
     return { endpoint: context.credentials.endpoint, token: context.credentials.token };
 }
@@ -226,6 +244,7 @@ async function decryptApiMessage(cipher: Cipher, message: ApiMessage): Promise<N
 // ─── Sync ────────────────────────────────────────────────────────
 
 export async function refreshSessions(): Promise<void> {
+    if (isFixturesActive) return;
     const ctx = requireContext();
     const apiSessions = await fetchSessions(restConfigOf(ctx));
     const sessions: Session[] = [];
@@ -236,6 +255,7 @@ export async function refreshSessions(): Promise<void> {
 }
 
 export async function refreshMachines(): Promise<void> {
+    if (isFixturesActive) return;
     const ctx = requireContext();
     const apiMachines = await fetchMachines(restConfigOf(ctx));
     const machines: Machine[] = [];
@@ -253,6 +273,7 @@ export async function loadSessionMessages(
     sessionId: string,
     options?: { limit?: number; offset?: number }
 ): Promise<{ total: number; hasMore: boolean }> {
+    if (isFixturesActive) return fixtureLoadSessionMessages(sessionId);
     const ctx = requireContext();
     const cipher = ctx.sessionCiphers.get(sessionId);
     if (!cipher) {
@@ -289,12 +310,6 @@ export async function sendSessionMessage(
         displayText?: string;
     }
 ): Promise<void> {
-    const ctx = requireContext();
-    const cipher = ctx.sessionCiphers.get(sessionId);
-    if (!cipher) {
-        throw new Error(`Session encryption not found for ${sessionId}`);
-    }
-
     const localId = randomUUID();
     const permissionMode = options?.permissionMode ?? 'default';
     const record: RawRecord = {
@@ -308,6 +323,21 @@ export async function sendSessionMessage(
             ...(options?.displayText ? { displayText: options.displayText } : {})
         }
     };
+
+    // Fixture-режим: только локальное эхо, без шифрования и сети
+    if (isFixturesActive) {
+        const normalized = normalizeRawMessage(localId, localId, null, Date.now(), record);
+        if (normalized) {
+            useProtocolStore.getState().applyMessages(sessionId, [normalized]);
+        }
+        return;
+    }
+
+    const ctx = requireContext();
+    const cipher = ctx.sessionCiphers.get(sessionId);
+    if (!cipher) {
+        throw new Error(`Session encryption not found for ${sessionId}`);
+    }
     const encryptedRecord = await cipher.encryptRaw(record);
 
     // Local echo — replaced when the server broadcasts the stored copy
@@ -320,6 +350,40 @@ export async function sendSessionMessage(
     sendEncryptedMessage({ sessionId, encryptedRecord, localId, permissionMode });
 }
 
+// ─── Permission responses (fixture-aware) ────────────────────────
+// Обёртки над socket.ts: в fixture-режиме allow/deny убирают карточку локально
+// (запрос переезжает в completedRequests стора), без RPC.
+
+/** Allow a pending permission request. */
+export async function sessionAllow(
+    sessionId: string,
+    id: string,
+    mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan',
+    allowedTools?: string[],
+    decision?: 'approved' | 'approved_for_session'
+): Promise<void> {
+    if (isFixturesActive) {
+        fixtureAnswerPermission(sessionId, id, 'approved');
+        return;
+    }
+    await socketSessionAllow(sessionId, id, mode, allowedTools, decision);
+}
+
+/** Deny a pending permission request. */
+export async function sessionDeny(
+    sessionId: string,
+    id: string,
+    mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan',
+    allowedTools?: string[],
+    decision?: 'denied' | 'abort'
+): Promise<void> {
+    if (isFixturesActive) {
+        fixtureAnswerPermission(sessionId, id, 'denied');
+        return;
+    }
+    await socketSessionDeny(sessionId, id, mode, allowedTools, decision);
+}
+
 /**
  * Set a custom machine display name via `machine-update-metadata` with
  * optimistic concurrency control and retry on version conflicts — port of
@@ -327,6 +391,7 @@ export async function sendSessionMessage(
  * the custom display name.
  */
 export async function machineSetDisplayName(machineId: string, displayName: string, maxRetries = 3): Promise<void> {
+    if (isFixturesActive) return;
     const ctx = requireContext();
     const machine = useProtocolStore.getState().machines[machineId];
     const cipher = ctx.machineDataCiphers.get(machineId);
@@ -383,6 +448,10 @@ function evictMachine(machineId: string): void {
  * daemon's own machine — surfaced as a typed result for the UI to explain.
  */
 export async function machineDelete(machineId: string): Promise<DeleteMachineResult> {
+    if (isFixturesActive) {
+        evictMachine(machineId);
+        return { ok: true };
+    }
     const ctx = requireContext();
     const result = await deleteMachine(restConfigOf(ctx), machineId);
     if (result.ok || result.status === 404) {
@@ -537,6 +606,9 @@ function handleEphemeral(data: unknown): void {
 
 // ─── Lifecycle ───────────────────────────────────────────────────
 
+/** Период замера латентности демона (GET /health) для пилюли соединения. */
+const LATENCY_PING_INTERVAL_MS = 30_000;
+
 async function startWithCredentials(credentials: P2PCredentials): Promise<void> {
     stopProtocolClient();
 
@@ -574,6 +646,15 @@ async function startWithCredentials(credentials: P2PCredentials): Promise<void> 
 
     useProtocolStore.getState().setAuthenticated(true);
 
+    // Латентность соединения: GET /health раз в ~30s — пилюля HomePage («p2p · 12ms»)
+    const measureLatency = async () => {
+        const latencyMs = await measureHealthLatency(credentials.endpoint);
+        useProtocolStore.getState().setLatency(latencyMs);
+    };
+    void measureLatency();
+    const latencyTimer = window.setInterval(() => { void measureLatency(); }, LATENCY_PING_INTERVAL_MS);
+    ctx.unsubscribers.push(() => window.clearInterval(latencyTimer));
+
     // Initial data load (socket handlers keep it fresh afterwards)
     await Promise.all([
         refreshSessions().catch(() => undefined),
@@ -583,12 +664,14 @@ async function startWithCredentials(credentials: P2PCredentials): Promise<void> 
 
 /** Connect using a parsed QR/URL/manual payload; persists the connection. */
 export async function startProtocolClient(payload: P2PQRPayload): Promise<void> {
+    if (isFixturesActive) return;
     const credentials = connectP2P(payload);
     await startWithCredentials(credentials);
 }
 
 /** Restore a persisted connection (page load). Returns false when none stored. */
 export async function restoreProtocolClient(): Promise<boolean> {
+    if (isFixturesActive) return true;
     const credentials = restoreCredentials();
     if (!credentials) {
         return false;
@@ -599,6 +682,7 @@ export async function restoreProtocolClient(): Promise<boolean> {
 
 /** Disconnect the socket and drop in-memory state (keeps stored credentials). */
 export function stopProtocolClient(): void {
+    if (isFixturesActive) return; // фикстуры в сторе живут до выключения режима
     if (context) {
         for (const unsubscribe of context.unsubscribers) {
             unsubscribe();

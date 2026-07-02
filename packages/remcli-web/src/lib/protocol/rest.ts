@@ -41,6 +41,24 @@ async function requestJson<T>(config: RestConfig, path: string, init?: RequestIn
     return await response.json() as T;
 }
 
+// ─── Health / latency ────────────────────────────────────────────
+
+/**
+ * Daemon round-trip time: GET /health (no auth, lightweight) measured with
+ * performance.now(). Returns whole milliseconds (min 1), null on failure —
+ * the caller shows the connection pill without a latency suffix then.
+ */
+export async function measureHealthLatency(endpoint: string): Promise<number | null> {
+    const startedAt = performance.now();
+    try {
+        const response = await fetch(`${endpoint}/health`, { cache: 'no-store' });
+        if (!response.ok) return null;
+        return Math.max(1, Math.round(performance.now() - startedAt));
+    } catch {
+        return null;
+    }
+}
+
 // ─── Sessions ────────────────────────────────────────────────────
 
 export async function fetchSessions(config: RestConfig): Promise<ApiSession[]> {

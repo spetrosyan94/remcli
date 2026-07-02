@@ -111,7 +111,8 @@ function SheetRow({ isActive, label, meta, onClick }: { isActive: boolean; label
 }
 
 const SHEET_CONTENT_CLASS =
-    "rounded-t-[20px] border-border bg-card pb-[max(10px,env(safe-area-inset-bottom))] " +
+    // rounded через тот же data-вариант, что в ui/drawer.tsx — иначе twMerge не схлопнет rounded-t-lg базы.
+    "data-[vaul-drawer-direction=bottom]:rounded-t-[20px] border-border bg-card pb-[max(10px,env(safe-area-inset-bottom))] " +
     "[&>div:first-child]:mt-2 [&>div:first-child]:mb-1 [&>div:first-child]:h-[4.5px] [&>div:first-child]:w-[38px] [&>div:first-child]:bg-muted-foreground/40";
 
 export function NewSessionPage() {

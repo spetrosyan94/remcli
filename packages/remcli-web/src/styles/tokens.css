@@ -53,7 +53,7 @@
   --destructive: 0 91% 71%;          /* #F87171 */
   --destructive-foreground: 0 63% 11%;
   --border: 240 6% 16%;              /* #26262B */
-  --input: 240 6% 11%;
+  --input: 240 6% 16%;               /* #26262B — рамка поля видима на заливке muted (#1A1A1E) */
   --ring: 158 64% 52%;
 
   --status-running: 158 64% 52%;     /* #34D399 */

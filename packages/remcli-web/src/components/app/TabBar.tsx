@@ -20,7 +20,7 @@ const TABS: TabConfig[] = [
 
 export function TabBar() {
     return (
-        <nav className="border-t border-border bg-background/90 pb-[env(safe-area-inset-bottom)] backdrop-blur">
+        <nav className="border-t border-border bg-background/90 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden">
             <div className="flex px-2 pt-2">
                 {TABS.map(({ to, labelKey, icon: Icon }) => (
                     <NavLink

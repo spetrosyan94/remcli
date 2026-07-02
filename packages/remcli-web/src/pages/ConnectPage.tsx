@@ -5,7 +5,7 @@
 import * as React from "react";
 import { Loader2, QrCode, X } from "lucide-react";
 import { useNavigate } from "react-router";
-import { Caret } from "@/components/kit";
+import { Caret, Logo } from "@/components/kit";
 import { t } from "@/lib/i18n";
 import {
     logoutProtocolClient,
@@ -179,7 +179,7 @@ export function ConnectPage() {
         <div className="flex min-h-dvh flex-col bg-background pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] text-foreground">
             {/* центр: знак + промис */}
             <div className="flex flex-1 flex-col items-center justify-center px-8">
-                <img src="/logo.svg" alt="remcli" className="size-[72px]" />
+                <Logo className="size-[72px] text-foreground" label="remcli" />
                 <div className="mt-4 font-mono text-[26px] font-semibold">
                     remcli<span className="text-accent">_</span>
                 </div>

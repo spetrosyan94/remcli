@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#08080A;}
+@keyframes rcEcho{0%{transform:translateX(-8px);opacity:0}30%,100%{transform:translateX(0);opacity:.28}}
+@keyframes rcMain{0%{transform:translateX(7px);opacity:0}28%,100%{transform:translateX(0);opacity:1}}
+@keyframes rcCur{0%,24%{opacity:0}30%,55%{opacity:1}62%,80%{opacity:0}86%,100%{opacity:1}}
+</style>
+</helmet>
+<section id="t1" style="padding:44px 48px 40px;font-family:Geist,sans-serif">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:6px">
+    <a href="#t1" style="font-family:'Geist Mono',monospace;font-size:10px;font-weight:600;padding:3px 7px;background:#FAFAFA;color:#09090B;border-radius:4px;text-decoration:none">1</a>
+    <span style="font-size:14px;font-weight:600;color:#FAFAFA">remcli — знак: 3 концепта</span>
+    <span style="font-family:'Geist Mono',monospace;font-size:11px;color:#71717A">zinc + emerald · Geist / Geist Mono</span>
+  </div>
+  <p style="margin:0 0 24px;font-size:12px;line-height:1.5;color:#8B8B93;max-width:640px">Все три построены на сетке 32, из терминальных примитивов, работают одноцветно и в 16px. Рекомендация — <a href="#1a" style="color:#34D399;text-decoration:none;font-family:'Geist Mono',monospace">1a</a>.</p>
+  <div id="concepts" style="display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start">
+    <!-- 1a Echo prompt -->
+    <div id="1a" style="display:flex;flex-direction:column;gap:9px;width:372px">
+      <div style="display:flex;align-items:baseline;gap:8px"><a href="#1a" style="font-family:'Geist Mono',monospace;font-size:10.5px;font-weight:600;padding:3px 7px;background:#34D399;color:#052E1E;border-radius:5px;text-decoration:none">1a</a><span style="font-size:12px;font-weight:600;color:#FAFAFA">Echo prompt</span><span style="font-size:11px;color:#71717A">рекомендую</span></div>
+      <div style="background:#0E0E11;border:1px solid #1F1F23;border-radius:12px;overflow:hidden">
+        <div style="height:190px;display:flex;align-items:center;justify-content:center;background:#0B0B0E;border-bottom:1px solid #1F1F23">
+          <svg width="104" height="104" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#FAFAFA" stroke-opacity="0.26" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#34D399"/></svg>
+        </div>
+        <div style="padding:13px 16px 14px;font-size:11.5px;line-height:1.55;color:#8B8B93">Терминальный prompt, продублированный «эхом»: команда, отданная здесь, исполняется там. Призрачный шеврон — удалённая машина, курсор-блок — живая сессия. Читается как «&gt;_», но принадлежит только remcli.</div>
+        <div style="display:flex;align-items:center;gap:14px;padding:12px 16px;border-top:1px solid #1F1F23">
+          <span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B">16→48</span>
+          <svg width="16" height="16" viewBox="0 0 32 32"><path d="M9.5 9 L16.5 16 L9.5 23" stroke="#FAFAFA" stroke-width="4" fill="none"/><rect x="19.5" y="19" width="7" height="4" fill="#34D399"/></svg>
+          <svg width="24" height="24" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#FAFAFA" stroke-opacity="0.26" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#34D399"/></svg>
+          <svg width="32" height="32" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#FAFAFA" stroke-opacity="0.26" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#34D399"/></svg>
+          <svg width="48" height="48" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#FAFAFA" stroke-opacity="0.26" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#34D399"/></svg>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <div style="width:34px;height:34px;border-radius:8px;background:#F4F4F5;display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#18181B" stroke-opacity="0.3" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#18181B" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#059669"/></svg></div>
+            <div style="width:34px;height:34px;border-radius:8px;border:1px solid #27272A;display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#FAFAFA" stroke-opacity="0.26" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#FAFAFA"/></svg></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- 1b r-node -->
+    <div id="1b" style="display:flex;flex-direction:column;gap:9px;width:372px">
+      <div style="display:flex;align-items:baseline;gap:8px"><a href="#1b" style="font-family:'Geist Mono',monospace;font-size:10.5px;font-weight:600;padding:3px 7px;background:#26262B;color:#FAFAFA;border-radius:5px;text-decoration:none">1b</a><span style="font-size:12px;font-weight:600;color:#FAFAFA">r-node</span><span style="font-size:11px;color:#71717A">монограмма</span></div>
+      <div style="background:#0E0E11;border:1px solid #1F1F23;border-radius:12px;overflow:hidden">
+        <div style="height:190px;display:flex;align-items:center;justify-content:center;background:#0B0B0E;border-bottom:1px solid #1F1F23">
+          <svg width="104" height="104" viewBox="0 0 32 32"><rect x="9.5" y="9" width="3.4" height="14" fill="#FAFAFA"/><rect x="9.5" y="9" width="9.2" height="3.4" fill="#FAFAFA"/><rect x="20.9" y="9" width="3.4" height="3.4" fill="#34D399"/></svg>
+        </div>
+        <div style="padding:13px 16px 14px;font-size:11.5px;line-height:1.55;color:#8B8B93">Строчная «r» из двух брусков в пиксельной логике; рука обрывается — и завершается отделённым узлом. Стем — ваш компьютер, узел — телефон на другом конце P2P-линии. Самый «иконочный» из трёх.</div>
+        <div style="display:flex;align-items:center;gap:14px;padding:12px 16px;border-top:1px solid #1F1F23">
+          <span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B">16→48</span>
+          <svg width="16" height="16" viewBox="0 0 32 32"><rect x="8.5" y="8" width="4.4" height="16" fill="#FAFAFA"/><rect x="8.5" y="8" width="10.2" height="4.4" fill="#FAFAFA"/><rect x="20.9" y="8" width="4.4" height="4.4" fill="#34D399"/></svg>
+          <svg width="24" height="24" viewBox="0 0 32 32"><rect x="9.5" y="9" width="3.4" height="14" fill="#FAFAFA"/><rect x="9.5" y="9" width="9.2" height="3.4" fill="#FAFAFA"/><rect x="20.9" y="9" width="3.4" height="3.4" fill="#34D399"/></svg>
+          <svg width="32" height="32" viewBox="0 0 32 32"><rect x="9.5" y="9" width="3.4" height="14" fill="#FAFAFA"/><rect x="9.5" y="9" width="9.2" height="3.4" fill="#FAFAFA"/><rect x="20.9" y="9" width="3.4" height="3.4" fill="#34D399"/></svg>
+          <svg width="48" height="48" viewBox="0 0 32 32"><rect x="9.5" y="9" width="3.4" height="14" fill="#FAFAFA"/><rect x="9.5" y="9" width="9.2" height="3.4" fill="#FAFAFA"/><rect x="20.9" y="9" width="3.4" height="3.4" fill="#34D399"/></svg>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <div style="width:34px;height:34px;border-radius:8px;background:#F4F4F5;display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 32 32"><rect x="9.5" y="9" width="3.4" height="14" fill="#18181B"/><rect x="9.5" y="9" width="9.2" height="3.4" fill="#18181B"/><rect x="20.9" y="9" width="3.4" height="3.4" fill="#059669"/></svg></div>
+            <div style="width:34px;height:34px;border-radius:8px;border:1px solid #27272A;display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 32 32"><rect x="9.5" y="9" width="3.4" height="14" fill="#FAFAFA"/><rect x="9.5" y="9" width="9.2" height="3.4" fill="#FAFAFA"/><rect x="20.9" y="9" width="3.4" height="3.4" fill="#FAFAFA"/></svg></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- 1c p2p arrow -->
+    <div id="1c" style="display:flex;flex-direction:column;gap:9px;width:372px">
+      <div style="display:flex;align-items:baseline;gap:8px"><a href="#1c" style="font-family:'Geist Mono',monospace;font-size:10.5px;font-weight:600;padding:3px 7px;background:#26262B;color:#FAFAFA;border-radius:5px;text-decoration:none">1c</a><span style="font-size:12px;font-weight:600;color:#FAFAFA">&lt;-&gt; линк</span><span style="font-size:11px;color:#71717A">P2P-узел</span></div>
+      <div style="background:#0E0E11;border:1px solid #1F1F23;border-radius:12px;overflow:hidden">
+        <div style="height:190px;display:flex;align-items:center;justify-content:center;background:#0B0B0E;border-bottom:1px solid #1F1F23">
+          <svg width="104" height="104" viewBox="0 0 32 32"><path d="M10.8 10.5 L5.3 16 L10.8 21.5" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><path d="M21.2 10.5 L26.7 16 L21.2 21.5" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="13.6" y="14.5" width="4.8" height="3" fill="#34D399"/></svg>
+        </div>
+        <div style="padding:13px 16px 14px;font-size:11.5px;line-height:1.55;color:#8B8B93">ASCII-стрелка «&lt;-&gt;», сжатая в глиф: два конца — две машины, зелёное звено между ними — зашифрованный туннель. Прямая метафора P2P, набранная символами терминала.</div>
+        <div style="display:flex;align-items:center;gap:14px;padding:12px 16px;border-top:1px solid #1F1F23">
+          <span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B">16→48</span>
+          <svg width="16" height="16" viewBox="0 0 32 32"><path d="M10.8 9.5 L4.3 16 L10.8 22.5" stroke="#FAFAFA" stroke-width="4" fill="none"/><path d="M21.2 9.5 L27.7 16 L21.2 22.5" stroke="#FAFAFA" stroke-width="4" fill="none"/><rect x="13.4" y="14" width="5.2" height="4" fill="#34D399"/></svg>
+          <svg width="24" height="24" viewBox="0 0 32 32"><path d="M10.8 10.5 L5.3 16 L10.8 21.5" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><path d="M21.2 10.5 L26.7 16 L21.2 21.5" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="13.6" y="14.5" width="4.8" height="3" fill="#34D399"/></svg>
+          <svg width="32" height="32" viewBox="0 0 32 32"><path d="M10.8 10.5 L5.3 16 L10.8 21.5" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><path d="M21.2 10.5 L26.7 16 L21.2 21.5" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="13.6" y="14.5" width="4.8" height="3" fill="#34D399"/></svg>
+          <svg width="48" height="48" viewBox="0 0 32 32"><path d="M10.8 10.5 L5.3 16 L10.8 21.5" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><path d="M21.2 10.5 L26.7 16 L21.2 21.5" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="13.6" y="14.5" width="4.8" height="3" fill="#34D399"/></svg>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <div style="width:34px;height:34px;border-radius:8px;background:#F4F4F5;display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 32 32"><path d="M10.8 10.5 L5.3 16 L10.8 21.5" stroke="#18181B" stroke-width="3.2" fill="none"/><path d="M21.2 10.5 L26.7 16 L21.2 21.5" stroke="#18181B" stroke-width="3.2" fill="none"/><rect x="13.6" y="14.5" width="4.8" height="3" fill="#059669"/></svg></div>
+            <div style="width:34px;height:34px;border-radius:8px;border:1px solid #27272A;display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 32 32"><path d="M10.8 10.5 L5.3 16 L10.8 21.5" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><path d="M21.2 10.5 L26.7 16 L21.2 21.5" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="13.6" y="14.5" width="4.8" height="3" fill="#FAFAFA"/></svg></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<section id="t2" style="padding:40px 48px 48px;border-top:1px solid #17171B;font-family:Geist,sans-serif">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:22px">
+    <a href="#t2" style="font-family:'Geist Mono',monospace;font-size:10px;font-weight:600;padding:3px 7px;background:#FAFAFA;color:#09090B;border-radius:4px;text-decoration:none">2</a>
+    <span style="font-size:14px;font-weight:600;color:#FAFAFA">Комплект для <a href="#1a" style="color:#34D399;text-decoration:none">1a</a> · Echo prompt</span>
+    <span style="font-family:'Geist Mono',monospace;font-size:11px;color:#71717A">wordmark · icons · splash · motion</span>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start">
+    <!-- wordmark -->
+    <div style="display:flex;flex-direction:column;gap:9px;width:372px">
+      <span style="font-size:11px;color:#71717A">Wordmark + лого-строка</span>
+      <div style="background:#0E0E11;border:1px solid #1F1F23;border-radius:12px;padding:26px 24px;display:flex;flex-direction:column;gap:22px">
+        <div style="display:flex;align-items:center;gap:11px">
+          <svg width="30" height="30" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#FAFAFA" stroke-opacity="0.26" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#34D399"/></svg>
+          <span style="font-family:'Geist Mono',monospace;font-size:22px;font-weight:600;color:#FAFAFA;letter-spacing:-0.02em">remcli<span style="color:#34D399">_</span></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:9px">
+          <span style="font-family:'Geist Mono',monospace;font-size:14px;font-weight:500;color:#FAFAFA">remcli<span style="color:#34D399">_</span></span>
+          <span style="font-family:'Geist Mono',monospace;font-size:10px;color:#52525B">компактно, без знака</span>
+        </div>
+        <div style="background:#F4F4F5;border-radius:8px;padding:14px 18px;display:flex;align-items:center;gap:10px">
+          <svg width="22" height="22" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#18181B" stroke-opacity="0.3" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#18181B" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#059669"/></svg>
+          <span style="font-family:'Geist Mono',monospace;font-size:15px;font-weight:600;color:#18181B">remcli<span style="color:#059669">_</span></span>
+        </div>
+      </div>
+    </div>
+    <!-- home screen context -->
+    <div style="display:flex;flex-direction:column;gap:9px;width:372px">
+      <span style="font-size:11px;color:#71717A">Иконка на домашнем экране iPhone</span>
+      <div style="background:linear-gradient(165deg,#101014,#0A0A0E);border:1px solid #1F1F23;border-radius:12px;padding:24px 20px 18px">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0 8px;justify-items:center">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div style="width:58px;height:58px;border-radius:14px;background:#1C1C21;display:flex;align-items:center;justify-content:center"><div style="width:24px;height:24px;border-radius:50%;background:#3F3F46"></div></div><span style="font-size:9.5px;color:#A1A1AA">GitHub</span></div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div style="width:58px;height:58px;border-radius:14px;background:#1C1C21;display:flex;align-items:center;justify-content:center"><div style="width:22px;height:22px;background:#3F3F46;clip-path:polygon(50% 0,100% 100%,0 100%)"></div></div><span style="font-size:9.5px;color:#A1A1AA">Linear</span></div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div style="width:58px;height:58px;border-radius:14px;background:#1C1C21;display:flex;align-items:center;justify-content:center"><div style="width:22px;height:22px;background:#3F3F46;border-radius:4px"></div></div><span style="font-size:9.5px;color:#A1A1AA">VS Code</span></div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div style="width:58px;height:58px;border-radius:14px;background:#0B0B0E;border:1px solid #26262B;display:flex;align-items:center;justify-content:center"><svg width="34" height="34" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#FAFAFA" stroke-opacity="0.26" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#34D399"/></svg></div><span style="font-size:9.5px;color:#FAFAFA">remcli</span></div>
+        </div>
+        <div style="display:flex;gap:14px;margin-top:20px;padding-top:16px;border-top:1px solid #1F1F23;align-items:center">
+          <div style="width:64px;height:64px;border-radius:15px;background:#0B0B0E;display:flex;align-items:center;justify-content:center"><svg width="38" height="38" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#FAFAFA" stroke-opacity="0.26" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#34D399"/></svg></div>
+          <div style="width:64px;height:64px;border-radius:15px;background:#F4F4F5;display:flex;align-items:center;justify-content:center"><svg width="38" height="38" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#18181B" stroke-opacity="0.3" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#18181B" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#059669"/></svg></div>
+          <div style="width:64px;height:64px;border-radius:15px;background:#34D399;display:flex;align-items:center;justify-content:center"><svg width="38" height="38" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#052E1E" stroke-opacity="0.35" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#052E1E" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#052E1E"/></svg></div>
+          <span style="font-family:'Geist Mono',monospace;font-size:9.5px;color:#52525B;line-height:1.6">maskable<br/>dark / light / brand</span>
+        </div>
+      </div>
+    </div>
+    <!-- favicon + header -->
+    <div style="display:flex;flex-direction:column;gap:9px;width:372px">
+      <span style="font-size:11px;color:#71717A">Favicon · шапка приложения · splash</span>
+      <div style="background:#0E0E11;border:1px solid #1F1F23;border-radius:12px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:16px;padding:16px 18px;border-bottom:1px solid #1F1F23">
+          <span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B">favicon</span>
+          <svg width="16" height="16" viewBox="0 0 32 32"><path d="M9.5 9 L16.5 16 L9.5 23" stroke="#FAFAFA" stroke-width="4" fill="none"/><rect x="19.5" y="19" width="7" height="4" fill="#34D399"/></svg>
+          <svg width="32" height="32" viewBox="0 0 32 32"><path d="M9.5 9 L16.5 16 L9.5 23" stroke="#FAFAFA" stroke-width="4" fill="none"/><rect x="19.5" y="19" width="7" height="4" fill="#34D399"/></svg>
+          <span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B">в 16px эхо убрано — только prompt + курсор</span>
+        </div>
+        <div style="padding:14px 18px;border-bottom:1px solid #1F1F23">
+          <div style="background:#111114;border:1px solid #232328;border-radius:10px;padding:11px 14px;display:flex;align-items:center;gap:10px">
+            <svg width="20" height="20" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#FAFAFA" stroke-opacity="0.26" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#34D399"/></svg>
+            <span style="font-family:'Geist Mono',monospace;font-size:13px;font-weight:600;color:#FAFAFA">remcli<span style="color:#34D399">_</span></span>
+            <span style="margin-left:auto;display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:#34D399"></span><span style="font-family:'Geist Mono',monospace;font-size:10px;color:#A1A1AA">mbp.local</span></span>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:center;gap:26px;padding:20px 18px;background:#09090B">
+          <div style="width:150px;height:300px;border-radius:22px;border:1px solid #232328;background:#09090B;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px">
+            <div style="position:absolute;top:9px;left:50%;transform:translateX(-50%);width:44px;height:13px;border-radius:7px;background:#18181B"></div>
+            <svg width="52" height="52" viewBox="0 0 32 32"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#FAFAFA" stroke-opacity="0.26" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#34D399"><animate attributeName="opacity" values="1;1;0;0;1" keyTimes="0;0.5;0.55;0.95;1" dur="1.2s" repeatCount="indefinite"/></rect></svg>
+            <span style="font-family:'Geist Mono',monospace;font-size:11px;font-weight:600;color:#FAFAFA">remcli</span>
+            <span style="position:absolute;bottom:18px;font-family:'Geist Mono',monospace;font-size:7.5px;color:#3F3F46;letter-spacing:0.08em">P2P · E2E · NO CLOUD</span>
+            <div style="position:absolute;bottom:7px;left:50%;transform:translateX(-50%);width:46px;height:3px;border-radius:2px;background:#26262B"></div>
+          </div>
+          <span style="font-family:'Geist Mono',monospace;font-size:9.5px;color:#52525B;line-height:1.7">splash:<br/>theme-color #09090B<br/>курсор мигает,<br/>дальше — home</span>
+        </div>
+      </div>
+    </div>
+    <!-- animation -->
+    <div style="display:flex;flex-direction:column;gap:9px;width:372px">
+      <span style="font-size:11px;color:#71717A">Анимация знака · 1.4s, один проход + blink</span>
+      <div style="background:#0E0E11;border:1px solid #1F1F23;border-radius:12px;overflow:hidden">
+        <div style="height:150px;display:flex;align-items:center;justify-content:center;background:#0B0B0E;border-bottom:1px solid #1F1F23">
+          <svg width="76" height="76" viewBox="0 0 32 32" style="overflow:visible">
+            <path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#FAFAFA" stroke-width="3.2" fill="none" style="animation:rcEcho 2.6s cubic-bezier(0.22,1,0.36,1) infinite"/>
+            <path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#FAFAFA" stroke-width="3.2" fill="none" style="animation:rcMain 2.6s cubic-bezier(0.22,1,0.36,1) infinite"/>
+            <rect x="21.6" y="19.5" width="6" height="3.2" fill="#34D399" style="animation:rcCur 2.6s steps(1) infinite"/>
+          </svg>
+        </div>
+        <div style="padding:13px 16px;font-family:'Geist Mono',monospace;font-size:10px;line-height:1.8;color:#8B8B93">
+          <div><span style="color:#52525B">0–380ms</span>&nbsp;&nbsp;шевроны съезжаются к центру, ease-out</div>
+          <div><span style="color:#52525B">380ms</span>&nbsp;&nbsp;&nbsp;&nbsp;эхо гаснет до 26%</div>
+          <div><span style="color:#52525B">400–1.4s</span>&nbsp;курсор мигает 2 раза (steps)</div>
+          <div><span style="color:#52525B">loop</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;только в пустых состояниях</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+</x-dc>
+</body>
+</html>

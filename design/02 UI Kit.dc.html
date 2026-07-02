@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#08080A;}
+@keyframes kBlink{0%,49%{opacity:1}50%,100%{opacity:0}}
+@keyframes kPulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes kBar{0%,100%{transform:scaleY(.25)}50%{transform:scaleY(1)}}
+@keyframes kShim{0%{background-position:-180px 0}100%{background-position:180px 0}}
+@keyframes kSpin{to{transform:rotate(360deg)}}
+</style>
+</helmet>
+<section id="t1" style="padding:44px 48px 40px;font-family:Geist,sans-serif">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:22px">
+    <a href="#t1" style="font-family:'Geist Mono',monospace;font-size:10px;font-weight:600;padding:3px 7px;background:#FAFAFA;color:#09090B;border-radius:4px;text-decoration:none">1</a>
+    <span style="font-size:14px;font-weight:600;color:#FAFAFA">Фундамент</span>
+    <span style="font-family:'Geist Mono',monospace;font-size:11px;color:#71717A">цвет · тип · отступы · радиусы</span>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start">
+    <div style="display:flex;flex-direction:column;gap:9px;width:400px">
+      <span style="font-size:11px;color:#71717A">Семантические цвета — dark (основная)</span>
+      <div style="background:#0E0E11;border:1px solid #1F1F23;border-radius:12px;padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-family:'Geist Mono',monospace;font-size:10px">
+        <div style="display:flex;align-items:center;gap:9px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:7px;background:#09090B;border:1px solid #26262B"></span>background #09090B</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:7px;background:#131316;border:1px solid #26262B"></span>card #131316</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:7px;background:#1A1A1E;border:1px solid #26262B"></span>input/muted #1A1A1E</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:7px;background:#26262B"></span>border #26262B</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:7px;background:#FAFAFA"></span>foreground #FAFAFA</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:7px;background:#A1A1AA"></span>secondary #A1A1AA</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:7px;background:#71717A"></span>muted-fg #71717A</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:7px;background:#FAFAFA"></span>primary = fg</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:7px;background:#34D399"></span>accent #34D399</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:7px;background:#F87171"></span>destructive #F87171</div>
+      </div>
+      <span style="font-size:11px;color:#71717A;margin-top:6px">light</span>
+      <div style="background:#FFFFFF;border:1px solid #E4E4E7;border-radius:12px;padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-family:'Geist Mono',monospace;font-size:10px">
+        <div style="display:flex;align-items:center;gap:9px;color:#52525B"><span style="width:30px;height:30px;border-radius:7px;background:#FAFAFA;border:1px solid #E4E4E7"></span>background #FAFAFA</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#52525B"><span style="width:30px;height:30px;border-radius:7px;background:#FFFFFF;border:1px solid #E4E4E7"></span>card #FFFFFF</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#52525B"><span style="width:30px;height:30px;border-radius:7px;background:#E4E4E7"></span>border #E4E4E7</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#52525B"><span style="width:30px;height:30px;border-radius:7px;background:#18181B"></span>foreground #18181B</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#52525B"><span style="width:30px;height:30px;border-radius:7px;background:#059669"></span>accent #059669</div>
+        <div style="display:flex;align-items:center;gap:9px;color:#52525B"><span style="width:30px;height:30px;border-radius:7px;background:#DC2626"></span>destructive #DC2626</div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:9px;width:400px">
+      <span style="font-size:11px;color:#71717A">Статусы агента — единая система</span>
+      <div style="background:#0E0E11;border:1px solid #1F1F23;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:11px;font-family:'Geist Mono',monospace;font-size:11px">
+        <div style="display:flex;align-items:center;gap:10px"><span style="width:8px;height:8px;border-radius:50%;background:#34D399;animation:kPulse 2s ease-in-out infinite"></span><span style="color:#34D399">running</span><span style="color:#52525B;margin-left:auto">работает · пульс 2s</span></div>
+        <div style="display:flex;align-items:center;gap:10px"><span style="width:8px;height:8px;border-radius:50%;background:#22D3EE;animation:kPulse 1.2s ease-in-out infinite"></span><span style="color:#22D3EE">thinking</span><span style="color:#52525B;margin-left:auto">думает · пульс 1.2s</span></div>
+        <div style="display:flex;align-items:center;gap:10px"><span style="width:8px;height:8px;border-radius:50%;background:#FBBF24"></span><span style="color:#FBBF24">permission</span><span style="color:#52525B;margin-left:auto">ждёт разрешения · статично</span></div>
+        <div style="display:flex;align-items:center;gap:10px"><span style="width:8px;height:8px;border-radius:50%;background:#71717A"></span><span style="color:#A1A1AA">idle</span><span style="color:#52525B;margin-left:auto">ожидает</span></div>
+        <div style="display:flex;align-items:center;gap:10px"><span style="width:8px;height:8px;border-radius:50%;border:1.5px solid #52525B;box-sizing:border-box"></span><span style="color:#71717A">offline</span><span style="color:#52525B;margin-left:auto">полый дот</span></div>
+        <div style="display:flex;align-items:center;gap:10px"><span style="width:8px;height:8px;border-radius:50%;background:#F87171"></span><span style="color:#F87171">error</span><span style="color:#52525B;margin-left:auto">ошибка</span></div>
+        <div style="border-top:1px solid #1F1F23;padding-top:11px;display:flex;gap:8px;flex-wrap:wrap">
+          <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;background:rgba(52,211,153,0.1);color:#34D399"><span style="width:6px;height:6px;border-radius:50%;background:#34D399"></span>работает</span>
+          <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;background:rgba(251,191,36,0.1);color:#FBBF24"><span style="width:6px;height:6px;border-radius:50%;background:#FBBF24"></span>ждёт разрешения</span>
+          <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;background:rgba(113,113,122,0.12);color:#A1A1AA"><span style="width:6px;height:6px;border-radius:50%;background:#71717A"></span>ожидает</span>
+        </div>
+      </div>
+      <span style="font-size:11px;color:#71717A;margin-top:6px">AgentIcon — маркировка агентов</span>
+      <div style="background:#0E0E11;border:1px solid #1F1F23;border-radius:12px;padding:16px;display:flex;gap:18px;font-family:'Geist Mono',monospace;font-size:10px">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:7px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:8px;background:rgba(217,119,87,0.14);color:#E8916F;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">cl</span>claude</div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:7px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:8px;background:rgba(45,212,191,0.12);color:#2DD4BF;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">cx</span>codex</div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:7px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:8px;background:rgba(96,165,250,0.12);color:#60A5FA;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">gm</span>gemini</div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:7px;color:#8B8B93"><span style="width:30px;height:30px;border-radius:8px;background:rgba(161,161,170,0.12);color:#D4D4D8;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">cu</span>cursor</div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:9px;width:400px">
+      <span style="font-size:11px;color:#71717A">Типографика · Geist + Geist Mono</span>
+      <div style="background:#0E0E11;border:1px solid #1F1F23;border-radius:12px;padding:18px 16px;display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;align-items:baseline;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B;width:70px">22/600</span><span style="font-size:22px;font-weight:600;color:#FAFAFA">Заголовок экрана</span></div>
+        <div style="display:flex;align-items:baseline;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B;width:70px">17/600</span><span style="font-size:17px;font-weight:600;color:#FAFAFA">Секция, диалог</span></div>
+        <div style="display:flex;align-items:baseline;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B;width:70px">14/400</span><span style="font-size:14px;color:#D4D4D8">Основной текст чата, 1.55</span></div>
+        <div style="display:flex;align-items:baseline;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B;width:70px">13/500</span><span style="font-size:13px;font-weight:500;color:#FAFAFA">Кнопки, строки списков</span></div>
+        <div style="display:flex;align-items:baseline;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B;width:70px">12/400</span><span style="font-size:12px;color:#A1A1AA">Вторичный текст, подписи</span></div>
+        <div style="display:flex;align-items:baseline;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B;width:70px">mono 13</span><span style="font-family:'Geist Mono',monospace;font-size:13px;color:#FAFAFA">~/dev/remcli · пути, сессии</span></div>
+        <div style="display:flex;align-items:baseline;gap:12px"><span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B;width:70px">mono 11</span><span style="font-family:'Geist Mono',monospace;font-size:11px;color:#A1A1AA">код, статусы, метаданные</span></div>
+      </div>
+      <div style="display:flex;gap:24px">
+        <div style="flex:1;background:#0E0E11;border:1px solid #1F1F23;border-radius:12px;padding:14px 16px">
+          <span style="font-size:11px;color:#71717A">Отступы 4-база</span>
+          <div style="display:flex;align-items:flex-end;gap:6px;margin-top:10px">
+            <div style="width:4px;height:4px;background:#34D399"></div><div style="width:8px;height:8px;background:#2DB786"></div><div style="width:12px;height:12px;background:#279C74"></div><div style="width:16px;height:16px;background:#218262"></div><div style="width:24px;height:24px;background:#1B6850"></div><div style="width:32px;height:32px;background:#154E3E"></div>
+          </div>
+          <div style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B;margin-top:6px">4 8 12 16 24 32</div>
+        </div>
+        <div style="flex:1;background:#0E0E11;border:1px solid #1F1F23;border-radius:12px;padding:14px 16px">
+          <span style="font-size:11px;color:#71717A">Радиусы</span>
+          <div style="display:flex;align-items:flex-end;gap:10px;margin-top:10px">
+            <div style="width:34px;height:34px;border:1px solid #3F3F46;border-radius:6px"></div>
+            <div style="width:34px;height:34px;border:1px solid #3F3F46;border-radius:8px"></div>
+            <div style="width:34px;height:34px;border:1px solid #3F3F46;border-radius:12px"></div>
+            <div style="width:34px;height:34px;border:1px solid #3F3F46;border-radius:16px"></div>
+          </div>
+          <div style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B;margin-top:6px">6 ctrl-s · 8 ctrl · 12 card · 16 sheet</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<section id="t3" style="padding:40px 48px;border-top:1px solid #17171B;font-family:Geist,sans-serif">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:22px">
+    <a href="#t3" style="font-family:'Geist Mono',monospace;font-size:10px;font-weight:600;padding:3px 7px;background:#FAFAFA;color:#09090B;border-radius:4px;text-decoration:none">3</a>
+    <span style="font-size:14px;font-weight:600;color:#FAFAFA">Композиты remcli · все состояния · dark</span>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start">
+    <div style="display:flex;flex-direction:column;gap:9px;width:390px">
+      <span style="font-size:11px;color:#71717A">SessionCard: обычная · активная · ждёт разрешения · офлайн</span>
+      <div style="background:#09090B;border:1px solid #1F1F23;border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:10px;background:#131316;border:1px solid #26262B">
+          <span style="width:32px;height:32px;border-radius:8px;background:rgba(45,212,191,0.12);color:#2DD4BF;display:flex;align-items:center;justify-content:center;font-family:'Geist Mono',monospace;font-size:12px;font-weight:700;flex:none">cx</span>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+            <span style="font-family:'Geist Mono',monospace;font-size:13px;font-weight:600;color:#FAFAFA;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">~/dev/api-gateway</span>
+            <span style="font-size:12px;color:#71717A;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Тесты прошли, готовлю коммит…</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:none"><span style="width:8px;height:8px;border-radius:50%;background:#71717A"></span><span style="font-family:'Geist Mono',monospace;font-size:10px;color:#52525B">12:40</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:10px;background:#131316;border:1px solid rgba(52,211,153,0.35)">
+          <span style="width:32px;height:32px;border-radius:8px;background:rgba(217,119,87,0.14);color:#E8916F;display:flex;align-items:center;justify-content:center;font-family:'Geist Mono',monospace;font-size:12px;font-weight:700;flex:none">cl</span>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+            <span style="font-family:'Geist Mono',monospace;font-size:13px;font-weight:600;color:#FAFAFA">~/dev/remcli</span>
+            <span style="font-size:12px;color:#34D399">Пишу WebRTC-транспорт…</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:none"><span style="width:8px;height:8px;border-radius:50%;background:#34D399;animation:kPulse 2s ease-in-out infinite"></span><span style="font-family:'Geist Mono',monospace;font-size:10px;color:#52525B">сейчас</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:10px;background:linear-gradient(90deg,rgba(251,191,36,0.07),#131316 55%);border:1px solid rgba(251,191,36,0.4)">
+          <span style="width:32px;height:32px;border-radius:8px;background:rgba(217,119,87,0.14);color:#E8916F;display:flex;align-items:center;justify-content:center;font-family:'Geist Mono',monospace;font-size:12px;font-weight:700;flex:none">cl</span>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+            <span style="font-family:'Geist Mono',monospace;font-size:13px;font-weight:600;color:#FAFAFA">~/dev/deploy-scripts</span>
+            <span style="font-size:12px;color:#FBBF24;font-weight:500">Просит разрешение: git push --force</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:none"><span style="width:8px;height:8px;border-radius:50%;background:#FBBF24"></span><span style="font-family:'Geist Mono',monospace;font-size:10px;color:#FBBF24">2 мин</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:10px;background:#0E0E11;border:1px solid #1F1F23;opacity:0.55">
+          <span style="width:32px;height:32px;border-radius:8px;background:rgba(96,165,250,0.12);color:#60A5FA;display:flex;align-items:center;justify-content:center;font-family:'Geist Mono',monospace;font-size:12px;font-weight:700;flex:none">gm</span>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+            <span style="font-family:'Geist Mono',monospace;font-size:13px;font-weight:600;color:#A1A1AA">~/exp/rag-index</span>
+            <span style="font-size:12px;color:#52525B">офлайн · машина недоступна</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:none"><span style="width:8px;height:8px;border-radius:50%;border:1.5px solid #52525B;box-sizing:border-box"></span><span style="font-family:'Geist Mono',monospace;font-size:10px;color:#52525B">вчера</span></div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:9px;width:390px">
+      <span style="font-size:11px;color:#71717A">PermissionCard: обычный · опасный · свёрнутый</span>
+      <div style="background:#09090B;border:1px solid #1F1F23;border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px">
+        <div style="border-radius:12px;border:1px solid rgba(251,191,36,0.45);background:#141208;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 13px;border-bottom:1px solid rgba(251,191,36,0.2)">
+            <span style="width:7px;height:7px;border-radius:50%;background:#FBBF24"></span>
+            <span style="font-family:'Geist Mono',monospace;font-size:11px;font-weight:600;color:#FBBF24">запрос разрешения · bash</span>
+            <span style="margin-left:auto;font-family:'Geist Mono',monospace;font-size:10px;color:#71717A">claude</span>
+          </div>
+          <div style="margin:12px 13px;padding:10px 12px;border-radius:8px;background:#0B0B0E;border:1px solid #26262B;font-family:'Geist Mono',monospace;font-size:12px;line-height:1.6;color:#D4D4D8"><span style="color:#34D399">$</span> pnpm add @noble/ciphers<br/><span style="color:#52525B"># установит 1 пакет в ~/dev/remcli</span></div>
+          <div style="display:flex;gap:8px;padding:0 13px 12px">
+            <button style="flex:1.4;height:44px;border-radius:10px;background:#34D399;color:#052E1E;font-family:Geist,sans-serif;font-size:14px;font-weight:600;border:none">Разрешить</button>
+            <button style="flex:1;height:44px;border-radius:10px;background:transparent;color:#F87171;font-family:Geist,sans-serif;font-size:14px;font-weight:500;border:1px solid rgba(248,113,113,0.35)">Запретить</button>
+          </div>
+          <button style="display:block;width:100%;padding:0 13px 12px;background:none;border:none;font-family:'Geist Mono',monospace;font-size:11px;color:#71717A;text-align:center">всегда разрешать pnpm add в этой сессии</button>
+        </div>
+        <div style="border-radius:12px;border:1px solid rgba(248,113,113,0.5);background:#160D0D;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 13px;border-bottom:1px solid rgba(248,113,113,0.25)">
+            <span style="width:7px;height:7px;border-radius:50%;background:#F87171"></span>
+            <span style="font-family:'Geist Mono',monospace;font-size:11px;font-weight:600;color:#F87171">опасная команда · необратимо</span>
+            <span style="margin-left:auto;font-family:'Geist Mono',monospace;font-size:10px;color:#71717A">claude</span>
+          </div>
+          <div style="margin:12px 13px;padding:10px 12px;border-radius:8px;background:#0B0B0E;border:1px solid rgba(248,113,113,0.3);font-family:'Geist Mono',monospace;font-size:12px;line-height:1.6;color:#D4D4D8"><span style="color:#F87171">$</span> git push --force origin main</div>
+          <div style="display:flex;gap:8px;padding:0 13px 14px">
+            <button style="flex:1;height:44px;border-radius:10px;background:#F87171;color:#2D0A0A;font-family:Geist,sans-serif;font-size:14px;font-weight:600;border:none">Разрешить force-push</button>
+            <button style="flex:1;height:44px;border-radius:10px;background:#1F1F23;color:#FAFAFA;font-family:Geist,sans-serif;font-size:14px;font-weight:600;border:none">Запретить</button>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:11px 13px;border-radius:10px;border:1px solid rgba(251,191,36,0.4);background:#141208">
+          <span style="width:7px;height:7px;border-radius:50%;background:#FBBF24"></span>
+          <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#FAFAFA;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Edit src/tunnel.ts · +8 −2</span>
+          <button style="height:30px;padding:0 12px;border-radius:7px;background:#34D399;color:#052E1E;font-size:12px;font-weight:600;border:none;font-family:Geist,sans-serif">Да</button>
+          <button style="height:30px;padding:0 12px;border-radius:7px;background:transparent;color:#F87171;font-size:12px;font-weight:500;border:1px solid rgba(248,113,113,0.35);font-family:Geist,sans-serif">Нет</button>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:9px;width:390px">
+      <span style="font-size:11px;color:#71717A">ToolCallCard: свёрнут-успех · развёрнут-running · ошибка</span>
+      <div style="background:#09090B;border:1px solid #1F1F23;border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:9px;background:#131316;border:1px solid #26262B;font-family:'Geist Mono',monospace;font-size:12px">
+          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M3 2 L7 5 L3 8" stroke="#71717A" stroke-width="1.6" fill="none"/></svg>
+          <span style="color:#A1A1AA">Read</span><span style="color:#FAFAFA;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">src/transport/webrtc.ts</span>
+          <svg width="13" height="13" viewBox="0 0 14 14"><path d="M2.5 7.5 L5.5 10.5 L11.5 4" stroke="#34D399" stroke-width="2" fill="none"/></svg>
+        </div>
+        <div style="border-radius:9px;background:#131316;border:1px solid #26262B;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:9px;padding:9px 12px;font-family:'Geist Mono',monospace;font-size:12px">
+            <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3 L5 7 L8 3" stroke="#71717A" stroke-width="1.6" fill="none"/></svg>
+            <span style="color:#A1A1AA">Bash</span><span style="color:#FAFAFA;flex:1">pnpm test</span>
+            <span style="width:12px;height:12px;border-radius:50%;border:2px solid #26262B;border-top-color:#34D399;animation:kSpin 0.8s linear infinite"></span>
+          </div>
+          <div style="border-top:1px solid #1F1F23;padding:10px 12px;font-family:'Geist Mono',monospace;font-size:11px;line-height:1.65;color:#8B8B93;background:#0B0B0E">RUN&nbsp;&nbsp;src/tunnel.test.ts<br/>PASS src/crypto.test.ts <span style="color:#34D399">12 passed</span><br/><span style="display:inline-block;width:7px;height:12px;background:#34D399;vertical-align:-2px;animation:kBlink 1.1s steps(2) infinite"></span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:9px;background:#131316;border:1px solid rgba(248,113,113,0.35);font-family:'Geist Mono',monospace;font-size:12px">
+          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M3 2 L7 5 L3 8" stroke="#71717A" stroke-width="1.6" fill="none"/></svg>
+          <span style="color:#A1A1AA">Edit</span><span style="color:#FAFAFA;flex:1">src/legacy.ts</span>
+          <span style="color:#F87171;font-size:10.5px">exit 1</span>
+        </div>
+      </div>
+      <span style="font-size:11px;color:#71717A;margin-top:6px">DiffView</span>
+      <div style="background:#09090B;border:1px solid #1F1F23;border-radius:12px;padding:12px">
+        <div style="border-radius:9px;border:1px solid #26262B;overflow:hidden;font-family:'Geist Mono',monospace;font-size:11.5px">
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#131316;border-bottom:1px solid #1F1F23">
+            <span style="color:#FAFAFA">src/transport/webrtc.ts</span>
+            <span style="margin-left:auto;color:#34D399">+12</span><span style="color:#F87171">−4</span>
+          </div>
+          <div style="background:#0B0B0E;line-height:1.75;padding:6px 0">
+            <div style="padding:0 12px;color:#71717A">&nbsp;&nbsp;const chan = peer.channel;</div>
+            <div style="padding:0 12px;background:rgba(248,113,113,0.09);color:#F1A8A8"><span style="color:#F87171">−</span> chan.send(raw);</div>
+            <div style="padding:0 12px;background:rgba(52,211,153,0.08);color:#9BE8C8"><span style="color:#34D399">+</span> chan.send(seal(raw, key));</div>
+            <div style="padding:0 12px;background:rgba(52,211,153,0.08);color:#9BE8C8"><span style="color:#34D399">+</span> metrics.bump("tx");</div>
+            <div style="padding:0 12px;color:#71717A">&nbsp;&nbsp;await ack();</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:9px;width:390px">
+      <span style="font-size:11px;color:#71717A">ChatMessage: пользователь · агент · стриминг · системное</span>
+      <div style="background:#09090B;border:1px solid #1F1F23;border-radius:12px;padding:16px 14px;display:flex;flex-direction:column;gap:14px">
+        <div style="align-self:flex-end;max-width:85%;background:#1F1F23;border-radius:14px 14px 4px 14px;padding:9px 13px;font-size:14px;line-height:1.5;color:#FAFAFA">Добавь шифрование в канал и прогони тесты</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;align-items:center;gap:7px;font-family:'Geist Mono',monospace;font-size:10.5px;color:#71717A"><span style="width:18px;height:18px;border-radius:5px;background:rgba(217,119,87,0.14);color:#E8916F;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700">cl</span>claude · opus-4.1 · 12:41</div>
+          <div style="font-size:14px;line-height:1.55;color:#D4D4D8">Оборачиваю отправку в <span style="font-family:'Geist Mono',monospace;font-size:12.5px;background:#1A1A1E;padding:1px 5px;border-radius:5px;color:#9BE8C8">seal()</span> с ключом сессии. Изменил два файла, тесты зелёные.</div>
+          <div style="display:flex;gap:8px">
+            <button style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:7px;background:transparent;border:1px solid #2E2E33;color:#A1A1AA;font-family:'Geist Mono',monospace;font-size:10.5px"><svg width="10" height="10" viewBox="0 0 12 12"><path d="M2 4.5 L2 7.5 L4.5 7.5 L7.5 10 L7.5 2 L4.5 4.5 Z" fill="#A1A1AA"/></svg>слушать</button>
+            <button style="height:28px;padding:0 10px;border-radius:7px;background:transparent;border:none;color:#52525B;font-family:'Geist Mono',monospace;font-size:10.5px">копировать</button>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;align-items:center;gap:7px;font-family:'Geist Mono',monospace;font-size:10.5px;color:#71717A"><span style="width:18px;height:18px;border-radius:5px;background:rgba(217,119,87,0.14);color:#E8916F;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700">cl</span>стриминг</div>
+          <div style="font-size:14px;line-height:1.55;color:#D4D4D8">Теперь проверю обратный канал<span style="display:inline-block;width:8px;height:15px;background:#34D399;vertical-align:-2px;margin-left:3px;animation:kBlink 1.1s steps(2) infinite"></span></div>
+        </div>
+        <div style="align-self:center;font-family:'Geist Mono',monospace;font-size:10.5px;color:#52525B">— режим разрешений: ask → auto —</div>
+        <div style="display:flex;align-items:center;gap:9px;font-family:'Geist Mono',monospace;font-size:11.5px;color:#71717A"><span style="width:18px;height:18px;border-radius:5px;background:rgba(217,119,87,0.14);color:#E8916F;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700">cl</span>думает<span style="display:inline-block;width:8px;height:14px;background:#22D3EE;animation:kBlink 0.9s steps(2) infinite"></span><span style="color:#3F3F46;margin-left:auto">сигнатурная анимация</span></div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:9px;width:390px">
+      <span style="font-size:11px;color:#71717A">VoiceRecordBar: запись · распознавание · ошибка</span>
+      <div style="background:#09090B;border:1px solid #1F1F23;border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;gap:12px;height:52px;padding:0 14px;border-radius:12px;background:#131316;border:1px solid #26262B">
+          <span style="width:9px;height:9px;border-radius:50%;background:#F87171;animation:kPulse 1s ease-in-out infinite"></span>
+          <div style="display:flex;align-items:center;gap:2.5px;height:22px;flex:1">
+            <span style="width:3px;height:100%;border-radius:2px;background:#34D399;animation:kBar 0.9s ease-in-out infinite"></span><span style="width:3px;height:100%;border-radius:2px;background:#34D399;animation:kBar 0.7s ease-in-out -0.2s infinite"></span><span style="width:3px;height:100%;border-radius:2px;background:#34D399;animation:kBar 1.1s ease-in-out -0.4s infinite"></span><span style="width:3px;height:100%;border-radius:2px;background:#34D399;animation:kBar 0.8s ease-in-out -0.1s infinite"></span><span style="width:3px;height:100%;border-radius:2px;background:#34D399;animation:kBar 1s ease-in-out -0.5s infinite"></span><span style="width:3px;height:100%;border-radius:2px;background:#34D399;animation:kBar 0.75s ease-in-out -0.3s infinite"></span><span style="width:3px;height:100%;border-radius:2px;background:#34D399;animation:kBar 0.95s ease-in-out -0.6s infinite"></span><span style="width:3px;height:100%;border-radius:2px;background:#2A9D74;animation:kBar 0.85s ease-in-out -0.15s infinite"></span><span style="width:3px;height:100%;border-radius:2px;background:#2A9D74;animation:kBar 1.05s ease-in-out -0.45s infinite"></span><span style="width:3px;height:100%;border-radius:2px;background:#2A9D74;animation:kBar 0.9s ease-in-out -0.7s infinite"></span>
+          </div>
+          <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#FAFAFA">0:07</span>
+          <button style="width:34px;height:34px;border-radius:9px;background:#F87171;border:none;display:flex;align-items:center;justify-content:center"><span style="width:11px;height:11px;border-radius:2px;background:#2D0A0A"></span></button>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;height:52px;padding:0 14px;border-radius:12px;background:#131316;border:1px solid #26262B">
+          <span style="width:14px;height:14px;border-radius:50%;border:2px solid #26262B;border-top-color:#22D3EE;animation:kSpin 0.8s linear infinite"></span>
+          <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#A1A1AA">распознаём…</span>
+          <button style="margin-left:auto;height:28px;padding:0 10px;border-radius:7px;background:none;border:none;color:#52525B;font-family:'Geist Mono',monospace;font-size:11px">отмена</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;height:52px;padding:0 14px;border-radius:12px;background:#160D0D;border:1px solid rgba(248,113,113,0.4)">
+          <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#F87171">микрофон недоступен</span>
+          <button style="margin-left:auto;height:28px;padding:0 12px;border-radius:7px;background:#1F1F23;border:none;color:#FAFAFA;font-size:12px;font-weight:500;font-family:Geist,sans-serif">повторить</button>
+        </div>
+      </div>
+      <span style="font-size:11px;color:#71717A;margin-top:6px">ListenButton (TTS): idle · синтез · играет · ошибка</span>
+      <div style="background:#09090B;border:1px solid #1F1F23;border-radius:12px;padding:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button style="display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border-radius:8px;background:transparent;border:1px solid #2E2E33;color:#A1A1AA;font-family:'Geist Mono',monospace;font-size:11px"><svg width="11" height="11" viewBox="0 0 12 12"><path d="M2 4.5 L2 7.5 L4.5 7.5 L7.5 10 L7.5 2 L4.5 4.5 Z" fill="#A1A1AA"/></svg>слушать</button>
+        <button style="display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 11px;border-radius:8px;background:transparent;border:1px solid #2E2E33;color:#A1A1AA;font-family:'Geist Mono',monospace;font-size:11px"><span style="width:11px;height:11px;border-radius:50%;border:2px solid #26262B;border-top-color:#34D399;animation:kSpin 0.8s linear infinite"></span>синтез…</button>
+        <button style="display:inline-flex;align-items:center;gap:8px;height:30px;padding:0 11px;border-radius:8px;background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.35);color:#34D399;font-family:'Geist Mono',monospace;font-size:11px"><span style="display:flex;align-items:flex-end;gap:2px;height:11px"><span style="width:2.5px;background:#34D399;height:100%;animation:kBar 0.8s ease-in-out infinite"></span><span style="width:2.5px;background:#34D399;height:100%;animation:kBar 0.6s ease-in-out -0.2s infinite"></span><span style="width:2.5px;background:#34D399;height:100%;animation:kBar 0.9s ease-in-out -0.4s infinite"></span></span>0:12 · стоп</button>
+        <button style="display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border-radius:8px;background:transparent;border:1px solid rgba(248,113,113,0.35);color:#F87171;font-family:'Geist Mono',monospace;font-size:11px">tts недоступен</button>
+      </div>
+      <span style="font-size:11px;color:#71717A;margin-top:6px">ConnectionBanner · EmptyState</span>
+      <div style="background:#09090B;border:1px solid #1F1F23;border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;gap:9px;padding:8px 13px;border-radius:9px;background:rgba(251,191,36,0.09);border:1px solid rgba(251,191,36,0.3)">
+          <span style="width:12px;height:12px;border-radius:50%;border:2px solid rgba(251,191,36,0.25);border-top-color:#FBBF24;animation:kSpin 0.9s linear infinite"></span>
+          <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#FBBF24">соединение потеряно · переподключаем…</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:9px;padding:8px 13px;border-radius:9px;background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.3)">
+          <svg width="12" height="12" viewBox="0 0 14 14"><path d="M2.5 7.5 L5.5 10.5 L11.5 4" stroke="#34D399" stroke-width="2" fill="none"/></svg>
+          <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#34D399">соединение восстановлено</span>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px;padding:26px 20px;border-radius:10px;background:#0E0E11;border:1px dashed #26262B">
+          <svg width="34" height="34" viewBox="0 0 32 32" style="opacity:0.5"><path d="M5.5 10.8 L10.7 16 L5.5 21.2" stroke="#FAFAFA" stroke-opacity="0.26" stroke-width="3.2" fill="none"/><path d="M12.2 9.3 L18.9 16 L12.2 22.7" stroke="#FAFAFA" stroke-width="3.2" fill="none"/><rect x="21.6" y="19.5" width="6" height="3.2" fill="#34D399"><animate attributeName="opacity" values="1;1;0;0;1" keyTimes="0;0.5;0.55;0.95;1" dur="1.2s" repeatCount="indefinite"/></rect></svg>
+          <span style="font-size:13.5px;font-weight:600;color:#FAFAFA">Нет активных сессий</span>
+          <span style="font-family:'Geist Mono',monospace;font-size:11px;color:#71717A">запустите агента — он появится здесь</span>
+          <button style="height:36px;padding:0 16px;border-radius:9px;background:#FAFAFA;color:#09090B;font-size:13px;font-weight:600;border:none;font-family:Geist,sans-serif">Новая сессия</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:baseline;gap:12px;margin:34px 0 22px">
+    <a href="#t4" id="t4" style="font-family:'Geist Mono',monospace;font-size:10px;font-weight:600;padding:3px 7px;background:#FAFAFA;color:#09090B;border-radius:4px;text-decoration:none">4</a>
+    <span style="font-size:14px;font-weight:600;color:#FAFAFA">Композиты · light</span>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start">
+    <div style="width:390px;background:#FAFAFA;border:1px solid #E4E4E7;border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px;font-family:Geist,sans-serif">
+      <div style="display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:10px;background:#FFFFFF;border:1px solid #E4E4E7">
+        <span style="width:32px;height:32px;border-radius:8px;background:rgba(217,119,87,0.12);color:#C05B3C;display:flex;align-items:center;justify-content:center;font-family:'Geist Mono',monospace;font-size:12px;font-weight:700;flex:none">cl</span>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+          <span style="font-family:'Geist Mono',monospace;font-size:13px;font-weight:600;color:#18181B">~/dev/remcli</span>
+          <span style="font-size:12px;color:#059669">Пишу WebRTC-транспорт…</span>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:#059669;animation:kPulse 2s ease-in-out infinite"></span><span style="font-family:'Geist Mono',monospace;font-size:10px;color:#A1A1AA">сейчас</span></div>
+      </div>
+      <div style="border-radius:12px;border:1px solid rgba(217,119,6,0.4);background:#FFFBEB;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:10px 13px;border-bottom:1px solid rgba(217,119,6,0.18)">
+          <span style="width:7px;height:7px;border-radius:50%;background:#D97706"></span>
+          <span style="font-family:'Geist Mono',monospace;font-size:11px;font-weight:600;color:#B45309">запрос разрешения · bash</span>
+        </div>
+        <div style="margin:12px 13px;padding:10px 12px;border-radius:8px;background:#18181B;font-family:'Geist Mono',monospace;font-size:12px;line-height:1.6;color:#E4E4E7"><span style="color:#34D399">$</span> pnpm add @noble/ciphers</div>
+        <div style="display:flex;gap:8px;padding:0 13px 12px">
+          <button style="flex:1.4;height:44px;border-radius:10px;background:#059669;color:#FFFFFF;font-size:14px;font-weight:600;border:none;font-family:Geist,sans-serif">Разрешить</button>
+          <button style="flex:1;height:44px;border-radius:10px;background:#FFFFFF;color:#DC2626;font-size:14px;font-weight:500;border:1px solid rgba(220,38,38,0.3);font-family:Geist,sans-serif">Запретить</button>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:9px;background:#FFFFFF;border:1px solid #E4E4E7;font-family:'Geist Mono',monospace;font-size:12px">
+        <svg width="10" height="10" viewBox="0 0 10 10"><path d="M3 2 L7 5 L3 8" stroke="#A1A1AA" stroke-width="1.6" fill="none"/></svg>
+        <span style="color:#71717A">Read</span><span style="color:#18181B;flex:1">src/transport/webrtc.ts</span>
+        <svg width="13" height="13" viewBox="0 0 14 14"><path d="M2.5 7.5 L5.5 10.5 L11.5 4" stroke="#059669" stroke-width="2" fill="none"/></svg>
+      </div>
+      <div style="border-radius:9px;border:1px solid #E4E4E7;overflow:hidden;font-family:'Geist Mono',monospace;font-size:11.5px;background:#FFFFFF">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #F0F0F2"><span style="color:#18181B">src/transport/webrtc.ts</span><span style="margin-left:auto;color:#059669">+12</span><span style="color:#DC2626">−4</span></div>
+        <div style="line-height:1.75;padding:5px 0">
+          <div style="padding:0 12px;background:rgba(220,38,38,0.06);color:#B91C1C"><span>−</span> chan.send(raw);</div>
+          <div style="padding:0 12px;background:rgba(5,150,105,0.07);color:#047857"><span>+</span> chan.send(seal(raw, key));</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center">
+        <div style="align-self:flex-start;background:#EFEFF1;border-radius:14px 14px 4px 14px;padding:9px 13px;font-size:13.5px;color:#18181B;flex:1">Прогони тесты</div>
+        <button style="display:inline-flex;align-items:center;gap:8px;height:30px;padding:0 11px;border-radius:8px;background:rgba(5,150,105,0.07);border:1px solid rgba(5,150,105,0.3);color:#059669;font-family:'Geist Mono',monospace;font-size:11px;flex:none"><span style="display:flex;align-items:flex-end;gap:2px;height:11px"><span style="width:2.5px;background:#059669;height:100%;animation:kBar 0.8s ease-in-out infinite"></span><span style="width:2.5px;background:#059669;height:100%;animation:kBar 0.6s ease-in-out -0.2s infinite"></span><span style="width:2.5px;background:#059669;height:100%;animation:kBar 0.9s ease-in-out -0.4s infinite"></span></span>0:12</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:9px;padding:8px 13px;border-radius:9px;background:#FFFBEB;border:1px solid rgba(217,119,6,0.3)">
+        <span style="width:12px;height:12px;border-radius:50%;border:2px solid rgba(217,119,6,0.25);border-top-color:#D97706;animation:kSpin 0.9s linear infinite"></span>
+        <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#B45309">соединение потеряно · переподключаем…</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;height:48px;padding:0 14px;border-radius:12px;background:#FFFFFF;border:1px solid #E4E4E7">
+        <span style="width:9px;height:9px;border-radius:50%;background:#DC2626;animation:kPulse 1s ease-in-out infinite"></span>
+        <div style="display:flex;align-items:center;gap:2.5px;height:20px;flex:1">
+          <span style="width:3px;height:100%;border-radius:2px;background:#059669;animation:kBar 0.9s ease-in-out infinite"></span><span style="width:3px;height:100%;border-radius:2px;background:#059669;animation:kBar 0.7s ease-in-out -0.2s infinite"></span><span style="width:3px;height:100%;border-radius:2px;background:#059669;animation:kBar 1.1s ease-in-out -0.4s infinite"></span><span style="width:3px;height:100%;border-radius:2px;background:#059669;animation:kBar 0.8s ease-in-out -0.1s infinite"></span><span style="width:3px;height:100%;border-radius:2px;background:#059669;animation:kBar 1s ease-in-out -0.5s infinite"></span>
+        </div>
+        <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#18181B">0:07</span>
+        <button style="width:32px;height:32px;border-radius:9px;background:#DC2626;border:none;display:flex;align-items:center;justify-content:center"><span style="width:10px;height:10px;border-radius:2px;background:#FFFFFF"></span></button>
+      </div>
+    </div>
+  </div>
+</section>
+<section id="t2" style="padding:40px 48px;border-top:1px solid #17171B;font-family:Geist,sans-serif">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:22px">
+    <a href="#t2" style="font-family:'Geist Mono',monospace;font-size:10px;font-weight:600;padding:3px 7px;background:#FAFAFA;color:#09090B;border-radius:4px;text-decoration:none">2</a>
+    <span style="font-size:14px;font-weight:600;color:#FAFAFA">Базовые компоненты · курируемый shadcn-набор</span>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start">
+    <div style="width:400px;background:#09090B;border:1px solid #1F1F23;border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:16px">
+      <span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B;letter-spacing:0.08em">BUTTON · DARK</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button style="height:36px;padding:0 16px;border-radius:8px;background:#FAFAFA;color:#09090B;font-family:Geist,sans-serif;font-size:13px;font-weight:600;border:none">Primary</button>
+        <button style="height:36px;padding:0 16px;border-radius:8px;background:#34D399;color:#052E1E;font-family:Geist,sans-serif;font-size:13px;font-weight:600;border:none">Разрешить</button>
+        <button style="height:36px;padding:0 16px;border-radius:8px;background:#1F1F23;color:#FAFAFA;font-family:Geist,sans-serif;font-size:13px;font-weight:500;border:none">Secondary</button>
+        <button style="height:36px;padding:0 16px;border-radius:8px;background:transparent;color:#FAFAFA;font-family:Geist,sans-serif;font-size:13px;font-weight:500;border:1px solid #2E2E33">Outline</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button style="height:36px;padding:0 16px;border-radius:8px;background:transparent;color:#F87171;font-family:Geist,sans-serif;font-size:13px;font-weight:500;border:1px solid rgba(248,113,113,0.35)">Запретить</button>
+        <button style="height:36px;padding:0 14px;border-radius:8px;background:transparent;color:#A1A1AA;font-family:Geist,sans-serif;font-size:13px;font-weight:500;border:none">Ghost</button>
+        <button style="height:28px;padding:0 11px;border-radius:6px;background:#1F1F23;color:#FAFAFA;font-family:Geist,sans-serif;font-size:12px;font-weight:500;border:none">sm 28</button>
+        <button style="height:44px;padding:0 20px;border-radius:10px;background:#FAFAFA;color:#09090B;font-family:Geist,sans-serif;font-size:14px;font-weight:600;border:none">lg 44 · mobile CTA</button>
+      </div>
+      <span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B;letter-spacing:0.08em">INPUT · SELECT · SWITCH</span>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="height:40px;border-radius:8px;background:#1A1A1E;border:1px solid #26262B;display:flex;align-items:center;padding:0 12px;font-family:'Geist Mono',monospace;font-size:13px;color:#71717A">~/путь/к/проекту</div>
+        <div style="display:flex;gap:10px">
+          <div style="flex:1;height:40px;border-radius:8px;background:#1A1A1E;border:1px solid #34D399;box-shadow:0 0 0 3px rgba(52,211,153,0.15);display:flex;align-items:center;padding:0 12px;font-family:'Geist Mono',monospace;font-size:13px;color:#FAFAFA">focus<span style="width:1.5px;height:16px;background:#34D399;margin-left:2px;animation:kBlink 1.1s steps(2) infinite"></span></div>
+          <div style="height:40px;border-radius:8px;background:#1A1A1E;border:1px solid #26262B;display:flex;align-items:center;gap:8px;padding:0 12px;font-size:13px;color:#FAFAFA">opus-4.1<svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3.5 L5 6.5 L8 3.5" stroke="#71717A" stroke-width="1.5" fill="none"/></svg></div>
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:36px;height:22px;border-radius:999px;background:#34D399;position:relative"><span style="position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:50%;background:#052E1E"></span></span><span style="width:36px;height:22px;border-radius:999px;background:#26262B;position:relative"><span style="position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#71717A"></span></span></div>
+        </div>
+      </div>
+      <span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B;letter-spacing:0.08em">TABS · SEGMENTED</span>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;gap:20px;border-bottom:1px solid #1F1F23;padding-bottom:0">
+          <span style="font-size:13px;font-weight:600;color:#FAFAFA;padding-bottom:8px;border-bottom:2px solid #34D399">Чат</span>
+          <span style="font-size:13px;font-weight:500;color:#71717A;padding-bottom:8px">Терминал</span>
+          <span style="font-size:13px;font-weight:500;color:#71717A;padding-bottom:8px">Файлы</span>
+        </div>
+        <div style="display:flex;background:#1A1A1E;border-radius:8px;padding:3px;width:fit-content;font-family:'Geist Mono',monospace;font-size:11px">
+          <span style="padding:6px 14px;border-radius:6px;color:#71717A">safe</span>
+          <span style="padding:6px 14px;border-radius:6px;background:#2E2E33;color:#FAFAFA;font-weight:600">ask</span>
+          <span style="padding:6px 14px;border-radius:6px;color:#71717A">auto</span>
+        </div>
+      </div>
+      <span style="font-family:'Geist Mono',monospace;font-size:9px;color:#52525B;letter-spacing:0.08em">SKELETON · TOAST · BADGE</span>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="height:12px;width:70%;border-radius:6px;background:linear-gradient(90deg,#1A1A1E 25%,#232328 50%,#1A1A1E 75%);background-size:180px 100%;animation:kShim 1.4s linear infinite"></div>
+          <div style="height:12px;width:45%;border-radius:6px;background:linear-gradient(90deg,#1A1A1E 25%,#232328 50%,#1A1A1E 75%);background-size:180px 100%;animation:kShim 1.4s linear infinite"></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;background:#18181C;border:1px solid #2E2E33;border-radius:10px;padding:11px 14px;box-shadow:0 8px 24px rgba(0,0,0,0.5);width:fit-content">
+          <svg width="14" height="14" viewBox="0 0 14 14"><path d="M2.5 7.5 L5.5 10.5 L11.5 4" stroke="#34D399" stroke-width="2" fill="none"/></svg>
+          <span style="font-size:12.5px;color:#FAFAFA">Сессия остановлена</span>
+          <span style="font-family:'Geist Mono',monospace;font-size:10px;color:#52525B">sonner</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <span style="padding:3px 9px;border-radius:6px;background:#1F1F23;color:#D4D4D8;font-family:'Geist Mono',monospace;font-size:10.5px">opus-4.1</span>
+          <span style="padding:3px 9px;border-radius:6px;border:1px solid #2E2E33;color:#A1A1AA;font-family:'Geist Mono',monospace;font-size:10.5px">lan</span>
+          <span style="padding:3px 9px;border-radius:6px;background:rgba(52,211,153,0.1);color:#34D399;font-family:'Geist Mono',monospace;font-size:10.5px">e2e</span>
+        </div>
+      </div>
+    </div>
+    <div style="width:400px;background:#FAFAFA;border:1px solid #E4E4E7;border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:16px">
+      <span style="font-family:'Geist Mono',monospace;font-size:9px;color:#A1A1AA;letter-spacing:0.08em">BUTTON · LIGHT</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button style="height:36px;padding:0 16px;border-radius:8px;background:#18181B;color:#FAFAFA;font-family:Geist,sans-serif;font-size:13px;font-weight:600;border:none">Primary</button>
+        <button style="height:36px;padding:0 16px;border-radius:8px;background:#059669;color:#FFFFFF;font-family:Geist,sans-serif;font-size:13px;font-weight:600;border:none">Разрешить</button>
+        <button style="height:36px;padding:0 16px;border-radius:8px;background:#F4F4F5;color:#18181B;font-family:Geist,sans-serif;font-size:13px;font-weight:500;border:none">Secondary</button>
+        <button style="height:36px;padding:0 16px;border-radius:8px;background:#FFFFFF;color:#18181B;font-family:Geist,sans-serif;font-size:13px;font-weight:500;border:1px solid #E4E4E7">Outline</button>
+        <button style="height:36px;padding:0 16px;border-radius:8px;background:#FFFFFF;color:#DC2626;font-family:Geist,sans-serif;font-size:13px;font-weight:500;border:1px solid rgba(220,38,38,0.3)">Запретить</button>
+      </div>
+      <span style="font-family:'Geist Mono',monospace;font-size:9px;color:#A1A1AA;letter-spacing:0.08em">INPUT · SEGMENTED · BADGE</span>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="height:40px;border-radius:8px;background:#FFFFFF;border:1px solid #E4E4E7;display:flex;align-items:center;padding:0 12px;font-family:'Geist Mono',monospace;font-size:13px;color:#A1A1AA">~/путь/к/проекту</div>
+        <div style="display:flex;gap:10px;align-items:center">
+          <div style="display:flex;background:#EFEFF1;border-radius:8px;padding:3px;width:fit-content;font-family:'Geist Mono',monospace;font-size:11px">
+            <span style="padding:6px 14px;border-radius:6px;color:#71717A">safe</span>
+            <span style="padding:6px 14px;border-radius:6px;background:#FFFFFF;color:#18181B;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,0.08)">ask</span>
+            <span style="padding:6px 14px;border-radius:6px;color:#71717A">auto</span>
+          </div>
+          <span style="padding:3px 9px;border-radius:6px;background:#F4F4F5;color:#3F3F46;font-family:'Geist Mono',monospace;font-size:10.5px">opus-4.1</span>
+          <span style="padding:3px 9px;border-radius:6px;background:rgba(5,150,105,0.08);color:#059669;font-family:'Geist Mono',monospace;font-size:10.5px">e2e</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;background:#FFFFFF;border:1px solid #E4E4E7;border-radius:10px;padding:11px 14px;box-shadow:0 4px 14px rgba(0,0,0,0.08);width:fit-content">
+          <svg width="14" height="14" viewBox="0 0 14 14"><path d="M2.5 7.5 L5.5 10.5 L11.5 4" stroke="#059669" stroke-width="2" fill="none"/></svg>
+          <span style="font-size:12.5px;color:#18181B">Сессия остановлена</span>
+        </div>
+      </div>
+      <span style="font-family:'Geist Mono',monospace;font-size:9px;color:#A1A1AA;letter-spacing:0.08em">СТАТУСЫ · LIGHT</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;font-family:'Geist Mono',monospace;font-size:10.5px">
+        <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;background:rgba(5,150,105,0.08);color:#059669"><span style="width:6px;height:6px;border-radius:50%;background:#059669"></span>работает</span>
+        <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;background:rgba(8,145,178,0.08);color:#0891B2"><span style="width:6px;height:6px;border-radius:50%;background:#0891B2"></span>думает</span>
+        <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;background:rgba(217,119,6,0.1);color:#D97706"><span style="width:6px;height:6px;border-radius:50%;background:#D97706"></span>ждёт разрешения</span>
+        <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;background:#F4F4F5;color:#71717A"><span style="width:6px;height:6px;border-radius:50%;background:#A1A1AA"></span>ожидает</span>
+        <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;background:#F4F4F5;color:#A1A1AA"><span style="width:6px;height:6px;border-radius:50%;border:1.5px solid #A1A1AA;box-sizing:border-box"></span>офлайн</span>
+        <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;background:rgba(220,38,38,0.07);color:#DC2626"><span style="width:6px;height:6px;border-radius:50%;background:#DC2626"></span>ошибка</span>
+      </div>
+    </div>
+  </div>
+</section>
+</x-dc>
+</body>
+</html>

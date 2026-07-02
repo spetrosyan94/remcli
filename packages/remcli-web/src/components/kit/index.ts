@@ -11,4 +11,5 @@ export { ListenButton } from "@/components/kit/ListenButton";
 export { VoiceRecordBar } from "@/components/kit/VoiceRecordBar";
 export { ConnectionBanner } from "@/components/kit/ConnectionBanner";
 export { EmptyState } from "@/components/kit/EmptyState";
+export { Logo } from "@/components/kit/Logo";
 export { Segmented } from "@/components/kit/Segmented";

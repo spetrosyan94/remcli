@@ -55,6 +55,8 @@ interface ProtocolState {
     connectionStatus: ConnectionStatus;
     /** True when stored credentials exist and the client is initialized. */
     isAuthenticated: boolean;
+    /** GET /health round-trip to the daemon in ms; null until measured / on failure. */
+    latencyMs: number | null;
     machines: Record<string, Machine>;
     sessions: Record<string, Session>;
     sessionMessages: Record<string, SessionMessagesState>;
@@ -63,6 +65,7 @@ interface ProtocolState {
 interface ProtocolActions {
     setConnectionStatus: (status: ConnectionStatus) => void;
     setAuthenticated: (isAuthenticated: boolean) => void;
+    setLatency: (latencyMs: number | null) => void;
     applySessions: (sessions: Session[]) => void;
     removeSession: (sessionId: string) => void;
     applyMachines: (machines: Machine[]) => void;
@@ -76,6 +79,7 @@ interface ProtocolActions {
 const initialState: ProtocolState = {
     connectionStatus: 'disconnected',
     isAuthenticated: false,
+    latencyMs: null,
     machines: {},
     sessions: {},
     sessionMessages: {}
@@ -87,6 +91,8 @@ export const useProtocolStore = create<ProtocolState & ProtocolActions>()((set) 
     setConnectionStatus: (status) => set({ connectionStatus: status }),
 
     setAuthenticated: (isAuthenticated) => set({ isAuthenticated }),
+
+    setLatency: (latencyMs) => set({ latencyMs }),
 
     applySessions: (sessions) => set((state) => {
         const next = { ...state.sessions };
@@ -177,6 +183,11 @@ export function useConnectionStatus(): ConnectionStatus {
 /** True when a stored connection exists and the client is initialized. */
 export function useIsAuthenticated(): boolean {
     return useProtocolStore((state) => state.isAuthenticated);
+}
+
+/** Daemon GET /health latency in ms (measured every ~30s); null until known. */
+export function useLatencyMs(): number | null {
+    return useProtocolStore((state) => state.latencyMs);
 }
 
 /** All known machines, most recently active first. */
