@@ -48,25 +48,12 @@ export interface P2PMachine {
     updatedAt: number;
 }
 
-export interface P2PArtifact {
-    id: string;
-    seq: number;
-    header: string;
-    headerVersion: number;
-    body: string;
-    bodyVersion: number;
-    dataEncryptionKey: string;
-    createdAt: number;
-    updatedAt: number;
-}
-
 // ─── Store ───────────────────────────────────────────────────────
 
 export class P2PStore {
     private sessions = new Map<string, P2PSession>();
     private sessionMessages = new Map<string, P2PMessage[]>();
     private machines = new Map<string, P2PMachine>();
-    private artifacts = new Map<string, P2PArtifact>();
     private userSeq = 0;
     private sessionSeqs = new Map<string, number>();
 
@@ -376,72 +363,6 @@ export class P2PStore {
             version: machine.daemonStateVersion,
             daemonState: machine.daemonState
         };
-    }
-
-    // ─── Artifacts ───────────────────────────────────────────────
-
-    createArtifact(id: string, header: string, body: string, dataEncryptionKey: string): P2PArtifact {
-        const now = Date.now();
-        const artifact: P2PArtifact = {
-            id,
-            seq: this.allocateUserSeq(),
-            header,
-            headerVersion: 1,
-            body,
-            bodyVersion: 1,
-            dataEncryptionKey,
-            createdAt: now,
-            updatedAt: now
-        };
-        this.artifacts.set(id, artifact);
-        return artifact;
-    }
-
-    getArtifact(id: string): P2PArtifact | undefined {
-        return this.artifacts.get(id);
-    }
-
-    updateArtifactHeader(artifactId: string, header: string, expectedVersion: number): {
-        result: 'success' | 'version-mismatch' | 'error';
-        version: number;
-        data: string;
-    } {
-        const artifact = this.artifacts.get(artifactId);
-        if (!artifact) return { result: 'error', version: 0, data: '' };
-
-        if (artifact.headerVersion !== expectedVersion) {
-            return { result: 'version-mismatch', version: artifact.headerVersion, data: artifact.header };
-        }
-
-        artifact.header = header;
-        artifact.headerVersion++;
-        artifact.updatedAt = Date.now();
-
-        return { result: 'success', version: artifact.headerVersion, data: artifact.header };
-    }
-
-    updateArtifactBody(artifactId: string, body: string, expectedVersion: number): {
-        result: 'success' | 'version-mismatch' | 'error';
-        version: number;
-        data: string;
-    } {
-        const artifact = this.artifacts.get(artifactId);
-        if (!artifact) return { result: 'error', version: 0, data: '' };
-
-        if (artifact.bodyVersion !== expectedVersion) {
-            return { result: 'version-mismatch', version: artifact.bodyVersion, data: artifact.body };
-        }
-
-        artifact.body = body;
-        artifact.bodyVersion++;
-        artifact.updatedAt = Date.now();
-
-        return { result: 'success', version: artifact.bodyVersion, data: artifact.body };
-    }
-
-    deleteArtifact(id: string): boolean {
-        const existed = this.artifacts.delete(id);
-        return existed;
     }
 
 }

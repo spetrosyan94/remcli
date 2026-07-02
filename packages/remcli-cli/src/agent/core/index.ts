@@ -16,27 +16,11 @@ export type {
   AgentMessage,
   AgentMessageHandler,
   AgentBackend,
-  AgentBackendConfig,
-  AcpAgentConfig,
   McpServerConfig,
-  AgentTransport,
   AgentId,
+  AgentFactoryOptions,
   StartSessionResult,
 } from './AgentBackend';
-
-// ============================================================================
-// AgentRegistry - Factory registry
-// ============================================================================
-
-export {
-  AgentRegistry,
-  agentRegistry,
-} from './AgentRegistry';
-
-export type {
-  AgentFactory,
-  AgentFactoryOptions,
-} from './AgentRegistry';
 
 // ============================================================================
 // AgentMessage - Detailed message types with type guards
@@ -60,10 +44,6 @@ export type {
 } from './AgentMessage';
 
 export {
-  isModelOutputMessage,
-  isStatusMessage,
-  isToolCallMessage,
-  isToolResultMessage,
   isPermissionRequestMessage,
   getMessageText,
 } from './AgentMessage';

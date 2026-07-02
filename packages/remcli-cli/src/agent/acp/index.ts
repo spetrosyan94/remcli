@@ -32,10 +32,3 @@ export {
   handleThinkingUpdate,
 } from './sessionUpdateHandlers';
 
-// Factory helper for generic ACP backends
-export { createAcpBackend, type CreateAcpBackendOptions } from './createAcpBackend';
-
-// Legacy aliases for backwards compatibility
-export { AcpBackend as AcpSdkBackend } from './AcpBackend';
-export type { AcpBackendOptions as AcpSdkBackendOptions } from './AcpBackend';
-

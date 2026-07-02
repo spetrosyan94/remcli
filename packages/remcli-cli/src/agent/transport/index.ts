@@ -16,7 +16,7 @@ export type {
 } from './TransportHandler';
 
 // Default implementation
-export { DefaultTransport, defaultTransport } from './DefaultTransport';
+export { DefaultTransport } from './DefaultTransport';
 
 // Agent-specific handlers
 export { GeminiTransport, geminiTransport } from './handlers';

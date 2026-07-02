@@ -41,8 +41,6 @@ export class ApiClient {
       encryptionVariant = 'dataKey';
 
       // Derive and encrypt data encryption key
-      // const contentDataKey = await deriveKey(this.secret, 'Remcli Encrypt', ['content']);
-      // const publicKey = libsodiumPublicKeyFromSecretKey(contentDataKey);
       let encryptedDataKey = libsodiumEncryptForPublicKey(encryptionKey, this.credential.encryption.publicKey);
       dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
       dataEncryptionKey.set([0], 0); // Version byte

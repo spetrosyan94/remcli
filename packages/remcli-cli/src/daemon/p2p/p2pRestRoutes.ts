@@ -112,53 +112,6 @@ export function registerP2PRestRoutes(
         return { success: true };
     });
 
-    // ─── GET /v1/artifacts (stub for P2P) ─────────────────────────
-    typed.get('/v1/artifacts', async () => {
-        return [];
-    });
-
-    // ─── GET /v1/artifacts/:artifactId (stub for P2P) ──────────────
-    typed.get('/v1/artifacts/:artifactId', {
-        schema: {
-            params: z.object({
-                artifactId: z.string()
-            })
-        }
-    }, async (_request, reply) => {
-        reply.code(404);
-        return { error: 'Artifact not found' };
-    });
-
-    // ─── POST /v1/artifacts (stub for P2P) ──────────────────────────
-    typed.post('/v1/artifacts', async (_request, reply) => {
-        reply.code(501);
-        return { error: 'Artifacts not supported in P2P mode' };
-    });
-
-    // ─── POST /v1/artifacts/:artifactId (stub for P2P) ─────────────
-    typed.post('/v1/artifacts/:artifactId', {
-        schema: {
-            params: z.object({
-                artifactId: z.string()
-            })
-        }
-    }, async (_request, reply) => {
-        reply.code(501);
-        return { error: 'Artifacts not supported in P2P mode' };
-    });
-
-    // ─── DELETE /v1/artifacts/:artifactId (stub for P2P) ────────────
-    typed.delete('/v1/artifacts/:artifactId', {
-        schema: {
-            params: z.object({
-                artifactId: z.string()
-            })
-        }
-    }, async (_request, reply) => {
-        reply.code(501);
-        return { error: 'Artifacts not supported in P2P mode' };
-    });
-
     // ─── GET /v1/kv (stub for P2P — returns empty list) ────────────
     typed.get('/v1/kv', async () => {
         return { items: [] };
@@ -192,12 +145,6 @@ export function registerP2PRestRoutes(
                 version: 1
             }))
         };
-    });
-
-    // ─── POST /v1/voice/token (stub for P2P) ──────────────────────
-    typed.post('/v1/voice/token', async (_request, reply) => {
-        reply.code(400);
-        return { error: 'Voice not supported in P2P mode' };
     });
 
     // ─── GET /v1/whisper/status ──────────────────────────────────

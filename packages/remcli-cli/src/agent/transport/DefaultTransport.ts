@@ -127,8 +127,3 @@ export class DefaultTransport implements TransportHandler {
     return toolName;
   }
 }
-
-/**
- * Singleton instance for convenience
- */
-export const defaultTransport = new DefaultTransport();

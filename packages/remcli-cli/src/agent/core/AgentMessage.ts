@@ -170,39 +170,6 @@ export type AgentMessage =
   | PatchApplyEndMessage;
 
 /**
- * Handler function type for agent messages
- */
-export type AgentMessageHandler = (msg: AgentMessage) => void;
-
-/**
- * Type guard for model output messages
- */
-export function isModelOutputMessage(msg: AgentMessage): msg is ModelOutputMessage {
-  return msg.type === 'model-output';
-}
-
-/**
- * Type guard for status messages
- */
-export function isStatusMessage(msg: AgentMessage): msg is StatusMessage {
-  return msg.type === 'status';
-}
-
-/**
- * Type guard for tool call messages
- */
-export function isToolCallMessage(msg: AgentMessage): msg is ToolCallMessage {
-  return msg.type === 'tool-call';
-}
-
-/**
- * Type guard for tool result messages
- */
-export function isToolResultMessage(msg: AgentMessage): msg is ToolResultMessage {
-  return msg.type === 'tool-result';
-}
-
-/**
  * Type guard for permission request messages
  */
 export function isPermissionRequestMessage(msg: AgentMessage): msg is PermissionRequestMessage {

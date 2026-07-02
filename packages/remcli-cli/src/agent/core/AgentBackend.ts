@@ -44,43 +44,16 @@ export interface McpServerConfig {
   env?: Record<string, string>;
 }
 
-/** Transport type for agent communication */
-export type AgentTransport = 'native-claude' | 'mcp-codex' | 'acp';
-
 /** Agent identifier */
 export type AgentId = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' | 'claude-acp' | 'codex-acp';
 
-/**
- * Configuration for creating an agent backend
- */
-export interface AgentBackendConfig {
+/** Options passed to agent factory functions */
+export interface AgentFactoryOptions {
   /** Working directory for the agent */
   cwd: string;
-  
-  /** Name of the agent */
-  agentName: AgentId;
-  
-  /** Transport protocol to use */
-  transport: AgentTransport;
-  
+
   /** Environment variables to pass to the agent */
   env?: Record<string, string>;
-  
-  /** MCP servers to make available to the agent */
-  mcpServers?: Record<string, McpServerConfig>;
-}
-
-/**
- * Configuration specific to ACP-based agents
- */
-export interface AcpAgentConfig extends AgentBackendConfig {
-  transport: 'acp';
-  
-  /** Command to spawn the ACP agent */
-  command: string;
-  
-  /** Arguments for the agent command */
-  args?: string[];
 }
 
 /**
