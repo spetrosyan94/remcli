@@ -1,10 +1,10 @@
-# Encryption and Data Encoding
+# Шифрование и кодирование данных
 
-This document details how client data is encrypted, how encrypted blobs are structured, and how those blobs map onto protocol fields. It is based on `packages/remcli-cli/src/api/encryption.ts` and the server routes that accept/emit these values.
+Этот документ описывает, как шифруются клиентские данные, как устроены зашифрованные блобы и как эти блобы ложатся на поля протокола. Основан на `packages/remcli-cli/src/api/encryption.ts` и серверных роутах, которые принимают/отдают эти значения.
 
-For transport and event shapes, see `protocol.md`.
+Транспорт и форматы событий — см. `protocol.md`.
 
-## Overview
+## Обзор
 
 ```mermaid
 graph TB
@@ -29,12 +29,12 @@ graph TB
     style Store fill:#e3f2fd
 ```
 
-## Design goals
-- Keep the server blind to user content (end-to-end encryption on clients).
-- Use explicit, stable binary layouts so clients can interoperate across versions.
-- Prefer simple, consistent base64 encoding on the wire.
+## Цели дизайна
+- Сервер не должен видеть пользовательский контент (сквозное шифрование на клиентах).
+- Явные, стабильные бинарные форматы, чтобы клиенты разных версий были совместимы.
+- Простое, единообразное кодирование base64 на проводе.
 
-## Encryption variants
+## Варианты шифрования
 
 ```mermaid
 graph LR
@@ -58,16 +58,16 @@ graph LR
     DataKey --> D1 & D2
 ```
 
-Clients currently use one of two encryption variants:
+Сейчас клиенты используют один из двух вариантов шифрования:
 
 ### 1) legacy (NaCl secretbox)
-Used when the client only has a shared secret key.
+Используется, когда у клиента есть только общий секретный ключ.
 
-**Algorithm**: `tweetnacl.secretbox` (XSalsa20-Poly1305)
-- **Nonce length**: 24 bytes
-- **Key length**: 32 bytes
+**Алгоритм**: `tweetnacl.secretbox` (XSalsa20-Poly1305)
+- **Длина nonce**: 24 байта
+- **Длина ключа**: 32 байта
 
-**Binary layout** (plaintext JSON -> bytes):
+**Бинарный формат** (plaintext JSON -> байты):
 ```
 [ nonce (24) | ciphertext+auth (secretbox output) ]
 ```
@@ -79,14 +79,14 @@ packet-beta
 ```
 
 ### 2) dataKey (AES-256-GCM)
-Used when the client supports per-session/per-machine data keys.
+Используется, когда клиент поддерживает ключи данных per-session/per-machine.
 
-**Algorithm**: AES-256-GCM
-- **Nonce length**: 12 bytes
-- **Auth tag**: 16 bytes
-- **Key length**: 32 bytes
+**Алгоритм**: AES-256-GCM
+- **Длина nonce**: 12 байт
+- **Auth tag**: 16 байт
+- **Длина ключа**: 32 байта
 
-**Binary layout**:
+**Бинарный формат**:
 ```
 [ version (1) | nonce (12) | ciphertext (...) | authTag (16) ]
 ```
@@ -99,9 +99,9 @@ packet-beta
   45-60: "authTag (16 bytes)"
 ```
 
-- `version` is currently `0`.
+- `version` сейчас равен `0`.
 
-## Data encryption key (dataKey variant)
+## Ключ шифрования данных (вариант dataKey)
 
 ```mermaid
 flowchart LR
@@ -126,13 +126,13 @@ flowchart LR
     Plain --> AES --> Cipher
 ```
 
-When `dataKey` is used, the actual content key is encrypted for storage/transport.
+Когда используется `dataKey`, сам ключ контента шифруется для хранения/передачи.
 
-**Algorithm**: `tweetnacl.box` with an ephemeral keypair.
-- **Ephemeral public key**: 32 bytes
-- **Nonce**: 24 bytes
+**Алгоритм**: `tweetnacl.box` с эфемерной парой ключей.
+- **Эфемерный публичный ключ**: 32 байта
+- **Nonce**: 24 байта
 
-**Binary layout**:
+**Бинарный формат**:
 ```
 [ ephPublicKey (32) | nonce (24) | ciphertext (...) ]
 ```
@@ -144,14 +144,14 @@ packet-beta
   56-87: "ciphertext (...)"
 ```
 
-This blob is then wrapped with a version byte before being sent/stored:
+Затем этот блоб оборачивается байтом версии перед отправкой/сохранением:
 ```
 [ version (1 = 0) | boxBundle (...) ]
 ```
 
-The resulting bytes are base64-encoded and placed in fields such as `dataEncryptionKey` for sessions/machines.
+Итоговые байты кодируются в base64 и помещаются в поля вроде `dataEncryptionKey` для сессий/машин.
 
-## Where encryption is applied
+## Где применяется шифрование
 
 ```mermaid
 graph TB
@@ -181,16 +181,16 @@ graph TB
     style K1 fill:#e1f5fe
 ```
 
-The P2P server treats these fields as opaque strings/blobs. The client encrypts them before sending.
+P2P-сервер трактует эти поля как непрозрачные строки/блобы. Клиент шифрует их перед отправкой.
 
-### Session metadata + agent state
-- **Encrypted by client** and stored in P2P Store.
-- Used in:
+### Метаданные сессии + состояние агента
+- **Шифруются клиентом** и хранятся в P2P-хранилище.
+- Используются в:
   - `POST /v1/sessions` (create/load)
   - WebSocket `update-metadata` / `update-state`
-  - `update-session` events
+  - Событиях `update-session`
 
-### Session messages
+### Сообщения сессии
 
 ```mermaid
 sequenceDiagram
@@ -208,23 +208,23 @@ sequenceDiagram
     Client->>Client: Decrypt message
 ```
 
-- Client emits `message` with a base64 encrypted blob.
-- Server stores it as `SessionMessage.content`:
+- Клиент отправляет `message` с зашифрованным блобом в base64.
+- Сервер сохраняет его как `SessionMessage.content`:
   - `{ t: "encrypted", c: "<base64>" }`
-- Server emits it back in `new-message` updates with the same structure.
+- Сервер отдаёт его обратно в обновлениях `new-message` в той же структуре.
 
-### Machine metadata + daemon state
-- **Encrypted by client** and stored in P2P Store.
-- Used in:
+### Метаданные машины + состояние демона
+- **Шифруются клиентом** и хранятся в P2P-хранилище.
+- Используются в:
   - `POST /v1/machines`
   - WebSocket `machine-update-metadata` / `machine-update-state`
-  - `update-machine` events
+  - Событиях `update-machine`
 
-### Key-value store
-- `UserKVStore.value` is encrypted bytes encoded as base64 on the wire.
-- `kvMutate` expects base64 strings; `kvGet/list/bulk` return base64 strings.
+### Key-value хранилище
+- `UserKVStore.value` — зашифрованные байты, закодированные в base64 на проводе.
+- `kvMutate` ожидает base64-строки; `kvGet/list/bulk` возвращают base64-строки.
 
-## On-wire formats (encrypted fields)
+## Форматы на проводе (зашифрованные поля)
 
 ```mermaid
 graph LR
@@ -238,9 +238,9 @@ graph LR
     JSON --> Plain
 ```
 
-Below are the typical JSON shapes that carry encrypted data. All `...` values are base64 strings representing encrypted bytes.
+Ниже — типичные JSON-формы, несущие зашифрованные данные. Все значения `...` — base64-строки с зашифрованными байтами.
 
-### Session creation
+### Создание сессии
 ```http
 POST /v1/sessions
 ```
@@ -253,7 +253,7 @@ POST /v1/sessions
 }
 ```
 
-### Encrypted message (client -> server)
+### Зашифрованное сообщение (клиент -> сервер)
 ```
 Socket emit: "message"
 ```
@@ -264,7 +264,7 @@ Socket emit: "message"
 }
 ```
 
-### Encrypted message (server -> client)
+### Зашифрованное сообщение (сервер -> клиент)
 ```
 update.body.t = "new-message"
 ```
@@ -275,7 +275,7 @@ update.body.t = "new-message"
 }
 ```
 
-### Session metadata update (WebSocket)
+### Обновление метаданных сессии (WebSocket)
 ```
 Socket emit: "update-metadata"
 ```
@@ -287,7 +287,7 @@ Socket emit: "update-metadata"
 }
 ```
 
-### Machine update (WebSocket)
+### Обновление машины (WebSocket)
 ```
 Socket emit: "machine-update-state"
 ```
@@ -299,7 +299,7 @@ Socket emit: "machine-update-state"
 }
 ```
 
-### KV mutate (HTTP)
+### Мутация KV (HTTP)
 ```http
 POST /v1/kv
 ```
@@ -312,19 +312,19 @@ POST /v1/kv
 }
 ```
 
-## Client-side types (shapes used before encryption)
-These are the client-side structures that get encrypted and sent over the wire. They are defined in `packages/remcli-cli/src/api/types.ts`.
+## Клиентские типы (формы до шифрования)
+Это клиентские структуры, которые шифруются и отправляются по проводу. Определены в `packages/remcli-cli/src/api/types.ts`.
 
-### Session message content (encrypted)
-The payload stored in `SessionMessage.content` is always encrypted and wrapped as:
+### Содержимое сообщения сессии (зашифровано)
+Payload, хранящийся в `SessionMessage.content`, всегда зашифрован и обёрнут как:
 ```json
 { "t": "encrypted", "c": "<base64 encrypted>" }
 ```
 
-### Encrypted message payload (plaintext before encryption)
-Messages are encrypted as `MessageContent` and then base64 encoded:
+### Зашифрованный payload сообщения (plaintext до шифрования)
+Сообщения шифруются как `MessageContent`, затем кодируются в base64:
 
-**User message**
+**Сообщение пользователя**
 ```json
 {
   "role": "user",
@@ -334,7 +334,7 @@ Messages are encrypted as `MessageContent` and then base64 encoded:
 }
 ```
 
-**Agent message**
+**Сообщение агента**
 ```json
 {
   "role": "agent",
@@ -343,7 +343,7 @@ Messages are encrypted as `MessageContent` and then base64 encoded:
 }
 ```
 
-### Metadata (encrypted)
+### Метаданные (зашифрованы)
 ```json
 {
   "path": "...",
@@ -371,7 +371,7 @@ Messages are encrypted as `MessageContent` and then base64 encoded:
 }
 ```
 
-### Agent state (encrypted)
+### Состояние агента (зашифровано)
 ```json
 {
   "controlledByUser": true,
@@ -394,7 +394,7 @@ Messages are encrypted as `MessageContent` and then base64 encoded:
 }
 ```
 
-### Machine metadata (encrypted)
+### Метаданные машины (зашифрованы)
 ```json
 {
   "host": "...",
@@ -406,7 +406,7 @@ Messages are encrypted as `MessageContent` and then base64 encoded:
 }
 ```
 
-### Daemon state (encrypted)
+### Состояние демона (зашифровано)
 ```json
 {
   "status": "running | shutting-down",
@@ -418,7 +418,7 @@ Messages are encrypted as `MessageContent` and then base64 encoded:
 }
 ```
 
-## Decryption flow (client side)
+## Поток расшифровки (сторона клиента)
 
 ```mermaid
 flowchart TD
@@ -443,14 +443,14 @@ flowchart TD
     DecryptD --> Plain
 ```
 
-- Read base64 field from API/Socket.
-- Decode base64 to bytes.
-- Choose encryption variant (`legacy` or `dataKey`) based on local credentials.
-- Decrypt bytes using the appropriate key and algorithm.
+- Прочитать base64-поле из API/Socket.
+- Декодировать base64 в байты.
+- Выбрать вариант шифрования (`legacy` или `dataKey`) по локальным учётным данным.
+- Расшифровать байты соответствующим ключом и алгоритмом.
 
-For `dataKey`, clients must first decrypt or derive the per-session/per-machine data key from the stored `dataEncryptionKey` bundle.
+Для `dataKey` клиенты сначала должны расшифровать или вывести ключ данных per-session/per-machine из сохранённого бандла `dataEncryptionKey`.
 
-## Encoding conventions
+## Соглашения по кодированию
 
 ```mermaid
 graph TB
@@ -471,12 +471,12 @@ graph TB
     E3 --> Ex3
 ```
 
-- All encrypted bytes are base64 strings on the wire unless explicitly noted.
-- Timestamps remain plain numbers (epoch ms) and are not encrypted by the server.
-- Non-encrypted identifiers (ids, tags, versions) are always plain strings/numbers.
+- Все зашифрованные байты на проводе — base64-строки, если явно не указано иное.
+- Временные метки остаются обычными числами (epoch ms) и сервером не шифруются.
+- Незашифрованные идентификаторы (ids, tags, versions) — всегда обычные строки/числа.
 
-## Implementation references
-- Client crypto: `packages/remcli-cli/src/api/encryption.ts`
-- Session message format: `packages/remcli-cli/src/api/types.ts`
-- Server message ingestion: `packages/remcli-cli/src/daemon/p2p/p2pSocketHandlers.ts`
-- KV routes: `packages/remcli-cli/src/daemon/p2p/p2pRestRoutes.ts`
+## Ссылки на реализацию
+- Клиентская криптография: `packages/remcli-cli/src/api/encryption.ts`
+- Формат сообщений сессии: `packages/remcli-cli/src/api/types.ts`
+- Приём сообщений сервером: `packages/remcli-cli/src/daemon/p2p/p2pSocketHandlers.ts`
+- KV-роуты: `packages/remcli-cli/src/daemon/p2p/p2pRestRoutes.ts`

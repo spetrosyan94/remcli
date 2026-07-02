@@ -1,19 +1,19 @@
-# Remcli Docs
+# Документация Remcli
 
-Internal documentation for Remcli — protocol, encryption, and CLI architecture.
+Внутренняя документация Remcli — протокол, шифрование и архитектура CLI.
 
-## Index
+## Оглавление
 
-| Document | Description |
-|----------|-------------|
-| [protocol.md](protocol.md) | Wire protocol (WebSocket/HTTP), payload formats, sequencing, concurrency |
-| [encryption.md](encryption.md) | Encryption schemes, binary layouts, key wrapping, on-wire encoding |
-| [cli-architecture.md](cli-architecture.md) | CLI entry flow, daemon lifecycle, session management, RPC |
+| Документ | Описание |
+|----------|----------|
+| [protocol.md](protocol.md) | Сетевой протокол (WebSocket/HTTP), форматы payload, секвенирование, конкурентность |
+| [encryption.md](encryption.md) | Схемы шифрования, бинарные форматы, обёртывание ключей, кодирование на проводе |
+| [cli-architecture.md](cli-architecture.md) | Поток запуска CLI, жизненный цикл демона, управление сессиями, RPC |
 
-## Conventions
+## Соглашения
 
-- Paths and field names reflect the current implementation in `packages/remcli-cli`.
-- The daemon runs a built-in P2P server (Fastify + Socket.IO) — no separate server package.
-- The daemon also serves the web app build (`packages/remcli-app/dist/`) as static files via `@fastify/static`, with SPA fallback for client-side routing.
-- The client is migrating to a web-only package (`remcli-web`, Vite + React + PWA); `remcli-app` (React Native) is in maintenance mode.
-- Examples are illustrative; the canonical source is the code.
+- Пути и имена полей соответствуют текущей реализации в `packages/remcli-cli`.
+- Демон запускает встроенный P2P-сервер (Fastify + Socket.IO) — отдельного серверного пакета нет.
+- Демон также раздаёт сборку веб-приложения (`packages/remcli-app/dist/`) как статические файлы через `@fastify/static`, с SPA-fallback для клиентского роутинга.
+- Клиент мигрирует на web-only пакет (`remcli-web`, Vite + React + PWA); `remcli-app` (React Native) находится в режиме поддержки.
+- Примеры иллюстративны; канонический источник — код.

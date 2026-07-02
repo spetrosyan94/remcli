@@ -1,8 +1,8 @@
-# CLI Architecture
+# Архитектура CLI
 
-This document describes the Remcli (`packages/remcli-cli`) and its daemon. The CLI is both an interactive tool and a background session manager that keeps machine state in sync with the server.
+Этот документ описывает Remcli (`packages/remcli-cli`) и его демон. CLI — это одновременно интерактивный инструмент и фоновый менеджер сессий, который синхронизирует состояние машины с сервером.
 
-## System overview
+## Обзор системы
 
 ```mermaid
 graph TB
@@ -38,14 +38,14 @@ graph TB
     Agents --> API
 ```
 
-## High-level layout
-- **Entry point:** `src/index.ts` parses subcommands and routes execution.
-- **API client:** `src/api` handles HTTP + Socket.IO, encryption, and RPC.
-- **Daemon:** `src/daemon` runs in the background, spawns sessions, and maintains machine state.
-- **Persistence/config:** `src/persistence.ts` + `src/configuration.ts` manage local state in `~/.remcli`.
-- **Agents:** `src/claude`, `src/cursor`, `src/codex`, `src/gemini` provide provider-specific runners.
+## Общая структура
+- **Точка входа:** `src/index.ts` разбирает подкоманды и маршрутизирует выполнение.
+- **API-клиент:** `src/api` отвечает за HTTP + Socket.IO, шифрование и RPC.
+- **Демон:** `src/daemon` работает в фоне, запускает сессии и поддерживает состояние машины.
+- **Персистентность/конфигурация:** `src/persistence.ts` + `src/configuration.ts` управляют локальным состоянием в `~/.remcli`.
+- **Агенты:** `src/claude`, `src/cursor`, `src/codex`, `src/gemini` — раннеры для конкретных провайдеров.
 
-## CLI entry flow
+## Поток запуска CLI
 
 ```mermaid
 flowchart TD
@@ -71,12 +71,12 @@ flowchart TD
     StartDaemon --> SpawnSession[Spawn session]
 ```
 
-`src/index.ts` is the CLI router. It:
-- Parses subcommands (`doctor`, `setup`, `auth`, `connect`, `cursor`, `codex`, `gemini`, and default run flows).
-- Ensures auth and machine setup when needed (`authAndSetupMachineIfNeeded`).
-- Starts the daemon or runs an agent directly based on subcommand/context.
+`src/index.ts` — роутер CLI. Он:
+- Разбирает подкоманды (`doctor`, `setup`, `auth`, `connect`, `cursor`, `codex`, `gemini` и сценарии запуска по умолчанию).
+- При необходимости обеспечивает аутентификацию и настройку машины (`authAndSetupMachineIfNeeded`).
+- Запускает демон или агент напрямую в зависимости от подкоманды/контекста.
 
-## Local state and configuration
+## Локальное состояние и конфигурация
 
 ```mermaid
 graph LR
@@ -99,16 +99,16 @@ graph LR
     E1 -.-> settings & access & daemon & logs
 ```
 
-Local state lives under `~/.remcli` (or `REMCLI_HOME_DIR`):
-- `settings.json`: onboarding and profile settings (validated/migrated).
-- `access.key`: local key material for encryption/auth.
-- `daemon.state.json`: daemon PID + control port + version.
-- `logs/`: CLI/daemon logs.
+Локальное состояние хранится в `~/.remcli` (или `REMCLI_HOME_DIR`):
+- `settings.json`: настройки онбординга и профиля (валидируются/мигрируются).
+- `access.key`: локальный ключевой материал для шифрования/аутентификации.
+- `daemon.state.json`: PID демона + контрольный порт + версия.
+- `logs/`: логи CLI/демона.
 
-Configuration lives in `src/configuration.ts`:
-- `REMCLI_VARIANT`, `REMCLI_EXPERIMENTAL`, `REMCLI_DISABLE_CAFFEINATE` control behavior.
+Конфигурация находится в `src/configuration.ts`:
+- Поведение управляется переменными `REMCLI_VARIANT`, `REMCLI_EXPERIMENTAL`, `REMCLI_DISABLE_CAFFEINATE`.
 
-## API client architecture
+## Архитектура API-клиента
 
 ```mermaid
 graph TB
@@ -134,10 +134,10 @@ graph TB
 ```
 
 ### HTTP
-`ApiClient` (`src/api/api.ts`) handles:
-- Session creation (`POST /v1/sessions`) with encrypted metadata/state.
-- Machine registration (`POST /v1/machines`) with encrypted metadata/daemon state.
-- Other CRUD actions through `ApiSessionClient` and `ApiMachineClient`.
+`ApiClient` (`src/api/api.ts`) отвечает за:
+- Создание сессий (`POST /v1/sessions`) с зашифрованными метаданными/состоянием.
+- Регистрацию машины (`POST /v1/machines`) с зашифрованными метаданными/состоянием демона.
+- Остальные CRUD-операции через `ApiSessionClient` и `ApiMachineClient`.
 
 ### WebSocket
 
@@ -157,16 +157,16 @@ graph LR
     S_Out & M_Out --> P2PServer
 ```
 
-`ApiSessionClient` (`src/api/apiSession.ts`) connects to Socket.IO as a **session-scoped** client:
-- Receives `update` events and decrypts message content.
-- Emits `message`, `update-metadata`, `update-state`, `session-alive`, and `usage-report`.
+`ApiSessionClient` (`src/api/apiSession.ts`) подключается к Socket.IO как **session-scoped** клиент:
+- Принимает события `update` и расшифровывает содержимое сообщений.
+- Отправляет `message`, `update-metadata`, `update-state`, `session-alive` и `usage-report`.
 
-`ApiMachineClient` (`src/api/apiMachine.ts`) connects as a **machine-scoped** client:
-- Sends `machine-alive` heartbeats.
-- Updates machine metadata/daemon state with optimistic concurrency.
-- Receives machine updates and merges them locally.
+`ApiMachineClient` (`src/api/apiMachine.ts`) подключается как **machine-scoped** клиент:
+- Шлёт heartbeat-события `machine-alive`.
+- Обновляет метаданные машины/состояние демона с оптимистичным контролем конкурентности.
+- Принимает обновления машины и сливает их локально.
 
-### Encryption
+### Шифрование
 
 ```mermaid
 flowchart LR
@@ -183,11 +183,11 @@ flowchart LR
     style B64 fill:#fff3e0
 ```
 
-The CLI encrypts client content before it leaves the machine using `src/api/encryption.ts`.
-- Session metadata, agent state, messages, machine state, and KV values are encrypted client-side.
-- On-wire encoding is base64; see `encryption.md`.
+CLI шифрует клиентский контент до того, как он покидает машину, через `src/api/encryption.ts`.
+- Метаданные сессии, состояние агента, сообщения, состояние машины и значения KV шифруются на стороне клиента.
+- Кодирование на проводе — base64; см. `encryption.md`.
 
-## Daemon architecture
+## Архитектура демона
 
 ```mermaid
 graph TB
@@ -211,22 +211,22 @@ graph TB
     MachineClient --> |state sync| P2PServer
 ```
 
-The daemon is a long-lived process responsible for running sessions in the background and maintaining machine presence.
+Демон — долгоживущий процесс, отвечающий за выполнение сессий в фоне и поддержание присутствия машины.
 
-### Module layout
+### Структура модулей
 
-`src/daemon/run.ts` is a thin coordinator that wires together focused modules:
+`src/daemon/run.ts` — тонкий координатор, связывающий сфокусированные модули:
 
-| Module | Responsibility |
-|--------|----------------|
-| `run.ts` | Startup/shutdown orchestration: lock file, P2P server, QR code, tunnel, wiring below modules |
-| `sessionSpawner.ts` | Session manager factory: spawn/stop/track child sessions, tmux windows, cleanup |
-| `src/daemon/sessions/listAgentSessions.ts` | Scans on-disk agent session stores (Claude/Codex/Cursor/Gemini) for the resume picker (`list-agent-sessions` RPC) |
-| `machineSocket.ts` | Machine-scoped Socket.IO client connecting to the daemon's own P2P server; registers RPC handlers (spawn-session etc.) |
-| `heartbeat.ts` | Interval loop: prunes dead sessions, auto-updates on CLI version change (spawns fresh daemon, self-terminates), detects foreign daemons, writes heartbeat to state file |
-| `controlServer.ts` | Local-only HTTP IPC on `127.0.0.1` |
+| Модуль | Ответственность |
+|--------|-----------------|
+| `run.ts` | Оркестрация запуска/остановки: lock-файл, P2P-сервер, QR-код, туннель, связывание модулей ниже |
+| `sessionSpawner.ts` | Фабрика менеджера сессий: запуск/остановка/трекинг дочерних сессий, окна tmux, очистка |
+| `src/daemon/sessions/listAgentSessions.ts` | Сканирует on-disk хранилища сессий агентов (Claude/Codex/Cursor/Gemini) для пикера resume (RPC `list-agent-sessions`) |
+| `machineSocket.ts` | Machine-scoped Socket.IO-клиент, подключающийся к собственному P2P-серверу демона; регистрирует RPC-обработчики (`spawn-session` и др.) |
+| `heartbeat.ts` | Интервальный цикл: удаляет мёртвые сессии, автообновляется при смене версии CLI (запускает свежий демон, завершает себя), обнаруживает чужие демоны, пишет heartbeat в файл состояния |
+| `controlServer.ts` | Локальный HTTP IPC только на `127.0.0.1` |
 
-### Lifecycle
+### Жизненный цикл
 
 ```mermaid
 flowchart TD
@@ -242,22 +242,22 @@ flowchart TD
     Running --> |SIGTERM| Shutdown[Cleanup & exit]
 ```
 
-1. `startDaemon()` validates the running version and acquires a lock file.
-2. It authenticates and registers the machine with the server.
-3. It starts a local **control server** for IPC.
-4. It keeps a map of tracked child sessions and updates daemon state on the server.
+1. `startDaemon()` проверяет запущенную версию и захватывает lock-файл.
+2. Аутентифицируется и регистрирует машину на сервере.
+3. Запускает локальный **контрольный сервер** для IPC.
+4. Ведёт map отслеживаемых дочерних сессий и обновляет состояние демона на сервере.
 
-### Web app serving
+### Раздача веб-приложения
 
-The daemon serves the pre-built web app (`packages/remcli-app/dist/`) as static files via `@fastify/static` on the same P2P server port. This allows the QR code to encode a URL that opens the web app directly from the daemon — no separate dev server needed. The daemon looks for the web build in:
+Демон раздаёт предсобранное веб-приложение (`packages/remcli-app/dist/`) как статические файлы через `@fastify/static` на том же порту P2P-сервера. Это позволяет закодировать в QR-код URL, открывающий веб-приложение прямо с демона — отдельный dev-сервер не нужен. Демон ищет веб-сборку в:
 
-1. `REMCLI_WEB_DIR` environment variable
-2. `../../../remcli-app/dist` relative to compiled `dist/`
-3. `packages/remcli-app/dist` relative to cwd
+1. Переменной окружения `REMCLI_WEB_DIR`
+2. `../../../remcli-app/dist` относительно скомпилированного `dist/`
+3. `packages/remcli-app/dist` относительно cwd
 
-A SPA fallback route serves `index.html` for any unmatched GET request (excluding `/v1/*` and `/v2/*` API routes). Static files are served without authentication; only API routes require the Bearer token.
+SPA-fallback роут отдаёт `index.html` на любой несматченный GET-запрос (кроме API-роутов `/v1/*` и `/v2/*`). Статические файлы раздаются без аутентификации; `bearer token` требуется только для API-роутов.
 
-### Control server (local IPC)
+### Контрольный сервер (локальный IPC)
 
 ```mermaid
 sequenceDiagram
@@ -281,16 +281,16 @@ sequenceDiagram
     Control->>Daemon: Shutdown
 ```
 
-`startDaemonControlServer()` (`src/daemon/controlServer.ts`) runs an HTTP server on `127.0.0.1` and exposes:
-- `/list` (list active sessions)
+`startDaemonControlServer()` (`src/daemon/controlServer.ts`) запускает HTTP-сервер на `127.0.0.1` и предоставляет:
+- `/list` (список активных сессий)
 - `/stop-session`
 - `/spawn-session`
-- `/stop` (shutdown daemon)
-- `/session-started` (session self-report)
+- `/stop` (остановка демона)
+- `/session-started` (самоотчёт сессии)
 
-The CLI talks to this server via `controlClient.ts`, using a port stored in `daemon.state.json`.
+CLI общается с этим сервером через `controlClient.ts`, используя порт из `daemon.state.json`.
 
-### Session spawning
+### Запуск сессий
 
 ```mermaid
 flowchart LR
@@ -319,33 +319,33 @@ flowchart LR
     end
 ```
 
-Sessions can be started by:
-- The CLI directly (foreground).
-- The daemon (background).
-- Remote requests over RPC (from mobile/web via machine connection).
+Сессии могут быть запущены:
+- CLI напрямую (foreground).
+- Демоном (в фоне).
+- Удалёнными запросами по RPC (из mobile/web через подключение машины).
 
-All daemon-spawned sessions run inside **tmux** (required dependency). The first session creates a tmux session named `remcli` with the command as its only window. Subsequent sessions add new windows to the same tmux session. Terminal.app/iTerm2 opens automatically on macOS when the first session is spawned.
+Все сессии, запущенные демоном, работают внутри **tmux** (обязательная зависимость). Первая сессия создаёт tmux-сессию с именем `remcli`, где команда — единственное окно. Последующие сессии добавляют новые окна в ту же tmux-сессию. На macOS при запуске первой сессии автоматически открывается Terminal.app/iTerm2.
 
-When the daemon shuts down, it kills all tracked child processes and the tmux session `remcli`.
+При остановке демон убивает все отслеживаемые дочерние процессы и tmux-сессию `remcli`.
 
-Daemon session spawning uses `registerCommonHandlers` to expose a controlled RPC surface (shell commands, file operations, search/diff helpers).
+Запуск сессий демоном использует `registerCommonHandlers` для предоставления контролируемой RPC-поверхности (shell-команды, файловые операции, помощники поиска/diff).
 
-### Session resume
+### Возобновление сессий (resume)
 
-Support for resuming a previous agent session (e.g. tapping "Resume" in the client) varies per agent:
+Поддержка возобновления предыдущей сессии агента (например, по нажатию «Resume» в клиенте) различается по агентам:
 
-| Agent | Resume | Mechanism |
-|-------|--------|-----------|
-| Claude Code | Full | `--resume <id>`; history from the original session is replayed into the P2P store (`src/claude/utils/replaySessionHistory.ts`) |
-| Cursor | Full | `agent --resume <id>` on each headless query (`src/cursor/cursorQuery.ts`) |
-| Gemini | Full | ACP `session/load` when the agent advertises the `loadSession` capability; falls back to a new session otherwise (`src/agent/acp/AcpBackend.ts`) |
-| Codex | Not supported | `experimental_resume` was removed from the Codex CLI; a fresh session starts with an explicit notice that no context is carried over. Migration to the Codex app-server is planned (`src/codex/runCodex.ts`) |
+| Агент | Resume | Механизм |
+|-------|--------|----------|
+| Claude Code | Полный | `--resume <id>`; история исходной сессии реплеится в P2P-хранилище (`src/claude/utils/replaySessionHistory.ts`) |
+| Cursor | Полный | `agent --resume <id>` на каждый headless-запрос (`src/cursor/cursorQuery.ts`) |
+| Gemini | Полный | ACP `session/load`, если агент декларирует capability `loadSession`; иначе откат к новой сессии (`src/agent/acp/AcpBackend.ts`) |
+| Codex | Не поддерживается | `experimental_resume` удалён из Codex CLI; стартует свежая сессия с явным уведомлением, что контекст не переносится. Планируется миграция на Codex app-server (`src/codex/runCodex.ts`) |
 
-Agent-specific notes:
-- **Cursor**: the CLI binary is detected as `agent` (fallback: `cursor-agent` for older builds); headless queries run with `--trust` to skip workspace-trust prompts.
-- **Gemini**: ACP mode uses `--acp` on newer builds and falls back to `--experimental-acp` (probed once via `gemini --help`). Since 2026-06-18 Google disabled Gemini CLI access for OAuth (Google-account) users — the CLI surfaces a clear error suggesting API-key auth instead of a generic failure.
+Примечания по агентам:
+- **Cursor**: бинарник CLI определяется как `agent` (fallback: `cursor-agent` для старых сборок); headless-запросы выполняются с `--trust`, чтобы пропустить промпты workspace-trust.
+- **Gemini**: режим ACP использует `--acp` на новых сборках с откатом к `--experimental-acp` (проверяется однократно через `gemini --help`). С 2026-06-18 Google отключил доступ Gemini CLI для OAuth-пользователей (аккаунт Google) — CLI выводит понятную ошибку с предложением аутентификации по API-ключу вместо общего сбоя.
 
-### Machine state
+### Состояние машины
 
 ```mermaid
 graph TB
@@ -377,12 +377,12 @@ graph TB
     ApiMachine --> P2PServer
 ```
 
-- **Machine metadata** is static info (host, platform, CLI version, paths).
-- **Daemon state** is dynamic (pid, httpPort, startedAt, shutdown info).
+- **Метаданные машины** — статическая информация (host, платформа, версия CLI, пути).
+- **Состояние демона** — динамическое (pid, httpPort, startedAt, информация об остановке).
 
-The daemon updates these via `ApiMachineClient` and mirrors local state into `daemon.state.json` for control/diagnostics.
+Демон обновляет их через `ApiMachineClient` и зеркалирует локальное состояние в `daemon.state.json` для контроля/диагностики.
 
-## RPC and tool bridge
+## RPC и мост инструментов
 
 ```mermaid
 sequenceDiagram
@@ -405,82 +405,82 @@ sequenceDiagram
     Note over Mobile,Session: All RPC flows through Socket.IO<br/>No direct REST exposure
 ```
 
-RPC is used to send commands over the Socket.IO connection:
-- Sessions register RPC handlers (e.g., `bash`, file read/write, `ripgrep`, `difftastic`).
-- The daemon registers a spawn-session handler so the server/mobile client can ask it to start a local session.
+RPC используется для отправки команд по Socket.IO-соединению:
+- Сессии регистрируют RPC-обработчики (например, `bash`, чтение/запись файлов, `ripgrep`, `difftastic`).
+- Демон регистрирует обработчик `spawn-session`, чтобы сервер/мобильный клиент мог попросить его запустить локальную сессию.
 
-This mechanism allows the P2P server and mobile clients to drive local actions without exposing a broad REST surface.
+Этот механизм позволяет P2P-серверу и мобильным клиентам управлять локальными действиями без широкой REST-поверхности.
 
-## Daemon services
+## Сервисы демона
 
-Optional services hosted by the daemon and exposed over the P2P REST API:
+Опциональные сервисы, размещённые в демоне и доступные через P2P REST API:
 
-| Service | Endpoints | Notes |
-|---------|-----------|-------|
-| Whisper STT | `GET /v1/whisper/status`, `POST /v1/voice/transcribe` | Local whisper.cpp transcription (`src/daemon/whisper/`) |
-| TTS | `GET /v1/tts/status`, `POST /v1/voice/synthesize` | edge-tts (default) or qwen3-tts; with `ttsEdgeVoice: 'auto'` (config default) the Edge voice is picked per response language (`src/daemon/tts/edgeTtsProvider.ts`) |
-| Concierge | `GET /v1/concierge/status`, `POST /v1/concierge/chat` | Optional local LLM assistant ("Jarvis") via LM Studio (`src/daemon/concierge/conciergeService.ts`). Persona + soft rules: `CONCIERGE_SYSTEM_PROMPT`; hard guardrails in code (3-tool whitelist, agent/directory validation before spawn, 4 rounds × 5 tool calls, single spawn per conversation). Owner prompt suffix: `conciergeExtraPrompt` in setup.json (cannot override base rules) |
+| Сервис | Endpoints | Примечания |
+|--------|-----------|------------|
+| Whisper STT | `GET /v1/whisper/status`, `POST /v1/voice/transcribe` | Локальная транскрипция через whisper.cpp (`src/daemon/whisper/`) |
+| TTS | `GET /v1/tts/status`, `POST /v1/voice/synthesize` | edge-tts (по умолчанию) или qwen3-tts; при `ttsEdgeVoice: 'auto'` (дефолт конфигурации) голос Edge подбирается по языку ответа (`src/daemon/tts/edgeTtsProvider.ts`) |
+| Concierge | `GET /v1/concierge/status`, `POST /v1/concierge/chat` | Опциональный локальный LLM-ассистент («Jarvis») через LM Studio (`src/daemon/concierge/conciergeService.ts`). Персона + мягкие правила: `CONCIERGE_SYSTEM_PROMPT`; жёсткие ограничения в коде (whitelist из 3 инструментов, валидация агента/директории перед запуском, 4 раунда × 5 вызовов инструментов, один spawn на диалог). Пользовательский суффикс промпта: `conciergeExtraPrompt` в setup.json (не может переопределить базовые правила) |
 
-### Local concierge (LM Studio)
+### Локальный concierge (LM Studio)
 
-Lightweight LLM assistant embedded in the daemon. Disabled by default; enabled via `conciergeEnabled` in `~/.remcli/setup.json` (`conciergeUrl` defaults to `http://127.0.0.1:1234/v1`, `conciergeModel` empty = first model reported by the server). Talks to any OpenAI-compatible API and routes intent into deterministic function calls:
+Лёгкий LLM-ассистент, встроенный в демон. По умолчанию отключён; включается через `conciergeEnabled` в `~/.remcli/setup.json` (`conciergeUrl` по умолчанию `http://127.0.0.1:1234/v1`, пустой `conciergeModel` = первая модель, которую сообщает сервер). Работает с любым OpenAI-совместимым API и маршрутизирует намерение в детерминированные вызовы функций:
 
-- `list_sessions` — active session list
-- `get_daemon_status` — daemon version/uptime/port/tunnel
-- `spawn_agent_session` — starts an agent session, only on explicit user request
+- `list_sessions` — список активных сессий
+- `get_daemon_status` — версия/uptime/порт/туннель демона
+- `spawn_agent_session` — запускает сессию агента, только по явному запросу пользователя
 
-`POST /v1/concierge/chat` returns `{ reply, actions }`; availability is probed cheaply against `{url}/models` (an offline LM Studio returns 503, never crashes the daemon).
+`POST /v1/concierge/chat` возвращает `{ reply, actions }`; доступность дёшево проверяется запросом к `{url}/models` (выключенный LM Studio возвращает 503 и никогда не роняет демон).
 
-## Setup wizard and diagnostics
+## Мастер настройки и диагностика
 
 ### `remcli setup`
 
-Interactive setup wizard (`src/commands/setup.ts`) that configures:
-1. **Whisper STT model** — selects and downloads a local speech-to-text model.
-2. **TTS provider** — edge-tts (free, no setup) or qwen3-tts (local voice cloning, Apple Silicon only).
-3. **AI agent installation** — installs supported agents with cross-platform commands.
-4. **cloudflared HTTPS tunnel** — installs cloudflared binary for remote access and web voice input.
+Интерактивный мастер настройки (`src/commands/setup.ts`), который конфигурирует:
+1. **Модель Whisper STT** — выбирает и скачивает локальную модель распознавания речи.
+2. **TTS-провайдер** — edge-tts (бесплатно, без настройки) или qwen3-tts (локальное клонирование голоса, только Apple Silicon).
+3. **Установку AI-агентов** — устанавливает поддерживаемых агентов кроссплатформенными командами.
+4. **HTTPS-туннель cloudflared** — устанавливает бинарник cloudflared для удалённого доступа и голосового ввода в вебе.
 
-Supported agents:
+Поддерживаемые агенты:
 
-| Agent | Binary | macOS / Linux | Windows |
-|-------|--------|---------------|---------|
+| Агент | Бинарник | macOS / Linux | Windows |
+|-------|----------|---------------|---------|
 | Claude Code | `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` | `irm https://claude.ai/install.ps1 \| iex` |
 | Gemini CLI | `gemini` | `npm install -g @google/gemini-cli` | `npm install -g @google/gemini-cli` |
 | Codex CLI | `codex` | `npm install -g @openai/codex` | `npm install -g @openai/codex` |
-| Cursor CLI | `agent` (older builds: `cursor-agent`) | `curl https://cursor.com/install -fsS \| bash` | `curl https://cursor.com/install -fsS \| bash` |
+| Cursor CLI | `agent` (старые сборки: `cursor-agent`) | `curl https://cursor.com/install -fsS \| bash` | `curl https://cursor.com/install -fsS \| bash` |
 
-cloudflared installation per platform:
+Установка cloudflared по платформам:
 
-| Platform | Command |
-|----------|---------|
+| Платформа | Команда |
+|-----------|---------|
 | macOS | `brew install cloudflared` |
-| Linux | download `.deb` from GitHub releases |
+| Linux | скачивание `.deb` из GitHub releases |
 | Windows | `winget install Cloudflare.cloudflared` |
 
-No authtoken is needed — cloudflared quick tunnels work out of the box.
+Authtoken не нужен — quick tunnels cloudflared работают из коробки.
 
-Platform detection uses `process.platform === 'win32'`. Installation runs with `stdio: 'inherit'` so the user sees real-time progress.
+Определение платформы — через `process.platform === 'win32'`. Установка выполняется со `stdio: 'inherit'`, чтобы пользователь видел прогресс в реальном времени.
 
-Configuration is saved to `~/.remcli/setup.json`.
+Конфигурация сохраняется в `~/.remcli/setup.json`.
 
 ### `remcli doctor`
 
-Diagnostics command (`src/ui/doctor.ts`) that checks:
-- Basic info (version, platform, Node.js)
-- Daemon status and processes
-- Whisper STT model status
-- TTS provider status
-- **AI agent availability** — detects all four agents (Claude Code, Gemini CLI, Codex CLI, Cursor CLI) via `which`/`where` and reports installed versions (Cursor: `agent`, fallback `cursor-agent`)
-- Log files and support links
+Команда диагностики (`src/ui/doctor.ts`), которая проверяет:
+- Базовую информацию (версия, платформа, Node.js)
+- Статус демона и процессы
+- Статус модели Whisper STT
+- Статус TTS-провайдера
+- **Доступность AI-агентов** — обнаруживает все четыре агента (Claude Code, Gemini CLI, Codex CLI, Cursor CLI) через `which`/`where` и сообщает установленные версии (Cursor: `agent`, fallback `cursor-agent`)
+- Файлы логов и ссылки на поддержку
 
-## Implementation references
-- CLI entry: `packages/remcli-cli/src/index.ts`
-- Daemon coordinator: `packages/remcli-cli/src/daemon/run.ts`
-- Daemon modules: `packages/remcli-cli/src/daemon/sessionSpawner.ts`, `machineSocket.ts`, `heartbeat.ts`
-- Control server/client: `packages/remcli-cli/src/daemon/controlServer.ts`, `packages/remcli-cli/src/daemon/controlClient.ts`
+## Ссылки на реализацию
+- Точка входа CLI: `packages/remcli-cli/src/index.ts`
+- Координатор демона: `packages/remcli-cli/src/daemon/run.ts`
+- Модули демона: `packages/remcli-cli/src/daemon/sessionSpawner.ts`, `machineSocket.ts`, `heartbeat.ts`
+- Контрольный сервер/клиент: `packages/remcli-cli/src/daemon/controlServer.ts`, `packages/remcli-cli/src/daemon/controlClient.ts`
 - Concierge: `packages/remcli-cli/src/daemon/concierge/conciergeService.ts`
 - TTS: `packages/remcli-cli/src/daemon/tts/`
-- API clients: `packages/remcli-cli/src/api`
-- Persistence: `packages/remcli-cli/src/persistence.ts`
-- Config: `packages/remcli-cli/src/configuration.ts`
+- API-клиенты: `packages/remcli-cli/src/api`
+- Персистентность: `packages/remcli-cli/src/persistence.ts`
+- Конфигурация: `packages/remcli-cli/src/configuration.ts`
