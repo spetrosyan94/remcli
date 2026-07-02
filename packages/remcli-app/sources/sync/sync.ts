@@ -1139,6 +1139,51 @@ class Sync {
         log.log(`💬 fetchMessages completed for session ${sessionId} - processed ${normalizedMessages.length} messages`);
     }
 
+    /**
+     * Fetch older messages for a session with offset-based pagination.
+     * Returns { hasMore } to indicate if there are more messages to load.
+     */
+    fetchOlderMessages = async (sessionId: string, offset: number): Promise<{ hasMore: boolean }> => {
+        const encryption = this.encryption.getSessionEncryption(sessionId);
+        if (!encryption) {
+            return { hasMore: false };
+        }
+
+        const response = await apiSocket.request(`/v1/sessions/${sessionId}/messages?limit=150&offset=${offset}`);
+        const data = await response.json() as { messages: ApiMessage[]; total: number; hasMore: boolean };
+
+        let existingMessages = this.sessionReceivedMessages.get(sessionId);
+        if (!existingMessages) {
+            existingMessages = new Set<string>();
+            this.sessionReceivedMessages.set(sessionId, existingMessages);
+        }
+
+        const messagesToDecrypt: ApiMessage[] = [];
+        for (const msg of [...data.messages].reverse()) {
+            if (!existingMessages.has(msg.id)) {
+                messagesToDecrypt.push(msg);
+            }
+        }
+
+        const decryptedMessages = await encryption.decryptMessages(messagesToDecrypt);
+        const normalizedMessages: NormalizedMessage[] = [];
+        for (const decrypted of decryptedMessages) {
+            if (decrypted) {
+                existingMessages.add(decrypted.id);
+                const normalized = normalizeRawMessage(decrypted.id, decrypted.localId, decrypted.createdAt, decrypted.content);
+                if (normalized) {
+                    normalizedMessages.push(normalized);
+                }
+            }
+        }
+
+        if (normalizedMessages.length > 0) {
+            this.applyMessages(sessionId, normalizedMessages);
+        }
+
+        return { hasMore: data.hasMore ?? false };
+    }
+
     private subscribeToUpdates = () => {
         // Subscribe to message updates
         apiSocket.onMessage('update', this.handleUpdate.bind(this));

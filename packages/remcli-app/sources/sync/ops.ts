@@ -9,6 +9,19 @@ import type { MachineMetadata } from './storageTypes';
 
 // Strict type definitions for all operations
 
+// Agent session info returned by list-agent-sessions RPC
+export interface AgentSessionInfo {
+    sessionId: string;
+    agent: 'claude' | 'codex' | 'cursor' | 'gemini';
+    projectPath: string;
+    lastModified: number;
+    firstMessage: string | null;
+    messageCount: number;
+    createdAt: number | null;
+    /** Session name: from /rename command (priority) or slug field. Null for non-Claude agents. */
+    sessionName: string | null;
+}
+
 // Permission operation types
 interface SessionPermissionRequest {
     id: string;
@@ -139,6 +152,8 @@ export interface SpawnSessionOptions {
     approvedNewDirectoryCreation?: boolean;
     token?: string;
     agent?: 'codex' | 'claude' | 'cursor' | 'gemini';
+    resumeSessionId?: string;
+    resumeSessionName?: string;
     // Environment variables from AI backend profile
     // Accepts any environment variables - daemon will pass them to the agent process
     // Common variables include:
@@ -159,7 +174,7 @@ export interface SpawnSessionOptions {
  */
 export async function machineSpawnNewSession(options: SpawnSessionOptions): Promise<SpawnSessionResult> {
 
-    const { machineId, directory, approvedNewDirectoryCreation = false, token, agent, environmentVariables } = options;
+    const { machineId, directory, approvedNewDirectoryCreation = false, token, agent, resumeSessionId, resumeSessionName, environmentVariables } = options;
 
     try {
         const result = await apiSocket.machineRPC<SpawnSessionResult, {
@@ -168,11 +183,13 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
             approvedNewDirectoryCreation?: boolean,
             token?: string,
             agent?: 'codex' | 'claude' | 'cursor' | 'gemini',
+            resumeSessionId?: string,
+            resumeSessionName?: string,
             environmentVariables?: Record<string, string>;
         }>(
             machineId,
             'spawn-remcli-session',
-            { type: 'spawn-in-directory', directory, approvedNewDirectoryCreation, token, agent, environmentVariables }
+            { type: 'spawn-in-directory', directory, approvedNewDirectoryCreation, token, agent, resumeSessionId, resumeSessionName, environmentVariables }
         );
         if (!result) {
             return {
@@ -187,6 +204,35 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
             type: 'error',
             errorMessage: error instanceof Error ? error.message : 'Failed to spawn session'
         };
+    }
+}
+
+/**
+ * List agent sessions on a specific machine (for resume session feature)
+ */
+export async function machineListAgentSessions(
+    machineId: string,
+    agent?: string,
+    directory?: string,
+    limit?: number
+): Promise<AgentSessionInfo[]> {
+    try {
+        const result = await apiSocket.machineRPC<{ sessions: AgentSessionInfo[] }, {
+            agent?: string;
+            directory?: string;
+            limit?: number;
+        }>(
+            machineId,
+            'list-agent-sessions',
+            { agent, directory, limit }
+        );
+        if (!result) {
+            return [];
+        }
+        return result.sessions ?? [];
+    } catch (error) {
+        console.error('[RPC] machineListAgentSessions failed:', error);
+        return [];
     }
 }
 

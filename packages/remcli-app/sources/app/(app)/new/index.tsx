@@ -964,6 +964,21 @@ function NewSessionWizard() {
         }
     }, [selectedMachineId, selectedPath, router]);
 
+    const handleResumeSession = React.useCallback(() => {
+        if (!selectedMachineId) {
+            Modal.alert(t('common.error'), t('newSession.noMachineSelected'));
+            return;
+        }
+        router.push({
+            pathname: '/new/pick/resume',
+            params: {
+                machineId: selectedMachineId,
+                agent: agentType,
+                directory: selectedPath || undefined,
+            },
+        });
+    }, [selectedMachineId, agentType, selectedPath, router]);
+
     // Session creation
     const handleCreateSession = React.useCallback(async () => {
         if (!selectedMachineId) {
@@ -1126,6 +1141,30 @@ function NewSessionWizard() {
                                     value={sessionType}
                                     onChange={setSessionType}
                                 />
+                            </View>
+                        </View>
+                    )}
+
+                    {/* Resume Session link */}
+                    {selectedMachineId && (
+                        <View style={{ paddingHorizontal: screenWidth > 700 ? 16 : 8, marginBottom: 8 }}>
+                            <View style={{ maxWidth: layout.maxWidth, width: '100%', alignSelf: 'center' }}>
+                                <Pressable
+                                    onPress={handleResumeSession}
+                                    style={({ pressed }) => ({
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                        gap: 6,
+                                        opacity: pressed ? 0.6 : 1,
+                                        paddingVertical: 4,
+                                        paddingHorizontal: 4,
+                                    })}
+                                >
+                                    <Ionicons name="refresh-outline" size={16} color={theme.colors.button.primary.tint} />
+                                    <Text style={{ fontSize: 14, color: theme.colors.button.primary.tint, ...Typography.default() }}>
+                                        {t('newSession.resumeSession')}
+                                    </Text>
+                                </Pressable>
                             </View>
                         </View>
                     )}
@@ -1887,6 +1926,30 @@ function NewSessionWizard() {
                     </View>
                 </View>
                 </ScrollView>
+
+                {/* Resume Session link */}
+                {selectedMachineId && (
+                    <View style={{ paddingHorizontal: screenWidth > 700 ? 16 : 8, marginBottom: 8 }}>
+                        <View style={{ maxWidth: layout.maxWidth, width: '100%', alignSelf: 'center' }}>
+                            <Pressable
+                                onPress={handleResumeSession}
+                                style={({ pressed }) => ({
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                    opacity: pressed ? 0.6 : 1,
+                                    paddingVertical: 4,
+                                    paddingHorizontal: 4,
+                                })}
+                            >
+                                <Ionicons name="refresh-outline" size={16} color={theme.colors.button.primary.tint} />
+                                <Text style={{ fontSize: 14, color: theme.colors.button.primary.tint, ...Typography.default() }}>
+                                    Resume Session
+                                </Text>
+                            </Pressable>
+                        </View>
+                    </View>
+                )}
 
                 {/* Section 5: AgentInput - Sticky at bottom */}
                 <View style={{ paddingHorizontal: screenWidth > 700 ? 16 : 8, paddingBottom: Math.max(16, safeArea.bottom) }}>

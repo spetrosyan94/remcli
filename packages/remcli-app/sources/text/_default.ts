@@ -285,7 +285,13 @@ export const en = {
             notGitRepo: 'Worktrees require a git repository',
             failed: ({ error }: { error: string }) => `Failed to create worktree: ${error}`,
             success: 'Worktree created successfully',
-        }
+        },
+        resumeSession: 'Resume Session',
+        resumeSessionEmpty: 'No previous sessions found',
+        resumeSessionEmptyHint: 'Start a new session first, then you can resume it later',
+        resumeSessionUntitled: 'Untitled session',
+        resumeSessionMessages: ({ count }: { count: number }) => count === 1 ? '1 message' : `${count} messages`,
+        resumeSessionFailed: 'Failed to resume session',
     },
 
     sessionHistory: {

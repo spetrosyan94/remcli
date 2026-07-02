@@ -318,7 +318,13 @@ export const ja: TranslationStructure = {
             notGitRepo: 'ワークツリーにはGitリポジトリが必要です',
             failed: ({ error }: { error: string }) => `ワークツリーの作成に失敗しました: ${error}`,
             success: 'ワークツリーが正常に作成されました',
-        }
+        },
+        resumeSession: 'セッションを再開',
+        resumeSessionEmpty: '過去のセッションが見つかりません',
+        resumeSessionEmptyHint: 'まず新しいセッションを開始してください。その後再開できます',
+        resumeSessionUntitled: '無題のセッション',
+        resumeSessionMessages: ({ count }: { count: number }) => count === 1 ? '1件のメッセージ' : `${count}件のメッセージ`,
+        resumeSessionFailed: 'セッションの再開に失敗しました',
     },
 
     sessionHistory: {

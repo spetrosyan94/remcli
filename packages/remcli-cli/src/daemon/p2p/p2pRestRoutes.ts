@@ -419,11 +419,17 @@ export function registerP2PRestRoutes(
         schema: {
             params: z.object({
                 sessionId: z.string()
+            }),
+            querystring: z.object({
+                limit: z.coerce.number().int().min(1).max(500).default(150),
+                offset: z.coerce.number().int().min(0).default(0),
             })
         }
     }, async (request) => {
         const { sessionId } = request.params;
-        const messages = store.getMessages(sessionId, 150);
+        const { limit, offset } = request.query;
+        const messages = store.getMessages(sessionId, limit, offset);
+        const total = store.getMessageCount(sessionId);
         return {
             messages: messages.map(m => ({
                 id: m.id,
@@ -432,7 +438,9 @@ export function registerP2PRestRoutes(
                 localId: m.localId,
                 createdAt: m.createdAt,
                 updatedAt: m.updatedAt
-            }))
+            })),
+            total,
+            hasMore: offset + limit < total,
         };
     });
 

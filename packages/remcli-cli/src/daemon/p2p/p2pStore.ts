@@ -253,10 +253,20 @@ export class P2PStore {
         return message;
     }
 
-    getMessages(sessionId: string, limit: number = 150): P2PMessage[] {
+    getMessages(sessionId: string, limit: number = 150, offset: number = 0): P2PMessage[] {
         const messages = this.sessionMessages.get(sessionId) || [];
-        // Return last N messages, sorted by createdAt desc (newest first, as server does)
-        return messages.slice(-limit).reverse();
+        const total = messages.length;
+        // Messages stored oldest-first in array. We want newest-first for the app.
+        // offset=0 → last `limit` messages (newest)
+        // offset=50 → skip last 50, then take `limit` messages
+        const end = total - offset;
+        const start = Math.max(0, end - limit);
+        if (end <= 0) return [];
+        return messages.slice(start, end).reverse();
+    }
+
+    getMessageCount(sessionId: string): number {
+        return (this.sessionMessages.get(sessionId) || []).length;
     }
 
     // ─── Machines ────────────────────────────────────────────────

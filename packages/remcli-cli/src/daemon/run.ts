@@ -27,6 +27,7 @@ import { generateSharedSecret, encodeSharedSecret, deriveBearerToken } from './p
 import { getLanIPAddress } from './p2p/networkUtils';
 import { buildP2PConnectionInfo, buildP2PQRUrl, displayP2PQRCode, displayP2PConnectionStatus } from './p2p/p2pQRCode';
 import { startCloudflaredTunnel, isCloudflaredAvailable } from './p2p/tunnel';
+import { listAllAgentSessions } from '@/daemon/sessions/listAgentSessions';
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { freeWhisper } from './whisper/whisperService';
 import { initTtsProvider, stopTts } from './tts/ttsService';
@@ -449,7 +450,8 @@ export async function startDaemon(): Promise<void> {
 
           // Construct command for the CLI
           const cliPath = join(projectPath(), 'dist', 'index.mjs');
-          const fullCommand = `node --no-warnings --no-deprecation ${cliPath} ${agent} --remcli-starting-mode remote --started-by daemon`;
+          const resumeArg = options.resumeSessionId ? ` --resume ${options.resumeSessionId}` : '';
+          const fullCommand = `node --no-warnings --no-deprecation ${cliPath} ${agent} --remcli-starting-mode remote --started-by daemon${resumeArg}`;
 
           // Spawn in tmux with environment variables
           const tmuxEnv: Record<string, string> = {};
@@ -463,6 +465,11 @@ export async function startDaemon(): Promise<void> {
 
           // Add extra environment variables (these should already be filtered)
           Object.assign(tmuxEnv, extraEnv);
+
+          // Pass session name for resumed sessions (used by runClaude to set P2P metadata)
+          if (options.resumeSessionName) {
+              tmuxEnv.REMCLI_SESSION_NAME = options.resumeSessionName;
+          }
 
           const tmuxResult = await tmux.spawnInTmux([fullCommand], {
             sessionName: tmuxSessionName,
@@ -697,8 +704,8 @@ export async function startDaemon(): Promise<void> {
     registerCommonHandlers(machineRpcManager, process.cwd());
 
     // Register daemon-specific RPC handlers
-    machineRpcManager.registerHandler('spawn-remcli-session', async (params: any) => {
-        const { directory, sessionId: sid, machineId: targetMachineId, approvedNewDirectoryCreation, agent, token, environmentVariables } = params || {};
+    machineRpcManager.registerHandler('spawn-remcli-session', async (params: Partial<SpawnSessionOptions> & { directory: string }) => {
+        const { directory, sessionId: sid, machineId: targetMachineId, approvedNewDirectoryCreation, agent, token, environmentVariables, resumeSessionId, resumeSessionName } = params || {};
         logger.debugLargeJson('[DAEMON RUN] RPC spawn-remcli-session', params);
 
         if (!directory) {
@@ -712,7 +719,9 @@ export async function startDaemon(): Promise<void> {
             approvedNewDirectoryCreation,
             agent,
             token,
-            environmentVariables
+            environmentVariables,
+            resumeSessionId,
+            resumeSessionName,
         });
 
         switch (result.type) {
@@ -727,7 +736,7 @@ export async function startDaemon(): Promise<void> {
         }
     });
 
-    machineRpcManager.registerHandler('stop-session', (params: any) => {
+    machineRpcManager.registerHandler('stop-session', (params: { sessionId?: string }) => {
         const { sessionId: targetSessionId } = params || {};
         if (!targetSessionId) {
             throw new Error('Session ID is required');
@@ -746,6 +755,12 @@ export async function startDaemon(): Promise<void> {
         logger.debug('[DAEMON RUN] RPC stop-daemon received');
         setTimeout(() => requestShutdown('remcli-app'), 100);
         return { message: 'Daemon stop request acknowledged' };
+    });
+
+    machineRpcManager.registerHandler('list-agent-sessions', async (params: { agent?: string; directory?: string; limit?: number }) => {
+        const { agent, directory, limit } = params || {};
+        const sessions = listAllAgentSessions(agent, directory, limit);
+        return { sessions };
     });
 
     machineSocket.on('connect', () => {

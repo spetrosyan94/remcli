@@ -286,7 +286,13 @@ export const ca: TranslationStructure = {
             notGitRepo: 'Els worktrees requereixen un repositori git',
             failed: ({ error }: { error: string }) => `Error en crear el worktree: ${error}`,
             success: 'Worktree creat amb èxit',
-        }
+        },
+        resumeSession: 'Reprendre sessió',
+        resumeSessionEmpty: 'No s\'han trobat sessions anteriors',
+        resumeSessionEmptyHint: 'Inicia una nova sessió primer, després podràs reprendre-la',
+        resumeSessionUntitled: 'Sessió sense títol',
+        resumeSessionMessages: ({ count }: { count: number }) => count === 1 ? '1 missatge' : `${count} missatges`,
+        resumeSessionFailed: 'No s\'ha pogut reprendre la sessió',
     },
 
     sessionHistory: {

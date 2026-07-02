@@ -119,6 +119,10 @@ export interface SpawnSessionOptions {
     machineId?: string;
     directory: string;
     sessionId?: string;
+    /** Agent session ID to resume (passes --resume <id> to the spawned process) */
+    resumeSessionId?: string;
+    /** Session name for resumed sessions (shown in app) */
+    resumeSessionName?: string;
     approvedNewDirectoryCreation?: boolean;
     agent?: 'claude' | 'codex' | 'cursor' | 'gemini';
     token?: string;

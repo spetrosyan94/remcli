@@ -315,7 +315,13 @@ export const it: TranslationStructure = {
             notGitRepo: 'Le worktree richiedono un repository git',
             failed: ({ error }: { error: string }) => `Impossibile creare la worktree: ${error}`,
             success: 'Worktree creata con successo',
-        }
+        },
+        resumeSession: 'Riprendi sessione',
+        resumeSessionEmpty: 'Nessuna sessione precedente trovata',
+        resumeSessionEmptyHint: 'Avvia prima una nuova sessione, poi potrai riprenderla',
+        resumeSessionUntitled: 'Sessione senza titolo',
+        resumeSessionMessages: ({ count }: { count: number }) => count === 1 ? '1 messaggio' : `${count} messaggi`,
+        resumeSessionFailed: 'Impossibile riprendere la sessione',
     },
 
     sessionHistory: {

@@ -304,6 +304,13 @@ export default function RootLayout() {
                 }}
             />
             <Stack.Screen
+                name="new/pick/resume"
+                options={{
+                    headerTitle: t('newSession.resumeSession'),
+                    headerBackTitle: t('common.back'),
+                }}
+            />
+            <Stack.Screen
                 name="new/pick/profile-edit"
                 options={{
                     headerTitle: '',

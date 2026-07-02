@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createInterface, Interface as ReadlineInterface } from 'node:readline';
 import { promisify } from 'node:util';
+import { randomBytes } from 'node:crypto';
 import { tmpNameSync } from 'tmp';
 import { readSetupConfig } from '@/persistence';
 import { logger } from '@/ui/logger';
@@ -23,7 +24,7 @@ const execFileAsync = promisify(execFile);
 // ─── Constants ──────────────────────────────────────────────────
 
 const WORKER_READY_TIMEOUT_MS = 120_000;
-const SYNTHESIS_TIMEOUT_MS = 60_000;
+const SYNTHESIS_TIMEOUT_MS = 90_000;
 const SHUTDOWN_GRACE_MS = 2_000;
 
 // ─── Provider ───────────────────────────────────────────────────
@@ -31,6 +32,7 @@ const SHUTDOWN_GRACE_MS = 2_000;
 export class QwenTtsProvider implements TtsProvider {
     private workerProcess: ChildProcess | null = null;
     private stdoutReader: ReadlineInterface | null = null;
+    private pendingRequestId: string | null = null;
     private pendingResolve: ((value: WorkerResponse) => void) | null = null;
     private pendingReject: ((reason: Error) => void) | null = null;
     private requestQueue: Array<{ resolve: (buf: Buffer) => void; reject: (err: Error) => void; run: () => Promise<Buffer> }> = [];
@@ -69,6 +71,7 @@ export class QwenTtsProvider implements TtsProvider {
                 this.pendingReject(new Error(`Qwen3-TTS worker exited unexpectedly: code=${code}, signal=${signal}`));
                 this.pendingResolve = null;
                 this.pendingReject = null;
+                this.pendingRequestId = null;
             }
         });
 
@@ -182,11 +185,11 @@ export class QwenTtsProvider implements TtsProvider {
             }
 
             // Convert OGG Vorbis → OGG Opus for iOS/Safari compatibility
-            // 48kbps mono Opus at 24kHz — optimized for speech (~6 KB/sec)
+            // 96kbps mono Opus at 24kHz — good quality speech (~12 KB/sec)
             await execFileAsync('ffmpeg', [
                 '-i', vorbisPath,
                 '-c:a', 'libopus',
-                '-b:a', '48k',
+                '-b:a', '96k',
                 '-ar', '24000',
                 '-ac', '1',
                 '-application', 'voip',
@@ -274,10 +277,17 @@ export class QwenTtsProvider implements TtsProvider {
 
         try {
             const response = JSON.parse(line) as WorkerResponse;
+            // Match response to pending request by ID — discard stale responses
+            // from timed-out requests that finished after we moved on
+            if (response.id && response.id !== this.pendingRequestId) {
+                logger.debug(`[TTS:qwen3] Discarding stale response (id=${response.id}, pending=${this.pendingRequestId})`);
+                return;
+            }
             if (this.pendingResolve) {
                 this.pendingResolve(response);
                 this.pendingResolve = null;
                 this.pendingReject = null;
+                this.pendingRequestId = null;
             }
         } catch {
             logger.debug(`[TTS:qwen3] Non-JSON output: ${line}`);
@@ -291,12 +301,16 @@ export class QwenTtsProvider implements TtsProvider {
                 return;
             }
 
+            const requestId = randomBytes(8).toString('hex');
+
             const timeout = setTimeout(() => {
                 this.pendingResolve = null;
                 this.pendingReject = null;
+                this.pendingRequestId = null;
                 reject(new Error(`Synthesis timed out after ${SYNTHESIS_TIMEOUT_MS}ms`));
             }, SYNTHESIS_TIMEOUT_MS);
 
+            this.pendingRequestId = requestId;
             this.pendingResolve = (response: WorkerResponse) => {
                 clearTimeout(timeout);
                 resolve(response);
@@ -306,7 +320,7 @@ export class QwenTtsProvider implements TtsProvider {
                 reject(error);
             };
 
-            const jsonLine = JSON.stringify(request) + '\n';
+            const jsonLine = JSON.stringify({ ...request, id: requestId }) + '\n';
             this.workerProcess.stdin.write(jsonLine);
         });
     }
@@ -323,6 +337,7 @@ interface WorkerRequest {
 }
 
 interface WorkerResponse {
+    id?: string;
     ok: boolean;
     path?: string;
     error?: string;

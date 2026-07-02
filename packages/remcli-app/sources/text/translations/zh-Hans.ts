@@ -288,7 +288,13 @@ export const zhHans: TranslationStructure = {
             notGitRepo: 'Worktree 需要 git 仓库',
             failed: ({ error }: { error: string }) => `创建 worktree 失败：${error}`,
             success: 'Worktree 创建成功',
-        }
+        },
+        resumeSession: '恢复会话',
+        resumeSessionEmpty: '未找到历史会话',
+        resumeSessionEmptyHint: '请先创建一个会话，之后可以恢复它',
+        resumeSessionUntitled: '无标题会话',
+        resumeSessionMessages: ({ count }: { count: number }) => count === 1 ? '1条消息' : `${count}条消息`,
+        resumeSessionFailed: '恢复会话失败',
     },
 
     sessionHistory: {

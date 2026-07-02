@@ -287,7 +287,13 @@ export const zhHant: TranslationStructure = {
             notGitRepo: 'Worktree 需要 git 倉庫',
             failed: ({ error }: { error: string }) => `建立 worktree 失敗：${error}`,
             success: 'Worktree 建立成功',
-        }
+        },
+        resumeSession: '恢復工作階段',
+        resumeSessionEmpty: '未找到歷史工作階段',
+        resumeSessionEmptyHint: '請先建立一個工作階段，之後可以恢復它',
+        resumeSessionUntitled: '無標題工作階段',
+        resumeSessionMessages: ({ count }: { count: number }) => count === 1 ? '1則訊息' : `${count}則訊息`,
+        resumeSessionFailed: '恢復工作階段失敗',
     },
 
     sessionHistory: {

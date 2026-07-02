@@ -222,13 +222,13 @@ export async function downloadModelWithProgress(
 const SILENCE_RMS_THRESHOLD = 0.005;
 
 /** Per-segment RMS threshold — segments with energy below this are on silence */
-const SEGMENT_SILENCE_RMS_THRESHOLD = 0.003;
+const SEGMENT_SILENCE_RMS_THRESHOLD = 0.006;
 
 /** Segment confidence threshold — segments below this are likely hallucinations */
-const MIN_SEGMENT_CONFIDENCE = 0.4;
+const MIN_SEGMENT_CONFIDENCE = 0.45;
 
 /** Trailing segment confidence threshold — stricter for end-of-audio hallucinations */
-const MIN_TRAILING_CONFIDENCE = 0.5;
+const MIN_TRAILING_CONFIDENCE = 0.65;
 
 /**
  * Known Whisper hallucination patterns (case-insensitive).
@@ -368,9 +368,9 @@ export async function transcribe(audioPath: string): Promise<TranscriptionResult
             language: 'auto',
             suppress_blank: true,
             suppress_non_speech_tokens: true,
-            no_speech_thold: 0.8,
-            logprob_thold: -0.7,
-            entropy_thold: 2.4,
+            no_speech_thold: 0.9,
+            logprob_thold: -0.5,
+            entropy_thold: 2.0,
             temperature: 0.0,
             format: 'detail',
         });

@@ -25,6 +25,7 @@ import { projectPath } from '../projectPath';
 import { resolve } from 'node:path';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { Session } from './session';
+import { replaySessionHistory, extractResumeIdFromArgs } from '@/claude/utils/replaySessionHistory';
 
 /** JavaScript runtime to use for spawning Claude Code */
 export type JsRuntime = 'node' | 'bun'
@@ -91,7 +92,9 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         // Initialize lifecycle state
         lifecycleState: 'running',
         lifecycleStateSince: Date.now(),
-        flavor: 'claude'
+        flavor: 'claude',
+        // Session name from daemon spawn (resume flow)
+        ...(process.env.REMCLI_SESSION_NAME ? { name: process.env.REMCLI_SESSION_NAME } : {}),
     };
     const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
 
@@ -382,6 +385,17 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     });
 
     registerKillSessionHandler(session.rpcHandlerManager, cleanup);
+
+    // Replay history from the original session into P2P store (for --resume)
+    const resumeId = extractResumeIdFromArgs(options.claudeArgs);
+    if (resumeId) {
+        const count = await replaySessionHistory(
+            resumeId,
+            workingDirectory,
+            (msg) => session.sendClaudeSessionMessage(msg)
+        );
+        logger.debug(`[RESUME] Replayed ${count} historical messages for resumed session ${resumeId}`);
+    }
 
     // Create claude loop
     const exitCode = await loop({

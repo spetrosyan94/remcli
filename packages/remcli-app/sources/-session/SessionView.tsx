@@ -3,6 +3,7 @@ import { AgentInput } from '@/components/AgentInput';
 import { getSuggestions } from '@/components/autocomplete/suggestions';
 import { ChatHeaderView } from '@/components/ChatHeaderView';
 import { ChatList } from '@/components/ChatList';
+import { useLoadMoreMessages } from '@/hooks/useLoadMoreMessages';
 import { Deferred } from '@/components/Deferred';
 import { EmptyMessages } from '@/components/EmptyMessages';
 import { VoiceAssistantStatusBar } from '@/components/VoiceAssistantStatusBar';
@@ -161,6 +162,7 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
     const [message, setMessage] = React.useState('');
     const realtimeStatus = useRealtimeStatus();
     const { messages, isLoaded } = useSessionMessages(sessionId);
+    const { loadMore, loading: loadingMore } = useLoadMoreMessages(sessionId);
     const acknowledgedCliVersions = useLocalSetting('acknowledgedCliVersions');
 
     // Check if CLI version is outdated and not already acknowledged
@@ -303,7 +305,7 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         <>
             <Deferred>
                 {messages.length > 0 && (
-                    <ChatList session={session} tts={ttsProps} />
+                    <ChatList session={session} tts={ttsProps} onLoadMore={loadMore} loadingMore={loadingMore} />
                 )}
             </Deferred>
         </>

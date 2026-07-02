@@ -9,7 +9,7 @@ import { Metadata, Session } from '@/sync/storageTypes';
 import { ChatFooter } from './ChatFooter';
 import { Message } from '@/sync/typesMessage';
 
-export const ChatList = React.memo((props: { session: Session; tts?: TtsProps }) => {
+export const ChatList = React.memo((props: { session: Session; tts?: TtsProps; onLoadMore?: () => void; loadingMore?: boolean }) => {
     const { messages } = useSessionMessages(props.session.id);
     return (
         <ChatListInternal
@@ -17,6 +17,8 @@ export const ChatList = React.memo((props: { session: Session; tts?: TtsProps })
             sessionId={props.session.id}
             messages={messages}
             tts={props.tts}
+            onLoadMore={props.onLoadMore}
+            loadingMore={props.loadingMore}
         />
     )
 });
@@ -34,11 +36,22 @@ const ListFooter = React.memo((props: { sessionId: string }) => {
     )
 });
 
+const LoadMoreIndicator = React.memo((props: { loading?: boolean }) => {
+    if (!props.loading) return null;
+    return (
+        <View style={{ paddingVertical: 16, alignItems: 'center' }}>
+            <ActivityIndicator size="small" />
+        </View>
+    );
+});
+
 const ChatListInternal = React.memo((props: {
     metadata: Metadata | null,
     sessionId: string,
     messages: Message[],
     tts?: TtsProps,
+    onLoadMore?: () => void,
+    loadingMore?: boolean,
 }) => {
     const keyExtractor = useCallback((item: any) => item.id, []);
     const renderItem = useCallback(({ item }: { item: any }) => (
@@ -57,7 +70,9 @@ const ChatListInternal = React.memo((props: {
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'none'}
             renderItem={renderItem}
             ListHeaderComponent={<ListFooter sessionId={props.sessionId} />}
-            ListFooterComponent={<ListHeader />}
+            ListFooterComponent={<><LoadMoreIndicator loading={props.loadingMore} /><ListHeader /></>}
+            onEndReached={props.onLoadMore}
+            onEndReachedThreshold={0.3}
         />
     )
 });

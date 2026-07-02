@@ -5,8 +5,8 @@ Loads model once, accepts JSON requests via stdin, outputs OGG audio files.
 Communication protocol: JSON lines on stdin/stdout.
 Matches usage patterns from /Users/solidhard1/Projects/qwen3-tts reference repo.
 
-Request:  {"text": "...", "lang": "ru", "output": "/tmp/tts-xxx.ogg", "ref_audio": "...", "ref_text": "..."}
-Response: {"ok": true, "path": "/tmp/tts-xxx.ogg"} or {"ok": false, "error": "..."}
+Request:  {"id": "abc", "text": "...", "lang": "ru", "output": "/tmp/tts-xxx.ogg", "ref_audio": "...", "ref_text": "..."}
+Response: {"id": "abc", "ok": true, "path": "/tmp/tts-xxx.ogg"} or {"id": "abc", "ok": false, "error": "..."}
 """
 
 import os
@@ -20,6 +20,16 @@ import soundfile as sf
 from mlx_audio.tts.utils import load_model
 
 MODEL_ID = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit"
+
+# Generation defaults — match model defaults explicitly
+# mlx_audio.server has DIFFERENT defaults that cause artifacts (max_tokens=1200, repetition_penalty=1.0)
+GENERATION_DEFAULTS = {
+    "temperature": 0.9,
+    "top_p": 1.0,
+    "top_k": 50,
+    "repetition_penalty": 1.05,
+    "max_tokens": 8192,  # ~30 sec audio (12Hz × 16 codes × 30s = 5760 + overhead)
+}
 
 
 def main():
@@ -35,6 +45,7 @@ def main():
             continue
         try:
             req = json.loads(line)
+            req_id = req.get("id")
             text = req["text"]
             output_path = req["output"]
             lang = req.get("lang", "ru")
@@ -45,6 +56,7 @@ def main():
                 text=text,
                 lang_code=lang,
                 verbose=False,
+                **GENERATION_DEFAULTS,
             )
             if ref_audio and ref_text:
                 generate_kwargs["ref_audio"] = ref_audio
@@ -52,7 +64,7 @@ def main():
 
             results = list(model.generate(**generate_kwargs))
             if not results:
-                print(json.dumps({"ok": False, "error": "No audio generated"}), flush=True)
+                print(json.dumps({"id": req_id, "ok": False, "error": "No audio generated"}), flush=True)
                 continue
 
             last_result = results[-1]
@@ -67,9 +79,9 @@ def main():
 
             sf.write(output_path, audio_np, sr, format="OGG", subtype="VORBIS")
 
-            print(json.dumps({"ok": True, "path": output_path}), flush=True)
+            print(json.dumps({"id": req_id, "ok": True, "path": output_path}), flush=True)
         except Exception as e:
-            print(json.dumps({"ok": False, "error": str(e)}), flush=True)
+            print(json.dumps({"id": req_id, "ok": False, "error": str(e)}), flush=True)
 
 
 if __name__ == "__main__":
