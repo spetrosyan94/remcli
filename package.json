@@ -1,27 +1,26 @@
 {
-    "name": "remcli-monorepo",
-    "private": true,
-    "workspaces": [
-        "packages/remcli-app",
-        "packages/remcli-cli",
-        "packages/remcli-web"
-    ],
-    "scripts": {
-        "setup": "npm install && npm -w remcli run build && node packages/remcli-cli/bin/remcli.mjs setup",
-        "build:web": "npm run build --workspace=remcli && npm run export:web --workspace=remcli-app",
-        "start": "npm run build --workspace=remcli && node packages/remcli-cli/bin/remcli.mjs daemon stop; node packages/remcli-cli/bin/remcli.mjs daemon start-sync",
-        "start:tunnel": "npm run build --workspace=remcli && node packages/remcli-cli/bin/remcli.mjs daemon stop; node packages/remcli-cli/bin/remcli.mjs daemon start-sync --tunnel",
-        "claude": "node packages/remcli-cli/bin/remcli.mjs claude",
-        "codex": "node packages/remcli-cli/bin/remcli.mjs codex",
-        "cursor": "node packages/remcli-cli/bin/remcli.mjs cursor",
-        "gemini": "node packages/remcli-cli/bin/remcli.mjs gemini",
-        "stop": "node packages/remcli-cli/bin/remcli.mjs daemon stop",
-        "status": "node packages/remcli-cli/bin/remcli.mjs daemon status",
-        "qr": "node packages/remcli-cli/bin/remcli.mjs daemon qr",
-
-        "dev:app": "npm run start --workspace=remcli-app",
-        "dev:web": "npm run web --workspace=remcli-app",
-        "dev:cli": "npm run build --workspace=remcli",
-        "dev:typecheck": "npm run typecheck --workspace=remcli-app"
-    }
+  "name": "remcli-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/remcli-app",
+    "packages/remcli-cli",
+    "packages/remcli-web"
+  ],
+  "scripts": {
+    "setup": "npm install && npm run build && node packages/remcli-cli/bin/remcli.mjs setup",
+    "build": "npm -w remcli-web run build && npm -w remcli run build",
+    "start": "npm run build && node packages/remcli-cli/bin/remcli.mjs daemon stop; node packages/remcli-cli/bin/remcli.mjs daemon start-sync",
+    "start:tunnel": "npm run build && node packages/remcli-cli/bin/remcli.mjs daemon stop; node packages/remcli-cli/bin/remcli.mjs daemon start-sync --tunnel",
+    "stop": "node packages/remcli-cli/bin/remcli.mjs daemon stop",
+    "status": "node packages/remcli-cli/bin/remcli.mjs daemon status",
+    "qr": "node packages/remcli-cli/bin/remcli.mjs daemon qr",
+    "doctor": "node packages/remcli-cli/bin/remcli.mjs doctor",
+    "claude": "node packages/remcli-cli/bin/remcli.mjs claude",
+    "codex": "node packages/remcli-cli/bin/remcli.mjs codex",
+    "cursor": "node packages/remcli-cli/bin/remcli.mjs cursor",
+    "gemini": "node packages/remcli-cli/bin/remcli.mjs gemini",
+    "dev:web": "npm -w remcli-web run dev",
+    "typecheck": "npm -w remcli-web run typecheck && npm -w remcli run typecheck",
+    "test": "npm -w remcli-web run test && npm -w remcli run test"
+  }
 }
