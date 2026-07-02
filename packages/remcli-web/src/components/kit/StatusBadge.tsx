@@ -1,15 +1,20 @@
 // remcli — StatusDot / StatusBadge (перенос design/screens/components.tsx, разметка 1:1).
-import { t } from "@/lib/i18n";
+import { t, type I18nKey } from "@/lib/i18n";
 import type { Status } from "@/components/kit/types";
 
-export const STATUS_LABEL: Record<Status, string> = {
-    running: t("status.running"),
-    thinking: t("status.thinking"),
-    permission: t("status.permission"),
-    idle: t("status.idle"),
-    offline: t("status.offline"),
-    error: t("status.error"),
+const STATUS_LABEL_KEY: Record<Status, I18nKey> = {
+    running: "status.running",
+    thinking: "status.thinking",
+    permission: "status.permission",
+    idle: "status.idle",
+    offline: "status.offline",
+    error: "status.error",
 };
+
+// t() вызывается при каждом рендере — подпись обновляется при смене языка без перезагрузки.
+export function statusLabel(status: Status): string {
+    return t(STATUS_LABEL_KEY[status]);
+}
 
 export function StatusDot({ status, className = "size-2" }: { status: Status; className?: string }) {
     const map: Record<Status, string> = {
@@ -35,7 +40,7 @@ export function StatusBadge({ status }: { status: Status }) {
     return (
         <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-mono text-[10.5px] ${tint[status]}`}>
             <StatusDot status={status} className="size-1.5" />
-            {STATUS_LABEL[status]}
+            {statusLabel(status)}
         </span>
     );
 }

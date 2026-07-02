@@ -2,7 +2,7 @@
 // агент, путь (~/…), статус (DESIGN.md §Карта статусов), строка состояния, метки времени.
 // Референс: remcli-app sources/utils/sessionUtils.ts.
 import type { AgentId, Status } from "@/components/kit";
-import { t } from "@/lib/i18n";
+import { getIntlLocale, t } from "@/lib/i18n";
 import type { Machine, Session } from "@/lib/protocol";
 
 /** flavor из метаданных сессии → id агента UI-кита (неизвестный флейвор → claude). */
@@ -68,12 +68,12 @@ export function formatTimeLabel(timestamp: number): string {
     const date = new Date(timestamp);
     const now = new Date();
     if (date.toDateString() === now.toDateString()) {
-        return date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+        return date.toLocaleTimeString(getIntlLocale(), { hour: "2-digit", minute: "2-digit" });
     }
     const yesterday = new Date(now);
     yesterday.setDate(now.getDate() - 1);
     if (date.toDateString() === yesterday.toDateString()) return t("time.yesterday");
-    return date.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+    return date.toLocaleDateString(getIntlLocale(), { day: "numeric", month: "short" });
 }
 
 /** Имя машины: displayName → host → короткий id. */

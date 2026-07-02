@@ -232,7 +232,7 @@ export function ConnectPage() {
                             <span className="text-[13.5px] font-semibold">{t("connect.error.title")}</span>
                         </div>
                         <p className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground">
-                            {t("connect.error.timeout").replace("{address}", target)}<br />{t("connect.error.hint")}
+                            {t("connect.error.timeout", { address: target })}<br />{t("connect.error.hint")}
                         </p>
                         <div className="flex gap-2">
                             <button onClick={() => setState("connecting")} className="h-10 flex-1 rounded-[9px] bg-primary text-[13px] font-semibold text-primary-foreground">{t("connect.retry")}</button>

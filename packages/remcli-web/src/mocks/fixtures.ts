@@ -14,7 +14,7 @@ export interface MockMachine {
 
 export const machines: MockMachine[] = [
     { id: "m-mbp", name: "mbp.local", isOnline: true, transport: "lan", latencyLabel: "12ms" },
-    { id: "m-studio", name: "studio-pc", isOnline: false, transport: "lan", lastSeenLabel: "вчера" },
+    { id: "m-studio", name: "studio-pc", isOnline: false, transport: "lan", lastSeenLabel: "yesterday" },
 ];
 
 /* ---------- Сессии (все 6 статусов) ---------- */
@@ -36,33 +36,33 @@ export const sessions: MockSession[] = [
     // permission всегда поднимается наверх списка
     {
         id: "s-deploy", machineId: "m-mbp", agent: "claude", model: "opus-4.1",
-        path: "~/dev/deploy-scripts", message: "Просит разрешение: git push --force",
-        status: "permission", timeLabel: "2 мин", permissionMode: "ask",
+        path: "~/dev/deploy-scripts", message: "Asking for permission: git push --force",
+        status: "permission", timeLabel: "2 min", permissionMode: "ask",
     },
     {
         id: "s-remcli", machineId: "m-mbp", agent: "claude", model: "opus-4.1",
-        path: "~/dev/remcli", message: "Пишу WebRTC-транспорт…",
-        status: "running", timeLabel: "сейчас", permissionMode: "ask",
+        path: "~/dev/remcli", message: "Writing the WebRTC transport…",
+        status: "running", timeLabel: "now", permissionMode: "ask",
     },
     {
         id: "s-webapp", machineId: "m-mbp", agent: "cursor", model: "composer-1",
-        path: "~/dev/webapp", message: "Думает над планом миграции…",
-        status: "thinking", timeLabel: "1 мин", permissionMode: "safe",
+        path: "~/dev/webapp", message: "Thinking about the migration plan…",
+        status: "thinking", timeLabel: "1 min", permissionMode: "safe",
     },
     {
         id: "s-gateway", machineId: "m-mbp", agent: "codex", model: "gpt-5.2-codex",
-        path: "~/dev/api-gateway", message: "Тесты прошли, готовлю коммит…",
+        path: "~/dev/api-gateway", message: "Tests passed, preparing a commit…",
         status: "idle", timeLabel: "12:40", permissionMode: "auto",
     },
     {
         id: "s-parser", machineId: "m-mbp", agent: "codex", model: "gpt-5.2-codex",
-        path: "~/oss/parser", message: "ошибка: pnpm build · exit 1",
+        path: "~/oss/parser", message: "error: pnpm build · exit 1",
         status: "error", timeLabel: "11:02", permissionMode: "ask",
     },
     {
         id: "s-rag", machineId: "m-studio", agent: "gemini", model: "gemini-3-pro",
-        path: "~/exp/rag-index", message: "машина недоступна",
-        status: "offline", timeLabel: "вчера", permissionMode: "ask",
+        path: "~/exp/rag-index", message: "machine unreachable",
+        status: "offline", timeLabel: "yesterday", permissionMode: "ask",
     },
 ];
 
@@ -131,10 +131,10 @@ export type MockChatMessage =
 /** Лента чата по id сессии (заполнена для s-remcli и s-deploy). */
 export const chatMessages: Record<string, MockChatMessage[]> = {
     "s-remcli": [
-        { id: "c1", kind: "user", text: "Добавь шифрование в канал и прогони тесты" },
+        { id: "c1", kind: "user", text: "Add encryption to the channel and run the tests" },
         {
             id: "c2", kind: "agent", agent: "claude", timeLabel: "claude · 12:41",
-            text: "Смотрю текущий транспорт и оборачиваю отправку в", code: "seal()",
+            text: "Inspecting the current transport and wrapping send in", code: "seal()",
         },
         { id: "c3", kind: "tool-call", tool: "Read", arg: "src/transport/webrtc.ts", state: "success" },
         {
@@ -152,20 +152,20 @@ export const chatMessages: Record<string, MockChatMessage[]> = {
         },
         {
             id: "c6", kind: "permission", tool: "bash", timeLabel: "12:42",
-            command: "pnpm test -- --run crypto", comment: "прогонит тесты шифрования",
-            alwaysLabel: "всегда разрешать pnpm test в этой сессии",
+            command: "pnpm test -- --run crypto", comment: "will run the crypto tests",
+            alwaysLabel: "always allow pnpm test in this session",
         },
         { id: "c7", kind: "thinking", agent: "claude" },
     ],
     "s-deploy": [
-        { id: "d1", kind: "user", text: "Задеплой ветку release в прод" },
+        { id: "d1", kind: "user", text: "Deploy the release branch to production" },
         {
             id: "d2", kind: "agent", agent: "claude", timeLabel: "claude · 13:58",
-            text: "Ветка расходится с origin — нужен force-push.",
+            text: "The branch diverges from origin — a force-push is needed.",
         },
         {
             id: "d3", kind: "permission", tool: "bash", timeLabel: "14:00",
-            command: "git push --force origin release", comment: "перезапишет историю origin/release",
+            command: "git push --force origin release", comment: "will rewrite origin/release history",
             isDanger: true,
         },
     ],
@@ -199,10 +199,10 @@ export interface MockZenTask {
 }
 
 export const zenTasks: MockZenTask[] = [
-    { id: "z1", title: "Довести E2E-шифрование канала", isDone: false, sessionId: "s-remcli" },
-    { id: "z2", title: "Ретраи при обрыве туннеля", isDone: false, hasWorkCta: true },
-    { id: "z3", title: "Обновить README по установке демона", isDone: false },
-    { id: "z4", title: "Настроить QR-подключение по туннелю", isDone: true },
+    { id: "z1", title: "Finish channel E2E encryption", isDone: false, sessionId: "s-remcli" },
+    { id: "z2", title: "Retries on tunnel drop", isDone: false, hasWorkCta: true },
+    { id: "z3", title: "Update README on daemon install", isDone: false },
+    { id: "z4", title: "Set up QR connection over tunnel", isDone: true },
 ];
 
 /* ---------- Новая сессия ---------- */
@@ -226,8 +226,8 @@ export interface MockRecentDir {
 }
 
 export const recentDirs: MockRecentDir[] = [
-    { path: "~/dev/remcli", lastUsedLabel: "2 ч назад" },
-    { path: "~/dev/api-gateway", lastUsedLabel: "вчера" },
+    { path: "~/dev/remcli", lastUsedLabel: "2 h ago" },
+    { path: "~/dev/api-gateway", lastUsedLabel: "yesterday" },
 ];
 
 export interface MockResumeEntry {
@@ -237,8 +237,8 @@ export interface MockResumeEntry {
 }
 
 export const resumeEntries: MockResumeEntry[] = [
-    { id: "rc-42", label: "rc-42 · сегодня 12:41 · ~/dev/remcli", agent: "claude" },
-    { id: "rc-41", label: "rc-41 · вчера 18:03 · ~/dev/remcli", agent: "claude" },
+    { id: "rc-42", label: "rc-42 · today 12:41 · ~/dev/remcli", agent: "claude" },
+    { id: "rc-41", label: "rc-41 · yesterday 18:03 · ~/dev/remcli", agent: "claude" },
 ];
 
 /* ---------- Новая сессия · resume-sheet (эталон design/pages/new-session.html) ---------- */
@@ -250,9 +250,9 @@ export interface NewSessionResumeEntry {
 }
 
 export const newSessionResumeEntries: NewSessionResumeEntry[] = [
-    { id: "ns-rc-42", title: "rc-42 · WebRTC-транспорт", timeLabel: "сегодня 12:41", agent: "claude" },
-    { id: "ns-rc-41", title: "rc-41 · рефактор crypto.ts", timeLabel: "вчера 18:03", agent: "claude" },
-    { id: "ns-rc-39", title: "rc-39 · onboarding-флоу", timeLabel: "28 июн", agent: "claude" },
+    { id: "ns-rc-42", title: "rc-42 · WebRTC transport", timeLabel: "today 12:41", agent: "claude" },
+    { id: "ns-rc-41", title: "rc-41 · crypto.ts refactor", timeLabel: "yesterday 18:03", agent: "claude" },
+    { id: "ns-rc-39", title: "rc-39 · onboarding flow", timeLabel: "Jun 28", agent: "claude" },
 ];
 
 /* ---------- Подключение ---------- */
@@ -346,7 +346,7 @@ export interface SettingsTtsProviderOption {
 export const settingsTtsProviders: SettingsTtsProviderOption[] = [
     { id: "system", label: "system", voices: ["Milena · ru", "Yuri · ru", "Samantha · en"] },
     { id: "edge", label: "edge-tts", voices: ["Dmitry · ru", "Svetlana · ru", "Guy · en"] },
-    { id: "qwen3", label: "qwen3-tts", voices: ["default", "my-voice · клон"] },
+    { id: "qwen3", label: "qwen3-tts", voices: ["default", "my-voice · clone"] },
 ];
 
 /* ---------- Чат: доп. фикстуры экрана /session/:id ---------- */
@@ -357,16 +357,16 @@ export interface ChatEndedSessionInfo {
 
 /** Завершённые сессии — блок «сессия завершена» (chat-states 1f). */
 export const chatEndedSessions: Record<string, ChatEndedSessionInfo> = {
-    "s-gateway": { label: "— сессия завершена · exit 0 · 14:02 —" },
+    "s-gateway": { label: "— session ended · exit 0 · 14:02 —" },
 };
 
 /** Дополнительные ленты чата (существующий chatMessages не трогаем). */
 export const chatExtraMessages: Record<string, MockChatMessage[]> = {
     "s-gateway": [
-        { id: "chat-g1", kind: "user", text: "Прогони тесты и подготовь коммит" },
+        { id: "chat-g1", kind: "user", text: "Run the tests and prepare a commit" },
         {
             id: "chat-g2", kind: "agent", agent: "codex", timeLabel: "codex · 13:57",
-            text: "Тесты зелёные, коммит подготовлен.",
+            text: "Tests are green, the commit is ready.",
         },
         { id: "chat-g3", kind: "tool-call", tool: "Bash", arg: "pnpm test", state: "success" },
     ],

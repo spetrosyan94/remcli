@@ -2,26 +2,27 @@
 // Разметка — из design/screens/home.tsx (nav + TabItem).
 import { ListTodo, SlidersHorizontal, Terminal } from "lucide-react";
 import { NavLink } from "react-router";
-import { t } from "@/lib/i18n";
+import { t, type I18nKey } from "@/lib/i18n";
 import type { LucideIcon } from "lucide-react";
 
 interface TabConfig {
     to: string;
-    label: string;
+    labelKey: I18nKey;
     icon: LucideIcon;
 }
 
+// В константе только ключи — t() вызывается в рендере, чтобы смена языка применялась без перезагрузки.
 const TABS: TabConfig[] = [
-    { to: "/", label: t("tabs.sessions"), icon: Terminal },
-    { to: "/zen", label: t("tabs.tasks"), icon: ListTodo },
-    { to: "/settings", label: t("tabs.settings"), icon: SlidersHorizontal },
+    { to: "/", labelKey: "tabs.sessions", icon: Terminal },
+    { to: "/zen", labelKey: "tabs.tasks", icon: ListTodo },
+    { to: "/settings", labelKey: "tabs.settings", icon: SlidersHorizontal },
 ];
 
 export function TabBar() {
     return (
         <nav className="border-t border-border bg-background/90 pb-[env(safe-area-inset-bottom)] backdrop-blur">
             <div className="flex px-2 pt-2">
-                {TABS.map(({ to, label, icon: Icon }) => (
+                {TABS.map(({ to, labelKey, icon: Icon }) => (
                     <NavLink
                         key={to}
                         to={to}
@@ -33,7 +34,7 @@ export function TabBar() {
                         {({ isActive }) => (
                             <>
                                 <Icon className="size-5" />
-                                <span className={`text-[10px] ${isActive ? "font-semibold" : "font-medium"}`}>{label}</span>
+                                <span className={`text-[10px] ${isActive ? "font-semibold" : "font-medium"}`}>{t(labelKey)}</span>
                             </>
                         )}
                     </NavLink>

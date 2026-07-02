@@ -1,25 +1,28 @@
 // remcli-web — Чат сессии на живом P2P-протоколе (разметка — design/screens/chat.tsx, 1:1).
-// Данные — @/lib/protocol: история через REST (loadSessionMessages) + live через socket (store),
-// отправка — sendSessionMessage, permissions — session.agentState.requests + sessionAllow/Deny,
-// TTS — synthesizeSpeech, диктовка — MediaRecorder + transcribeAudio (референс remcli-app).
+// Данные — @/lib/protocol: история через REST (loadSessionMessages, пагинация offset/limit)
+// + live через socket (store), отправка — sendSessionMessage, permissions —
+// session.agentState.requests + sessionAllow/Deny, TTS/диктовка — хуки @/lib/voice,
+// resume завершённой сессии — machineSpawnNewSession({resumeSessionId}).
 import * as React from "react";
 import { ArrowLeft, ChevronDown, Loader2, Mic, MoreHorizontal, Send } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
+import { toast } from "sonner";
 import {
     AgentMeta, Caret, ConnectionBanner, DiffView, ListenButton, PermissionCard,
-    Segmented, STATUS_LABEL, StatusDot, ThinkingRow, ToolCallCard, UserMessage, VoiceRecordBar,
+    Segmented, statusLabel, StatusDot, ThinkingRow, ToolCallCard, UserMessage, VoiceRecordBar,
     type AgentId, type DiffLine, type Status,
 } from "@/components/kit";
 import { t } from "@/lib/i18n";
 import {
-    fetchTtsStatus, fetchWhisperStatus, getRestConfig, isClientStarted, loadSessionMessages,
-    restoreProtocolClient, sendSessionMessage, sessionAllow, sessionDeny, synthesizeSpeech,
-    transcribeAudio, useConnectionStatus, useSession, useSessionMessages, useSessionMessagesLoaded,
+    fetchWhisperStatus, getRestConfig, isClientStarted, loadSessionMessages,
+    machineSpawnNewSession, refreshSessions, restoreProtocolClient, sendSessionMessage,
+    sessionAllow, sessionDeny, useConnectionStatus, useMachines, useProtocolStore,
+    useSession, useSessionMessages, useSessionMessagesLoaded,
     type NormalizedMessage, type PermissionMode as ProtocolPermissionMode, type Session,
 } from "@/lib/protocol";
+import { useVoiceRecorder } from "@/lib/voice/recorder";
+import { useTts, useTtsAvailability } from "@/lib/voice/tts";
 
-type InputState = "text" | "recording" | "transcribing";
-type TtsPhase = "synth" | "playing";
 type UiPermissionMode = "safe" | "ask" | "auto";
 
 const UI_PERMISSION_MODES: UiPermissionMode[] = ["safe", "ask", "auto"];
@@ -350,21 +353,19 @@ export function ChatPage() {
     const messages = useSessionMessages(sessionId);
     const messagesLoaded = useSessionMessagesLoaded(sessionId);
     const connectionStatus = useConnectionStatus();
+    const machines = useMachines();
     const agent = agentOf(session);
 
     const [isBooting, setIsBooting] = React.useState(true);
-    const [inputState, setInputState] = React.useState<InputState>("text");
     const [draft, setDraft] = React.useState("");
     const [uiMode, setUiMode] = React.useState<UiPermissionMode>(() =>
         navState.permissionMode ? fromProtocolMode(navState.permissionMode) : "ask"
     );
     const [busyPermissionIds, setBusyPermissionIds] = React.useState<readonly string[]>([]);
     const [expandedTools, setExpandedTools] = React.useState<Record<string, boolean>>({});
-    const [tts, setTts] = React.useState<{ groupId: string; phase: TtsPhase } | null>(null);
-    const [isTtsAvailable, setIsTtsAvailable] = React.useState(false);
     const [isWhisperAvailable, setIsWhisperAvailable] = React.useState(false);
     const [banner, setBanner] = React.useState<"ok" | "lost" | "restored">("ok");
-    const [recordSeconds, setRecordSeconds] = React.useState(0);
+    const [isResuming, setIsResuming] = React.useState(false);
     const feedRef = React.useRef<HTMLElement>(null);
     const hadConnectedRef = React.useRef(false);
 
@@ -372,8 +373,25 @@ export function ChatPage() {
     const pendingPermissions = React.useMemo(() => pendingPermissionsOf(session), [session]);
     const status = session ? statusOf(session, pendingPermissions.length > 0) : "offline";
 
-    // ── Boot: восстановить клиент при deep-link и подгрузить историю сессии ──
+    // ── Пагинация истории (паттерн remcli-app useLoadMoreMessages): offset = число
+    // загруженных сообщений (live-сообщения тоже двигают его), страницы — newest-first ──
+    const [hasMore, setHasMore] = React.useState(false);
+    const [isLoadingOlder, setIsLoadingOlder] = React.useState(false);
+    const loadingOlderRef = React.useRef(false);
+    const offsetRef = React.useRef(0);
+    /** Снимок скролла перед prepend старых сообщений — восстанавливаем позицию после рендера. */
+    const scrollRestoreRef = React.useRef<{ height: number; top: number } | null>(null);
+    /** Автоскролл к низу — только если пользователь у низа ленты (не сбивать чтение истории). */
+    const isNearBottomRef = React.useRef(true);
+
+    // ── Boot: восстановить клиент при deep-link и подгрузить первую страницу истории ──
     React.useEffect(() => {
+        offsetRef.current = 0;
+        loadingOlderRef.current = false;
+        scrollRestoreRef.current = null;
+        isNearBottomRef.current = true;
+        setHasMore(false);
+        setIsLoadingOlder(false);
         if (!sessionId) {
             setIsBooting(false);
             return;
@@ -385,7 +403,8 @@ export function ChatPage() {
                     const restored = await restoreProtocolClient();
                     if (!restored) return;
                 }
-                await loadSessionMessages(sessionId);
+                const page = await loadSessionMessages(sessionId);
+                if (!cancelled) setHasMore(page.hasMore);
             } catch {
                 // неизвестная сессия или сеть — ниже покажем notFound/баннер
             } finally {
@@ -397,22 +416,68 @@ export function ChatPage() {
         };
     }, [sessionId]);
 
-    // ── Доступность TTS/Whisper (P2P REST, референс useTtsAvailability) ──
+    // offset следует за числом загруженных сообщений (live-поток тоже добавляет их в стор)
+    React.useEffect(() => {
+        if (messages.length > offsetRef.current) offsetRef.current = messages.length;
+    }, [messages.length]);
+
+    const loadOlder = React.useCallback(async () => {
+        if (loadingOlderRef.current || !hasMore) return;
+        loadingOlderRef.current = true;
+        setIsLoadingOlder(true);
+        const node = feedRef.current;
+        scrollRestoreRef.current = node ? { height: node.scrollHeight, top: node.scrollTop } : null;
+        try {
+            const page = await loadSessionMessages(sessionId, { offset: offsetRef.current });
+            setHasMore(page.hasMore);
+        } catch {
+            scrollRestoreRef.current = null; // тихий фейл — не блокируем UI
+        } finally {
+            loadingOlderRef.current = false;
+            setIsLoadingOlder(false);
+        }
+    }, [sessionId, hasMore]);
+
+    // Восстановление позиции скролла после prepend старых сообщений (до отрисовки кадра,
+    // мгновенно — обходим css scroll-behavior:smooth ленты)
+    React.useLayoutEffect(() => {
+        const restore = scrollRestoreRef.current;
+        if (!restore) return;
+        scrollRestoreRef.current = null;
+        const node = feedRef.current;
+        if (node && node.scrollHeight !== restore.height) {
+            const previousBehavior = node.style.scrollBehavior;
+            node.style.scrollBehavior = "auto";
+            node.scrollTop = node.scrollHeight - restore.height + restore.top;
+            node.style.scrollBehavior = previousBehavior;
+        }
+    }, [feed]);
+
+    const handleFeedScroll = () => {
+        const node = feedRef.current;
+        if (!node) return;
+        isNearBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
+        if (node.scrollTop < 60 && hasMore && !loadingOlderRef.current) void loadOlder();
+    };
+
+    // ── Доступность TTS/Whisper (P2P REST, хук useTtsAvailability из @/lib/voice) ──
+    const ttsAvailability = useTtsAvailability();
+    const refreshTtsStatus = ttsAvailability.refresh;
+    const isTtsAvailable = ttsAvailability.status?.available ?? false;
     React.useEffect(() => {
         if (isBooting) return;
+        // при deep-link клиент восстановился уже после mount-проверки хука — перепроверяем
+        refreshTtsStatus();
         const config = getRestConfig();
         if (!config) return;
         let cancelled = false;
-        fetchTtsStatus(config)
-            .then((ttsStatus) => { if (!cancelled) setIsTtsAvailable(ttsStatus.available); })
-            .catch(() => undefined);
         fetchWhisperStatus(config)
             .then((whisperStatus) => { if (!cancelled) setIsWhisperAvailable(whisperStatus.available); })
             .catch(() => undefined);
         return () => {
             cancelled = true;
         };
-    }, [isBooting]);
+    }, [isBooting, refreshTtsStatus]);
 
     // ── Баннер соединения: lost при разрыве после первого подключения, restored → скрытие ──
     React.useEffect(() => {
@@ -431,137 +496,78 @@ export function ChatPage() {
         return () => window.clearTimeout(timer);
     }, [banner]);
 
-    // ── Автоскролл к концу ленты при новых сообщениях/стриминге (MOTION.md §2) ──
+    // ── Автоскролл к концу ленты при новых сообщениях/стриминге (MOTION.md §2);
+    // при чтении истории (скролл вверх/пагинация) вниз не дёргаем ──
     React.useEffect(() => {
         const node = feedRef.current;
-        if (node) node.scrollTop = node.scrollHeight;
+        if (node && isNearBottomRef.current) node.scrollTop = node.scrollHeight;
     }, [feed.length, pendingPermissions.length, session?.thinking, messagesLoaded]);
 
-    // ── Таймер записи диктовки ──
-    React.useEffect(() => {
-        if (inputState !== "recording") return;
-        const timer = window.setInterval(() => setRecordSeconds((seconds) => seconds + 1), 1000);
-        return () => window.clearInterval(timer);
-    }, [inputState]);
-
-    // ── TTS: синтез через демон + воспроизведение, abort при stop/переключении ──
-    const ttsGenerationRef = React.useRef(0);
-    const ttsAbortRef = React.useRef<AbortController | null>(null);
-    const ttsAudioRef = React.useRef<HTMLAudioElement | null>(null);
-    const ttsUrlRef = React.useRef<string | null>(null);
-
-    const stopTts = React.useCallback(() => {
-        ttsGenerationRef.current += 1;
-        ttsAbortRef.current?.abort();
-        ttsAbortRef.current = null;
-        if (ttsAudioRef.current) {
-            ttsAudioRef.current.pause();
-            ttsAudioRef.current = null;
-        }
-        if (ttsUrlRef.current) {
-            URL.revokeObjectURL(ttsUrlRef.current);
-            ttsUrlRef.current = null;
-        }
-        setTts(null);
-    }, []);
+    // ── TTS: хук useTts (@/lib/voice) — generation counter, AbortController, lang, LRU-кэш ──
+    const { ttsState, activeId: ttsActiveId, synthesize: ttsSynthesize, stop: stopTts } = useTts();
 
     const toggleListen = (groupId: string, text: string) => {
-        if (tts?.groupId === groupId) {
+        if (ttsActiveId === groupId && ttsState !== "idle") {
             stopTts();
             return;
         }
-        stopTts();
-        const config = getRestConfig();
-        if (!config || !text.trim()) return;
-        const generation = ttsGenerationRef.current;
-        const controller = new AbortController();
-        ttsAbortRef.current = controller;
-        setTts({ groupId, phase: "synth" });
-        synthesizeSpeech(config, text, { signal: controller.signal })
-            .then((buffer) => {
-                if (generation !== ttsGenerationRef.current) return;
-                const url = URL.createObjectURL(new Blob([buffer], { type: "audio/ogg" }));
-                ttsUrlRef.current = url;
-                const audio = new Audio(url);
-                ttsAudioRef.current = audio;
-                audio.onended = () => {
-                    if (generation === ttsGenerationRef.current) stopTts();
-                };
-                setTts({ groupId, phase: "playing" });
-                void audio.play().catch(() => {
-                    if (generation === ttsGenerationRef.current) stopTts();
-                });
-            })
-            .catch(() => {
-                if (generation === ttsGenerationRef.current) setTts(null);
-            });
+        if (!text.trim()) return;
+        void ttsSynthesize(text, groupId).catch(() => undefined);
     };
 
-    // ── Диктовка: MediaRecorder → Whisper (референс whisperRecorder.web.ts) ──
-    const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
-    const recordChunksRef = React.useRef<Blob[]>([]);
+    // ── Диктовка: хук useVoiceRecorder (@/lib/voice) — MediaRecorder → Whisper ──
+    const recorder = useVoiceRecorder();
 
-    const startDictation = async () => {
-        if (inputState !== "text") return;
+    const stopDictation = async () => {
+        const text = await recorder.stopAndTranscribe();
+        if (text) setDraft((prev) => (prev ? `${prev} ${text}` : text));
+    };
+
+    // ── Resume завершённой сессии: spawn с resumeSessionId + переход в новую сессию ──
+    // RPC-хендлер живёт под id машины из стора демона (не metadata.machineId) — матчим как HomePage
+    const rpcMachineId = React.useMemo(() => {
+        const meta = session?.metadata;
+        if (!meta) return null;
+        if (machines.some((machine) => machine.id === meta.machineId)) return meta.machineId ?? null;
+        const byHost = machines.filter((machine) => machine.metadata?.host === meta.host);
+        const onlineByHost = byHost.find((machine) => machine.active);
+        if (onlineByHost) return onlineByHost.id;
+        if (byHost.length > 0) return byHost[0].id;
+        const active = machines.filter((machine) => machine.active);
+        return active.length === 1 ? active[0].id : null;
+    }, [machines, session]);
+
+    const resumeAgentSessionId = session?.metadata?.claudeSessionId;
+    const isEnded = session ? session.presence !== "online" : false;
+    const canResume = isEnded && !!resumeAgentSessionId && !!session?.metadata?.path && !!rpcMachineId;
+
+    const resumeSession = async () => {
+        const meta = session?.metadata;
+        if (!meta?.path || !resumeAgentSessionId || !rpcMachineId || isResuming) return;
+        setIsResuming(true);
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            recordChunksRef.current = [];
-            const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-                ? "audio/webm;codecs=opus"
-                : MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
-            const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-            recorder.ondataavailable = (event) => {
-                if (event.data.size > 0) recordChunksRef.current.push(event.data);
-            };
-            recorder.start(250);
-            mediaRecorderRef.current = recorder;
-            setRecordSeconds(0);
-            setInputState("recording");
-        } catch {
-            // микрофон недоступен/запрещён — остаёмся в текстовом режиме
-        }
-    };
-
-    const stopDictation = () => {
-        const recorder = mediaRecorderRef.current;
-        if (!recorder) {
-            setInputState("text");
-            return;
-        }
-        setInputState("transcribing");
-        recorder.onstop = () => {
-            recorder.stream.getTracks().forEach((track) => track.stop());
-            const blob = new Blob(recordChunksRef.current, { type: recorder.mimeType || "audio/webm" });
-            mediaRecorderRef.current = null;
-            recordChunksRef.current = [];
-            const config = getRestConfig();
-            if (!config) {
-                setInputState("text");
+            const result = await machineSpawnNewSession({
+                machineId: rpcMachineId,
+                directory: meta.path,
+                agent,
+                resumeSessionId: resumeAgentSessionId,
+                resumeSessionName: meta.name,
+            });
+            if (result.type !== "success") {
+                toast.error(result.type === "error" ? result.errorMessage : t("chat.resumeFailed"));
                 return;
             }
-            transcribeAudio(config, blob)
-                .then((result) => setDraft((prev) => (prev ? `${prev} ${result.text}` : result.text)))
-                .catch(() => undefined)
-                .finally(() => setInputState("text"));
-        };
-        recorder.stop();
-    };
-
-    // ── Очистка ресурсов при выходе со страницы ──
-    React.useEffect(() => () => {
-        stopTts();
-        const recorder = mediaRecorderRef.current;
-        if (recorder) {
-            recorder.onstop = null;
-            try {
-                recorder.stop();
-            } catch {
-                // уже остановлен
+            // ждём появления сессии в сторе (нужен cipher для сообщений) — как NewSessionPage
+            for (let attempt = 0; attempt < 10 && !useProtocolStore.getState().sessions[result.sessionId]; attempt++) {
+                await refreshSessions().catch(() => undefined);
+                if (useProtocolStore.getState().sessions[result.sessionId]) break;
+                await new Promise((resolve) => setTimeout(resolve, 400));
             }
-            recorder.stream.getTracks().forEach((track) => track.stop());
-            mediaRecorderRef.current = null;
+            navigate(`/session/${result.sessionId}`, { replace: true });
+        } finally {
+            setIsResuming(false);
         }
-    }, [stopTts]);
+    };
 
     if (!session) {
         return (
@@ -627,6 +633,8 @@ export function ChatPage() {
     };
 
     const host = session.metadata?.host;
+    // локальный const — TS сужает union состояния рекордера в JSX-ветках
+    const recorderState = recorder.recorderState;
 
     return (
         <div className="flex h-dvh flex-col bg-background pt-[env(safe-area-inset-top)] text-foreground">
@@ -640,7 +648,7 @@ export function ChatPage() {
                     <span className="truncate font-mono text-[13.5px] font-semibold">{displayPath(session)}</span>
                     <span className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
                         <StatusDot status={status} className="size-1.5" />
-                        {agent}{host ? ` · ${host}` : ""} · {STATUS_LABEL[status]}
+                        {agent}{host ? ` · ${host}` : ""} · {statusLabel(status)}
                     </span>
                 </div>
                 {/* десктоп (3a): segmented safe/ask/auto полностью + кнопка «терминал» */}
@@ -665,7 +673,8 @@ export function ChatPage() {
             )}
 
             {/* лента */}
-            <main ref={feedRef} className="flex-1 overflow-y-auto px-3.5 py-3.5 [scroll-behavior:smooth]">
+            <main ref={feedRef} onScroll={handleFeedScroll}
+                className="flex-1 overflow-y-auto px-3.5 py-3.5 [scroll-behavior:smooth]">
                 <div className="mx-auto flex w-full max-w-[720px] flex-col gap-3">
                     {!messagesLoaded && (
                         <div className="flex justify-center py-4">
@@ -673,11 +682,25 @@ export function ChatPage() {
                         </div>
                     )}
 
+                    {/* пагинация истории: автоподгрузка при скролле вверх + явная кнопка */}
+                    {messagesLoaded && hasMore && (
+                        <div className="flex justify-center pb-1">
+                            <button onClick={() => void loadOlder()} disabled={isLoadingOlder}
+                                className="flex h-8 items-center gap-2 rounded-[9px] border border-border px-3 font-mono text-[10.5px] text-muted-foreground disabled:opacity-60">
+                                {isLoadingOlder && <Loader2 className="size-3 animate-spin" />}
+                                {t("chat.loadEarlier")}
+                            </button>
+                        </div>
+                    )}
+
                     {feed.map((item) => {
                         if (item.kind === "user") return <UserMessage key={item.id}>{item.text}</UserMessage>;
 
                         const groupText = item.texts.join("\n\n");
-                        const listenState: "idle" | TtsPhase = tts?.groupId === item.id ? tts.phase : "idle";
+                        const listenState: "idle" | "synth" | "playing" =
+                            ttsActiveId === item.id && ttsState !== "idle"
+                                ? (ttsState === "synthesizing" ? "synth" : "playing")
+                                : "idle";
                         return (
                             <div key={item.id} className="flex flex-col gap-2">
                                 {item.texts.length > 0 && (
@@ -740,7 +763,7 @@ export function ChatPage() {
                                 command={permission.command}
                                 comment={permission.comment}
                                 danger={permission.isDanger}
-                                alwaysLabel={permission.isDanger ? undefined : `всегда разрешать · ${permission.tool}`}
+                                alwaysLabel={permission.isDanger ? undefined : t("chat.alwaysAllow", { tool: permission.tool })}
                                 onAllow={() => answerPermission(permission, "allow")}
                                 onDeny={() => answerPermission(permission, "deny")}
                                 onAlways={() => answerPermission(permission, "always")}
@@ -750,13 +773,31 @@ export function ChatPage() {
 
                     {/* индикатор «думает» — ephemeral activity (session.thinking) */}
                     {session.thinking && <ThinkingRow agent={agent} />}
+
+                    {/* сессия завершена + есть агентская сессия в metadata → resume (design/screens/chat.tsx, ended) */}
+                    {canResume && (
+                        <div className="flex flex-col items-center gap-2.5 rounded-xl border border-dashed border-border bg-card/50 px-4 py-4">
+                            <span className="font-mono text-[11px] text-muted-foreground">{t("chat.ended")}</span>
+                            <div className="flex gap-2">
+                                <button onClick={() => void resumeSession()} disabled={isResuming}
+                                    className="flex h-9 items-center gap-1.5 rounded-[9px] bg-primary px-3.5 text-[13px] font-semibold text-primary-foreground disabled:opacity-60">
+                                    {isResuming && <Loader2 className="size-3.5 animate-spin" />}
+                                    {t("chat.ended.resume")}
+                                </button>
+                                <button onClick={() => navigate("/")}
+                                    className="h-9 rounded-[9px] border border-border px-3.5 text-[13px] font-medium text-muted-foreground">
+                                    {t("chat.ended.toList")}
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </main>
 
             {/* ввод: текст + диктовка (Whisper) + отправка */}
             <footer className="border-t border-border px-3.5 pb-[max(10px,env(safe-area-inset-bottom))] pt-2">
                 <div className="mx-auto w-full max-w-[720px]">
-                    {inputState === "text" ? (
+                    {recorderState === "idle" ? (
                         <div className="flex items-end gap-2">
                             <textarea rows={1} placeholder={t("chat.placeholder")}
                                 value={draft}
@@ -769,7 +810,7 @@ export function ChatPage() {
                                 }}
                                 className="min-h-11 flex-1 resize-none rounded-xl border border-input bg-muted px-3.5 py-3 text-sm outline-none placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15" />
                             {isWhisperAvailable && (
-                                <button aria-label={t("chat.aria.dictate")} onClick={() => void startDictation()}
+                                <button aria-label={t("chat.aria.dictate")} onClick={() => void recorder.start()}
                                     className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-border">
                                     <Mic className="size-4 text-muted-foreground" />
                                 </button>
@@ -780,12 +821,16 @@ export function ChatPage() {
                             </button>
                         </div>
                     ) : (
-                        <div onClick={() => { if (inputState === "recording") stopDictation(); }}>
-                            <VoiceRecordBar
-                                state={inputState === "recording" ? "recording" : "transcribing"}
-                                seconds={formatSeconds(recordSeconds)}
-                            />
-                        </div>
+                        <VoiceRecordBar
+                            state={recorderState}
+                            seconds={formatSeconds(recorder.elapsedSeconds)}
+                            onStop={() => void stopDictation()}
+                            onCancel={recorder.cancel}
+                            onRetry={() => {
+                                recorder.reset();
+                                void recorder.start();
+                            }}
+                        />
                     )}
                 </div>
             </footer>

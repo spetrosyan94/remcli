@@ -50,10 +50,17 @@ export function CommandPalette() {
                 event.preventDefault();
                 setIsOpen((open) => !open);
             }
+            // глобальный хоткей «новая сессия» (⌘N / Ctrl+N) — дублирует пункт палитры
+            if (event.key === "n" && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey) {
+                event.preventDefault();
+                setIsOpen(false);
+                setQuery("");
+                navigate("/new");
+            }
         };
         document.addEventListener("keydown", onKeyDown);
         return () => document.removeEventListener("keydown", onKeyDown);
-    }, []);
+    }, [navigate]);
 
     const handleOpenChange = (open: boolean) => {
         setIsOpen(open);

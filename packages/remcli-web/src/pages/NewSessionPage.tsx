@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import { AgentIcon, Segmented, StatusDot, type AgentId } from "@/components/kit";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
-import { t } from "@/lib/i18n";
+import { getIntlLocale, t } from "@/lib/i18n";
 import {
     machineListAgentSessions,
     machineSpawnNewSession,
@@ -52,24 +52,14 @@ const PERMISSION_BY_AGENT: Record<AgentId, Record<PermissionChoice, PermissionMo
     cursor: { safe: "read-only", ask: "default", auto: "yolo" },
 };
 
-// Локальные тексты — заглушка i18n типизирована по ключам, новые ключи добавит владелец i18n.ts
-const TEXT = {
-    noMachines: "нет машин — запустите remcli daemon",
-    spawning: "запускаем…",
-    resumeLoading: "загружаем сессии…",
-    promptLabel: "промпт · первая команда",
-    createDirConfirm: (dir: string) => `Директории «${dir}» нет на машине. Создать?`,
-    online: "online",
-} as const;
-
 /* ---------- Хелперы ---------- */
 
 function formatRelativeTime(timestamp: number): string {
     const diff = Date.now() - timestamp;
-    if (diff < 60_000) return "только что";
-    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} мин`;
-    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} ч`;
-    return new Date(timestamp).toLocaleDateString("ru", { day: "numeric", month: "short" });
+    if (diff < 60_000) return t("time.justNow");
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} ${t("time.min")}`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} ${t("time.hour")}`;
+    return new Date(timestamp).toLocaleDateString(getIntlLocale(), { day: "numeric", month: "short" });
 }
 
 function machineName(machine: Machine): string {
@@ -207,7 +197,7 @@ export function NewSessionPage() {
             };
             let result: SpawnSessionResult = await machineSpawnNewSession(options);
             if (result.type === "requestToApproveDirectoryCreation") {
-                if (!window.confirm(TEXT.createDirConfirm(result.directory))) return;
+                if (!window.confirm(t("new.createDirConfirm", { dir: result.directory }))) return;
                 result = await machineSpawnNewSession({ ...options, approvedNewDirectoryCreation: true });
             }
             if (result.type === "error") {
@@ -258,7 +248,7 @@ export function NewSessionPage() {
                             <span className={`size-1.5 rounded-full ${machine.active ? "bg-status-running" : "bg-status-offline"}`} />
                         </>
                     ) : (
-                        <span className="font-mono text-[12px] text-muted-foreground">{TEXT.noMachines}</span>
+                        <span className="font-mono text-[12px] text-muted-foreground">{t("new.noMachines")}</span>
                     )}
                     <ChevronDown className="ml-auto size-3 text-muted-foreground" />
                 </button>
@@ -330,7 +320,7 @@ export function NewSessionPage() {
                 {/* промпт из задачи Zen — уйдёт первым сообщением после запуска */}
                 {zenState?.zenTaskTitle && (
                     <section className="flex flex-col gap-2">
-                        <span className="font-mono text-[10px] text-muted-foreground/70">{TEXT.promptLabel}</span>
+                        <span className="font-mono text-[10px] text-muted-foreground/70">{t("new.promptLabel")}</span>
                         <div className="rounded-xl border border-border bg-card px-3.5 py-3 text-[13px] leading-snug">
                             {zenState.zenTaskTitle}
                         </div>
@@ -340,7 +330,7 @@ export function NewSessionPage() {
                 {/* resume: bottom-sheet со списком прошлых сессий агента (RPC list-agent-sessions) */}
                 <button onClick={() => setSheet("resume")} disabled={!machine}
                     className="flex h-10 items-center justify-center gap-2 rounded-[10px] border border-dashed border-border font-mono text-[11.5px] text-muted-foreground">
-                    <RotateCcw className="size-3" /> {t("new.resumePrefix")} {agent}…
+                    <RotateCcw className="size-3" /> {t("new.resume", { agent })}
                 </button>
             </main>
 
@@ -348,8 +338,8 @@ export function NewSessionPage() {
                 <button onClick={() => void spawn()} disabled={!machine || activeDir === "" || isSpawning}
                     className="h-[52px] w-full rounded-xl bg-accent text-base font-semibold text-accent-foreground disabled:opacity-50">
                     {isSpawning
-                        ? TEXT.spawning
-                        : `${t("new.start")} ${agent} ${t("new.startIn")} ${displayPath(activeDir, homeDir) || "…"}`}
+                        ? t("new.spawning")
+                        : t("new.startButton", { agent, dir: displayPath(activeDir, homeDir) || "…" })}
                 </button>
             </footer>
 
@@ -364,7 +354,7 @@ export function NewSessionPage() {
                                         <>
                                             <StatusDot status={m.active ? "running" : "offline"} className="size-1.5" />
                                             <span className="font-mono text-[10px] text-muted-foreground/70">
-                                                {m.active ? TEXT.online : formatRelativeTime(m.activeAt)}
+                                                {m.active ? t("home.machine.online") : formatRelativeTime(m.activeAt)}
                                             </span>
                                         </>
                                     }
@@ -386,7 +376,7 @@ export function NewSessionPage() {
                             <SheetHeader title={`${t("new.resumeTitle")} · ${agent}`} tag={t("new.resumeTag")} />
                             {resumeItems === null ? (
                                 <div className="border-t border-border px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground/70">
-                                    {TEXT.resumeLoading}
+                                    {t("new.resumeLoading")}
                                 </div>
                             ) : resumeItems.length === 0 ? (
                                 <div className="border-t border-border px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground/70">

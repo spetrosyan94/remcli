@@ -49,6 +49,7 @@
   },
   "files": [
     "dist",
+    "web-dist",
     "bin",
     "scripts",
     "tools",
@@ -59,7 +60,7 @@
   "scripts": {
     "why do we need to build before running tests / dev?": "We need the binary to be built so we run daemon commands which directly run the binary - we don't want them to go out of sync or have custom spawn logic depending how we started remcli",
     "typecheck": "tsc --noEmit",
-    "build": "shx rm -rf dist && npx tsc --noEmit && pkgroll 2>/dev/null",
+    "build": "shx rm -rf dist && npx tsc --noEmit && pkgroll 2>/dev/null && node scripts/copy-web-dist.cjs",
     "test": "$npm_execpath run build && vitest run",
     "start": "$npm_execpath run build && node ./bin/remcli.mjs",
     "start:tunnel": "$npm_execpath run build && node ./bin/remcli.mjs daemon start-sync --tunnel",

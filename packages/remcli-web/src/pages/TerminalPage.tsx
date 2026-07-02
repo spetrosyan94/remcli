@@ -46,11 +46,10 @@ export function TerminalPage() {
             <main className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
                 <TerminalSquare className="size-8 text-zinc-600" />
                 <span className="font-mono text-[12.5px] text-zinc-400">
-                    Терминал доступен только с хоста
+                    {t("terminal.stub.title")}
                 </span>
                 <span className="max-w-[420px] font-mono text-[11px] leading-relaxed text-zinc-600">
-                    P2P-протокол демона не передаёт терминальные события — откройте tmux-сессию
-                    на машине, где запущен `remcli`.
+                    {t("terminal.stub.hint")}
                 </span>
                 <button
                     onClick={() => navigate(id ? `/session/${id}` : "/")}

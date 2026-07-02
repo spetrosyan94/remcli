@@ -3,10 +3,10 @@
 // Данные — живой P2P-стор (@/lib/protocol): машины, сессии, live-статусы (session-alive),
 // permission-наверх, Skeleton при загрузке, ConnectionBanner при разрыве, stop-session с Dialog.
 import * as React from "react";
-import { Monitor, Plus, Search, Square } from "lucide-react";
+import { ChevronRight, Monitor, Plus, Search, Sparkles, Square } from "lucide-react";
 import { NavLink, useNavigate } from "react-router";
 import { toast } from "sonner";
-import { ConnectionBanner, EmptyState, STATUS_LABEL, AgentIcon, SessionCard, StatusDot } from "@/components/kit";
+import { ConnectionBanner, EmptyState, statusLabel, AgentIcon, SessionCard, StatusDot } from "@/components/kit";
 import type { Status } from "@/components/kit";
 import {
     formatTimeLabel,
@@ -18,8 +18,10 @@ import {
 } from "@/components/app/sessionDisplay";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { t } from "@/lib/i18n";
+import { t, tPlural } from "@/lib/i18n";
 import {
+    fetchConciergeStatus,
+    getRestConfig,
     machineStopSession,
     useConnectionStatus,
     useMachines,
@@ -40,13 +42,7 @@ function sortPermissionFirst(list: Session[]): Session[] {
 }
 
 function sessionsCountLabel(count: number): string {
-    const mod10 = count % 10;
-    const mod100 = count % 100;
-    const word =
-        mod10 === 1 && mod100 !== 11 ? t("home.sessions.one")
-        : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? t("home.sessions.few")
-        : t("home.sessions.many");
-    return `${count} ${word}`;
+    return `${count} ${tPlural("home.sessions", count)}`;
 }
 
 /** ~/dev/remcli → remcli (компактные строки сайдбара, desktop.html) */
@@ -154,6 +150,43 @@ function useConnectionBanner(): "lost" | "restored" | null {
     return banner;
 }
 
+/* ---------- Консьерж: карточка в пустом состоянии (GET /v1/concierge/status) ---------- */
+
+function useConciergeAvailable(): boolean {
+    const status = useConnectionStatus();
+    const [isAvailable, setIsAvailable] = React.useState(false);
+    React.useEffect(() => {
+        if (status !== "connected") return undefined;
+        const config = getRestConfig();
+        if (!config) return undefined;
+        let isCancelled = false;
+        fetchConciergeStatus(config)
+            .then((concierge) => { if (!isCancelled) setIsAvailable(concierge.enabled && concierge.available); })
+            .catch(() => { if (!isCancelled) setIsAvailable(false); });
+        return () => { isCancelled = true; };
+    }, [status]);
+    return isAvailable;
+}
+
+function ConciergeCard() {
+    const navigate = useNavigate();
+    return (
+        <button
+            onClick={() => navigate("/concierge")}
+            className="flex w-full items-center gap-3 rounded-xl border border-border bg-card px-3.5 py-3 text-left"
+        >
+            <span className="flex size-[34px] shrink-0 items-center justify-center rounded-[10px] bg-accent/10">
+                <Sparkles className="size-4 text-accent" />
+            </span>
+            <span className="flex min-w-0 flex-1 flex-col">
+                <span className="font-mono text-[12.5px] font-semibold">{t("concierge.title")}</span>
+                <span className="truncate text-[11px] text-muted-foreground">{t("concierge.empty.hint")}</span>
+            </span>
+            <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/60" />
+        </button>
+    );
+}
+
 /** Грейс после connected: пока initial fetch в полёте, показываем Skeleton, а не EmptyState. */
 function useInitialGraceOver(): boolean {
     const status = useConnectionStatus();
@@ -234,13 +267,14 @@ function StopOverlayButton({ onClick }: { onClick: () => void }) {
 
 export function HomePage() {
     const groups = useMachineGroups();
+    const isConciergeAvailable = useConciergeAvailable();
     const [stopTarget, setStopTarget] = React.useState<StopTarget | null>(null);
     const controls: StopControls = {
         requestStop: (session, machineId) => setStopTarget({ session, machineId }),
     };
     return (
         <>
-            <MobileHome groups={groups} controls={controls} />
+            <MobileHome groups={groups} controls={controls} isConciergeAvailable={isConciergeAvailable} />
             <DesktopHome groups={groups} controls={controls} />
             <StopSessionDialog target={stopTarget} onClose={() => setStopTarget(null)} />
         </>
@@ -249,7 +283,11 @@ export function HomePage() {
 
 /* ---------- Мобайл <1024 (design/screens/home.tsx) ---------- */
 
-function MobileHome({ groups, controls }: { groups: MachineGroup[]; controls: StopControls }) {
+function MobileHome({ groups, controls, isConciergeAvailable }: {
+    groups: MachineGroup[];
+    controls: StopControls;
+    isConciergeAvailable: boolean;
+}) {
     const navigate = useNavigate();
     const connectionStatus = useConnectionStatus();
     const banner = useConnectionBanner();
@@ -290,7 +328,7 @@ function MobileHome({ groups, controls }: { groups: MachineGroup[]; controls: St
                         ))}
                     </div>
                 ) : isEmpty ? (
-                    <div className="mt-10">
+                    <div className="mt-10 flex flex-col gap-4">
                         <EmptyState
                             title={t("home.empty.title")}
                             hint={t("home.empty.hint")}
@@ -303,6 +341,11 @@ function MobileHome({ groups, controls }: { groups: MachineGroup[]; controls: St
                                 </button>
                             }
                         />
+                        {isConciergeAvailable && (
+                            <div className="mx-auto w-full max-w-xs">
+                                <ConciergeCard />
+                            </div>
+                        )}
                     </div>
                 ) : (
                     groups.map((group, index) => (
@@ -459,7 +502,7 @@ function SidebarMachineSection({ group, controls, isFirst }: { group: MachineGro
                             <AgentIcon agent={sessionAgent(session)} className="size-6 rounded-[7px] text-[10px]" />
                             <span className="flex min-w-0 flex-1 flex-col">
                                 <span className="truncate font-mono text-[11.5px] font-semibold">{shortDirName(sessionPath(session))}</span>
-                                <span className={`truncate text-[10.5px] ${SIDEBAR_STATUS_TEXT[status]}`}>{STATUS_LABEL[status]}</span>
+                                <span className={`truncate text-[10.5px] ${SIDEBAR_STATUS_TEXT[status]}`}>{statusLabel(status)}</span>
                             </span>
                             <StatusDot status={status} className="size-[7px]" />
                         </button>

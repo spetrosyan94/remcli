@@ -5,6 +5,7 @@
  */
 
 import { existsSync } from 'fs';
+import { sep } from 'path';
 import { randomUUID } from 'node:crypto';
 import fastify from 'fastify';
 import fastifyMultipart from '@fastify/multipart';
@@ -86,13 +87,20 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
             prefix: '/',
             decorateReply: true,
             wildcard: false,
-            maxAge: '1y',         // All files have content-hash in name, safe to cache forever
-            immutable: true,
+            cacheControl: false,  // Cache-Control set per file below
+            setHeaders: (res, filePath) => {
+                // Vite puts content-hashed files under assets/ — safe to cache forever.
+                // Everything else (index.html, favicon, manifest, icons) must revalidate.
+                const isHashedAsset = filePath.includes(`${sep}assets${sep}`);
+                res.setHeader('Cache-Control', isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache');
+            },
         });
 
         // SPA fallback: any GET that didn't match a file or API route → index.html
+        // so deep links (/terminal/connect, /session/:id) work on direct load.
         app.setNotFoundHandler(async (request, reply) => {
-            if (request.method === 'GET' && !request.url.startsWith('/v1/') && !request.url.startsWith('/v2/')) {
+            const isApiRoute = request.url.startsWith('/v1/') || request.url.startsWith('/v2/') || request.url.startsWith('/health');
+            if (request.method === 'GET' && !isApiRoute) {
                 reply.header('Cache-Control', 'no-cache');
                 return reply.sendFile('index.html');
             }

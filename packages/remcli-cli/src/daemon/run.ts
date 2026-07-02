@@ -39,8 +39,9 @@ export const initialMachineMetadata: MachineMetadata = {
 };
 
 /**
- * Resolve path to the web app build directory.
- * Checks (in order): REMCLI_WEB_DIR env, monorepo relative to dist/, monorepo from cwd.
+ * Resolve path to the web client build directory (remcli-web, Vite).
+ * Checks (in order): REMCLI_WEB_DIR env, monorepo remcli-web/dist (dev),
+ * bundled web-dist/ inside the published package, monorepo from cwd.
  */
 function resolveWebAppDir(): string | undefined {
     // 1. Explicit env var
@@ -50,12 +51,16 @@ function resolveWebAppDir(): string | undefined {
         logger.debug(`[DAEMON RUN] REMCLI_WEB_DIR=${dir} does not contain index.html`);
     }
 
-    // 2. Relative to CLI package root (projectPath() = packages/remcli-cli/)
-    const fromProject = resolve(projectPath(), '../remcli-app/dist');
+    // 2. Monorepo dev: fresh Vite build next to the CLI package (projectPath() = packages/remcli-cli/)
+    const fromProject = resolve(projectPath(), '../remcli-web/dist');
     if (existsSync(join(fromProject, 'index.html'))) return fromProject;
 
-    // 3. From cwd (running from monorepo root)
-    const fromCwd = resolve(process.cwd(), 'packages/remcli-app/dist');
+    // 3. Published package: web client bundled at build time by scripts/copy-web-dist.cjs
+    const bundled = join(projectPath(), 'web-dist');
+    if (existsSync(join(bundled, 'index.html'))) return bundled;
+
+    // 4. From cwd (running from monorepo root)
+    const fromCwd = resolve(process.cwd(), 'packages/remcli-web/dist');
     if (existsSync(join(fromCwd, 'index.html'))) return fromCwd;
 
     return undefined;
@@ -233,8 +238,8 @@ export async function startDaemon(): Promise<void> {
     if (webAppDir) {
         logger.debug(`[DAEMON RUN] Web app build found: ${webAppDir}`);
     } else {
-        logger.debug('[DAEMON RUN] No web app build found — QR will still work but browser cannot load the app from daemon');
-        console.log('  Warning: Web app build not found. Run "npm run build:web" first for QR→browser flow.');
+        logger.debug('[DAEMON RUN] No web client build found — QR will still work but browser cannot load the app from daemon');
+        console.log('  Warning: Web client build not found. Run "npm -w remcli-web run build" (or set REMCLI_WEB_DIR) for QR→browser flow.');
     }
 
     // Local concierge capabilities — deterministic daemon data the assistant may route into.

@@ -1,237 +1,46 @@
-// remcli-web — i18n: русский словарь (полный) + каркас 10 локалей.
-// Полный перевод остальных локалей — позже: overrides сейчас пустые, t() падает на ru.
-// Все UI-тексты берём отсюда через t(); ключи типизированы.
+// remcli-web — движок i18n (10 локалей, словари — src/lib/locales/).
+// Определение языка: localStorage → navigator.language → en.
+// Все UI-тексты берём через t(key, params); ключи типизированы базовым словарём (locales/ru.ts).
 // Смена языка: setLocale(id) (персист в localStorage) + useLocale() для реактивности.
+// Плюрализация — Intl.PluralRules (tPlural), локальные даты — getIntlLocale().
 import * as React from "react";
+import { dictionaries, LOCALES, type I18nKey, type LocaleId } from "@/lib/locales";
 
-/* ---------- Локали (DESIGN.md §Язык интерфейса, 10 шт., дефолт — ru) ---------- */
-
-export type LocaleId = "ru" | "en" | "es" | "pt" | "it" | "ca" | "pl" | "ja" | "zh-Hans" | "zh-Hant";
-
-export const LOCALES: { id: LocaleId; label: string }[] = [
-    { id: "ru", label: "Русский" },
-    { id: "en", label: "English" },
-    { id: "es", label: "Español" },
-    { id: "pt", label: "Português" },
-    { id: "it", label: "Italiano" },
-    { id: "ca", label: "Català" },
-    { id: "pl", label: "Polski" },
-    { id: "ja", label: "日本語" },
-    { id: "zh-Hans", label: "简体中文" },
-    { id: "zh-Hant", label: "繁體中文" },
-];
+export { LOCALES, type I18nKey, type LocaleId };
 
 const LOCALE_STORAGE_KEY = "remcli-locale";
 
-/* ---------- Базовый словарь (ru) ---------- */
+/* ---------- Определение локали: localStorage → navigator.language → en ---------- */
 
-const ru = {
-    "app.name": "remcli",
-
-    "tabs.sessions": "Сессии",
-    "tabs.tasks": "Задачи",
-    "tabs.settings": "Настройки",
-
-    "status.running": "работает",
-    "status.thinking": "думает",
-    "status.permission": "ждёт разрешения",
-    "status.idle": "ожидает",
-    "status.offline": "офлайн",
-    "status.error": "ошибка",
-
-    "common.cancel": "Отмена",
-    "common.save": "Сохранить",
-    "common.delete": "Удалить",
-
-    "permission.title": "запрос разрешения",
-    "permission.danger": "опасная команда · необратимо",
-    "permission.allow": "Разрешить",
-    "permission.deny": "Запретить",
-
-    "chat.thinking": "думает",
-    "chat.copy": "копировать",
-    "chat.placeholder": "Сообщение агенту…",
-    "chat.notFound": "сессия не найдена",
-    "chat.terminal": "терминал",
-    "chat.ended.resume": "↻ Продолжить",
-    "chat.ended.toList": "В список",
-    "chat.aria.back": "Назад",
-    "chat.aria.menu": "Меню",
-    "chat.aria.dictate": "Диктовка",
-    "chat.aria.send": "Отправить",
-
-    "tts.listen": "слушать",
-    "tts.synth": "синтез…",
-    "tts.stop": "стоп",
-    "tts.unavailable": "tts недоступен",
-
-    "voice.transcribing": "распознаём…",
-    "voice.cancel": "отмена",
-    "voice.micUnavailable": "микрофон недоступен",
-    "voice.retry": "повторить",
-
-    "connection.lost": "соединение потеряно · переподключаем…",
-    "connection.restored": "соединение восстановлено",
-
-    "connect.tagline1": "Пульт для ваших AI-агентов.",
-    "connect.tagline2": "Телефон — в руке, код — дома.",
-    "connect.feature.p2p": "P2P: телефон ↔ ваш компьютер, напрямую",
-    "connect.feature.e2e": "E2E-шифрование всего трафика",
-    "connect.feature.noCloud": "Без облака и аккаунтов — QR и есть логин",
-    "connect.scanQr": "Сканировать QR-код",
-    "connect.enterManually": "Ввести адрес вручную",
-    "connect.daemonHint": "демон: remcli serve · v",
-    "connect.scanner.hint": "камера · наведите на QR из `remcli serve`",
-    "connect.scanner.close": "закрыть сканер",
-    "connect.connectingTo": "Подключаемся к",
-    "connect.handshake": "рукопожатие → e2e-ключи → сессии",
-    "connect.error.title": "Не удалось подключиться",
-    "connect.error.timeout": "timeout: {address} не отвечает.",
-    "connect.error.hint": "Проверьте, что демон запущен и вы в одной сети.",
-    "connect.retry": "Повторить",
-    "connect.rescan": "Сканировать заново",
-    "connect.manual.title": "Ручной ввод",
-    "connect.manual.addressPlaceholder": "адрес:порт",
-    "connect.manual.keyPlaceholder": "ключ подключения",
-    "connect.manual.submit": "Подключиться",
-    "connect.manual.invalid": "не удалось разобрать адрес или ключ",
-    "connect.scanner.unsupported": "сканер QR недоступен в этом браузере — введите адрес вручную",
-    "connect.scanner.cameraDenied": "камера недоступна — введите адрес вручную",
-    "connect.footerHint": "адрес и ключ показывает remcli в терминале",
-
-    "home.empty.title": "Нет активных сессий",
-    "home.empty.hint": "запустите агента — он появится здесь",
-    "home.newSession": "Новая сессия",
-    "home.fab": "Сессия",
-    "home.searchAria": "Поиск (⌘K)",
-    "home.search": "Поиск",
-    "home.machine.online": "online",
-    "home.machine.offline": "офлайн",
-    "home.sessions.one": "сессия",
-    "home.sessions.few": "сессии",
-    "home.sessions.many": "сессий",
-    "home.desktop.pick.title": "Выберите сессию",
-    "home.desktop.pick.hint": "или создайте новую — ⌘K",
-    "home.connection.p2p": "p2p",
-    "home.stop.title": "Остановить сессию?",
-    "home.stop.hint": "процесс агента будет завершён",
-    "home.stop.confirm": "Остановить",
-    "home.stop.done": "сессия остановлена",
-    "home.stop.failed": "не удалось остановить сессию",
-    "home.stop.aria": "Остановить сессию",
-
-    "time.now": "сейчас",
-    "time.min": "мин",
-    "time.yesterday": "вчера",
-
-    "palette.placeholder": "Поиск сессий и действий…",
-    "palette.empty": "ничего не найдено",
-    "palette.sessions": "сессии",
-    "palette.actions": "действия",
-    "palette.newSession": "Новая сессия…",
-    "palette.openTerminal": "Открыть терминал",
-    "palette.stopAll": "Остановить все сессии",
-    "palette.settings": "Открыть настройки",
-    "palette.disconnect": "Отключиться",
-
-    "terminal.back": "Назад",
-    "terminal.run": "Выполнить",
-    "terminal.placeholder": "команда…",
-    "terminal.live": "live",
-
-    "zen.openCount": "открыто",
-    "zen.workOnTask": "Работать над задачей",
-    "zen.newTask": "новая задача…",
-    "zen.toggleTask": "переключить задачу",
-
-    "settings.title": "Настройки",
-    "settings.group.appearance": "внешний вид",
-    "settings.group.voice": "голос",
-    "settings.group.machines": "машины",
-    "settings.group.about": "о приложении",
-    "settings.theme": "Тема",
-    "settings.theme.light": "свет",
-    "settings.theme.dark": "тьма",
-    "settings.theme.system": "авто",
-    "settings.language": "Язык",
-    "settings.ttsProvider": "Провайдер TTS",
-    "settings.ttsVoice": "Голос",
-    "settings.ttsChecking": "проверяем…",
-    "settings.ttsOff": "выключен",
-    "settings.autoSpeak": "Автоозвучка ответов",
-    "settings.addMachineQr": "Добавить машину по QR",
-    "settings.machine.rename": "Переименовать",
-    "settings.machine.renameTitle": "Переименовать машину",
-    "settings.machine.renamePlaceholder": "имя машины",
-    "settings.machine.delete": "Удалить",
-    "settings.machine.deleteTitle": "Удалить машину?",
-    "settings.machine.deleteHint": "машина исчезнет из списка; при следующей активности демона появится снова",
-    "settings.machine.empty": "нет машин — подключитесь по QR",
-    "settings.disconnect": "Отключиться от демона",
-    "settings.version": "Версия",
-    "settings.daemon": "демон",
-
-    "concierge.title": "консьерж",
-    "concierge.checking": "проверяем консьержа…",
-    "concierge.unavailable": "консьерж недоступен",
-    "concierge.unavailableHint": "включите conciergeEnabled в ~/.remcli/setup.json и запустите LM Studio",
-    "concierge.notConnected": "нет подключения к демону",
-    "concierge.connect": "Подключиться",
-    "concierge.empty.hint": "спросите, что запущено, или попросите запустить агента",
-    "concierge.placeholder": "Сообщение консьержу…",
-    "concierge.thinking": "думает…",
-    "concierge.openSession": "открыть сессию →",
-    "concierge.error": "ошибка",
-
-    "new.title": "Новая сессия",
-    "new.close": "Закрыть",
-    "new.machine": "машина",
-    "new.agent": "агент",
-    "new.model": "модель",
-    "new.permissions": "разрешения",
-    "new.dirRecent": "директория · недавние",
-    "new.otherDir": "другая директория…",
-    "new.otherDirPlaceholder": "~/путь/к/проекту",
-    "new.resumePrefix": "продолжить прошлую сессию",
-    "new.resumeTitle": "Продолжить сессию",
-    "new.resumeTag": "resume",
-    "new.resumeEmpty": "нет прошлых сессий",
-    "new.machineTitle": "Машина",
-    "new.modelTitle": "Модель",
-    "new.start": "Запустить",
-    "new.startIn": "в",
-
-    "stub.title": "экран в разработке",
-} as const;
-
-export type I18nKey = keyof typeof ru;
-
-/* ---------- Каркас переводов: локаль → частичный словарь (fallback → ru) ---------- */
-
-type LocaleOverrides = Partial<Record<I18nKey, string>>;
-
-const overrides: Record<Exclude<LocaleId, "ru">, LocaleOverrides> = {
-    "en": {},
-    "es": {},
-    "pt": {},
-    "it": {},
-    "ca": {},
-    "pl": {},
-    "ja": {},
-    "zh-Hans": {},
-    "zh-Hant": {},
-};
-
-/* ---------- Текущая локаль (localStorage + подписка) ---------- */
-
-function isLocaleId(value: string | null): value is LocaleId {
+function isLocaleId(value: string | null | undefined): value is LocaleId {
     return LOCALES.some((locale) => locale.id === value);
 }
 
-let currentLocale: LocaleId = (() => {
+function matchNavigatorLanguage(raw: string): LocaleId | null {
+    const lower = raw.toLowerCase();
+    if (lower.startsWith("zh")) {
+        const isTraditional = lower.includes("hant") || lower.includes("tw") || lower.includes("hk") || lower.includes("mo");
+        return isTraditional ? "zh-Hant" : "zh-Hans";
+    }
+    const base = lower.split("-")[0];
+    return isLocaleId(base) ? base : null;
+}
+
+function detectLocale(): LocaleId {
     const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
-    return isLocaleId(stored) ? stored : "ru";
-})();
+    if (isLocaleId(stored)) return stored;
+    const candidates = navigator.languages?.length ? navigator.languages : [navigator.language];
+    for (const candidate of candidates) {
+        if (!candidate) continue;
+        const matched = matchNavigatorLanguage(candidate);
+        if (matched) return matched;
+    }
+    return "en";
+}
+
+/* ---------- Текущая локаль (модульное состояние + подписка) ---------- */
+
+let currentLocale: LocaleId = detectLocale();
 
 const localeListeners = new Set<() => void>();
 
@@ -251,6 +60,11 @@ export function getCurrentLanguage(): string {
     return currentLocale;
 }
 
+/** BCP-47-тег текущей локали для Intl / toLocaleDateString / toLocaleTimeString. */
+export function getIntlLocale(): string {
+    return currentLocale;
+}
+
 /** Реактивная подписка на локаль (компоненты с t() перерисуются при смене). */
 export function useLocale(): LocaleId {
     return React.useSyncExternalStore(
@@ -262,10 +76,29 @@ export function useLocale(): LocaleId {
     );
 }
 
-export function t(key: I18nKey): string {
-    if (currentLocale !== "ru") {
-        const translated = overrides[currentLocale][key];
-        if (translated) return translated;
+/* ---------- Перевод ---------- */
+
+type TranslationParams = Record<string, string | number>;
+
+export function t(key: I18nKey, params?: TranslationParams): string {
+    let text: string = dictionaries[currentLocale][key];
+    if (params) {
+        for (const [name, value] of Object.entries(params)) {
+            text = text.replaceAll(`{${name}}`, String(value));
+        }
     }
-    return ru[key];
+    return text;
+}
+
+/* ---------- Плюрализация (Intl.PluralRules по текущей локали) ---------- */
+
+/** Ключи-группы с формами .one/.few/.many/.other в словарях. */
+type PluralKeyPrefix = "home.sessions";
+
+export function tPlural(prefix: PluralKeyPrefix, count: number): string {
+    const category = new Intl.PluralRules(currentLocale).select(count);
+    const dictionary = dictionaries[currentLocale];
+    const exact = `${prefix}.${category}`;
+    if (exact in dictionary) return dictionary[exact as I18nKey];
+    return dictionary[`${prefix}.other`];
 }
