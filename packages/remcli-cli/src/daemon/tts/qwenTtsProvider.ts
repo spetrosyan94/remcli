@@ -35,6 +35,8 @@ export class QwenTtsProvider implements TtsProvider {
     private pendingRequestId: string | null = null;
     private pendingResolve: ((value: WorkerResponse) => void) | null = null;
     private pendingReject: ((reason: Error) => void) | null = null;
+    private initializing = false;
+    private readyResolve: (() => void) | null = null;
     private readyReject: ((reason: Error) => void) | null = null;
     private requestQueue: Array<{ resolve: (buf: Buffer) => void; reject: (err: Error) => void; run: () => Promise<Buffer> }> = [];
     private processing = false;
@@ -259,12 +261,10 @@ export class QwenTtsProvider implements TtsProvider {
 
     private waitForReady(): Promise<void> {
         return new Promise((resolve, reject) => {
-            // Override the pending handler temporarily to catch the ready signal
-            const originalHandler = this.handleWorkerLine.bind(this);
-
             const cleanup = () => {
                 clearTimeout(timeout);
-                this.handleWorkerLine = originalHandler;
+                this.initializing = false;
+                this.readyResolve = null;
                 this.readyReject = null;
             };
 
@@ -273,30 +273,37 @@ export class QwenTtsProvider implements TtsProvider {
                 reject(new Error(`Qwen3-TTS worker failed to become ready within ${WORKER_READY_TIMEOUT_MS}ms`));
             }, WORKER_READY_TIMEOUT_MS);
 
+            // Enter the initialization phase: handleWorkerLine watches for the
+            // ready signal until one of these callbacks fires.
+            this.initializing = true;
+            this.readyResolve = () => {
+                cleanup();
+                resolve();
+            };
             // Allow the process 'exit'/'error' handlers to abort startup instantly.
             this.readyReject = (error: Error) => {
                 cleanup();
                 reject(error);
-            };
-
-            this.handleWorkerLine = (line: string) => {
-                try {
-                    const parsed = JSON.parse(line) as { ready?: boolean };
-                    if (parsed.ready) {
-                        cleanup();
-                        resolve();
-                        return;
-                    }
-                } catch {
-                    // Not JSON, ignore
-                }
-                originalHandler(line);
             };
         });
     }
 
     private handleWorkerLine(line: string): void {
         if (!line.trim()) return;
+
+        // During startup, watch for the readiness signal. Non-ready lines fall
+        // through to normal request/response handling below.
+        if (this.initializing) {
+            try {
+                const parsed = JSON.parse(line) as { ready?: boolean };
+                if (parsed.ready) {
+                    this.readyResolve?.();
+                    return;
+                }
+            } catch {
+                // Not JSON — fall through to normal handling
+            }
+        }
 
         try {
             const response = JSON.parse(line) as WorkerResponse;

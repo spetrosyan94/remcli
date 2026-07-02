@@ -63,7 +63,10 @@ export async function* cursorQuery(options: CursorQueryOptions): AsyncGenerator<
     // `-p` = `--print` (headless/non-interactive mode)
     // Prompt is passed as positional argument: `agent -p "prompt" --output-format stream-json`
     // MCP servers are auto-discovered from .cursor/mcp.json — no inline config flag
-    const args = ['-p', prompt, '--output-format', 'stream-json'];
+    // `--trust` trusts the current workspace without prompting. In headless mode an
+    // untrusted-workspace prompt would hang forever; the user already launched remcli
+    // in this directory, so trusting it is safe and intentional.
+    const args = ['-p', prompt, '--output-format', 'stream-json', '--trust'];
 
     if (model) args.push('--model', model);
     if (resumeSessionId) args.push('--resume', resumeSessionId);

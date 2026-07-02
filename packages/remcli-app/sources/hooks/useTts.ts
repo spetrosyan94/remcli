@@ -19,6 +19,7 @@
 import * as React from 'react';
 import { Platform } from 'react-native';
 import { synthesizeSpeech } from '@/sync/apiTts';
+import { getCurrentLanguage } from '@/text';
 
 export type TtsState = 'idle' | 'synthesizing' | 'playing';
 
@@ -140,7 +141,7 @@ export function useTts() {
             let audioData = cacheRef.current.get(cacheKey);
 
             if (!audioData) {
-                audioData = await synthesizeSpeech(text, { signal: controller.signal });
+                audioData = await synthesizeSpeech(text, { lang: getCurrentLanguage(), signal: controller.signal });
                 // LRU eviction
                 if (cacheRef.current.size >= TTS_CACHE_MAX_ENTRIES) {
                     const firstKey = cacheRef.current.keys().next().value;

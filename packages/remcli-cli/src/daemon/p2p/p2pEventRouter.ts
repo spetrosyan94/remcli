@@ -36,8 +36,7 @@ export interface EphemeralPayload {
 export type RecipientFilter =
     | { type: 'all-interested-in-session'; sessionId: string }
     | { type: 'user-scoped-only' }
-    | { type: 'machine-scoped-only'; machineId: string }
-    | { type: 'all-user-authenticated-connections' };
+    | { type: 'machine-scoped-only'; machineId: string };
 
 // ─── Router ──────────────────────────────────────────────────────
 
@@ -52,10 +51,6 @@ export class P2PEventRouter {
     removeConnection(conn: P2PClientConnection): void {
         this.connections.delete(conn);
         logger.debug(`[P2P ROUTER] Connection removed: ${conn.connectionType} (total: ${this.connections.size})`);
-    }
-
-    getConnectionCount(): number {
-        return this.connections.size;
     }
 
     /**
@@ -96,9 +91,6 @@ export class P2PEventRouter {
                 // The specific machine + all user-scoped
                 return conn.connectionType === 'user-scoped' ||
                     (conn.connectionType === 'machine-scoped' && conn.machineId === filter.machineId);
-
-            case 'all-user-authenticated-connections':
-                return true;
         }
     }
 }

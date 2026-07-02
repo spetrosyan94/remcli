@@ -53,15 +53,6 @@ const testMetadata = {
     remcliToolsDir: '/home/user/.remcli/tools'
 };
 
-const testMachineMetadata = {
-    host: 'localhost',
-    platform: 'darwin',
-    remcliCliVersion: '1.0.0',
-    homeDir: '/home/user',
-    remcliHomeDir: '/home/user/.remcli',
-    remcliLibDir: '/home/user/.remcli/lib'
-};
-
 describe('Api server error handling', () => {
     let api: ApiClient;
 
@@ -233,80 +224,6 @@ describe('Api server error handling', () => {
             expect(consoleSpy).not.toHaveBeenCalledWith(
                 expect.stringContaining('⚠️  Remcli server unreachable')
             );
-            consoleSpy.mockRestore();
-        });
-    });
-
-    describe('getOrCreateMachine', () => {
-        it('should return minimal machine object when server is unreachable (ECONNREFUSED)', async () => {
-            connectionState.reset();
-            const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
-            // Mock axios to throw connection refused error
-            mockPost.mockRejectedValue({ code: 'ECONNREFUSED' });
-
-            const result = await api.getOrCreateMachine({
-                machineId: 'test-machine',
-                metadata: testMachineMetadata,
-                daemonState: {
-                    status: 'running',
-                    pid: 1234
-                }
-            });
-
-            expect(result).toEqual({
-                id: 'test-machine',
-                encryptionKey: expect.any(Uint8Array),
-                encryptionVariant: 'legacy',
-                metadata: testMachineMetadata,
-                metadataVersion: 0,
-                daemonState: {
-                    status: 'running',
-                    pid: 1234
-                },
-                daemonStateVersion: 0,
-            });
-
-            expect(consoleSpy).toHaveBeenCalledWith(
-                expect.stringContaining('⚠️  Remcli server unreachable')
-            );
-
-            consoleSpy.mockRestore();
-        });
-
-        it('should return minimal machine object when server endpoint returns 404', async () => {
-            connectionState.reset();
-            const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
-            // Mock axios to return 404
-            mockPost.mockRejectedValue({
-                response: { status: 404 },
-                isAxiosError: true
-            });
-
-            const result = await api.getOrCreateMachine({
-                machineId: 'test-machine',
-                metadata: testMachineMetadata
-            });
-
-            expect(result).toEqual({
-                id: 'test-machine',
-                encryptionKey: expect.any(Uint8Array),
-                encryptionVariant: 'legacy',
-                metadata: testMachineMetadata,
-                metadataVersion: 0,
-                daemonState: null,
-                daemonStateVersion: 0,
-            });
-
-            // New unified format via connectionState.fail()
-            expect(consoleSpy).toHaveBeenCalledWith(
-                expect.stringContaining('⚠️  Remcli server unreachable')
-            );
-            expect(consoleSpy).toHaveBeenCalledWith(
-                expect.stringContaining('Machine registration failed: 404')
-            );
-
             consoleSpy.mockRestore();
         });
     });

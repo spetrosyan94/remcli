@@ -18,9 +18,6 @@ import { registerSocketHandlers } from './p2pSocketHandlers';
 import { registerP2PRestRoutes } from './p2pRestRoutes';
 import { verifyBearerToken } from './p2pAuth';
 import { logger } from '@/ui/logger';
-import { TrackedSession } from '../types';
-import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
-import { Metadata } from '@/api/types';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -29,11 +26,6 @@ export interface P2PServerConfig {
     host: string;              // '0.0.0.0' for LAN
     sharedSecret: Uint8Array;  // 32 bytes from QR code
     store: P2PStore;
-    getChildren: () => TrackedSession[];
-    stopSession: (sessionId: string) => boolean;
-    spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
-    requestShutdown: () => void;
-    onRemcliSessionWebhook: (sessionId: string, metadata: Metadata) => void;
     webAppDir?: string;        // Path to web app build (static files)
 }
 
@@ -43,7 +35,6 @@ export interface P2PServer {
     store: P2PStore;
     router: P2PEventRouter;
     stop: () => Promise<void>;
-    getConnectionCount: () => number;
 }
 
 // ─── Server ──────────────────────────────────────────────────────
@@ -136,8 +127,10 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
         next();
     });
 
-    // Track sessions that have already received message replay to avoid duplicates on reconnect
+    // Track sessions that have already received message replay to avoid duplicates on reconnect.
+    // Cleared when a session is deleted from the store so the set does not leak memory.
     const replayedSessions = new Set<string>();
+    store.onSessionDeleted((sessionId) => replayedSessions.delete(sessionId));
 
     // Socket.IO connection handler
     io.on('connection', (socket) => {
@@ -205,7 +198,6 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
                 host,
                 store,
                 router,
-                getConnectionCount: () => router.getConnectionCount(),
                 stop: async () => {
                     logger.debug('[P2P SERVER] Stopping...');
                     io.close();

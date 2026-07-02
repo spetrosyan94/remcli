@@ -1091,9 +1091,29 @@ export async function runGemini(opts: {
             const errorCode = errObj.code || errObj.status || (errObj.response?.status);
             const errorMessage = errObj.message || errObj.error?.message || '';
             const errorString = String(error);
-            
+            const errorHaystack = `${errorDetails} ${errorMessage} ${errorString}`;
+
+            // Gemini CLI OAuth shutdown: as of 2026-06-18 Google disabled Gemini CLI
+            // access for free/Pro/Ultra Google-account (OAuth) users. Only API keys and
+            // Enterprise accounts still work. Such requests fail with 403 / PERMISSION_DENIED.
+            // Only surface this when we are actually authenticating via OAuth (not an API key).
+            const isForbidden = errorCode === 403 ||
+                /\b403\b/.test(errorHaystack) ||
+                errorHaystack.includes('PERMISSION_DENIED') ||
+                errorHaystack.includes('permission denied');
+            const usingOAuth = Boolean(cloudToken || currentUserEmail);
+
+            // Check for OAuth shutdown first — it must not be masked by generic handlers.
+            // Enterprise accounts also use OAuth and still work, so the message hedges.
+            if (isForbidden && usingOAuth) {
+                errorMsg = 'Gemini access denied (403). Most likely cause: Google disabled Gemini CLI ' +
+                           'for free/Pro/Ultra Google-account (OAuth) users on 2026-06-18 — only API keys ' +
+                           'and Enterprise accounts still work.\n' +
+                           'Use an API key: remcli connect gemini — or switch to another agent.\n' +
+                           '(Enterprise users: check GCP project permissions instead.)';
+            }
             // Check for 404 error (model not found)
-            if (errorCode === 404 || errorDetails.includes('notFound') || errorDetails.includes('404') || 
+            else if (errorCode === 404 || errorDetails.includes('notFound') || errorDetails.includes('404') ||
                 errorMessage.includes('not found') || errorMessage.includes('404')) {
               const currentModel = displayedModel || 'gemini-2.5-pro';
               errorMsg = `Model "${currentModel}" not found. Available models: gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite`;

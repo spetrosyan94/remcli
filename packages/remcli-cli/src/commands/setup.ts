@@ -22,6 +22,8 @@ import { resolveCloudflaredBinary } from '@/daemon/p2p/tunnel';
 interface AgentDefinition {
     name: string;
     binary: string;
+    /** Alternative binary names to accept if the primary one is not on PATH */
+    fallbackBinaries?: string[];
     install: {
         unix: string;      // macOS/Linux/WSL
         windows: string;   // Windows PowerShell
@@ -57,10 +59,15 @@ const AGENTS: AgentDefinition[] = [
     },
     {
         name: 'Cursor CLI',
-        binary: 'cursor',
+        // The Cursor Agent CLI installs as `agent` (older builds: `cursor-agent`).
+        // Note: a `cursor` binary is the IDE launcher shim, NOT the agent CLI.
+        binary: 'agent',
+        fallbackBinaries: ['cursor-agent'],
         install: {
             unix: 'curl https://cursor.com/install -fsS | bash',
-            windows: 'curl https://cursor.com/install -fsS | bash',
+            // The ?win32=true query returns the native PowerShell installer
+            // (the plain URL serves a bash script that iex cannot execute).
+            windows: 'powershell -Command "irm \'https://cursor.com/install?win32=true\' | iex"',
         },
     },
 ];
@@ -78,6 +85,15 @@ function isBinaryInstalled(binary: string): boolean {
     } catch {
         return false;
     }
+}
+
+/**
+ * Resolve the first installed binary for an agent, checking the primary name
+ * and any declared fallbacks. Returns the resolved binary name or null.
+ */
+function resolveInstalledBinary(agent: AgentDefinition): string | null {
+    const candidates = [agent.binary, ...(agent.fallbackBinaries ?? [])];
+    return candidates.find(isBinaryInstalled) ?? null;
 }
 
 function getBinaryVersion(binary: string): string | null {
@@ -223,27 +239,28 @@ async function stepTTS(): Promise<{ provider: string; voice: string; voiceProfil
 
     if (provider === 'off') {
         console.log(chalk.gray('\n  TTS disabled.'));
-        return { provider: 'off', voice: 'ru-RU-DmitryNeural', voiceProfile: 'default' };
+        return { provider: 'off', voice: 'auto', voiceProfile: 'default' };
     }
 
-    let voice = 'ru-RU-DmitryNeural';
+    let voice = 'auto';
     let voiceProfile = 'default';
 
     if (provider === 'edge') {
         voice = await select({
             message: 'Select voice:',
             choices: [
-                { name: 'ru-RU-DmitryNeural (male, recommended)', value: 'ru-RU-DmitryNeural' },
-                { name: 'ru-RU-SvetlanaNeural (female)', value: 'ru-RU-SvetlanaNeural' },
+                { name: 'Auto — pick voice by response language (recommended)', value: 'auto' },
+                { name: 'ru-RU-DmitryNeural (male, Russian)', value: 'ru-RU-DmitryNeural' },
+                { name: 'ru-RU-SvetlanaNeural (female, Russian)', value: 'ru-RU-SvetlanaNeural' },
                 { name: 'Custom (enter voice name)', value: '__custom__' },
             ],
-            default: 'ru-RU-DmitryNeural',
+            default: 'auto',
         });
 
         if (voice === '__custom__') {
             voice = await input({
                 message: 'Enter voice name (e.g., en-US-AriaNeural):',
-                default: 'ru-RU-DmitryNeural',
+                default: 'en-US-AriaNeural',
             });
         }
 
@@ -300,8 +317,9 @@ async function stepAIAgents(): Promise<string[]> {
     console.log(chalk.gray('  Select AI agents to install.\n'));
 
     const agentChoices = AGENTS.map(agent => {
-        const installed = isBinaryInstalled(agent.binary);
-        const version = installed ? getBinaryVersion(agent.binary) : null;
+        const resolvedBinary = resolveInstalledBinary(agent);
+        const installed = resolvedBinary !== null;
+        const version = resolvedBinary ? getBinaryVersion(resolvedBinary) : null;
         const statusLabel = installed
             ? chalk.green(`[installed${version ? `: ${version}` : ''}]`)
             : chalk.red('[not installed]');
@@ -329,8 +347,9 @@ async function stepAIAgents(): Promise<string[]> {
         const agent = AGENTS.find(a => a.binary === binary);
         if (!agent) continue;
 
-        if (isBinaryInstalled(agent.binary)) {
-            const version = getBinaryVersion(agent.binary);
+        const resolvedBinary = resolveInstalledBinary(agent);
+        if (resolvedBinary) {
+            const version = getBinaryVersion(resolvedBinary);
             console.log(chalk.green(`\n  ${agent.name} is already installed${version ? ` (${version})` : ''}, skipping.`));
             continue;
         }
@@ -450,8 +469,9 @@ function stepSummary(whisperModel: string, installedAgents: string[], cloudflare
     // AI Agents
     console.log(chalk.bold('\n  AI Agents'));
     for (const agent of AGENTS) {
-        const installed = isBinaryInstalled(agent.binary);
-        const version = installed ? getBinaryVersion(agent.binary) : null;
+        const resolvedBinary = resolveInstalledBinary(agent);
+        const installed = resolvedBinary !== null;
+        const version = resolvedBinary ? getBinaryVersion(resolvedBinary) : null;
         if (installed) {
             console.log(chalk.green(`  \u2713 ${agent.name}${version ? ` (${version})` : ''}`));
         } else {

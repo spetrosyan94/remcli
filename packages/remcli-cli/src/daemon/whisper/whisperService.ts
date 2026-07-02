@@ -8,8 +8,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
+import { once } from 'node:events';
 import { decode } from 'node-wav';
 import { configuration } from '@/configuration';
 import { readSetupConfig } from '@/persistence';
@@ -123,54 +122,26 @@ export function getStatus(): WhisperStatus {
     };
 }
 
-export async function ensureModel(modelName?: string): Promise<string> {
-    const name = modelName ?? getSelectedModel();
-    const modelPath = getModelPath(name);
-
-    if (isModelDownloaded(name)) {
-        return modelPath;
-    }
-
-    const modelsDir = getModelsDir();
-    if (!existsSync(modelsDir)) {
-        mkdirSync(modelsDir, { recursive: true });
-    }
-
-    logger.debug(`[WHISPER] Downloading model ${name} to ${modelPath}...`);
-
-    const url = getModelUrl(name);
-    const response = await fetch(url, { redirect: 'follow' });
-    if (!response.ok || !response.body) {
-        throw new Error(`Failed to download Whisper model: ${response.status} ${response.statusText}`);
-    }
-
-    const tempPath = `${modelPath}.downloading`;
-    try {
-        const fileStream = createWriteStream(tempPath);
-        const nodeStream = Readable.fromWeb(response.body as import('node:stream/web').ReadableStream);
-        await pipeline(nodeStream, fileStream);
-
-        renameSync(tempPath, modelPath);
-        logger.debug(`[WHISPER] Model downloaded successfully (${statSync(modelPath).size} bytes)`);
-    } catch (error) {
-        // Clean up partial download
-        if (existsSync(tempPath)) unlinkSync(tempPath);
-        throw error;
-    }
-
-    return modelPath;
-}
-
-export async function downloadModelWithProgress(
+/**
+ * Download a Whisper model to disk (temp .downloading file → atomic rename),
+ * cleaning up partial downloads on failure. If already present, returns early.
+ *
+ * Backpressure-aware: when the OS write buffer fills up we wait for the stream
+ * to 'drain' before queuing more chunks. Without this, large models (up to ~3 GB)
+ * would balloon memory as network chunks pile up faster than the disk can flush.
+ */
+async function downloadModel(
     modelName: string,
-    onProgress: (downloadedBytes: number, totalBytes: number | null) => void
+    onProgress?: (downloadedBytes: number, totalBytes: number | null) => void
 ): Promise<string> {
     const modelPath = getModelPath(modelName);
 
     if (isModelDownloaded(modelName)) {
-        const info = getModelInfo(modelName);
-        const totalBytes = info.sizeMB * 1_000_000;
-        onProgress(totalBytes, totalBytes);
+        if (onProgress) {
+            const info = getModelInfo(modelName);
+            const totalBytes = info.sizeMB * 1_000_000;
+            onProgress(totalBytes, totalBytes);
+        }
         return modelPath;
     }
 
@@ -178,6 +149,8 @@ export async function downloadModelWithProgress(
     if (!existsSync(modelsDir)) {
         mkdirSync(modelsDir, { recursive: true });
     }
+
+    logger.debug(`[WHISPER] Downloading model ${modelName} to ${modelPath}...`);
 
     const url = getModelUrl(modelName);
     const response = await fetch(url, { redirect: 'follow' });
@@ -190,30 +163,61 @@ export async function downloadModelWithProgress(
     let downloadedBytes = 0;
 
     const tempPath = `${modelPath}.downloading`;
+    const fileStream = createWriteStream(tempPath);
+    const reader = response.body.getReader();
+    // Persistent 'error' listener: without it a write error emitted while we are
+    // awaiting reader.read() would be an unhandled 'error' event and crash the daemon.
+    let streamError: Error | null = null;
+    fileStream.on('error', (error) => {
+        streamError = error instanceof Error ? error : new Error(String(error));
+    });
     try {
-        const fileStream = createWriteStream(tempPath);
-        const reader = response.body.getReader();
-
         while (true) {
+            if (streamError) throw streamError;
             const { done, value } = await reader.read();
             if (done) break;
-            fileStream.write(Buffer.from(value));
+            // Respect backpressure: write() returns false when the internal buffer
+            // is over the high-water mark; wait for 'drain' before continuing.
+            if (!fileStream.write(Buffer.from(value))) {
+                await once(fileStream, 'drain');
+            }
             downloadedBytes += value.byteLength;
-            onProgress(downloadedBytes, totalBytes);
+            onProgress?.(downloadedBytes, totalBytes);
         }
+        if (streamError) throw streamError;
 
         await new Promise<void>((resolve, reject) => {
+            fileStream.once('error', reject);
             fileStream.end(() => resolve());
-            fileStream.on('error', reject);
         });
 
         renameSync(tempPath, modelPath);
+        logger.debug(`[WHISPER] Model downloaded successfully (${statSync(modelPath).size} bytes)`);
     } catch (error) {
-        if (existsSync(tempPath)) unlinkSync(tempPath);
+        // Release resources before cleanup: fd must be closed for unlink on Windows.
+        fileStream.destroy();
+        await reader.cancel().catch(() => {});
+        try {
+            if (existsSync(tempPath)) unlinkSync(tempPath);
+        } catch {
+            // Partial file left behind; next download re-creates (truncates) it.
+        }
         throw error;
     }
 
     return modelPath;
+}
+
+export async function ensureModel(modelName?: string): Promise<string> {
+    const name = modelName ?? getSelectedModel();
+    return downloadModel(name);
+}
+
+export async function downloadModelWithProgress(
+    modelName: string,
+    onProgress: (downloadedBytes: number, totalBytes: number | null) => void
+): Promise<string> {
+    return downloadModel(modelName, onProgress);
 }
 
 // ─── Anti-hallucination ─────────────────────────────────────────

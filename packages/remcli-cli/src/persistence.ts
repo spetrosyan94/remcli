@@ -720,7 +720,7 @@ const SetupConfigSchema = z.object({
     installedAgents: z.array(z.string()).default([]),
     setupCompletedAt: z.string().optional(),
     ttsProvider: z.enum(['off', 'edge', 'qwen3']).default('edge'),
-    ttsEdgeVoice: z.string().default('ru-RU-DmitryNeural'),
+    ttsEdgeVoice: z.string().default('auto'),
     ttsQwenVoiceProfile: z.string().default('default'),
 });
 

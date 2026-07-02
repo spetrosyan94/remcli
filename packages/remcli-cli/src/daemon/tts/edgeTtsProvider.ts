@@ -16,12 +16,55 @@ import { TtsProvider, TtsOptions } from './ttsService';
 
 const execFileAsync = promisify(execFile);
 
+// ─── Voice selection ────────────────────────────────────────────
+
+/**
+ * Default Microsoft Edge neural voice per app language.
+ * Covers all 10 languages supported by the app; anything else falls back to en-US.
+ */
+const EDGE_VOICE_BY_LANG: Record<string, string> = {
+    en: 'en-US-GuyNeural',
+    ru: 'ru-RU-DmitryNeural',
+    pl: 'pl-PL-MarekNeural',
+    es: 'es-ES-AlvaroNeural',
+    ca: 'ca-ES-EnricNeural',
+    it: 'it-IT-DiegoNeural',
+    pt: 'pt-BR-AntonioNeural',
+    ja: 'ja-JP-KeitaNeural',
+    'zh-Hans': 'zh-CN-YunxiNeural',
+    'zh-Hant': 'zh-TW-YunJheNeural',
+};
+
+const EDGE_FALLBACK_VOICE = 'en-US-GuyNeural';
+
+/** Pick a default Edge neural voice for the requested app language (fallback en-US). */
+export function getEdgeVoiceForLang(lang?: string): string {
+    return (lang && EDGE_VOICE_BY_LANG[lang]) || EDGE_FALLBACK_VOICE;
+}
+
+/** All default per-language voices, used to advertise available voices in TTS status. */
+export function listEdgeDefaultVoices(): string[] {
+    return Object.values(EDGE_VOICE_BY_LANG);
+}
+
+/**
+ * Resolve the voice to synthesize with. Priority:
+ *   1. Explicit per-request voice (options.voice)
+ *   2. User-configured voice from setup.json (unless 'auto')
+ *   3. Language default for options.lang (fallback en-US)
+ */
+function resolveEdgeVoice(options: TtsOptions, configuredVoice?: string): string {
+    if (options.voice) return options.voice;
+    if (configuredVoice && configuredVoice !== 'auto') return configuredVoice;
+    return getEdgeVoiceForLang(options.lang);
+}
+
 // ─── Provider ───────────────────────────────────────────────────
 
 export class EdgeTtsProvider implements TtsProvider {
     async synthesize(text: string, options: TtsOptions): Promise<Buffer> {
         const config = readSetupConfig();
-        const voice = options.voice || config.ttsEdgeVoice || 'ru-RU-DmitryNeural';
+        const voice = resolveEdgeVoice(options, config.ttsEdgeVoice);
 
         const mp3Path = tmpNameSync({ postfix: '.mp3' });
         const oggPath = tmpNameSync({ postfix: '.ogg' });

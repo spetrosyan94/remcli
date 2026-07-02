@@ -1,11 +1,9 @@
 import axios from 'axios'
 import { logger } from '@/ui/logger'
-import type { AgentState, CreateSessionResponse, Metadata, Session, Machine, MachineMetadata, DaemonState } from '@/api/types'
+import type { AgentState, CreateSessionResponse, Metadata, Session } from '@/api/types'
 import { ApiSessionClient } from './apiSession';
-import { ApiMachineClient } from './apiMachine';
 import { decodeBase64, encodeBase64, getRandomBytes, encrypt, decrypt, libsodiumEncryptForPublicKey } from './encryption';
 import { getEffectiveServerUrl } from '@/daemon/p2p/p2pSession';
-import chalk from 'chalk';
 import { Credentials } from '@/persistence';
 import { connectionState, isNetworkError } from '@/utils/serverConnectionErrors';
 
@@ -131,148 +129,7 @@ export class ApiClient {
     }
   }
 
-  /**
-   * Register or update machine with the server
-   * Returns the current machine state from the server with decrypted metadata and daemonState
-   */
-  async getOrCreateMachine(opts: {
-    machineId: string,
-    metadata: MachineMetadata,
-    daemonState?: DaemonState,
-  }): Promise<Machine> {
-
-    // Resolve encryption key
-    let dataEncryptionKey: Uint8Array | null = null;
-    let encryptionKey: Uint8Array;
-    let encryptionVariant: 'legacy' | 'dataKey';
-    if (this.credential.encryption.type === 'dataKey') {
-      // Encrypt data encryption key
-      encryptionVariant = 'dataKey';
-      encryptionKey = this.credential.encryption.machineKey;
-      let encryptedDataKey = libsodiumEncryptForPublicKey(this.credential.encryption.machineKey, this.credential.encryption.publicKey);
-      dataEncryptionKey = new Uint8Array(encryptedDataKey.length + 1);
-      dataEncryptionKey.set([0], 0); // Version byte
-      dataEncryptionKey.set(encryptedDataKey, 1); // Data key
-    } else {
-      // Legacy encryption
-      encryptionKey = this.credential.encryption.secret;
-      encryptionVariant = 'legacy';
-    }
-
-    // Helper to create minimal machine object for offline mode (DRY)
-    const createMinimalMachine = (): Machine => ({
-      id: opts.machineId,
-      encryptionKey: encryptionKey,
-      encryptionVariant: encryptionVariant,
-      metadata: opts.metadata,
-      metadataVersion: 0,
-      daemonState: opts.daemonState || null,
-      daemonStateVersion: 0,
-    });
-
-    // Create machine
-    try {
-      const response = await axios.post(
-        `${getEffectiveServerUrl()}/v1/machines`,
-        {
-          id: opts.machineId,
-          metadata: encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.metadata)),
-          daemonState: opts.daemonState ? encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.daemonState)) : undefined,
-          dataEncryptionKey: dataEncryptionKey ? encodeBase64(dataEncryptionKey) : undefined
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${this.credential.token}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 60000 // 1 minute timeout for very bad network connections
-        }
-      );
-
-
-      const raw = response.data.machine;
-      logger.debug(`[API] Machine ${opts.machineId} registered/updated with server`);
-
-      // Return decrypted machine like we do for sessions
-      const machine: Machine = {
-        id: raw.id,
-        encryptionKey: encryptionKey,
-        encryptionVariant: encryptionVariant,
-        metadata: raw.metadata ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.metadata)) : null,
-        metadataVersion: raw.metadataVersion || 0,
-        daemonState: raw.daemonState ? decrypt(encryptionKey, encryptionVariant, decodeBase64(raw.daemonState)) : null,
-        daemonStateVersion: raw.daemonStateVersion || 0,
-      };
-      return machine;
-    } catch (error) {
-      // Handle connection errors gracefully
-      if (axios.isAxiosError(error) && error.code && isNetworkError(error.code)) {
-        connectionState.fail({
-          operation: 'Machine registration',
-          caller: 'api.getOrCreateMachine',
-          errorCode: error.code,
-          url: `${getEffectiveServerUrl()}/v1/machines`
-        });
-        return createMinimalMachine();
-      }
-
-      // Handle 403/409 - server rejected request due to authorization conflict
-      // This is NOT "server unreachable" - server responded, so don't use connectionState
-      if (axios.isAxiosError(error) && error.response?.status) {
-        const status = error.response.status;
-
-        if (status === 403 || status === 409) {
-          // Re-auth conflict: machine registered to old account, re-association not allowed
-          console.log(chalk.yellow(
-            `⚠️  Machine registration rejected by the server with status ${status}`
-          ));
-          console.log(chalk.yellow(
-            `   → This machine ID is already registered to another account on the server`
-          ));
-          console.log(chalk.yellow(
-            `   → This usually happens after re-authenticating with a different account`
-          ));
-          console.log(chalk.yellow(
-            `   → Run 'remcli doctor clean' to reset local state and generate a new machine ID`
-          ));
-          console.log(chalk.yellow(
-            `   → Open a GitHub issue if this problem persists`
-          ));
-          return createMinimalMachine();
-        }
-
-        // Handle 5xx - server error, use offline mode with auto-reconnect
-        if (status >= 500) {
-          connectionState.fail({
-            operation: 'Machine registration',
-            errorCode: String(status),
-            url: `${getEffectiveServerUrl()}/v1/machines`,
-            details: ['Server encountered an error, will retry automatically']
-          });
-          return createMinimalMachine();
-        }
-
-        // Handle 404 - endpoint may not be available yet
-        if (status === 404) {
-          connectionState.fail({
-            operation: 'Machine registration',
-            errorCode: '404',
-            url: `${getEffectiveServerUrl()}/v1/machines`
-          });
-          return createMinimalMachine();
-        }
-      }
-
-      // For other errors, rethrow
-      throw error;
-    }
-  }
-
   sessionSyncClient(session: Session): ApiSessionClient {
     return new ApiSessionClient(this.credential.token, session);
-  }
-
-  machineSyncClient(machine: Machine): ApiMachineClient {
-    return new ApiMachineClient(this.credential.token, machine);
   }
 }

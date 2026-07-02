@@ -56,6 +56,16 @@ export class P2PStore {
     private machines = new Map<string, P2PMachine>();
     private userSeq = 0;
     private sessionSeqs = new Map<string, number>();
+    private sessionDeletedListeners: Array<(sessionId: string) => void> = [];
+
+    /**
+     * Register a listener invoked whenever a session is deleted.
+     * Used by the P2P server to drop per-session bookkeeping (e.g. replay tracking)
+     * so it does not leak memory as sessions come and go.
+     */
+    onSessionDeleted(listener: (sessionId: string) => void): void {
+        this.sessionDeletedListeners.push(listener);
+    }
 
     // ─── Sequences ───────────────────────────────────────────────
 
@@ -137,6 +147,11 @@ export class P2PStore {
         const existed = this.sessions.delete(id);
         this.sessionMessages.delete(id);
         this.sessionSeqs.delete(id);
+        if (existed) {
+            for (const listener of this.sessionDeletedListeners) {
+                listener(id);
+            }
+        }
         return existed;
     }
 

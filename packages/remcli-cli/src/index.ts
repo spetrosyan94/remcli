@@ -28,6 +28,37 @@ import { spawnRemcliCLI } from './utils/spawnRemcliCLI'
 import { claudeCliPath } from './claude/claudeLocal'
 import { execFileSync } from 'node:child_process'
 
+/**
+ * Print a subcommand error consistently and terminate the process.
+ * Full stack is printed only when DEBUG is set.
+ */
+function exitWithSubcommandError(error: unknown): never {
+    console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+    if (process.env.DEBUG) {
+        console.error(error)
+    }
+    process.exit(1)
+}
+
+interface AgentRunArgs {
+    startedBy?: 'daemon' | 'terminal';
+    resumeSessionId?: string;
+}
+
+/** Parse the shared `--started-by` / `--resume` flags used by agent subcommands. */
+function parseAgentRunArgs(args: string[]): AgentRunArgs {
+    let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+    let resumeSessionId: string | undefined = undefined;
+    for (let i = 1; i < args.length; i++) {
+        if (args[i] === '--started-by') {
+            startedBy = args[++i] as 'daemon' | 'terminal';
+        } else if (args[i] === '--resume') {
+            resumeSessionId = args[++i];
+        }
+    }
+    return { startedBy, resumeSessionId };
+}
+
 async function ensureDaemonRunning(): Promise<void> {
     logger.debug('Ensuring Remcli background service is running & matches our version...');
     if (!(await isDaemonRunningCurrentlyInstalledRemcliVersion())) {
@@ -88,11 +119,7 @@ async function ensureDaemonRunning(): Promise<void> {
     try {
       await handleAuthCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      exitWithSubcommandError(error)
     }
     return;
   } else if (subcommand === 'connect') {
@@ -100,11 +127,7 @@ async function ensureDaemonRunning(): Promise<void> {
     try {
       await handleConnectCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      exitWithSubcommandError(error)
     }
     return;
   } else if (subcommand === 'codex') {
@@ -112,16 +135,7 @@ async function ensureDaemonRunning(): Promise<void> {
     try {
       const { runCodex } = await import('@/codex/runCodex');
 
-      // Parse startedBy / resume arguments
-      let startedBy: 'daemon' | 'terminal' | undefined = undefined;
-      let resumeSessionId: string | undefined = undefined;
-      for (let i = 1; i < args.length; i++) {
-        if (args[i] === '--started-by') {
-          startedBy = args[++i] as 'daemon' | 'terminal';
-        } else if (args[i] === '--resume') {
-          resumeSessionId = args[++i];
-        }
-      }
+      const { startedBy, resumeSessionId } = parseAgentRunArgs(args);
 
       await ensureDaemonRunning();
       const {
@@ -130,11 +144,7 @@ async function ensureDaemonRunning(): Promise<void> {
       await runCodex({credentials, startedBy, resumeSessionId});
       // Do not force exit here; allow instrumentation to show lingering handles
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      exitWithSubcommandError(error)
     }
     return;
   } else if (subcommand === 'cursor') {
@@ -142,16 +152,7 @@ async function ensureDaemonRunning(): Promise<void> {
     try {
       const { runCursor } = await import('@/cursor/runCursor');
 
-      // Parse startedBy / resume arguments
-      let startedBy: 'daemon' | 'terminal' | undefined = undefined;
-      let resumeSessionId: string | undefined = undefined;
-      for (let i = 1; i < args.length; i++) {
-        if (args[i] === '--started-by') {
-          startedBy = args[++i] as 'daemon' | 'terminal';
-        } else if (args[i] === '--resume') {
-          resumeSessionId = args[++i];
-        }
-      }
+      const { startedBy, resumeSessionId } = parseAgentRunArgs(args);
 
       await ensureDaemonRunning();
       const {
@@ -160,11 +161,7 @@ async function ensureDaemonRunning(): Promise<void> {
 
       await runCursor({credentials, startedBy, resumeSessionId});
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      exitWithSubcommandError(error)
     }
     return;
   } else if (subcommand === 'gemini') {
@@ -347,16 +344,7 @@ async function ensureDaemonRunning(): Promise<void> {
     try {
       const { runGemini } = await import('@/gemini/runGemini');
 
-      // Parse startedBy / resume arguments
-      let startedBy: 'daemon' | 'terminal' | undefined = undefined;
-      let resumeSessionId: string | undefined = undefined;
-      for (let i = 1; i < args.length; i++) {
-        if (args[i] === '--started-by') {
-          startedBy = args[++i] as 'daemon' | 'terminal';
-        } else if (args[i] === '--resume') {
-          resumeSessionId = args[++i];
-        }
-      }
+      const { startedBy, resumeSessionId } = parseAgentRunArgs(args);
 
       await ensureDaemonRunning();
       const {
@@ -365,11 +353,7 @@ async function ensureDaemonRunning(): Promise<void> {
 
       await runGemini({credentials, startedBy, resumeSessionId});
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      exitWithSubcommandError(error)
     }
     return;
   } else if (subcommand === 'logout') {
@@ -378,11 +362,7 @@ async function ensureDaemonRunning(): Promise<void> {
     try {
       await handleAuthCommand(['logout']);
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      exitWithSubcommandError(error)
     }
     return;
   } else if (subcommand === 'setup') {
@@ -390,11 +370,7 @@ async function ensureDaemonRunning(): Promise<void> {
       const { handleSetupCommand } = await import('@/commands/setup');
       await handleSetupCommand();
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      exitWithSubcommandError(error)
     }
     return;
   } else if (subcommand === 'daemon') {
@@ -694,11 +670,7 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
     try {
       await runClaude(credentials, options);
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
-      if (process.env.DEBUG) {
-        console.error(error)
-      }
-      process.exit(1)
+      exitWithSubcommandError(error)
     }
   }
 })();

@@ -149,11 +149,11 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     );
     
     expect(spawnedSession).toBeDefined();
-    expect(spawnedSession.startedBy).toBe('daemon');
-    
+    expect(spawnedSession!.startedBy).toBe('daemon');
+
     // Clean up - stop the spawned session
-    expect(spawnedSession.remcliSessionId).toBeDefined();
-    await stopDaemonSession(spawnedSession.remcliSessionId);
+    expect(spawnedSession!.remcliSessionId).toBeDefined();
+    await stopDaemonSession(spawnedSession!.remcliSessionId!);
   });
 
   it('stress test: spawn / stop', { timeout: 60_000 }, async () => {
@@ -171,7 +171,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     expect(sessions).toHaveLength(sessionCount);
 
     // Stop all sessions
-    const stopResults = await Promise.all(sessionIds.map(sessionId => stopDaemonSession(sessionId)));
+    const stopResults = await Promise.all(sessionIds.map(sessionId => stopDaemonSession(sessionId!)));
     expect(stopResults.every(r => r), 'Not all sessions reported stopped').toBe(true);
 
     // Verify all sessions are stopped
@@ -218,14 +218,14 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     );
 
     expect(terminalSession).toBeDefined();
-    expect(terminalSession.startedBy).toBe('remcli directly - likely by user from terminal');
-    
+    expect(terminalSession!.startedBy).toBe('remcli directly - likely by user from terminal');
+
     expect(daemonSession).toBeDefined();
-    expect(daemonSession.startedBy).toBe('daemon');
+    expect(daemonSession!.startedBy).toBe('daemon');
 
     // Clean up both sessions
     await stopDaemonSession('terminal-session-aaa');
-    await stopDaemonSession(daemonSession.remcliSessionId);
+    await stopDaemonSession(daemonSession!.remcliSessionId!);
     
     // Also kill the terminal process directly to be sure
     try {
@@ -245,7 +245,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     expect(session).toBeDefined();
 
     // Clean up
-    await stopDaemonSession(spawnResponse.sessionId);
+    await stopDaemonSession(spawnResponse.sessionId!);
   });
 
   it('should not allow starting a second daemon', async () => {
@@ -307,7 +307,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     // Stop all spawned sessions
     for (const session of daemonSessions) {
       expect(session.remcliSessionId).toBeDefined();
-      await stopDaemonSession(session.remcliSessionId);
+      await stopDaemonSession(session.remcliSessionId!);
     }
   });
 

@@ -10,15 +10,30 @@ import { projectPath } from '@/projectPath';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { configuration } from '@/configuration';
+import { TrackedSession } from './types';
 
-async function daemonPost(path: string, body?: any): Promise<{ error?: string } | any> {
+/**
+ * Consistent envelope for all daemon HTTP responses.
+ * Either the request succeeded with a typed payload, or it failed with a reason.
+ */
+export type DaemonResponse<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: string };
+
+interface SpawnDaemonSessionBody {
+  success?: boolean;
+  sessionId?: string;
+  errorMessage?: string;
+  type?: string;
+  directory?: string;
+}
+
+async function daemonPost<T = unknown>(path: string, body?: unknown): Promise<DaemonResponse<T>> {
   const state = await readDaemonState();
   if (!state?.httpPort) {
     const errorMessage = 'No daemon running, no state file found';
     logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
-    return {
-      error: errorMessage
-    };
+    return { ok: false, error: errorMessage };
   }
 
   try {
@@ -26,9 +41,7 @@ async function daemonPost(path: string, body?: any): Promise<{ error?: string } 
   } catch (error) {
     const errorMessage = 'Daemon is not running, file is stale';
     logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
-    return {
-      error: errorMessage
-    };
+    return { ok: false, error: errorMessage };
   }
 
   try {
@@ -40,48 +53,42 @@ async function daemonPost(path: string, body?: any): Promise<{ error?: string } 
       // Mostly increased for stress test
       signal: AbortSignal.timeout(timeout)
     });
-    
+
     if (!response.ok) {
       const errorMessage = `Request failed: ${path}, HTTP ${response.status}`;
       logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
-      return {
-        error: errorMessage
-      };
+      return { ok: false, error: errorMessage };
     }
-    
-    return await response.json();
+
+    return { ok: true, data: await response.json() as T };
   } catch (error) {
     const errorMessage = `Request failed: ${path}, ${error instanceof Error ? error.message : 'Unknown error'}`;
     logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
-    return {
-      error: errorMessage
-    }
+    return { ok: false, error: errorMessage };
   }
 }
 
 export async function notifyDaemonSessionStarted(
   sessionId: string,
   metadata: Metadata
-): Promise<{ error?: string } | any> {
-  return await daemonPost('/session-started', {
-    sessionId,
-    metadata
-  });
+): Promise<{ error?: string }> {
+  const result = await daemonPost('/session-started', { sessionId, metadata });
+  return result.ok ? {} : { error: result.error };
 }
 
-export async function listDaemonSessions(): Promise<any[]> {
-  const result = await daemonPost('/list');
-  return result.children || [];
+export async function listDaemonSessions(): Promise<TrackedSession[]> {
+  const result = await daemonPost<{ children?: TrackedSession[] }>('/list');
+  return result.ok ? (result.data.children ?? []) : [];
 }
 
 export async function stopDaemonSession(sessionId: string): Promise<boolean> {
-  const result = await daemonPost('/stop-session', { sessionId });
-  return result.success || false;
+  const result = await daemonPost<{ success?: boolean }>('/stop-session', { sessionId });
+  return result.ok ? (result.data.success ?? false) : false;
 }
 
-export async function spawnDaemonSession(directory: string, sessionId?: string): Promise<any> {
-  const result = await daemonPost('/spawn-session', { directory, sessionId });
-  return result;
+export async function spawnDaemonSession(directory: string, sessionId?: string): Promise<SpawnDaemonSessionBody & { error?: string }> {
+  const result = await daemonPost<SpawnDaemonSessionBody>('/spawn-session', { directory, sessionId });
+  return result.ok ? result.data : { error: result.error };
 }
 
 export async function stopDaemonHttp(): Promise<void> {

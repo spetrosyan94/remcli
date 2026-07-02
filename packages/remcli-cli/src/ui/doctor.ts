@@ -325,26 +325,29 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
     // AI Agents status
     console.log(chalk.bold('\n🤖 AI Agents'));
     const whichCmd = process.platform === 'win32' ? 'where' : 'which';
-    const agents = [
-        { name: 'Claude Code', binary: 'claude' },
-        { name: 'Gemini CLI',  binary: 'gemini' },
-        { name: 'Codex CLI',   binary: 'codex' },
-        { name: 'Cursor CLI',  binary: 'cursor' },
+    const agents: { name: string; binaries: string[] }[] = [
+        { name: 'Claude Code', binaries: ['claude'] },
+        { name: 'Gemini CLI',  binaries: ['gemini'] },
+        { name: 'Codex CLI',   binaries: ['codex'] },
+        // Cursor Agent CLI installs as `agent` (older builds: `cursor-agent`).
+        // A `cursor` binary is the IDE launcher shim, not the agent CLI.
+        { name: 'Cursor CLI',  binaries: ['agent', 'cursor-agent'] },
     ];
 
     for (const agent of agents) {
-        let installed = false;
-        try {
-            execFileSync(whichCmd, [agent.binary], { encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
-            installed = true;
-        } catch {
-            // not installed
-        }
+        const resolvedBinary = agent.binaries.find((binary) => {
+            try {
+                execFileSync(whichCmd, [binary], { encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+                return true;
+            } catch {
+                return false;
+            }
+        }) ?? null;
 
-        if (installed) {
+        if (resolvedBinary) {
             let version: string | null = null;
             try {
-                const output = execFileSync(agent.binary, ['--version'], {
+                const output = execFileSync(resolvedBinary, ['--version'], {
                     encoding: 'utf8',
                     timeout: 10000,
                     stdio: 'pipe',

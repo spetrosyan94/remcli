@@ -8,7 +8,7 @@
 
 import { readSetupConfig } from '@/persistence';
 import { logger } from '@/ui/logger';
-import { EdgeTtsProvider } from './edgeTtsProvider';
+import { EdgeTtsProvider, listEdgeDefaultVoices } from './edgeTtsProvider';
 import { QwenTtsProvider } from './qwenTtsProvider';
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -88,8 +88,9 @@ export function getTtsStatus(): TtsStatus {
 
     if (providerName === 'edge') {
         const config = readSetupConfig();
-        const voice = config.ttsEdgeVoice || 'ru-RU-DmitryNeural';
-        const voices = ['ru-RU-DmitryNeural', 'ru-RU-SvetlanaNeural', voice]
+        // Advertise the configured voice (if any) plus the per-language defaults.
+        const voices = [config.ttsEdgeVoice, ...listEdgeDefaultVoices()]
+            .filter((v): v is string => Boolean(v) && v !== 'auto')
             .filter((v, i, a) => a.indexOf(v) === i);
         // ffmpeg availability is checked lazily on first synth; report as available
         // since ffmpeg is a pre-existing remcli dependency (used by Whisper too)
