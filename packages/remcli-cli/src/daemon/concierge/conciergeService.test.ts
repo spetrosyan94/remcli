@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('@/ui/logger', () => ({
-    logger: { debug: () => {} },
+    logger: { debug: () => {}, infoDeveloper: () => {} },
 }));
 
 import {
