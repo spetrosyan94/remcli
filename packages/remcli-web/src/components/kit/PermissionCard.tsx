@@ -15,7 +15,7 @@ export function PermissionCard(props: {
         : { frame: "border-status-permission/45 bg-status-permission/[0.06]", head: "border-status-permission/20 text-status-permission", dot: "bg-status-permission" };
     const allowClass = danger ? "bg-status-error text-white" : "bg-accent text-accent-foreground";
     return (
-        <div className={`overflow-hidden rounded-xl border shadow-lg shadow-black/5 ${c.frame}`}>
+        <div className={`animate-permission-glow overflow-hidden rounded-xl border shadow-lg shadow-black/5 transition-[background-color,border-color,box-shadow] duration-[250ms] ease-[var(--ease-out)] ${c.frame}`}>
             <div className={`flex items-center gap-2 border-b px-3 py-2.5 ${c.head}`}>
                 <span className={`size-[7px] rounded-full ${c.dot}`} />
                 <span className="font-mono text-[11px] font-semibold">

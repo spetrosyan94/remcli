@@ -11,15 +11,101 @@ import {
     conciergeChat,
     fetchConciergeStatus,
     getRestConfig,
+    getStoredConnection,
+    useConnectionStatus,
+    useIsAuthenticated,
+    useMachines,
     type ConciergeChatMessage,
     type ConciergeStatus,
 } from "@/lib/protocol";
+
+interface ConciergeActionEntry {
+    tool: string;
+    result: unknown;
+}
 
 interface ConciergeFeedEntry {
     id: string;
     role: "user" | "assistant";
     content: string;
-    actions?: Array<{ tool: string; result: unknown }>;
+    actions?: ConciergeActionEntry[];
+}
+
+interface StoredConciergeFeed {
+    version: 1;
+    feed: ConciergeFeedEntry[];
+}
+
+const CONCIERGE_FEED_STORAGE_PREFIX = "remcli-web:concierge-feed:v1";
+
+function getLocalStorage(): Storage | null {
+    try {
+        return typeof localStorage === "undefined" ? null : localStorage;
+    } catch {
+        return null;
+    }
+}
+
+function isConciergeActionEntry(value: unknown): value is ConciergeActionEntry {
+    if (typeof value !== "object" || value === null) return false;
+    const record = value as Record<string, unknown>;
+    return typeof record.tool === "string";
+}
+
+function isConciergeFeedEntry(value: unknown): value is ConciergeFeedEntry {
+    if (typeof value !== "object" || value === null) return false;
+    const record = value as Record<string, unknown>;
+    const hasValidActions = record.actions === undefined || (
+        Array.isArray(record.actions) && record.actions.every(isConciergeActionEntry)
+    );
+    return (
+        typeof record.id === "string" &&
+        (record.role === "user" || record.role === "assistant") &&
+        typeof record.content === "string" &&
+        hasValidActions
+    );
+}
+
+function loadStoredFeed(storageKey: string): ConciergeFeedEntry[] {
+    const raw = getLocalStorage()?.getItem(storageKey);
+    if (!raw) return [];
+    try {
+        const parsed = JSON.parse(raw) as Partial<StoredConciergeFeed>;
+        if (parsed.version !== 1 || !Array.isArray(parsed.feed)) return [];
+        return parsed.feed.filter(isConciergeFeedEntry);
+    } catch {
+        return [];
+    }
+}
+
+function sanitizeActionForStorage(action: ConciergeActionEntry): ConciergeActionEntry {
+    const sessionId = action.tool === "spawn_agent_session" ? spawnedSessionId(action.result) : null;
+    const errorText = actionErrorText(action.result);
+    return {
+        tool: action.tool,
+        result: {
+            ...(sessionId ? { sessionId } : {}),
+            ...(errorText ? { error: errorText } : {})
+        }
+    };
+}
+
+function sanitizeFeedForStorage(feed: ConciergeFeedEntry[]): ConciergeFeedEntry[] {
+    return feed.map((entry) => ({
+        id: entry.id,
+        role: entry.role,
+        content: entry.content,
+        ...(entry.actions ? { actions: entry.actions.map(sanitizeActionForStorage) } : {})
+    }));
+}
+
+function storeFeed(storageKey: string, feed: ConciergeFeedEntry[]): void {
+    const payload: StoredConciergeFeed = { version: 1, feed: sanitizeFeedForStorage(feed) };
+    getLocalStorage()?.setItem(storageKey, JSON.stringify(payload));
+}
+
+function conciergeStorageKey(endpoint: string, machineId: string | null): string {
+    return `${CONCIERGE_FEED_STORAGE_PREFIX}:${endpoint}:${machineId ?? "daemon"}`;
 }
 
 /** sessionId из результата spawn_agent_session (SpawnSessionResult демона). */
@@ -54,28 +140,70 @@ function ActionLine({ action }: { action: { tool: string; result: unknown } }) {
 
 export function ConciergeChat() {
     const navigate = useNavigate();
+    const connectionStatus = useConnectionStatus();
+    const isAuthenticated = useIsAuthenticated();
+    const hasStoredConnection = getStoredConnection() !== null;
+    const machines = useMachines();
     const [status, setStatus] = React.useState<ConciergeStatus | null>(null);
     const [isCheckingStatus, setIsCheckingStatus] = React.useState(true);
     const [feed, setFeed] = React.useState<ConciergeFeedEntry[]>([]);
     const [draft, setDraft] = React.useState("");
     const [isSending, setIsSending] = React.useState(false);
+    const [loadedStorageKey, setLoadedStorageKey] = React.useState<string | null>(null);
     const feedRef = React.useRef<HTMLElement>(null);
-    const config = getRestConfig();
+    const rawConfig = getRestConfig();
+    const endpoint = rawConfig?.endpoint ?? null;
+    const token = rawConfig?.token ?? null;
+    const config = React.useMemo(
+        () => (endpoint && token ? { endpoint, token } : null),
+        [endpoint, token]
+    );
+    const pairedMachineId = machines[0]?.id ?? null;
+    const storageKey = endpoint ? conciergeStorageKey(endpoint, pairedMachineId) : null;
+    const fallbackStorageKey = endpoint ? conciergeStorageKey(endpoint, null) : null;
+
+    React.useEffect(() => {
+        if (!storageKey) {
+            setFeed([]);
+            setLoadedStorageKey(null);
+            return;
+        }
+        const storedFeed = loadStoredFeed(storageKey);
+        const fallbackFeed = fallbackStorageKey && fallbackStorageKey !== storageKey && storedFeed.length === 0
+            ? loadStoredFeed(fallbackStorageKey)
+            : [];
+        setFeed(storedFeed.length > 0 ? storedFeed : fallbackFeed);
+        setLoadedStorageKey(storageKey);
+    }, [fallbackStorageKey, storageKey]);
+
+    React.useEffect(() => {
+        if (!storageKey || loadedStorageKey !== storageKey) return;
+        storeFeed(storageKey, feed);
+    }, [feed, loadedStorageKey, storageKey]);
 
     React.useEffect(() => {
         if (!config) {
-            setIsCheckingStatus(false);
+            setStatus(null);
+            setIsCheckingStatus(hasStoredConnection || isAuthenticated || connectionStatus === "connecting");
             return;
         }
+
         let isCancelled = false;
+        setIsCheckingStatus(true);
         fetchConciergeStatus(config)
-            .then((next) => { if (!isCancelled) setStatus(next); })
-            .catch(() => { if (!isCancelled) setStatus(null); })
-            .finally(() => { if (!isCancelled) setIsCheckingStatus(false); });
-        return () => { isCancelled = true; };
-        // config стабилен в рамках подключения — статус проверяем один раз при входе
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+            .then((next) => {
+                if (!isCancelled) setStatus(next);
+            })
+            .catch(() => {
+                if (!isCancelled) setStatus(null);
+            })
+            .finally(() => {
+                if (!isCancelled) setIsCheckingStatus(false);
+            });
+        return () => {
+            isCancelled = true;
+        };
+    }, [config, connectionStatus, endpoint, hasStoredConnection, isAuthenticated, token]);
 
     // автоскролл к концу ленты
     React.useEffect(() => {

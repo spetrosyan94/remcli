@@ -1,19 +1,32 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ApiSessionClient } from './apiSession';
+import type { Session } from './types';
 
 // Use vi.hoisted to ensure mock function is available when vi.mock factory runs
-const { mockIo } = vi.hoisted(() => ({
-    mockIo: vi.fn()
+const { mockIo, mockGetEffectiveServerUrl } = vi.hoisted(() => ({
+    mockIo: vi.fn(),
+    mockGetEffectiveServerUrl: vi.fn(() => 'https://api.example.com')
 }));
 
 vi.mock('socket.io-client', () => ({
     io: mockIo
 }));
 
+vi.mock('@/daemon/p2p/p2pSession', () => ({
+    getEffectiveServerUrl: mockGetEffectiveServerUrl
+}));
+
+interface MockSocket {
+    connect: ReturnType<typeof vi.fn>;
+    on: ReturnType<typeof vi.fn>;
+    off: ReturnType<typeof vi.fn>;
+    disconnect: ReturnType<typeof vi.fn>;
+}
+
 describe('ApiSessionClient connection handling', () => {
-    let mockSocket: any;
-    let consoleSpy: any;
-    let mockSession: any;
+    let mockSocket: MockSocket;
+    let consoleSpy: ReturnType<typeof vi.spyOn>;
+    let mockSession: Session;
 
     beforeEach(() => {
         consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});

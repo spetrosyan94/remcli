@@ -48,6 +48,7 @@ interface TestHandleConfig<T = { id: string }> {
     onNotify?: (msg: string) => void;
     onCleanup?: () => void;
     initialDelayMs?: number;
+    retryDelayMs?: (failureCount: number) => number;
 }
 
 /**
@@ -65,7 +66,8 @@ function createTestHandle<T = { id: string }>(config: TestHandleConfig<T> = {}) 
         onNotify,
         onCleanup,
         healthCheck: config.healthCheck ?? (async () => { /* success */ }),
-        initialDelayMs: config.initialDelayMs ?? 1
+        initialDelayMs: config.initialDelayMs ?? 1,
+        retryDelayMs: config.retryDelayMs ?? (() => 1)
     });
 
     return { handle, onReconnected, onNotify, onCleanup };

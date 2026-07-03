@@ -101,14 +101,22 @@ function createGeminiSession(
 
 describe('listAgentSessions', () => {
     let testDir: string;
+    let originalClaudeConfigDir: string | undefined;
 
     beforeEach(() => {
         testDir = join(tmpdir(), `test-agent-sessions-${Date.now()}-${Math.random().toString(36).slice(2)}`);
         mkdirSync(testDir, { recursive: true });
         testHomeDir = testDir;
+        originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+        process.env.CLAUDE_CONFIG_DIR = join(testDir, '.claude');
     });
 
     afterEach(() => {
+        if (originalClaudeConfigDir === undefined) {
+            delete process.env.CLAUDE_CONFIG_DIR;
+        } else {
+            process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
+        }
         if (existsSync(testDir)) {
             rmSync(testDir, { recursive: true, force: true });
         }
@@ -332,20 +340,11 @@ describe('listAgentSessions', () => {
             const sessionId = '88888888-8888-8888-8888-888888888888';
             createClaudeSession(customProjectsDir, sessionId);
 
-            const originalEnv = process.env.CLAUDE_CONFIG_DIR;
             process.env.CLAUDE_CONFIG_DIR = customConfigDir;
-            try {
-                const listClaudeSessions = await getListClaudeSessions();
-                const sessions = listClaudeSessions();
-                expect(sessions).toHaveLength(1);
-                expect(sessions[0]!.sessionId).toBe(sessionId);
-            } finally {
-                if (originalEnv === undefined) {
-                    delete process.env.CLAUDE_CONFIG_DIR;
-                } else {
-                    process.env.CLAUDE_CONFIG_DIR = originalEnv;
-                }
-            }
+            const listClaudeSessions = await getListClaudeSessions();
+            const sessions = listClaudeSessions();
+            expect(sessions).toHaveLength(1);
+            expect(sessions[0]!.sessionId).toBe(sessionId);
         });
     });
 

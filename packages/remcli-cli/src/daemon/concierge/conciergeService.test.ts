@@ -11,9 +11,10 @@ import {
     parseConciergeResponse,
     executeToolCall,
     stripThinkBlocks,
+    chatWithConcierge,
 } from './conciergeService';
 import { CONCIERGE_SYSTEM_PROMPT, CONCIERGE_TOOLS } from './constants';
-import { ConciergeDeps } from './types';
+import type { ConciergeDeps, ConciergeRequestBody } from './types';
 
 // ---- Helpers ----
 
@@ -57,6 +58,47 @@ describe('buildConciergeRequestBody', () => {
         });
         expect(body.tools).toBeUndefined();
         expect(body.tool_choice).toBeUndefined();
+    });
+});
+
+// ---- Stateless LLM request context ----
+
+describe('chatWithConcierge', () => {
+    it('sends the complete request message history to the OpenAI-compatible endpoint', async () => {
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+            new Response(JSON.stringify({ choices: [{ message: { content: 'Понял контекст.' } }] }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            }),
+        );
+
+        const messages = [
+            { role: 'user' as const, content: 'Меня зовут Сергей.' },
+            { role: 'assistant' as const, content: 'Принял, Сергей.' },
+            { role: 'user' as const, content: 'Как меня зовут?' },
+        ];
+
+        await chatWithConcierge({
+            url: 'http://127.0.0.1:1234/v1',
+            model: 'test-model',
+            messages,
+            deps: makeDeps(),
+            lang: 'ru',
+        });
+
+        expect(fetchSpy).toHaveBeenCalledOnce();
+        const init = fetchSpy.mock.calls[0][1];
+        expect(init).toBeDefined();
+        const body = JSON.parse(String(init?.body)) as ConciergeRequestBody;
+
+        expect(body.messages).toEqual([
+            expect.objectContaining({ role: 'system' }),
+            ...messages,
+        ]);
+        expect(body.messages[0].content).toContain('interface language is ru');
+        expect(body.messages[0].content).toContain('call yourself “Джарвис”');
+
+        fetchSpy.mockRestore();
     });
 });
 
@@ -225,6 +267,13 @@ describe('buildConciergeSystemPrompt', () => {
         const prompt = buildConciergeSystemPrompt({ lang: 'ru' });
         expect(prompt.startsWith(CONCIERGE_SYSTEM_PROMPT)).toBe(true);
         expect(prompt).toContain("The user's interface language is ru. Respond in this language unless the user writes in a different one.");
+    });
+
+    it('instructs Russian replies to use the localized assistant name without conflicting unconditional naming', () => {
+        const prompt = buildConciergeSystemPrompt({ lang: 'ru' });
+        expect(prompt).not.toContain('Introduce yourself as Jarvis');
+        expect(prompt).toContain('if the response language is Russian, or the interface language hint is lang=ru, call yourself “Джарвис”');
+        expect(prompt).toContain('otherwise call yourself Jarvis');
     });
 
     it('appends the owner customization as a labeled block AFTER the base prompt', () => {

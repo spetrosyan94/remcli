@@ -46,12 +46,18 @@
     --radius-lg: var(--radius);
     --radius-xl: calc(var(--radius) + 4px);
 
-    /* анимации статусов (design/README.md, MOTION.md) */
+    /* motion tokens (design/MOTION.md) */
+    --ease-motion-out: var(--ease-out);
+    --ease-motion-sheet: var(--ease-sheet);
     --animate-blink: blink 1.1s steps(2) infinite;
     --animate-blink-think: blink 0.9s steps(2) infinite;
     --animate-pulse-run: pulseDot 2s ease-in-out infinite;
     --animate-pulse-think: pulseDot 1.2s ease-in-out infinite;
     --animate-bar: bar 0.9s ease-in-out infinite;
+    --animate-shimmer: shimmer 1.4s linear infinite;
+    --animate-status-glow: statusGlow 400ms var(--ease-out) 1;
+    --animate-permission-glow: permissionGlow 400ms var(--ease-out) 1;
+    --animate-voice-transcribe: voiceTranscribe 120ms var(--ease-out) 1;
 
     @keyframes blink {
         0%, 49% { opacity: 1; }
@@ -64,6 +70,22 @@
     @keyframes bar {
         0%, 100% { transform: scaleY(0.25); }
         50% { transform: scaleY(1); }
+    }
+    @keyframes shimmer {
+        0% { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
+    }
+    @keyframes statusGlow {
+        0%, 100% { box-shadow: 0 0 0 0 transparent; }
+        45% { box-shadow: 0 0 0 5px var(--status-glow-color, currentColor); }
+    }
+    @keyframes permissionGlow {
+        0%, 100% { box-shadow: 0 0 0 0 hsl(var(--status-permission) / 0); }
+        45% { box-shadow: 0 0 0 5px hsl(var(--status-permission) / 0.35); }
+    }
+    @keyframes voiceTranscribe {
+        0% { opacity: 0; }
+        100% { opacity: 1; }
     }
 }
 
@@ -113,4 +135,37 @@ textarea,
 a,
 button {
     -webkit-touch-callout: none; /* long-press по ссылкам/кнопкам не открывает меню Safari */
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+        scroll-behavior: auto !important;
+        transition-duration: var(--dur-micro) !important;
+        animation-duration: var(--dur-micro) !important;
+        animation-iteration-count: 1 !important;
+    }
+
+    .animate-pulse-run,
+    .animate-pulse-think,
+    .animate-shimmer,
+    .animate-bar,
+    .animate-status-glow,
+    .animate-permission-glow,
+    [data-slot="skeleton"]::before {
+        animation: none !important;
+    }
+
+    [data-slot="skeleton"]::before {
+        background-image: none !important;
+    }
+
+    .animate-blink,
+    .animate-blink-think,
+    .animate-spin,
+    [data-slot="drawer-content"],
+    [data-slot="drawer-overlay"] {
+        animation: none !important;
+    }
 }

@@ -85,6 +85,13 @@ export interface OfflineReconnectionConfig<TSession> {
      * Default: 5000ms. Set to small value in tests.
      */
     initialDelayMs?: number;
+
+    /**
+     * Optional: retry delay calculator.
+     * Production uses exponential backoff with jitter; tests can inject a
+     * deterministic delay without weakening retry semantics.
+     */
+    retryDelayMs?: (failureCount: number) => number;
 }
 
 /**
@@ -161,6 +168,9 @@ export function startOfflineReconnection<TSession>(
 
     const healthCheck = config.healthCheck ?? defaultHealthCheck;
     const initialDelayMs = config.initialDelayMs ?? 5000;
+    const retryDelayMs = config.retryDelayMs ?? ((failureCount: number) =>
+        exponentialBackoffDelay(failureCount, 5000, 60000, 10)
+    );
 
     /**
      * Core reconnection attempt logic.
@@ -201,7 +211,7 @@ export function startOfflineReconnection<TSession>(
             // Retryable error: network error, 5xx, or onReconnected failure
             // Retries are UNLIMITED - only the delay caps at 60s after 10 failures
             failureCount++;
-            const delay = exponentialBackoffDelay(failureCount, 5000, 60000, 10); // 10 = delay cap, NOT retry limit
+            const delay = retryDelayMs(failureCount);
             logger.debug(`[OfflineReconnection] Attempt ${failureCount} failed, retrying in ${delay}ms`);
 
             // Schedule next attempt (only if not cancelled)

@@ -12,14 +12,14 @@ export default defineConfig({
         },
     },
     build: {
-        rolldownOptions: {
+        rollupOptions: {
             output: {
                 // React-рантайм — в отдельный чанк: вместе с route-level lazy (App.tsx)
                 // главный чанк держится < 300 kB (страницы догружаются по переходу)
-                codeSplitting: {
-                    groups: [
-                        { name: "react-vendor", test: /node_modules[\\/](react|react-dom|scheduler|react-router)[\\/]/ },
-                    ],
+                manualChunks(id) {
+                    return /node_modules[\\/](react|react-dom|scheduler|react-router)[\\/]/.test(id)
+                        ? "react-vendor"
+                        : undefined;
                 },
             },
         },

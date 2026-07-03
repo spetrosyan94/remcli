@@ -1,6 +1,6 @@
 import { readdirSync, statSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import * as os from 'node:os';
 import { getProjectPath } from '@/claude/utils/path';
 import { logger } from '@/ui/logger';
 
@@ -153,7 +153,7 @@ function walkFiles(dir: string, predicate: (name: string) => boolean): string[] 
 function loadClaudeSessionNameIndex(): Map<string, string> {
     const index = new Map<string, string>();
     try {
-        const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+        const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR || join(os.homedir(), '.claude');
         const sessionsDir = join(claudeConfigDir, 'sessions');
         if (!existsSync(sessionsDir)) return index;
 
@@ -186,7 +186,7 @@ export function listClaudeSessions(directory?: string): AgentSessionInfo[] {
     const sessions: AgentSessionInfo[] = [];
 
     try {
-        const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+        const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR || join(os.homedir(), '.claude');
         const projectsDir = join(claudeConfigDir, 'projects');
 
         // Load session name index from ~/.claude/sessions/ (fast, small JSON files)
@@ -312,7 +312,7 @@ export function listCodexSessions(): AgentSessionInfo[] {
     const sessions: AgentSessionInfo[] = [];
 
     try {
-        const sessionsDir = join(homedir(), '.codex', 'sessions');
+        const sessionsDir = join(os.homedir(), '.codex', 'sessions');
         const files = walkFiles(sessionsDir, name => name.endsWith('.jsonl'));
 
         for (const filePath of files) {
@@ -398,7 +398,7 @@ export function listCursorSessions(): AgentSessionInfo[] {
     const sessions: AgentSessionInfo[] = [];
 
     try {
-        const chatsDir = join(homedir(), '.cursor', 'chats');
+        const chatsDir = join(os.homedir(), '.cursor', 'chats');
         if (!existsSync(chatsDir)) return sessions;
 
         for (const workspaceId of listSubdirs(chatsDir)) {
@@ -445,7 +445,7 @@ export function listGeminiSessions(): AgentSessionInfo[] {
     const sessions: AgentSessionInfo[] = [];
 
     try {
-        const tmpDir = join(homedir(), '.gemini', 'tmp');
+        const tmpDir = join(os.homedir(), '.gemini', 'tmp');
         if (!existsSync(tmpDir)) return sessions;
 
         for (const projectHash of listSubdirs(tmpDir)) {

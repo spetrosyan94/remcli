@@ -367,8 +367,10 @@ export function ChatPage() {
     const [isWhisperAvailable, setIsWhisperAvailable] = React.useState(false);
     const [banner, setBanner] = React.useState<"ok" | "lost" | "restored">("ok");
     const [isResuming, setIsResuming] = React.useState(false);
+    const [hasDetachedAutoscroll, setHasDetachedAutoscroll] = React.useState(false);
     const feedRef = React.useRef<HTMLElement>(null);
     const hadConnectedRef = React.useRef(false);
+    const hasDetachedAutoscrollRef = React.useRef(false);
 
     const feed = React.useMemo(() => buildFeed(messages, agent), [messages, agent]);
     const pendingPermissions = React.useMemo(() => pendingPermissionsOf(session), [session]);
@@ -391,6 +393,8 @@ export function ChatPage() {
         loadingOlderRef.current = false;
         scrollRestoreRef.current = null;
         isNearBottomRef.current = true;
+        hasDetachedAutoscrollRef.current = false;
+        setHasDetachedAutoscroll(false);
         setHasMore(false);
         setIsLoadingOlder(false);
         if (!sessionId) {
@@ -457,8 +461,23 @@ export function ChatPage() {
     const handleFeedScroll = () => {
         const node = feedRef.current;
         if (!node) return;
-        isNearBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
+        const isNearBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
+        const isDetached = !isNearBottom;
+        isNearBottomRef.current = isNearBottom;
+        if (hasDetachedAutoscrollRef.current !== isDetached) {
+            hasDetachedAutoscrollRef.current = isDetached;
+            setHasDetachedAutoscroll(isDetached);
+        }
         if (node.scrollTop < 60 && hasMore && !loadingOlderRef.current) void loadOlder();
+    };
+
+    const scrollToBottom = () => {
+        const node = feedRef.current;
+        if (!node) return;
+        isNearBottomRef.current = true;
+        hasDetachedAutoscrollRef.current = false;
+        setHasDetachedAutoscroll(false);
+        node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
     };
 
     // ── Доступность TTS/Whisper (P2P REST, хук useTtsAvailability из @/lib/voice) ──
@@ -677,8 +696,9 @@ export function ChatPage() {
             )}
 
             {/* лента */}
+            <div className="relative min-h-0 flex-1">
             <main ref={feedRef} onScroll={handleFeedScroll}
-                className="flex-1 overflow-y-auto px-3.5 py-3.5 [scroll-behavior:smooth]">
+                className="h-full overflow-y-auto px-3.5 py-3.5 [scroll-behavior:smooth]">
                 <div className="mx-auto flex w-full max-w-[720px] flex-col gap-3">
                     {!messagesLoaded && (
                         <div className="flex justify-center py-4">
@@ -760,7 +780,7 @@ export function ChatPage() {
 
                     {/* живые permission-запросы из agentState.requests (вход: MOTION.md §6) */}
                     {pendingPermissions.map((permission) => (
-                        <div key={permission.id} className="animate-in fade-in slide-in-from-bottom-2.5 zoom-in-[.98] duration-[240ms]">
+                        <div key={permission.id} className="animate-in fade-in slide-in-from-bottom-2.5 zoom-in-[.98] duration-[var(--dur-enter)] ease-[var(--ease-out)]">
                             <PermissionCard
                                 tool={permission.tool}
                                 time={permission.createdAt ? formatTime(permission.createdAt) : undefined}
@@ -797,6 +817,13 @@ export function ChatPage() {
                     )}
                 </div>
             </main>
+            {hasDetachedAutoscroll && (
+                <button type="button" onClick={scrollToBottom}
+                    className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border bg-card/95 px-3 py-1.5 font-mono text-[11px] text-muted-foreground shadow-lg shadow-black/10 backdrop-blur transition-[opacity,transform,border-color,color] duration-[var(--dur-std)] ease-[var(--ease-out)] hover:border-accent/40 hover:text-foreground">
+                    ↓ к концу
+                </button>
+            )}
+            </div>
 
             {/* ввод: текст + диктовка (Whisper) + отправка */}
             <footer className="border-t border-border px-3.5 pb-[max(10px,env(safe-area-inset-bottom))] pt-2">

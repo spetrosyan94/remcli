@@ -308,8 +308,14 @@ export function registerP2PRestRoutes(
                 messages: z.array(z.object({
                     role: z.enum(['user', 'assistant']),
                     content: z.string().min(1).max(10000),
-                })).min(1).max(50),
+                })).min(1).max(50).optional(),
+                feed: z.array(z.object({
+                    role: z.enum(['user', 'assistant']),
+                    content: z.string().min(1).max(10000),
+                })).min(1).max(50).optional(),
                 lang: z.string().min(1).max(35).optional(),
+            }).refine((body) => Boolean(body.messages ?? body.feed), {
+                message: 'Either messages or feed is required',
             }),
         },
     }, async (request, reply) => {
@@ -326,11 +332,17 @@ export function registerP2PRestRoutes(
         }
 
         try {
-            logger.debug(`[CONCIERGE] Chat request: ${request.body.messages.length} message(s), model ${probe.model}`);
+            const messages = request.body.messages ?? request.body.feed;
+            if (!messages) {
+                reply.code(400);
+                return { error: 'Either messages or feed is required' };
+            }
+
+            logger.debug(`[CONCIERGE] Chat request: ${messages.length} message(s), model ${probe.model}`);
             const { reply: text, actions } = await chatWithConcierge({
                 url: config.conciergeUrl,
                 model: probe.model,
-                messages: request.body.messages,
+                messages,
                 deps: conciergeDeps,
                 lang: request.body.lang,
                 extraPrompt: config.conciergeExtraPrompt,

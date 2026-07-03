@@ -4,9 +4,10 @@ import axios from 'axios';
 import { connectionState } from '@/utils/serverConnectionErrors';
 
 // Use vi.hoisted to ensure mock functions are available when vi.mock factory runs
-const { mockPost, mockIsAxiosError } = vi.hoisted(() => ({
+const { mockPost, mockIsAxiosError, mockGetEffectiveServerUrl } = vi.hoisted(() => ({
     mockPost: vi.fn(),
-    mockIsAxiosError: vi.fn(() => true)
+    mockIsAxiosError: vi.fn(() => true),
+    mockGetEffectiveServerUrl: vi.fn(() => 'https://api.example.com')
 }));
 
 vi.mock('axios', () => ({
@@ -23,24 +24,21 @@ vi.mock('@/ui/logger', () => ({
     }
 }));
 
+vi.mock('@/daemon/p2p/p2pSession', () => ({
+    getEffectiveServerUrl: mockGetEffectiveServerUrl
+}));
+
 // Mock encryption utilities
 vi.mock('./encryption', () => ({
     decodeBase64: vi.fn((data: string) => data),
-    encodeBase64: vi.fn((data: any) => data),
-    decrypt: vi.fn((data: any) => data),
-    encrypt: vi.fn((data: any) => data)
-}));
-
-// Mock configuration
-vi.mock('./configuration', () => ({
-    configuration: {
-        serverUrl: 'https://api.example.com'
-    }
+    encodeBase64: vi.fn((data: unknown) => data),
+    decrypt: vi.fn((data: unknown) => data),
+    encrypt: vi.fn((data: unknown) => data)
 }));
 
 // Mock libsodium encryption
 vi.mock('./libsodiumEncryption', () => ({
-    libsodiumEncryptForPublicKey: vi.fn((data: any) => new Uint8Array(32))
+    libsodiumEncryptForPublicKey: vi.fn((_data: Uint8Array) => new Uint8Array(32))
 }));
 
 // Global test metadata
@@ -211,8 +209,7 @@ describe('Api server error handling', () => {
 
         it('should re-throw non-connection errors', async () => {
             // Mock axios to throw a different type of error (e.g., authentication error)
-            const authError = new Error('Invalid API key');
-            (authError as any).code = 'UNAUTHORIZED';
+            const authError = Object.assign(new Error('Invalid API key'), { code: 'UNAUTHORIZED' });
             mockPost.mockRejectedValue(authError);
 
             await expect(

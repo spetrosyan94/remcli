@@ -9,19 +9,21 @@ export function SessionCard(props: {
     const { agent, path, message, status, time, onClick } = props;
     const frame =
         status === "permission"
-            ? "border-status-permission/40 bg-gradient-to-r from-status-permission/10 to-card"
-            : status === "running" || status === "thinking"
-                ? "border-accent/35 bg-card"
-                : status === "offline"
-                    ? "border-border bg-card opacity-55"
-                    : "border-border bg-card";
+            ? "border-status-permission/40 bg-gradient-to-r from-status-permission/10 to-card [--status-glow-color:hsl(var(--status-permission)_/_0.24)]"
+            : status === "running"
+                ? "border-accent/35 bg-card [--status-glow-color:hsl(var(--status-running)_/_0.2)]"
+                : status === "thinking"
+                    ? "border-accent/35 bg-card [--status-glow-color:hsl(var(--status-thinking)_/_0.2)]"
+                    : status === "offline"
+                        ? "border-border bg-card opacity-55 [--status-glow-color:hsl(var(--status-offline)_/_0.12)]"
+                        : "border-border bg-card [--status-glow-color:hsl(var(--status-idle)_/_0.12)]";
     const msgCls =
         status === "permission" ? "text-status-permission font-medium"
         : status === "running" ? "text-status-running"
         : status === "thinking" ? "text-status-thinking"
         : "text-muted-foreground";
     return (
-        <button onClick={onClick} className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left ${frame}`}>
+        <button key={status} onClick={onClick} className={`flex w-full animate-status-glow items-center gap-3 rounded-xl border p-3 text-left transition-[background-color,border-color,color,box-shadow,opacity] duration-[250ms] ease-[var(--ease-out)] ${frame}`}>
             <AgentIcon agent={agent} />
             <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <span className="truncate font-mono text-[13px] font-semibold">{path}</span>

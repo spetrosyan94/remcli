@@ -31,6 +31,15 @@
   --status-error: 0 72% 51%;         /* #DC2626 */
 
   --radius: 0.5rem;                  /* 8px; sm=6, card=12, sheet=16 */
+
+  /* motion tokens (design/MOTION.md) */
+  --dur-micro: 120ms;
+  --dur-std: 200ms;
+  --dur-enter: 240ms;
+  --dur-sheet: 320ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+
   --font-sans: "Geist", system-ui, sans-serif;
   --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
 }
