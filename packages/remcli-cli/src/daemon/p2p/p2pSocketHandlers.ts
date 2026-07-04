@@ -8,6 +8,7 @@ import { Socket } from 'socket.io';
 import { randomUUID } from 'node:crypto';
 import { P2PStore } from './p2pStore';
 import { P2PEventRouter, P2PClientConnection, UpdatePayload } from './p2pEventRouter';
+import { publishSessionActivity } from './p2pSessionLifecycle';
 import { logger } from '@/ui/logger';
 
 // ─── RPC Listener Registry ──────────────────────────────────────
@@ -110,29 +111,22 @@ export function registerSocketHandlers(
     // ─── Session: session-alive ──────────────────────────────────
     socket.on('session-alive', (data: { sid: string; time: number; thinking?: boolean; mode?: string }) => {
         const { sid, time, thinking } = data;
-        store.setSessionActive(sid, true);
-
-        router.emitEphemeral({
-            type: 'activity',
-            id: sid,
+        publishSessionActivity(store, router, {
+            sessionId: sid,
             active: true,
             activeAt: time,
-            thinking: thinking || false
-        }, { type: 'user-scoped-only' });
+            thinking: thinking ?? false
+        });
     });
 
     // ─── Session: session-end ────────────────────────────────────
     socket.on('session-end', (data: { sid: string; time: number }) => {
         const { sid, time } = data;
-        store.setSessionActive(sid, false);
-
-        router.emitEphemeral({
-            type: 'activity',
-            id: sid,
+        publishSessionActivity(store, router, {
+            sessionId: sid,
             active: false,
-            activeAt: time,
-            thinking: false
-        }, { type: 'user-scoped-only' });
+            activeAt: time
+        });
     });
 
     // ─── Machine: machine-alive ──────────────────────────────────

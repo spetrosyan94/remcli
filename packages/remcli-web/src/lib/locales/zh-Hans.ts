@@ -43,6 +43,7 @@ export const zhHans: Dictionary = {
     "chat.loadEarlier": "显示更早消息",
     "chat.ended": "— 会话已结束 —",
     "chat.resumeFailed": "无法恢复会话",
+    "chat.sendFailed": "消息发送失败",
 
     "tts.listen": "收听",
     "tts.synth": "合成中…",

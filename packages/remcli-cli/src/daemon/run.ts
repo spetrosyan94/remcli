@@ -17,6 +17,7 @@ import { projectPath } from '@/projectPath';
 import { isTmuxAvailable } from '@/utils/tmux';
 import { P2PStore } from './p2p/p2pStore';
 import { startP2PServer, P2PServer } from './p2p/p2pServer';
+import { publishSessionActivity } from './p2p/p2pSessionLifecycle';
 import { encodeSharedSecret, deriveBearerToken } from './p2p/p2pAuth';
 import { loadOrCreatePairing, updatePairingPort } from './p2p/p2pPairing';
 import { getLanIPAddress } from './p2p/networkUtils';
@@ -204,11 +205,23 @@ export async function startDaemon(): Promise<void> {
 
     // Session manager owns tracked child sessions and tmux session cleanup
     const sessionManager = createSessionManager();
+    let publishStoppedSessionInactive: ((sessionId: string) => void) | null = null;
+    const stopSessionAndPublish = (sessionId: string) => {
+        const result = sessionManager.stopSession(sessionId);
+        if (result.success) {
+            if (publishStoppedSessionInactive) {
+                publishStoppedSessionInactive(result.stoppedSessionId);
+            } else {
+                logger.debug(`[DAEMON RUN] Stopped session ${result.stoppedSessionId} before P2P lifecycle publisher was ready`);
+            }
+        }
+        return result;
+    };
 
     // Start control server
     const { port: controlPort, stop: stopControlServer } = await startDaemonControlServer({
       getChildren: sessionManager.getChildren,
-      stopSession: sessionManager.stopSession,
+      stopSession: stopSessionAndPublish,
       spawnSession: sessionManager.spawnSession,
       requestShutdown: () => requestShutdown('remcli-cli'),
       onRemcliSessionWebhook: sessionManager.onRemcliSessionWebhook
@@ -294,6 +307,16 @@ export async function startDaemon(): Promise<void> {
         });
     }
     logger.debug(`[DAEMON RUN] P2P server started on port ${p2pServer.port}`);
+    publishStoppedSessionInactive = (sessionId: string) => {
+        const result = publishSessionActivity(p2pStore, p2pServer.router, {
+            sessionId,
+            active: false,
+            terminal: true
+        });
+        if (!result.sessionExists) {
+            logger.debug(`[DAEMON RUN] Stopped session ${sessionId} was not found in P2P store`);
+        }
+    };
     if (p2pServer.port !== pairing.port) {
         updatePairingPort(pairing, p2pServer.port);
     }
@@ -331,6 +354,7 @@ export async function startDaemon(): Promise<void> {
         sharedSecret,
         spawnSession: sessionManager.spawnSession,
         stopSession: sessionManager.stopSession,
+        onSessionStopped: (sessionId) => publishStoppedSessionInactive?.(sessionId),
         requestShutdown: () => requestShutdown('remcli-app')
     });
 

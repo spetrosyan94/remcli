@@ -21,6 +21,7 @@ const SOCKET_CONNECT_TIMEOUT_MS = 5_000;
 const RPC_ACK_TIMEOUT_MS = 5_000;
 const RPC_REGISTRATION_TIMEOUT_MS = 5_000;
 const RPC_REGISTRATION_RETRY_MS = 50;
+const EPHEMERAL_TIMEOUT_MS = 5_000;
 const TEST_MACHINE_ID = 'machine-rpc-directory-smoke';
 
 interface P2PModules {
@@ -28,6 +29,7 @@ interface P2PModules {
     bootstrapMachineSocket: typeof import('@/daemon/machineSocket').bootstrapMachineSocket;
     deriveBearerToken: typeof import('@/daemon/p2p/p2pAuth').deriveBearerToken;
     generateSharedSecret: typeof import('@/daemon/p2p/p2pAuth').generateSharedSecret;
+    publishSessionActivity: typeof import('@/daemon/p2p/p2pSessionLifecycle').publishSessionActivity;
     startP2PServer: typeof import('@/daemon/p2p/p2pServer').startP2PServer;
 }
 
@@ -39,6 +41,25 @@ interface RpcCallAck {
 
 interface MachineResponse {
     id: string;
+}
+
+interface SessionResponse {
+    id: string;
+    active: boolean;
+    activeAt: number;
+}
+
+interface EphemeralActivityPayload {
+    type: 'activity';
+    id: string;
+    active: boolean;
+    activeAt: number;
+    thinking: boolean;
+}
+
+interface StopSessionRpcResponse {
+    message: string;
+    sessionId: string;
 }
 
 let remcliHomeDir: string;
@@ -57,11 +78,13 @@ async function importP2PModules(): Promise<P2PModules> {
         p2pStore,
         machineSocket,
         p2pAuth,
+        p2pSessionLifecycle,
         p2pServerModule,
     ] = await Promise.all([
         import('@/daemon/p2p/p2pStore'),
         import('@/daemon/machineSocket'),
         import('@/daemon/p2p/p2pAuth'),
+        import('@/daemon/p2p/p2pSessionLifecycle'),
         import('@/daemon/p2p/p2pServer'),
     ]);
 
@@ -70,6 +93,7 @@ async function importP2PModules(): Promise<P2PModules> {
         bootstrapMachineSocket: machineSocket.bootstrapMachineSocket,
         deriveBearerToken: p2pAuth.deriveBearerToken,
         generateSharedSecret: p2pAuth.generateSharedSecret,
+        publishSessionActivity: p2pSessionLifecycle.publishSessionActivity,
         startP2PServer: p2pServerModule.startP2PServer,
     };
 }
@@ -109,6 +133,34 @@ function isRpcCallAck(value: unknown): value is RpcCallAck {
 
 function isMachineResponse(value: unknown): value is MachineResponse {
     return isRecord(value) && typeof value.id === 'string';
+}
+
+function isSessionResponse(value: unknown): value is SessionResponse {
+    return (
+        isRecord(value) &&
+        typeof value.id === 'string' &&
+        typeof value.active === 'boolean' &&
+        typeof value.activeAt === 'number'
+    );
+}
+
+function isEphemeralActivityPayload(value: unknown): value is EphemeralActivityPayload {
+    return (
+        isRecord(value) &&
+        value.type === 'activity' &&
+        typeof value.id === 'string' &&
+        typeof value.active === 'boolean' &&
+        typeof value.activeAt === 'number' &&
+        typeof value.thinking === 'boolean'
+    );
+}
+
+function isStopSessionRpcResponse(value: unknown): value is StopSessionRpcResponse {
+    return (
+        isRecord(value) &&
+        value.message === 'Session stopped' &&
+        typeof value.sessionId === 'string'
+    );
 }
 
 function isListDirectoryResponse(value: unknown): value is ListDirectoryResponse {
@@ -175,6 +227,25 @@ async function fetchMachines(port: number, bearerToken: string): Promise<Machine
     return body;
 }
 
+async function fetchSessions(port: number, bearerToken: string, path: string): Promise<SessionResponse[]> {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+        headers: {
+            Authorization: `Bearer ${bearerToken}`,
+        },
+    });
+
+    if (!response.ok) {
+        throw new Error(`Failed to fetch sessions: HTTP ${response.status}`);
+    }
+
+    const body = await response.json() as unknown;
+    if (!isRecord(body) || !Array.isArray(body.sessions) || !body.sessions.every(isSessionResponse)) {
+        throw new Error('Unexpected sessions response shape');
+    }
+
+    return body.sessions;
+}
+
 async function emitRpcCall(socket: ClientSocket, method: string, params: string): Promise<RpcCallAck> {
     const response = await socket
         .timeout(RPC_ACK_TIMEOUT_MS)
@@ -202,6 +273,29 @@ async function emitRpcCallWhenRegistered(socket: ClientSocket, method: string, p
     }
 
     return lastResponse ?? { ok: false, error: `No acknowledgement received for ${method}` };
+}
+
+function waitForSessionActivity(socket: ClientSocket, sessionId: string): Promise<EphemeralActivityPayload> {
+    return new Promise((resolve, reject) => {
+        let timeout: NodeJS.Timeout;
+
+        const handleEphemeral = (payload: unknown) => {
+            if (!isEphemeralActivityPayload(payload) || payload.id !== sessionId) {
+                return;
+            }
+
+            clearTimeout(timeout);
+            socket.off('ephemeral', handleEphemeral);
+            resolve(payload);
+        };
+
+        timeout = setTimeout(() => {
+            socket.off('ephemeral', handleEphemeral);
+            reject(new Error(`Timed out waiting for activity event for ${sessionId}`));
+        }, EPHEMERAL_TIMEOUT_MS);
+
+        socket.on('ephemeral', handleEphemeral);
+    });
 }
 
 beforeEach(() => {
@@ -268,7 +362,7 @@ describe('machine RPC directory browser smoke', { timeout: 15_000 }, () => {
             bearerToken,
             sharedSecret,
             spawnSession: async () => ({ type: 'error', errorMessage: 'spawn-session is outside this smoke test' }),
-            stopSession: () => false,
+            stopSession: () => ({ success: false }),
             requestShutdown: () => undefined,
         });
 
@@ -334,5 +428,102 @@ describe('machine RPC directory browser smoke', { timeout: 15_000 }, () => {
                 hidden: true,
             },
         ]);
+    });
+});
+
+describe('machine RPC session lifecycle', { timeout: 15_000 }, () => {
+    it('marks stopped sessions inactive in P2P store and emits offline activity', async () => {
+        const modules = await importP2PModules();
+        const sharedSecret = modules.generateSharedSecret();
+        const bearerToken = modules.deriveBearerToken(sharedSecret);
+        const store = new modules.P2PStore({ kvFilePath: null });
+        const session = store.createSession('stop-session-smoke', '{}', null);
+        const machine = store.getOrCreateMachine(
+            TEST_MACHINE_ID,
+            JSON.stringify({
+                host: 'test-host',
+                platform: process.platform,
+                remcliCliVersion: '0.0.0-test',
+                homeDir: browserRootDir,
+                remcliHomeDir,
+                remcliLibDir: remcliHomeDir,
+            }),
+            JSON.stringify({ status: 'running', pid: process.pid, startedAt: Date.now() }),
+            null,
+        );
+
+        expect(machine).not.toBeNull();
+        expect(session.active).toBe(true);
+
+        p2pServer = await modules.startP2PServer({
+            port: 0,
+            host: '127.0.0.1',
+            sharedSecret,
+            store,
+        });
+
+        machineSocketHandle = modules.bootstrapMachineSocket({
+            p2pPort: p2pServer.port,
+            machineId: TEST_MACHINE_ID,
+            bearerToken,
+            sharedSecret,
+            spawnSession: async () => ({ type: 'error', errorMessage: 'spawn-session is outside this smoke test' }),
+            stopSession: (sessionId: string) => {
+                if (sessionId !== session.id) {
+                    return { success: false };
+                }
+                return { success: true, stoppedSessionId: session.id };
+            },
+            onSessionStopped: (sessionId: string) => {
+                if (!p2pServer) {
+                    throw new Error('P2P server must be started before stop-session RPC');
+                }
+                modules.publishSessionActivity(store, p2pServer.router, {
+                    sessionId,
+                    active: false,
+                    terminal: true,
+                });
+            },
+            requestShutdown: () => undefined,
+        });
+
+        appSocket = await createSocketConnection(p2pServer.port, bearerToken);
+        const activityPromise = waitForSessionActivity(appSocket, session.id);
+        const encryptedParams = encodeBase64(encrypt(sharedSecret, 'legacy', { sessionId: session.id }));
+
+        const rpcResponse = await emitRpcCallWhenRegistered(
+            appSocket,
+            `${TEST_MACHINE_ID}:stop-session`,
+            encryptedParams,
+        );
+
+        expect(rpcResponse.ok).toBe(true);
+        if (!rpcResponse.result) {
+            throw new Error('RPC response did not include an encrypted result');
+        }
+
+        const decrypted = decrypt(sharedSecret, 'legacy', decodeBase64(rpcResponse.result)) as unknown;
+        expect(isStopSessionRpcResponse(decrypted)).toBe(true);
+        if (!isStopSessionRpcResponse(decrypted)) {
+            throw new Error('Unexpected stop-session response shape');
+        }
+        expect(decrypted).toEqual({ message: 'Session stopped', sessionId: session.id });
+
+        const activity = await activityPromise;
+        expect(activity).toMatchObject({
+            type: 'activity',
+            id: session.id,
+            active: false,
+            thinking: false,
+        });
+
+        const allSessions = await fetchSessions(p2pServer.port, bearerToken, '/v1/sessions');
+        expect(allSessions.find(({ id }) => id === session.id)).toMatchObject({
+            active: false,
+            activeAt: activity.activeAt,
+        });
+
+        const activeSessions = await fetchSessions(p2pServer.port, bearerToken, '/v2/sessions/active?limit=150');
+        expect(activeSessions.map(({ id }) => id)).not.toContain(session.id);
     });
 });

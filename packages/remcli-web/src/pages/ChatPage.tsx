@@ -64,6 +64,7 @@ interface AgentFeedGroup {
     kind: "agent-group";
     id: string;
     timeLabel: string;
+    tone: "normal" | "error";
     texts: string[];
     items: (ToolFeedEntry | DiffFeedEntry)[];
 }
@@ -226,16 +227,17 @@ function diffEntryOf(id: string, name: string, input: unknown): DiffFeedEntry | 
  * user → пузырь; agent text → новая группа; tool-call → карточка/diff в текущей группе;
  * tool-result — завершает карточку по tool_use_id; thinking/события/sidechain — пропуск.
  */
-function buildFeed(messages: NormalizedMessage[], agent: AgentId): FeedItem[] {
+export function buildFeed(messages: NormalizedMessage[], agent: AgentId): FeedItem[] {
     const feed: FeedItem[] = [];
     const toolById = new Map<string, ToolFeedEntry>();
     let group: AgentFeedGroup | null = null;
 
-    const openGroup = (message: NormalizedMessage, suffix: string): AgentFeedGroup => {
+    const openGroup = (message: NormalizedMessage, suffix: string, tone: AgentFeedGroup["tone"] = "normal"): AgentFeedGroup => {
         const next: AgentFeedGroup = {
             kind: "agent-group",
             id: `${message.id}:${suffix}`,
             timeLabel: `${agent} · ${formatTime(message.createdAt)}`,
+            tone,
             texts: [],
             items: [],
         };
@@ -250,7 +252,14 @@ function buildFeed(messages: NormalizedMessage[], agent: AgentId): FeedItem[] {
             feed.push({ kind: "user", id: message.id, text: message.meta?.displayText ?? message.content.text });
             continue;
         }
-        if (message.role === "event") continue;
+        if (message.role === "event") {
+            group = null;
+            if (message.content.type === "message" && message.content.message.trim()) {
+                const eventGroup = openGroup(message, "event", message.content.isError ? "error" : "normal");
+                eventGroup.texts.push(message.content.message);
+            }
+            continue;
+        }
         if (message.isSidechain) continue;
 
         for (const [index, block] of message.content.entries()) {
@@ -646,7 +655,11 @@ export function ChatPage() {
         if (!text) return;
         setDraft("");
         void sendSessionMessage(sessionId, text, { permissionMode: toProtocolMode(uiMode, agent), model: navState.model ?? null })
-            .catch((error: unknown) => console.error("[ChatPage] send failed:", error));
+            .catch((error: unknown) => {
+                const message = error instanceof Error ? error.message : String(error);
+                toast.error(t("chat.sendFailed"), { description: message });
+                console.error("[ChatPage] send failed:", error);
+            });
     };
 
     const toggleToolExpanded = (entryId: string, fallback: boolean) => {
@@ -737,11 +750,16 @@ export function ChatPage() {
                                 {item.texts.length > 0 && (
                                     <>
                                         <AgentMeta agent={agent}>{item.timeLabel}</AgentMeta>
-                                        {item.texts.map((text, index) => (
-                                            <p key={index} className="select-text whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">
-                                                {text}
-                                            </p>
-                                        ))}
+                                        {item.texts.map((text, index) => {
+                                            const textClassName = item.tone === "error"
+                                                ? "select-text whitespace-pre-wrap rounded-[9px] border border-status-error/35 bg-status-error/[0.06] px-3 py-2 text-sm leading-relaxed text-status-error"
+                                                : "select-text whitespace-pre-wrap text-sm leading-relaxed text-foreground/85";
+                                            return (
+                                                <p key={index} className={textClassName}>
+                                                    {text}
+                                                </p>
+                                            );
+                                        })}
                                     </>
                                 )}
                                 {item.items.map((entry) => {

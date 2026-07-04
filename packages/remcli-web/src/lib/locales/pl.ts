@@ -43,6 +43,7 @@ export const pl: Dictionary = {
     "chat.loadEarlier": "pokaż wcześniejsze",
     "chat.ended": "— sesja zakończona —",
     "chat.resumeFailed": "nie udało się wznowić sesji",
+    "chat.sendFailed": "nie udało się wysłać wiadomości",
 
     "tts.listen": "słuchaj",
     "tts.synth": "synteza…",

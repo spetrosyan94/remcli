@@ -41,12 +41,18 @@ interface AgentOption {
     models: string[];
 }
 
-const AGENT_OPTIONS: AgentOption[] = [
+const DEFAULT_MODEL_ID = "default";
+
+export const AGENT_OPTIONS: AgentOption[] = [
     { id: "claude", name: "Claude", kind: "code", models: ["default", "sonnet", "opus", "haiku"] },
-    { id: "codex", name: "Codex", kind: "cli", models: ["gpt-5.3-codex", "gpt-5.2", "gpt-5.1-codex-mini"] },
+    { id: "codex", name: "Codex", kind: "cli", models: [DEFAULT_MODEL_ID, "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"] },
     { id: "gemini", name: "Gemini", kind: "cli", models: ["gemini-2.5-pro", "gemini-3-pro", "gemini-3-flash"] },
     { id: "cursor", name: "Cursor", kind: "agent", models: ["default", "opus-4.6", "composer-1.5", "gemini-3-pro"] },
 ];
+
+export function getModelOverride(model: string): string | null {
+    return model !== DEFAULT_MODEL_ID ? model : null;
+}
 
 /** safe/ask/auto → PermissionMode протокола (AGENT_PERMISSIONS в remcli-app). */
 const PERMISSION_BY_AGENT: Record<AgentId, Record<PermissionChoice, PermissionMode>> = {
@@ -246,7 +252,7 @@ export function NewSessionPage() {
 
         if (zenState?.zenTaskId) linkZenTaskSession(zenState.zenTaskId, sessionId);
         const permissionMode = PERMISSION_BY_AGENT[agent][mode];
-        const modelMeta = model !== "default" ? model : null;
+        const modelMeta = getModelOverride(model);
         if (zenState?.zenTaskTitle && !resume) {
             await sendSessionMessage(sessionId, zenState.zenTaskTitle, { permissionMode, model: modelMeta })
                 .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)));

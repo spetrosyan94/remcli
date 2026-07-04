@@ -43,6 +43,7 @@ export const ja: Dictionary = {
     "chat.loadEarlier": "以前の履歴を表示",
     "chat.ended": "— セッション終了 —",
     "chat.resumeFailed": "セッションを再開できませんでした",
+    "chat.sendFailed": "メッセージを送信できませんでした",
 
     "tts.listen": "再生",
     "tts.synth": "合成中…",

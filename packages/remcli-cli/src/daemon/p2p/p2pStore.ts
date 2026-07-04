@@ -106,6 +106,8 @@ export class P2PStore {
     private ownMachineId: string | null = null;
     /** Machines explicitly deleted by the user — must not silently reappear. */
     private deletedMachineIds = new Set<string>();
+    /** Sessions stopped by an explicit user action — stale keep-alives must not revive them. */
+    private terminalStoppedSessionIds = new Set<string>();
 
     /**
      * @param options.kvFilePath Where to persist the KV store.
@@ -152,6 +154,7 @@ export class P2PStore {
                 session.active = true;
                 session.activeAt = Date.now();
                 session.updatedAt = Date.now();
+                this.terminalStoppedSessionIds.delete(session.id);
                 if (dataEncryptionKey !== null) {
                     session.dataEncryptionKey = dataEncryptionKey;
                 }
@@ -207,6 +210,7 @@ export class P2PStore {
         const existed = this.sessions.delete(id);
         this.sessionMessages.delete(id);
         this.sessionSeqs.delete(id);
+        this.terminalStoppedSessionIds.delete(id);
         if (existed) {
             for (const listener of this.sessionDeletedListeners) {
                 listener(id);
@@ -276,12 +280,25 @@ export class P2PStore {
         };
     }
 
-    setSessionActive(sessionId: string, active: boolean): void {
+    setSessionActive(sessionId: string, active: boolean, activeAt: number = Date.now()): boolean {
         const session = this.sessions.get(sessionId);
-        if (!session) return;
+        if (!session) return false;
+        if (active && this.terminalStoppedSessionIds.has(sessionId)) return false;
+        if (activeAt < session.activeAt) return false;
         session.active = active;
-        session.activeAt = Date.now();
-        session.updatedAt = Date.now();
+        session.activeAt = activeAt;
+        session.updatedAt = activeAt;
+        return true;
+    }
+
+    markSessionStopped(sessionId: string, activeAt: number = Date.now()): boolean {
+        const session = this.sessions.get(sessionId);
+        if (!session) return false;
+        this.terminalStoppedSessionIds.add(sessionId);
+        session.active = false;
+        session.activeAt = activeAt;
+        session.updatedAt = activeAt;
+        return true;
     }
 
     // ─── Messages ────────────────────────────────────────────────

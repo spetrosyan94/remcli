@@ -13,7 +13,7 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 import * as tmp from 'tmp';
 
-import { TrackedSession } from './types';
+import { StopSessionResult, TrackedSession } from './types';
 import { Metadata } from '@/api/types';
 import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 import { logger } from '@/ui/logger';
@@ -29,7 +29,7 @@ export interface SessionManager {
     /** Spawn a new session in tmux and wait for its webhook. */
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
     /** Stop a session by sessionId or `PID-<pid>` fallback. */
-    stopSession: (sessionId: string) => boolean;
+    stopSession: (sessionId: string) => StopSessionResult;
     /** Handle a webhook from a session reporting itself to the daemon. */
     onRemcliSessionWebhook: (sessionId: string, metadata: Metadata) => void;
     /** Remove sessions whose process is no longer alive (used by heartbeat). */
@@ -386,7 +386,7 @@ export function createSessionManager(): SessionManager {
     };
 
     // Stop a session by sessionId or PID fallback
-    const stopSession = (sessionId: string): boolean => {
+    const stopSession = (sessionId: string): StopSessionResult => {
         logger.debug(`[DAEMON RUN] Attempting to stop session ${sessionId}`);
 
         // Try to find by sessionId first
@@ -413,12 +413,15 @@ export function createSessionManager(): SessionManager {
 
                 pidToTrackedSession.delete(pid);
                 logger.debug(`[DAEMON RUN] Removed session ${sessionId} from tracking`);
-                return true;
+                return {
+                    success: true,
+                    stoppedSessionId: session.remcliSessionId ?? sessionId
+                };
             }
         }
 
         logger.debug(`[DAEMON RUN] Session ${sessionId} not found`);
-        return false;
+        return { success: false };
     };
 
     // Remove sessions whose process is no longer alive

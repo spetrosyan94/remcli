@@ -20,3 +20,14 @@ export interface TrackedSession {
   /** tmux session identifier (format: session:window) */
   tmuxSessionId?: string;
 }
+
+export interface StopSessionSuccess {
+  success: true;
+  stoppedSessionId: string;
+}
+
+export interface StopSessionFailure {
+  success: false;
+}
+
+export type StopSessionResult = StopSessionSuccess | StopSessionFailure;

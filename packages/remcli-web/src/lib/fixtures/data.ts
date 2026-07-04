@@ -354,11 +354,25 @@ export const FIXTURE_CHAT_MESSAGES: NormalizedMessage[] = [
             parentUUID: null
         }]
     },
+    // agent event error — должен быть видимым в ленте, не только в console/toast
+    {
+        id: 'fx-m06-event-error',
+        localId: null,
+        seq: 7,
+        createdAt: T - 6 * MINUTE + 30_000,
+        isSidechain: false,
+        role: 'event',
+        content: {
+            type: 'message',
+            message: 'The gpt-5.3-codex model is not supported when using Codex with a ChatGPT account.',
+            isError: true
+        }
+    },
     // DiffView — Edit с old_string/new_string
     {
         id: 'fx-m07',
         localId: null,
-        seq: 7,
+        seq: 8,
         createdAt: T - 6 * MINUTE,
         isSidechain: false,
         role: 'agent',
@@ -379,7 +393,7 @@ export const FIXTURE_CHAT_MESSAGES: NormalizedMessage[] = [
     {
         id: 'fx-m08',
         localId: null,
-        seq: 8,
+        seq: 9,
         createdAt: T - 5 * MINUTE,
         isSidechain: false,
         role: 'agent',
@@ -394,7 +408,7 @@ export const FIXTURE_CHAT_MESSAGES: NormalizedMessage[] = [
     {
         id: 'fx-m09',
         localId: null,
-        seq: 9,
+        seq: 10,
         createdAt: T - 4 * MINUTE,
         isSidechain: false,
         role: 'agent',

@@ -44,6 +44,7 @@ export const ru = {
     "chat.loadEarlier": "показать раньше",
     "chat.ended": "— сессия завершена —",
     "chat.resumeFailed": "не удалось продолжить сессию",
+    "chat.sendFailed": "не удалось отправить сообщение",
 
     "tts.listen": "слушать",
     "tts.synth": "синтез…",

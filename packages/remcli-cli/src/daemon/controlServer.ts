@@ -7,9 +7,9 @@ import fastify, { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import { logger } from '@/ui/logger';
-import { Metadata } from '@/api/types';
-import { TrackedSession } from './types';
-import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
+import type { Metadata } from '@/api/types';
+import type { StopSessionResult, TrackedSession } from './types';
+import type { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 
 export function startDaemonControlServer({
   getChildren,
@@ -19,7 +19,7 @@ export function startDaemonControlServer({
   onRemcliSessionWebhook
 }: {
   getChildren: () => TrackedSession[];
-  stopSession: (sessionId: string) => boolean;
+  stopSession: (sessionId: string) => StopSessionResult;
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   requestShutdown: () => void;
   onRemcliSessionWebhook: (sessionId: string, metadata: Metadata) => void;
@@ -99,8 +99,8 @@ export function startDaemonControlServer({
       const { sessionId } = request.body;
 
       logger.debug(`[CONTROL SERVER] Stop session request: ${sessionId}`);
-      const success = stopSession(sessionId);
-      return { success };
+      const result = stopSession(sessionId);
+      return { success: result.success };
     });
 
     // Spawn new session
