@@ -1,15 +1,15 @@
-name: Expo App TypeScript typecheck
+name: Web TypeScript typecheck
 
 on:
     pull_request:
         paths:
-            - 'packages/remcli-app/**'
+            - 'packages/remcli-web/**'
             - '.github/workflows/typecheck.yml'
     push:
         branches:
             - main
         paths:
-            - 'packages/remcli-app/**'
+            - 'packages/remcli-web/**'
             - '.github/workflows/typecheck.yml'
 
 jobs:
@@ -29,4 +29,4 @@ jobs:
               run: npm install
 
             - name: TypeScript typecheck
-              run: npm -w remcli-app run typecheck
+              run: npm -w remcli-web run typecheck

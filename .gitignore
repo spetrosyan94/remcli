@@ -39,11 +39,14 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
-# Claude Code
+# Claude Code / local agent state
 .claude/
 .agents/
+.codex/
 CLAUDE.md
 CLAUDE.local.md
+AGENTS.md
+HANDOFF_CLAUDE_TO_CODEX.md
 skills-lock.json
 plans/
 
@@ -51,4 +54,5 @@ plans/
 
 # Development planning notes (keep local, don't commit)
 notes/__pycache__/
+design/
 packages/remcli-cli/web-dist/
