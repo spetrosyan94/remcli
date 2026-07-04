@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -54,6 +54,7 @@ describe('daemon state persistence', () => {
 
         const statePath = join(homeDir, 'daemon.state.json');
         expect(existsSync(statePath)).toBe(true);
+        expect(statSync(statePath).mode & 0o777).toBe(0o600);
         await expect(persistence.readDaemonState()).resolves.toEqual(state);
         expect(readdirSync(homeDir).filter((fileName) => fileName.includes('daemon.state.json') && fileName.endsWith('.tmp'))).toEqual([]);
     });

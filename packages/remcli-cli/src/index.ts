@@ -25,7 +25,8 @@ import { listDaemonSessions, stopDaemonSession } from './daemon/controlClient'
 import { handleAuthCommand } from './commands/auth'
 import { handleConnectCommand } from './commands/connect'
 import { spawnRemcliCLI } from './utils/spawnRemcliCLI'
-import { claudeCliPath } from './claude/claudeLocal'
+import { getCleanEnv, getDefaultClaudeCodePath } from './claude/sdk/utils'
+import { parseAgentRunArgs } from './agentRunArgs'
 import { execFileSync } from 'node:child_process'
 
 /**
@@ -40,23 +41,26 @@ function exitWithSubcommandError(error: unknown): never {
     process.exit(1)
 }
 
-interface AgentRunArgs {
-    startedBy?: 'daemon' | 'terminal';
-    resumeSessionId?: string;
+function runPassthroughCommand(binary: string, args: string[]): void {
+    execFileSync(binary, args, {
+        stdio: 'inherit',
+        env: getCleanEnv()
+    });
 }
 
-/** Parse the shared `--started-by` / `--resume` flags used by agent subcommands. */
-function parseAgentRunArgs(args: string[]): AgentRunArgs {
-    let startedBy: 'daemon' | 'terminal' | undefined = undefined;
-    let resumeSessionId: string | undefined = undefined;
-    for (let i = 1; i < args.length; i++) {
-        if (args[i] === '--started-by') {
-            startedBy = args[++i] as 'daemon' | 'terminal';
-        } else if (args[i] === '--resume') {
-            resumeSessionId = args[++i];
+function resolveFirstExecutable(candidates: string[]): string {
+    for (const candidate of candidates) {
+        try {
+            execFileSync(candidate, ['--version'], {
+                stdio: 'ignore',
+                env: getCleanEnv()
+            });
+            return candidate;
+        } catch {
+            // Try the next candidate.
         }
     }
-    return { startedBy, resumeSessionId };
+    return candidates[0];
 }
 
 async function ensureDaemonRunning(): Promise<void> {
@@ -135,7 +139,11 @@ async function ensureDaemonRunning(): Promise<void> {
     try {
       const { runCodex } = await import('@/codex/runCodex');
 
-      const { startedBy, resumeSessionId } = parseAgentRunArgs(args);
+      const { startedBy, resumeSessionId, passthroughArgs, shouldPassthrough } = parseAgentRunArgs(args);
+      if (shouldPassthrough) {
+        runPassthroughCommand('codex', passthroughArgs);
+        process.exit(0);
+      }
 
       await ensureDaemonRunning();
       const {
@@ -152,7 +160,11 @@ async function ensureDaemonRunning(): Promise<void> {
     try {
       const { runCursor } = await import('@/cursor/runCursor');
 
-      const { startedBy, resumeSessionId } = parseAgentRunArgs(args);
+      const { startedBy, resumeSessionId, passthroughArgs, shouldPassthrough } = parseAgentRunArgs(args);
+      if (shouldPassthrough) {
+        runPassthroughCommand(resolveFirstExecutable(['agent', 'cursor-agent']), passthroughArgs);
+        process.exit(0);
+      }
 
       await ensureDaemonRunning();
       const {
@@ -344,7 +356,11 @@ async function ensureDaemonRunning(): Promise<void> {
     try {
       const { runGemini } = await import('@/gemini/runGemini');
 
-      const { startedBy, resumeSessionId } = parseAgentRunArgs(args);
+      const { startedBy, resumeSessionId, passthroughArgs, shouldPassthrough } = parseAgentRunArgs(args);
+      if (shouldPassthrough) {
+        runPassthroughCommand('gemini', passthroughArgs);
+        process.exit(0);
+      }
 
       await ensureDaemonRunning();
       const {
@@ -681,10 +697,12 @@ ${chalk.gray('─'.repeat(60))}
 ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
 `)
       
-      // Run claude --help and display its output
-      // Use execFileSync directly with claude CLI for runtime-agnostic compatibility
+      // Run claude --help and display its output without starting a remcli session.
       try {
-        const claudeHelp = execFileSync(claudeCliPath, ['--help'], { encoding: 'utf8' })
+        const claudeHelp = execFileSync(getDefaultClaudeCodePath(), ['--help'], {
+          encoding: 'utf8',
+          env: getCleanEnv()
+        })
         console.log(claudeHelp)
       } catch (e) {
         console.log(chalk.yellow('Could not retrieve claude help. Make sure claude is installed.'))
@@ -693,10 +711,15 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
       process.exit(0)
     }
 
-    // Show version
+    // Show version without starting a remcli session.
     if (showVersion) {
       console.log(`remcli version: ${packageJson.version}`)
-      // Don't exit - continue to pass --version to Claude Code
+      try {
+        runPassthroughCommand(getDefaultClaudeCodePath(), ['--version'])
+      } catch {
+        console.log(chalk.yellow('Could not retrieve claude version. Make sure claude is installed.'))
+      }
+      process.exit(0)
     }
 
     // Normal flow - auto-start daemon then connect

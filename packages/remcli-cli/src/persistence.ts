@@ -6,7 +6,7 @@
 
 import { FileHandle } from 'node:fs/promises'
 import { readFile, writeFile, mkdir, open, unlink, rename, stat } from 'node:fs/promises'
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, renameSync } from 'node:fs'
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, renameSync, chmodSync } from 'node:fs'
 import { constants } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -512,8 +512,9 @@ export async function readDaemonState(): Promise<DaemonLocallyPersistedState | n
 export function writeDaemonState(state: DaemonLocallyPersistedState): void {
   const stateFile = configuration.daemonStateFile;
   const tempFile = join(dirname(stateFile), `.${basename(stateFile)}.${process.pid}.${randomUUID()}.tmp`);
-  writeFileSync(tempFile, JSON.stringify(state, null, 2), 'utf-8');
+  writeFileSync(tempFile, JSON.stringify(state, null, 2), { encoding: 'utf-8', mode: 0o600 });
   renameSync(tempFile, stateFile);
+  chmodSync(stateFile, 0o600);
 }
 
 /**
