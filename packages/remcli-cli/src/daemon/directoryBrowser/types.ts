@@ -9,15 +9,31 @@ export interface ListDirectoryParams {
     path?: string;
 }
 
+export type DirectoryPathStyle = 'posix' | 'win32';
+
+export interface DirectoryPathHomeMetadata {
+    path: string;
+    displayPath: string;
+}
+
+export interface DirectoryPathMetadata {
+    style: DirectoryPathStyle;
+    separator: string;
+    home: DirectoryPathHomeMetadata;
+}
+
 export interface DirectoryBrowserEntry {
     name: string;
     path: string;
+    displayPath: string;
     type: 'directory';
     hidden: boolean;
 }
 
-export interface ListDirectoryResponse {
+export interface ListDirectoryResponse extends DirectoryPathMetadata {
     path: string;
+    displayPath: string;
     parent: string | null;
+    parentDisplayPath: string | null;
     entries: DirectoryBrowserEntry[];
 }

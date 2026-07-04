@@ -40,6 +40,7 @@ export {
     loadSessionMessages,
     sendSessionMessage,
     // fixture-aware обёртки над socket.ts (в fixture-режиме — локальный ответ)
+    machineListDirectory,
     sessionAllow,
     sessionDeny,
     machineSetDisplayName,
@@ -61,7 +62,6 @@ export {
 } from '@/lib/protocol/store';
 
 export {
-    machineListDirectory,
     machineSpawnNewSession,
     machineListAgentSessions,
     machineStopSession,
@@ -73,7 +73,9 @@ export {
     machineRpc,
     type ConnectionStatus,
     type DirectoryEntry,
+    type DirectoryHome,
     type DirectoryListing,
+    type DirectoryPathStyle,
     type SpawnSessionOptions,
     type SpawnSessionResult
 } from '@/lib/protocol/socket';

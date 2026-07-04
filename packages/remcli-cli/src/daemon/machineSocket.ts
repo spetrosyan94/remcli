@@ -13,7 +13,10 @@ import { logger } from '@/ui/logger';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import { registerCommonHandlers, SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 import { listDirectoryForBrowser } from '@/daemon/directoryBrowser/directoryBrowserService';
-import type { ListDirectoryParams, ListDirectoryResponse } from '@/daemon/directoryBrowser/types';
+import type {
+    ListDirectoryParams,
+    ListDirectoryResponse,
+} from '@/daemon/directoryBrowser/types';
 import { listAllAgentSessions } from '@/daemon/sessions/listAgentSessions';
 
 export interface MachineSocketDeps {

@@ -10,8 +10,6 @@ import { toast } from "sonner";
 import { AgentIcon, Segmented, StatusDot, type AgentId } from "@/components/kit";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
-import { Input } from "@/components/ui/input";
-import { displayDirectoryPath, expandDirectoryPath } from "@/lib/directoryPath";
 import { getIntlLocale, t } from "@/lib/i18n";
 import {
     machineListDirectory,
@@ -88,6 +86,11 @@ interface PendingDirectoryCreation {
     resume?: AgentSessionInfo;
 }
 
+interface DirectoryBackTarget {
+    path: string;
+    displayPath: string;
+}
+
 const RESUME_LIST_LIMIT = 20;
 
 /* ---------- Разметка ---------- */
@@ -128,11 +131,11 @@ export function NewSessionPage() {
     const [model, setModel] = React.useState(AGENT_OPTIONS[0].models[0]);
     const [mode, setMode] = React.useState<PermissionChoice>("ask");
     const [dir, setDir] = React.useState<string | null>(null);
-    const [isManualDirOpen, setIsManualDirOpen] = React.useState(false);
-    const [manualDir, setManualDir] = React.useState("");
+    const [dirDisplayPath, setDirDisplayPath] = React.useState<string | null>(null);
     const [directoryRequestPath, setDirectoryRequestPath] = React.useState<string | undefined>(undefined);
     const [directoryListing, setDirectoryListing] = React.useState<DirectoryListing | null>(null);
     const [directoryError, setDirectoryError] = React.useState<string | null>(null);
+    const [directoryBackTarget, setDirectoryBackTarget] = React.useState<DirectoryBackTarget | null>(null);
     const [directoryReloadKey, setDirectoryReloadKey] = React.useState(0);
     const [isDirectoryLoading, setIsDirectoryLoading] = React.useState(false);
     const [sheet, setSheet] = React.useState<SheetKind | null>(null);
@@ -162,12 +165,16 @@ export function NewSessionPage() {
             .slice(0, 4);
     }, [machine, sessions]);
 
-    const manualDirExpanded = expandDirectoryPath(manualDir.trim(), homeDir);
     const activeDir = dir ?? recentDirs[0]?.path ?? homeDir ?? "";
+    const activeDirDisplayPath = dir ? (dirDisplayPath ?? dir) : (recentDirs[0]?.path ?? homeDir ?? "");
     const hasActiveDirInRecent = recentDirs.some((d) => d.path === activeDir);
     const shouldShowSelectedDir = activeDir !== "" && !hasActiveDirInRecent;
     const directoryHeaderPath = directoryListing?.path ?? directoryRequestPath ?? activeDir;
-    const canSelectDirectoryHeaderPath = directoryHeaderPath !== "" && !isDirectoryLoading;
+    const directoryHeaderDisplayPath = directoryListing?.displayPath
+        ?? (directoryHeaderPath === activeDir ? activeDirDisplayPath : directoryHeaderPath);
+    const canSelectDirectoryHeaderPath = directoryHeaderPath !== "" && !isDirectoryLoading && !directoryError && directoryListing !== null;
+    const directoryParentPath = directoryListing?.parent ?? (directoryError ? directoryBackTarget?.path ?? null : null);
+    const directoryParentDisplayPath = directoryListing?.parentDisplayPath ?? (directoryError ? directoryBackTarget?.displayPath ?? null : null);
     const directoryEntries = directoryListing?.entries ?? [];
 
     // resume-sheet: RPC list-agent-sessions с фильтром по агенту
@@ -204,29 +211,29 @@ export function NewSessionPage() {
         if (nextModel) setModel(nextModel);
     };
 
-    const selectDir = (path: string) => {
+    const selectDir = (path: string, displayPath?: string) => {
         setDir(path);
-        setIsManualDirOpen(false);
-        setManualDir("");
+        setDirDisplayPath(displayPath ?? null);
     };
 
     const openDirectoryPicker = () => {
         setDirectoryRequestPath(activeDir || homeDir || undefined);
         setDirectoryListing(null);
         setDirectoryError(null);
-        setIsManualDirOpen(false);
+        setDirectoryBackTarget(null);
         setSheet("directory");
     };
 
-    const openManualFallback = () => {
-        setManualDir(directoryHeaderPath ? displayDirectoryPath(directoryHeaderPath, homeDir) : "");
-        setIsManualDirOpen(true);
-    };
-
-    const useManualDirectory = () => {
-        if (manualDirExpanded === "") return;
-        selectDir(manualDirExpanded);
-        setSheet(null);
+    const navigateDirectory = (path: string) => {
+        if (directoryListing) {
+            setDirectoryBackTarget({
+                path: directoryListing.path,
+                displayPath: directoryListing.displayPath,
+            });
+        } else {
+            setDirectoryBackTarget(null);
+        }
+        setDirectoryRequestPath(path);
     };
 
     const finishSpawn = async (sessionId: string, resume?: AgentSessionInfo) => {
@@ -363,10 +370,10 @@ export function NewSessionPage() {
                     <span className="font-mono text-[10px] text-muted-foreground/70">{t("new.dirRecent")}</span>
                     <div className="overflow-hidden rounded-xl border border-border">
                         {shouldShowSelectedDir && (
-                            <button onClick={() => selectDir(activeDir)}
+                            <button onClick={() => selectDir(activeDir, activeDirDisplayPath)}
                                 className="flex min-h-11 w-full items-center gap-2.5 bg-secondary px-3.5 py-3 font-mono text-[12.5px]">
                                 <FolderOpen className="size-3.5 shrink-0 text-accent" />
-                                <span className="truncate">{displayDirectoryPath(activeDir, homeDir)}</span>
+                                <span className="min-w-0 flex-1 truncate">{activeDirDisplayPath}</span>
                                 <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70">{t("new.dirSelected")}</span>
                             </button>
                         )}
@@ -376,7 +383,7 @@ export function NewSessionPage() {
                                 <button key={d.path} onClick={() => selectDir(d.path)}
                                     className={`flex min-h-11 w-full items-center gap-2.5 px-3.5 py-3 font-mono text-[12.5px] ${(i > 0 || shouldShowSelectedDir) ? "border-t border-border " : ""}${isActive ? "bg-secondary" : "bg-card text-muted-foreground"}`}>
                                     <Folder className={`size-3.5 shrink-0 ${isActive ? "text-accent" : "text-muted-foreground/40"}`} />
-                                    <span className="truncate">{displayDirectoryPath(d.path, homeDir)}</span>
+                                    <span className="min-w-0 flex-1 truncate">{d.path}</span>
                                     <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70">{formatRelativeTime(d.lastUsedAt)}</span>
                                 </button>
                             );
@@ -410,7 +417,7 @@ export function NewSessionPage() {
                     className="h-[52px] w-full rounded-xl bg-accent text-base font-semibold text-accent-foreground disabled:opacity-50">
                     {isSpawning
                         ? t("new.spawning")
-                        : t("new.startButton", { agent, dir: displayDirectoryPath(activeDir, homeDir) || "…" })}
+                        : t("new.startButton", { agent, dir: activeDirDisplayPath || "…" })}
                 </button>
             </footer>
 
@@ -432,11 +439,11 @@ export function NewSessionPage() {
                                     onClick={() => {
                                         setMachineId(m.id);
                                         setDir(null);
-                                        setManualDir("");
-                                        setIsManualDirOpen(false);
+                                        setDirDisplayPath(null);
                                         setDirectoryRequestPath(undefined);
                                         setDirectoryListing(null);
                                         setDirectoryError(null);
+                                        setDirectoryBackTarget(null);
                                         setSheet(null);
                                     }} />
                             ))}
@@ -457,23 +464,23 @@ export function NewSessionPage() {
                             <div className="mx-[18px] mb-3 rounded-xl bg-background/70 p-3 shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
                                 <div className="mb-1 font-mono text-[10px] text-muted-foreground/70">{t("new.dirCurrent")}</div>
                                 <div className="break-all font-mono text-[12.5px] font-semibold leading-snug">
-                                    {directoryHeaderPath ? displayDirectoryPath(directoryHeaderPath, homeDir) : "…"}
+                                    {directoryHeaderDisplayPath || "…"}
                                 </div>
                             </div>
 
                             <div className="border-t border-border">
                                 <button
                                     type="button"
-                                    disabled={!directoryListing?.parent || isDirectoryLoading}
+                                    disabled={!directoryParentPath || isDirectoryLoading}
                                     onClick={() => {
-                                        if (directoryListing?.parent) setDirectoryRequestPath(directoryListing.parent);
+                                        if (directoryParentPath) navigateDirectory(directoryParentPath);
                                     }}
                                     className="flex min-h-11 w-full items-center gap-3 px-[18px] py-3 text-left font-mono text-[12.5px] text-muted-foreground transition-[background-color,color,transform] active:scale-[0.96] disabled:opacity-40"
                                 >
                                     <ArrowUp className="size-3.5 shrink-0" />
                                     <span className="shrink-0">{t("new.dirParent")}</span>
                                     <span className="ml-auto max-w-[55%] truncate text-[11px]">
-                                        {directoryListing?.parent ? displayDirectoryPath(directoryListing.parent, homeDir) : "—"}
+                                        {directoryParentDisplayPath ?? "—"}
                                     </span>
                                 </button>
                             </div>
@@ -508,50 +515,15 @@ export function NewSessionPage() {
                                     <button
                                         key={entry.path}
                                         type="button"
-                                        onClick={() => setDirectoryRequestPath(entry.path)}
+                                        onClick={() => navigateDirectory(entry.path)}
                                         className={`flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left font-mono text-[12.5px] transition-[background-color,color,transform] active:scale-[0.96] ${entry.hidden ? "text-muted-foreground" : "text-foreground"}`}
                                     >
                                         <Folder className="size-3.5 shrink-0 text-accent" />
-                                        <span className="truncate">{entry.name}</span>
+                                        <span className="min-w-0 flex-1 truncate">{entry.name}</span>
                                         {entry.hidden && <span className="ml-auto size-1.5 shrink-0 rounded-full bg-muted-foreground/50" />}
                                     </button>
                                 ))}
                             </div>
-
-                            {!isManualDirOpen && (
-                                <div className="border-t border-border px-[18px] py-3">
-                                    <button
-                                        type="button"
-                                        onClick={openManualFallback}
-                                        className="min-h-11 w-full rounded-[10px] border border-border px-3 font-mono text-[11.5px] text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96]"
-                                    >
-                                        {t("new.dirManualFallback")}
-                                    </button>
-                                </div>
-                            )}
-
-                            {isManualDirOpen && (
-                                <div className="border-t border-border px-[18px] py-3">
-                                    <div className="flex min-h-11 items-center gap-2 rounded-[10px] border border-border bg-background/70 px-3">
-                                        <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
-                                        <Input
-                                            autoFocus
-                                            value={manualDir}
-                                            onChange={(event) => setManualDir(event.target.value)}
-                                            placeholder={t("new.otherDirPlaceholder")}
-                                            className="h-10 rounded-none border-none bg-transparent px-0 font-mono text-[12.5px] shadow-none focus-visible:ring-0"
-                                        />
-                                    </div>
-                                    <button
-                                        type="button"
-                                        disabled={manualDirExpanded === ""}
-                                        onClick={useManualDirectory}
-                                        className="mt-2 min-h-11 w-full rounded-[10px] bg-secondary px-3 font-mono text-[12px] font-semibold transition-[background-color,color,transform] active:scale-[0.96] disabled:opacity-50"
-                                    >
-                                        {t("new.dirUseManual")}
-                                    </button>
-                                </div>
-                            )}
 
                             <div className="border-t border-border px-[18px] pt-3">
                                 <button
@@ -559,7 +531,7 @@ export function NewSessionPage() {
                                     disabled={!canSelectDirectoryHeaderPath}
                                     onClick={() => {
                                         if (!canSelectDirectoryHeaderPath) return;
-                                        selectDir(directoryHeaderPath);
+                                        selectDir(directoryHeaderPath, directoryHeaderDisplayPath);
                                         setSheet(null);
                                     }}
                                     className="min-h-[52px] w-full rounded-xl bg-accent px-3 text-[14px] font-semibold text-accent-foreground transition-[background-color,transform] active:scale-[0.96] disabled:opacity-50"

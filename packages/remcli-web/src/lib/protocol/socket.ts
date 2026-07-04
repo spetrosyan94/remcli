@@ -196,16 +196,37 @@ export interface SpawnSessionOptions {
     environmentVariables?: Record<string, string>;
 }
 
+export type DirectoryPathStyle = 'posix' | 'win32';
+
+export interface DirectoryHome {
+    path: string;
+    displayPath: string;
+}
+
+interface DirectoryPathMetadata {
+    path: string;
+    displayPath: string;
+    style: DirectoryPathStyle;
+    separator: string;
+    home: DirectoryHome;
+}
+
 export interface DirectoryEntry {
     name: string;
     path: string;
+    displayPath: string;
     type: 'directory';
     hidden: boolean;
 }
 
 export interface DirectoryListing {
     path: string;
+    displayPath: string;
+    style: DirectoryPathStyle;
+    separator: string;
+    home: DirectoryHome;
     parent: string | null;
+    parentDisplayPath: string | null;
     entries: DirectoryEntry[];
 }
 
@@ -221,11 +242,33 @@ function isRpcErrorEnvelope(value: unknown): value is RpcErrorEnvelope {
     return isRecord(value) && typeof value.error === 'string';
 }
 
+function isDirectoryPathStyle(value: unknown): value is DirectoryPathStyle {
+    return value === 'posix' || value === 'win32';
+}
+
+function isDirectoryHome(value: unknown): value is DirectoryHome {
+    if (!isRecord(value)) return false;
+    return typeof value.path === 'string' && typeof value.displayPath === 'string';
+}
+
+function isDirectoryPathMetadata(value: unknown): value is DirectoryPathMetadata {
+    if (!isRecord(value)) return false;
+    return (
+        typeof value.path === 'string' &&
+        typeof value.displayPath === 'string' &&
+        isDirectoryPathStyle(value.style) &&
+        typeof value.separator === 'string' &&
+        value.separator.length > 0 &&
+        isDirectoryHome(value.home)
+    );
+}
+
 function isDirectoryEntry(value: unknown): value is DirectoryEntry {
     if (!isRecord(value)) return false;
     return (
         typeof value.name === 'string' &&
         typeof value.path === 'string' &&
+        typeof value.displayPath === 'string' &&
         value.type === 'directory' &&
         typeof value.hidden === 'boolean'
     );
@@ -234,8 +277,9 @@ function isDirectoryEntry(value: unknown): value is DirectoryEntry {
 function isDirectoryListing(value: unknown): value is DirectoryListing {
     if (!isRecord(value)) return false;
     return (
-        typeof value.path === 'string' &&
+        isDirectoryPathMetadata(value) &&
         (value.parent === null || typeof value.parent === 'string') &&
+        (value.parentDisplayPath === null || typeof value.parentDisplayPath === 'string') &&
         Array.isArray(value.entries) &&
         value.entries.every(isDirectoryEntry)
     );

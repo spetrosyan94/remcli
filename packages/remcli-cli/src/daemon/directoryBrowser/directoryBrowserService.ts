@@ -7,13 +7,21 @@
 
 import { readdir } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
-import * as os from 'node:os';
-import { dirname, join, resolve } from 'node:path';
 
-import type { DirectoryBrowserEntry, ListDirectoryResponse } from './types';
+import {
+    createDirectoryPathContext,
+    getDirectoryDisplayPath,
+    getDirectoryParentPath,
+    getDirectoryPathMetadata,
+    normalizeDirectoryPathValue,
+    type DirectoryPathContractDeps,
+} from './pathContract';
+import type {
+    DirectoryBrowserEntry,
+    ListDirectoryResponse,
+} from './types';
 
-interface DirectoryBrowserDeps {
-    getHomeDirectory?: () => string;
+interface DirectoryBrowserDeps extends DirectoryPathContractDeps {
     readDirectory?: (path: string, options: { withFileTypes: true }) => Promise<Dirent[]>;
 }
 
@@ -44,11 +52,6 @@ function getPathParam(params: unknown): string | undefined {
     }
 
     return value;
-}
-
-function getParentPath(path: string): string | null {
-    const parent = dirname(path);
-    return parent === path ? null : parent;
 }
 
 function isFileSystemError(error: unknown): error is FileSystemError {
@@ -85,10 +88,12 @@ export async function listDirectoryForBrowser(
     params: unknown = {},
     deps: DirectoryBrowserDeps = {},
 ): Promise<ListDirectoryResponse> {
-    const getHomeDirectory = deps.getHomeDirectory ?? os.homedir;
     const readDirectory = deps.readDirectory ?? readdir;
+    const pathContext = createDirectoryPathContext(deps);
     const requestedPath = getPathParam(params);
-    const currentPath = resolve(requestedPath ?? getHomeDirectory());
+    const currentPath = requestedPath === undefined
+        ? pathContext.homePath
+        : normalizeDirectoryPathValue(requestedPath, pathContext);
 
     let dirents: Dirent[];
     try {
@@ -99,17 +104,27 @@ export async function listDirectoryForBrowser(
 
     const entries = dirents
         .filter((entry) => entry.isDirectory())
-        .map((entry): DirectoryBrowserEntry => ({
-            name: entry.name,
-            path: join(currentPath, entry.name),
-            type: 'directory',
-            hidden: entry.name.startsWith('.'),
-        }))
+        .map((entry): DirectoryBrowserEntry => {
+            const entryPath = pathContext.pathTools.join(currentPath, entry.name);
+
+            return {
+                name: entry.name,
+                path: entryPath,
+                displayPath: getDirectoryDisplayPath(entryPath, pathContext),
+                type: 'directory',
+                hidden: entry.name.startsWith('.'),
+            };
+        })
         .sort(compareDirectoryEntries);
+
+    const parent = getDirectoryParentPath(currentPath, pathContext);
 
     return {
         path: currentPath,
-        parent: getParentPath(currentPath),
+        displayPath: getDirectoryDisplayPath(currentPath, pathContext),
+        parent,
+        parentDisplayPath: parent === null ? null : getDirectoryDisplayPath(parent, pathContext),
+        ...getDirectoryPathMetadata(pathContext),
         entries,
     };
 }

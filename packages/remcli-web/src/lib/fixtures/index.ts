@@ -21,6 +21,7 @@ import {
     FIXTURE_SESSIONS,
     FIXTURE_ZEN_TASKS
 } from '@/lib/fixtures/data';
+import type { DirectoryListing } from '@/lib/protocol/socket';
 import { useProtocolStore } from '@/lib/protocol/store';
 
 export { FIXTURE_CHAT_SESSION_ID };
@@ -65,6 +66,48 @@ function jsonResponse(body: unknown, status = 200): Response {
 // Zen-задачи живут в «KV» перехватчика: add/toggle на ZenPage работают без сети
 let zenTasksValue = JSON.stringify(FIXTURE_ZEN_TASKS);
 let zenTasksVersion = 1;
+
+const FIXTURE_DIRECTORY_CHILDREN: Record<string, string[]> = {
+    '/Users/dev': ['projects', 'Downloads', '.config'],
+    '/Users/dev/projects': ['remcli', 'webapp', 'api-server', 'docs', 'mobile'],
+    '/Users/dev/projects/remcli': ['packages', 'src', 'design', 'restricted', '.claude'],
+    '/Users/dev/projects/remcli/packages': ['remcli-web', 'remcli-cli', 'remcli-app'],
+    '/Users/dev/projects/remcli/packages/remcli-web': ['src', 'public'],
+    '/Users/dev/projects/remcli/packages/remcli-web/src': ['components', 'lib', 'pages', 'styles'],
+    '/Users/dev/projects/remcli/src': ['daemon', 'protocol'],
+    '/Users/dev/projects/remcli/design': ['screens', 'pages', 'assets'],
+    '/Users/dev/projects/webapp': ['src', 'tests'],
+    '/Users/dev/projects/api-server': ['src', 'migrations'],
+    '/Users/dev/projects/docs': ['guides', 'api'],
+    '/Users/dev/projects/mobile': ['app', 'assets'],
+    '/home/ci': ['releases', 'workspaces'],
+    '/home/ci/releases': ['pipeline'],
+    '/home/ci/releases/pipeline': ['jobs', 'logs']
+};
+
+function trimTrailingSlash(path: string): string {
+    if (path === '/') return path;
+    return path.endsWith('/') ? path.replace(/\/+$/, '') : path;
+}
+
+function fixtureParentPath(path: string): string | null {
+    if (path === '/') return null;
+    const index = path.lastIndexOf('/');
+    if (index <= 0) return '/';
+    return path.slice(0, index);
+}
+
+function fixtureDisplayPath(path: string, homePath: string): string {
+    if (path === homePath) return '~';
+    if (path.startsWith(`${homePath}/`)) return `~${path.slice(homePath.length)}`;
+    return path;
+}
+
+function normalizeFixtureDirectoryPath(path: string | undefined, homePath: string): string {
+    if (!path || path === '~') return homePath;
+    if (path.startsWith('~/')) return `${homePath}/${path.slice(2)}`;
+    return trimTrailingSlash(path);
+}
 
 async function handleFixtureRequest(path: string, init?: RequestInit): Promise<Response> {
     const method = (init?.method ?? 'GET').toUpperCase();
@@ -150,6 +193,46 @@ export function fixtureLoadSessionMessages(sessionId: string): { total: number; 
     return {
         total: store.sessionMessages[sessionId]?.messages.length ?? 0,
         hasMore: false
+    };
+}
+
+/** Локальный directory browser для `/new?fixtures=1`: contract совпадает с daemon `list-directory`. */
+export function fixtureListDirectory(machineId: string, path?: string): DirectoryListing {
+    const machine = FIXTURE_MACHINES.find((item) => item.id === machineId);
+    if (!machine?.metadata) {
+        throw new Error(`Fixture machine not found: ${machineId}`);
+    }
+
+    const homePath = machine.metadata.homeDir;
+    const currentPath = normalizeFixtureDirectoryPath(path, homePath);
+    if (currentPath.endsWith('/restricted')) {
+        throw new Error(`Unable to list directory "${currentPath}": permission denied.`);
+    }
+
+    const parentPath = fixtureParentPath(currentPath);
+    const childNames = FIXTURE_DIRECTORY_CHILDREN[currentPath] ?? [];
+
+    return {
+        path: currentPath,
+        displayPath: fixtureDisplayPath(currentPath, homePath),
+        style: 'posix',
+        separator: '/',
+        home: {
+            path: homePath,
+            displayPath: '~'
+        },
+        parent: parentPath,
+        parentDisplayPath: parentPath ? fixtureDisplayPath(parentPath, homePath) : null,
+        entries: childNames.map((name) => {
+            const entryPath = currentPath === '/' ? `/${name}` : `${currentPath}/${name}`;
+            return {
+                name,
+                path: entryPath,
+                displayPath: fixtureDisplayPath(entryPath, homePath),
+                type: 'directory',
+                hidden: name.startsWith('.')
+            };
+        })
     };
 }
 

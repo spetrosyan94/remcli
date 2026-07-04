@@ -9,6 +9,7 @@
 
 import {
     fixtureAnswerPermission,
+    fixtureListDirectory,
     fixtureLoadSessionMessages,
     fixtureRestConfig,
     initFixturesIfEnabled
@@ -32,6 +33,7 @@ import {
     type RestConfig
 } from '@/lib/protocol/rest';
 import {
+    machineListDirectory as socketMachineListDirectory,
     onSocketMessage,
     onSocketReconnected,
     onSocketStatusChange,
@@ -40,7 +42,8 @@ import {
     sessionDeny as socketSessionDeny,
     socketConnect,
     socketDisconnect,
-    socketEmitWithAck
+    socketEmitWithAck,
+    type DirectoryListing
 } from '@/lib/protocol/socket';
 import { useProtocolStore } from '@/lib/protocol/store';
 import {
@@ -107,6 +110,14 @@ export function getRestConfig(): RestConfig | null {
     if (isFixturesActive) return fixtureRestConfig();
     if (!context) return null;
     return { endpoint: context.credentials.endpoint, token: context.credentials.token };
+}
+
+/** List child directories on a machine; fixture mode returns a local daemon-shaped contract. */
+export async function machineListDirectory(machineId: string, path?: string): Promise<DirectoryListing> {
+    if (isFixturesActive) {
+        return fixtureListDirectory(machineId, path);
+    }
+    return socketMachineListDirectory(machineId, path);
 }
 
 function requireContext(): ClientContext {
