@@ -9,7 +9,7 @@
  * В этом режиме приложение НЕ подключается к демону:
  * - стор наполняется детерминированными данными (./data.ts, фиксированные времена);
  * - fetch к FIXTURE_ENDPOINT перехватывается и отвечает локально (zen-задачи в KV,
- *   статусы TTS/Whisper/concierge, /health);
+ *   статусы TTS/Whisper/concierge, concierge chat, /health);
  * - кнопки работают без сети: allow/deny убирают permission-карточку локально
  *   (fixtureAnswerPermission), отправка сообщения — локальное эхо (client.ts).
  */
@@ -17,9 +17,13 @@
 import {
     FIXTURE_CHAT_MESSAGES,
     FIXTURE_CHAT_SESSION_ID,
+    FIXTURE_CONCIERGE_CHAT_RESPONSE,
+    FIXTURE_CONCIERGE_FEED,
+    FIXTURE_CONCIERGE_STATUS,
     FIXTURE_MACHINES,
     FIXTURE_SESSIONS,
-    FIXTURE_ZEN_TASKS
+    FIXTURE_ZEN_TASKS,
+    type FixtureConciergeFeedEntry
 } from '@/lib/fixtures/data';
 import type { DirectoryListing } from '@/lib/protocol/socket';
 import { useProtocolStore } from '@/lib/protocol/store';
@@ -145,7 +149,13 @@ async function handleFixtureRequest(path: string, init?: RequestInit): Promise<R
         return jsonResponse({ available: true, model: 'base', modelDownloaded: true });
     }
     if (path === '/v1/concierge/status') {
-        return jsonResponse({ enabled: false, available: false, model: null });
+        return jsonResponse(FIXTURE_CONCIERGE_STATUS);
+    }
+    if (path === '/v1/concierge/chat') {
+        if (method !== 'POST') {
+            return jsonResponse({ error: 'Method not allowed' }, 405);
+        }
+        return jsonResponse(FIXTURE_CONCIERGE_CHAT_RESPONSE);
     }
     return jsonResponse({ error: `No fixture for ${method} ${path}` }, 404);
 }
@@ -184,6 +194,17 @@ export function initFixturesIfEnabled(): boolean {
 /** REST-конфиг fixture-режима: все запросы уйдут в fetch-перехватчик. */
 export function fixtureRestConfig(): { endpoint: string; token: string } {
     return { endpoint: FIXTURE_ENDPOINT, token: 'fixtures' };
+}
+
+export function isFixtureRestEndpoint(endpoint: string): boolean {
+    return endpoint === FIXTURE_ENDPOINT;
+}
+
+export function fixtureConciergeFeed(): FixtureConciergeFeedEntry[] {
+    return FIXTURE_CONCIERGE_FEED.map((entry) => ({
+        ...entry,
+        actions: entry.actions?.map((action) => ({ ...action }))
+    }));
 }
 
 /** «Загрузка» истории: сообщения уже в сторе — только пометить isLoaded. */

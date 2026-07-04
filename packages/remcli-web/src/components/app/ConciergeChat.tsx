@@ -6,7 +6,9 @@ import * as React from "react";
 import { ArrowLeft, Loader2, Send } from "lucide-react";
 import { Link, useNavigate } from "react-router";
 import { Caret, UserMessage } from "@/components/kit";
+import { stripConciergeSpeakerPrefix } from "@/components/app/conciergeText";
 import { copyText } from "@/lib/clipboard";
+import { fixtureConciergeFeed, isFixtureRestEndpoint } from "@/lib/fixtures";
 import { getCurrentLanguage, t } from "@/lib/i18n";
 import {
     conciergeChat,
@@ -73,10 +75,18 @@ function loadStoredFeed(storageKey: string): ConciergeFeedEntry[] {
     try {
         const parsed = JSON.parse(raw) as Partial<StoredConciergeFeed>;
         if (parsed.version !== 1 || !Array.isArray(parsed.feed)) return [];
-        return parsed.feed.filter(isConciergeFeedEntry);
+        return parsed.feed.filter(isConciergeFeedEntry).map(normalizeFeedEntry);
     } catch {
         return [];
     }
+}
+
+function normalizeFeedEntry(entry: ConciergeFeedEntry): ConciergeFeedEntry {
+    if (entry.role !== "assistant") return entry;
+    return {
+        ...entry,
+        content: stripConciergeSpeakerPrefix(entry.content)
+    };
 }
 
 function sanitizeActionForStorage(action: ConciergeActionEntry): ConciergeActionEntry {
@@ -95,7 +105,7 @@ function sanitizeFeedForStorage(feed: ConciergeFeedEntry[]): ConciergeFeedEntry[
     return feed.map((entry) => ({
         id: entry.id,
         role: entry.role,
-        content: entry.content,
+        content: entry.role === "assistant" ? stripConciergeSpeakerPrefix(entry.content) : entry.content,
         ...(entry.actions ? { actions: entry.actions.map(sanitizeActionForStorage) } : {})
     }));
 }
@@ -144,7 +154,7 @@ function ActionLine({ action }: { action: { tool: string; result: unknown } }) {
             {errorText
                 ? <span className="truncate text-status-error">{t("concierge.error")} · {errorText}</span>
                 : sessionId
-                    ? <Link to={`/session/${sessionId}`} className="text-accent underline underline-offset-2">{t("concierge.openSession")}</Link>
+                    ? <Link to={`/session/${sessionId}`} className="inline-flex min-h-11 items-center rounded-[7px] px-2 text-accent underline underline-offset-2">{t("concierge.openSession")}</Link>
                     : <span>ok</span>}
         </div>
     );
@@ -177,6 +187,11 @@ export function ConciergeChat() {
     React.useEffect(() => {
         if (!storageKey) {
             setFeed([]);
+            setLoadedStorageKey(null);
+            return;
+        }
+        if (endpoint && isFixtureRestEndpoint(endpoint)) {
+            setFeed(fixtureConciergeFeed().map(normalizeFeedEntry));
             setLoadedStorageKey(null);
             return;
         }
@@ -241,7 +256,7 @@ export function ConciergeChat() {
             setFeed((current) => [...current, {
                 id: `c-${Date.now()}-a`,
                 role: "assistant",
-                content: response.reply,
+                content: stripConciergeSpeakerPrefix(response.reply),
                 actions: response.actions,
             }]);
         } catch (error) {

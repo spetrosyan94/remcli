@@ -10,6 +10,7 @@ import {
     buildConciergeSystemPrompt,
     parseConciergeResponse,
     executeToolCall,
+    stripAssistantSpeakerPrefix,
     stripThinkBlocks,
     chatWithConcierge,
 } from './conciergeService';
@@ -135,6 +136,13 @@ describe('parseConciergeResponse', () => {
         expect(parsed.content).toBe('Hello there!');
     });
 
+    it('removes repeated assistant speaker prefixes from LLM replies', () => {
+        const parsed = parseConciergeResponse({
+            choices: [{ message: { content: 'Джарвис: Да, я вас слышу. Проверяю сессии.' } }],
+        });
+        expect(parsed.content).toBe('Да, я вас слышу. Проверяю сессии.');
+    });
+
     it('handles a malformed / empty response gracefully', () => {
         const parsed = parseConciergeResponse({});
         expect(parsed.content).toBe('');
@@ -255,6 +263,17 @@ describe('stripThinkBlocks', () => {
     });
 });
 
+describe('stripAssistantSpeakerPrefix', () => {
+    it('removes Russian and English speaker labels from the beginning only', () => {
+        expect(stripAssistantSpeakerPrefix('Джарвис: Да, я вас слышу.')).toBe('Да, я вас слышу.');
+        expect(stripAssistantSpeakerPrefix('Джарвис — Да, я вас слышу.')).toBe('Да, я вас слышу.');
+        expect(stripAssistantSpeakerPrefix('Jarvis: Yes, I hear you.')).toBe('Yes, I hear you.');
+        expect(stripAssistantSpeakerPrefix('Concierge - I can start a session.')).toBe('I can start a session.');
+        expect(stripAssistantSpeakerPrefix('Ответ без префикса. Джарвис: внутри текста остается.'))
+            .toBe('Ответ без префикса. Джарвис: внутри текста остается.');
+    });
+});
+
 // ---- System prompt composition (lang + owner customization) ----
 
 describe('buildConciergeSystemPrompt', () => {
@@ -274,6 +293,7 @@ describe('buildConciergeSystemPrompt', () => {
         expect(prompt).not.toContain('Introduce yourself as Jarvis');
         expect(prompt).toContain('if the response language is Russian, or the interface language hint is lang=ru, call yourself “Джарвис”');
         expect(prompt).toContain('otherwise call yourself Jarvis');
+        expect(prompt).toContain('Do not prefix replies with a speaker label');
     });
 
     it('appends the owner customization as a labeled block AFTER the base prompt', () => {

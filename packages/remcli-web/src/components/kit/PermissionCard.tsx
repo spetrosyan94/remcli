@@ -32,17 +32,17 @@ export function PermissionCard(props: {
                 </div>
                 <div className="flex gap-2 px-3 pb-3">
                     <button onClick={onAllow}
-                        className={`h-11 flex-[1.4] cursor-pointer rounded-[11px] text-sm font-semibold ${allowClass}`}>
+                        className={`h-12 flex-[1.4] cursor-pointer rounded-[11px] text-sm font-semibold ${allowClass}`}>
                         {allowLabel ?? t("permission.allow")}
                     </button>
                     <button onClick={onDeny}
-                        className="h-11 flex-1 cursor-pointer rounded-[11px] border border-destructive/35 text-sm font-medium text-destructive">
+                        className="h-12 flex-1 cursor-pointer rounded-[11px] border border-destructive/35 text-sm font-medium text-destructive">
                         {t("permission.deny")}
                     </button>
                 </div>
                 {!danger && alwaysLabel && (
                     <button onClick={onAlways}
-                        className="w-full cursor-pointer truncate px-3 pb-3 text-center font-mono text-[11px] text-muted-foreground">
+                        className="flex h-12 w-full cursor-pointer items-center justify-center truncate px-3 text-center font-mono text-[11px] text-muted-foreground">
                         {alwaysLabel}
                     </button>
                 )}

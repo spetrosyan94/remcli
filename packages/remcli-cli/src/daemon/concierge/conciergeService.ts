@@ -65,6 +65,18 @@ export function stripThinkBlocks(text: string): string {
         .trim();
 }
 
+/**
+ * Local models sometimes imitate transcript formatting and prepend "Jarvis:".
+ * The chat UI already renders the assistant label, so repeated speaker prefixes
+ * make every reply noisy and harder to copy.
+ */
+export function stripAssistantSpeakerPrefix(text: string): string {
+    const stripped = text
+        .replace(/^(?:\s*(?:джарвис|jarvis|консьерж|concierge|ассистент|assistant|ai)\s*[:：\-–—]\s*)+/i, '')
+        .trimStart();
+    return stripped.length > 0 ? stripped : text.trimStart();
+}
+
 // ─── URL helpers ─────────────────────────────────────────────────
 
 function stripTrailingSlash(url: string): string {
@@ -131,7 +143,7 @@ export function parseConciergeResponse(response: ConciergeResponse): {
     const message = response.choices?.[0]?.message;
     return {
         // Thinking models (Qwen3) interleave reasoning into content — never surface it.
-        content: stripThinkBlocks(message?.content ?? ''),
+        content: stripAssistantSpeakerPrefix(stripThinkBlocks(message?.content ?? '')),
         toolCalls: message?.tool_calls ?? [],
     };
 }

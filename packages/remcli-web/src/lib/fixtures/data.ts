@@ -2,7 +2,7 @@
 // Все времена — константы от FIXTURE_BASE_TIME (никаких Date.now): скриншоты
 // визуальных тестов и ИИ-аудита должны быть воспроизводимыми.
 import type { NormalizedMessage } from '@/lib/protocol/messages';
-import type { Machine, Session } from '@/lib/protocol/types';
+import type { ConciergeChatResponse, ConciergeStatus, Machine, Session } from '@/lib/protocol/types';
 import type { ZenTask } from '@/lib/zenTasks';
 
 /** 2026-06-15T10:00:00Z — базовая точка времени всех фикстур. */
@@ -14,6 +14,62 @@ const T = FIXTURE_BASE_TIME;
 
 /** Сессия «полного покрытия» чата: все состояния ленты на одном экране. */
 export const FIXTURE_CHAT_SESSION_ID = 'fx-chat';
+
+export interface FixtureConciergeFeedEntry {
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    actions?: Array<{ tool: string; result: unknown }>;
+}
+
+export const FIXTURE_CONCIERGE_STATUS: ConciergeStatus = {
+    enabled: true,
+    available: true,
+    model: 'jarvis-fixture'
+};
+
+const FIXTURE_CONCIERGE_ACTIONS: ConciergeChatResponse['actions'] = [
+    {
+        tool: 'list_sessions',
+        result: {
+            total: 6,
+            active: ['fx-chat', 'fx-running', 'fx-thinking']
+        }
+    },
+    {
+        tool: 'spawn_agent_session',
+        result: {
+            sessionId: FIXTURE_CHAT_SESSION_ID
+        }
+    }
+];
+
+export const FIXTURE_CONCIERGE_FEED: FixtureConciergeFeedEntry[] = [
+    {
+        id: 'fx-concierge-user-01',
+        role: 'user',
+        content: 'Джарвис, что сейчас запущено?'
+    },
+    {
+        id: 'fx-concierge-assistant-01',
+        role: 'assistant',
+        content: [
+            'Я на месте. Fixture daemon доступен, поэтому можно проверить копирование и выделение ответа без ручного seed в localStorage.',
+            '',
+            'Сейчас в ленте есть активная сессия с permission-карточками, отдельная running-сессия и thinking-сессия. Могу открыть seeded чат или запустить новую agent session.'
+        ].join('\n'),
+        actions: FIXTURE_CONCIERGE_ACTIONS
+    }
+];
+
+export const FIXTURE_CONCIERGE_CHAT_RESPONSE: ConciergeChatResponse = {
+    reply: [
+        'Принял. В fixture-режиме я отвечаю локально и детерминированно: REST `/v1/concierge/chat` не ходит в LM Studio.',
+        '',
+        'Для визуальной проверки можешь выделить этот текст, нажать copy и открыть seeded session по action ниже.'
+    ].join('\n'),
+    actions: FIXTURE_CONCIERGE_ACTIONS
+};
 
 // ─── Машины: online + offline ────────────────────────────────────
 

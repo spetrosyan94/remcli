@@ -182,10 +182,10 @@ export function StopSessionDialog({ target, onClose }: { target: StopTarget | nu
                     </DialogDescription>
                 </DialogHeader>
                 <DialogFooter className="gap-2">
-                    <button onClick={onClose} className="h-11 w-full rounded-[9px] border border-border text-[13px] font-medium text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96] lg:h-10 lg:flex-1">
+                    <button onClick={onClose} className="h-12 w-full rounded-[9px] border border-border text-[13px] font-medium text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96] lg:h-10 lg:flex-1">
                         {t("common.cancel")}
                     </button>
-                    <button onClick={() => void confirmStop()} className="h-11 w-full rounded-[9px] bg-status-error text-[13px] font-semibold text-white transition-[background-color,transform] active:scale-[0.96] lg:h-10 lg:flex-1">
+                    <button onClick={() => void confirmStop()} className="h-12 w-full rounded-[9px] bg-status-error text-[13px] font-semibold text-white transition-[background-color,transform] active:scale-[0.96] lg:h-10 lg:flex-1">
                         {t("home.stop.confirm")}
                     </button>
                 </DialogFooter>

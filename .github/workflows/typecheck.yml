@@ -38,5 +38,11 @@ jobs:
             - name: Unit tests
               run: npm -w remcli-web run test
 
+            - name: Install Playwright browsers
+              run: npm -w remcli-web exec -- playwright install --with-deps chromium
+
+            - name: Fixture design gates
+              run: npm -w remcli-web run test:e2e
+
             - name: Production build
               run: npm -w remcli-web run build
