@@ -174,6 +174,12 @@ npm run ios --workspace=remcli-app         # iOS симулятор
 npm run android --workspace=remcli-app     # Android эмулятор
 ```
 
+### Структура CLI-тестов
+
+- Unit-тесты остаются рядом с исходным кодом: `packages/remcli-cli/src/**/*.test.ts`
+- Integration-тесты находятся отдельно: `packages/remcli-cli/tests/integration/**/*.test.ts`
+- E2E-тесты добавляются в `packages/remcli-cli/tests/e2e/**/*.test.ts`
+
 ### macOS десктоп (Tauri)
 
 ```bash

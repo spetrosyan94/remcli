@@ -3,14 +3,8 @@
  * 
  * Tests the full flow of daemon startup, session tracking, and shutdown
  * 
- * IMPORTANT: These tests MUST be run with the integration test environment:
- * npm run test:integration-test-env
- *
- * DO NOT run with regular 'npm test' - it will use the wrong environment
- * and the daemon will not work properly!
- * 
- * The integration test environment uses .env.integration-test which sets:
- * - REMCLI_HOME_DIR=~/.remcli-dev-test (DIFFERENT from dev's ~/.remcli-dev!)
+ * These tests run through the package Vitest config, which loads
+ * .env.integration-test and isolates REMCLI_HOME_DIR from development state.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
