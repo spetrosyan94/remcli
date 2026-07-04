@@ -5,11 +5,17 @@ on:
     branches: [ main ]
     paths:
       - 'packages/remcli-cli/**'
+      - 'packages/remcli-web/**'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/cli-smoke-test.yml'
   pull_request:
     branches: [ main ]
     paths:
       - 'packages/remcli-cli/**'
+      - 'packages/remcli-web/**'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/cli-smoke-test.yml'
   workflow_dispatch:
 
@@ -32,11 +38,25 @@ jobs:
     - name: Install dependencies
       run: npm install
 
-    - name: Build package
-      run: npm -w remcli run build
+    - name: Build package with bundled web client
+      run: npm run build
+
+    - name: Verify built web bundle
+      run: test -f packages/remcli-cli/web-dist/index.html
+
+    - name: CLI typecheck and tests
+      if: matrix.node-version == 20
+      run: |
+        npm -w remcli run typecheck
+        npm -w remcli run test
 
     - name: Pack package
-      run: npm -w remcli pack
+      run: npm -w remcli pack --pack-destination packages/remcli-cli
+
+    - name: Verify packed web bundle
+      run: |
+        PACKAGE_FILE=$(ls packages/remcli-cli/*.tgz)
+        tar -tzf "$PACKAGE_FILE" | grep -Fx package/web-dist/index.html
 
     - name: Install packed package globally
       run: |
@@ -90,11 +110,32 @@ jobs:
     - name: Install dependencies
       run: npm install
 
-    - name: Build package
-      run: npm -w remcli run build
+    - name: Build package with bundled web client
+      run: npm run build
+
+    - name: Verify built web bundle
+      shell: cmd
+      run: |
+        if not exist "packages\remcli-cli\web-dist\index.html" (
+          echo Error: web-dist index.html is missing after build
+          exit /b 1
+        )
 
     - name: Pack package
-      run: npm -w remcli run pack
+      run: npm -w remcli pack --pack-destination packages/remcli-cli
+
+    - name: Verify packed web bundle
+      shell: pwsh
+      run: |
+        $packageFile = Get-ChildItem packages/remcli-cli/*.tgz | Select-Object -First 1
+        if (-not $packageFile) {
+          throw "Packed package was not created"
+        }
+
+        $packedFiles = tar -tzf $packageFile.FullName
+        if ($packedFiles -notcontains "package/web-dist/index.html") {
+          throw "Packed package does not include web-dist/index.html"
+        }
 
     - name: Install packed package globally
       shell: cmd

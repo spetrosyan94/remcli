@@ -12,6 +12,8 @@ import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { logger } from '@/ui/logger';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import { registerCommonHandlers, SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
+import { listDirectoryForBrowser } from '@/daemon/directoryBrowser/directoryBrowserService';
+import type { ListDirectoryParams, ListDirectoryResponse } from '@/daemon/directoryBrowser/types';
 import { listAllAgentSessions } from '@/daemon/sessions/listAgentSessions';
 
 export interface MachineSocketDeps {
@@ -113,6 +115,10 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         const { agent, directory, limit } = params || {};
         const sessions = listAllAgentSessions(agent, directory, limit);
         return { sessions };
+    });
+
+    machineRpcManager.registerHandler<ListDirectoryParams, ListDirectoryResponse>('list-directory', async (params) => {
+        return await listDirectoryForBrowser(params);
     });
 
     machineSocket.on('connect', () => {

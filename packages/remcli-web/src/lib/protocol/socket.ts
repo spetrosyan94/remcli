@@ -196,6 +196,51 @@ export interface SpawnSessionOptions {
     environmentVariables?: Record<string, string>;
 }
 
+export interface DirectoryEntry {
+    name: string;
+    path: string;
+    type: 'directory';
+    hidden: boolean;
+}
+
+export interface DirectoryListing {
+    path: string;
+    parent: string | null;
+    entries: DirectoryEntry[];
+}
+
+interface RpcErrorEnvelope {
+    error: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+}
+
+function isRpcErrorEnvelope(value: unknown): value is RpcErrorEnvelope {
+    return isRecord(value) && typeof value.error === 'string';
+}
+
+function isDirectoryEntry(value: unknown): value is DirectoryEntry {
+    if (!isRecord(value)) return false;
+    return (
+        typeof value.name === 'string' &&
+        typeof value.path === 'string' &&
+        value.type === 'directory' &&
+        typeof value.hidden === 'boolean'
+    );
+}
+
+function isDirectoryListing(value: unknown): value is DirectoryListing {
+    if (!isRecord(value)) return false;
+    return (
+        typeof value.path === 'string' &&
+        (value.parent === null || typeof value.parent === 'string') &&
+        Array.isArray(value.entries) &&
+        value.entries.every(isDirectoryEntry)
+    );
+}
+
 /** Spawn a new agent session on a machine (daemon RPC `spawn-remcli-session`). */
 export async function machineSpawnNewSession(options: SpawnSessionOptions): Promise<SpawnSessionResult> {
     const { machineId, directory, approvedNewDirectoryCreation = false, token, agent, resumeSessionId, resumeSessionName, environmentVariables } = options;
@@ -224,6 +269,22 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
             errorMessage: error instanceof Error ? error.message : 'Failed to spawn session'
         };
     }
+}
+
+/** List child directories on a machine (daemon RPC `list-directory`). */
+export async function machineListDirectory(machineId: string, path?: string): Promise<DirectoryListing> {
+    const result = await machineRpc<unknown, { path?: string }>(
+        machineId,
+        'list-directory',
+        path ? { path } : {}
+    );
+    if (isRpcErrorEnvelope(result)) {
+        throw new Error(result.error || 'Directory list RPC failed');
+    }
+    if (!isDirectoryListing(result)) {
+        throw new Error('Directory list RPC returned invalid response');
+    }
+    return result;
 }
 
 /** List past agent sessions on a machine (resume feature, RPC `list-agent-sessions`). */

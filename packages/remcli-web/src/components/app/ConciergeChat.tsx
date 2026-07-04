@@ -6,6 +6,7 @@ import * as React from "react";
 import { ArrowLeft, Loader2, Send } from "lucide-react";
 import { Link, useNavigate } from "react-router";
 import { Caret, UserMessage } from "@/components/kit";
+import { copyText } from "@/lib/clipboard";
 import { getCurrentLanguage, t } from "@/lib/i18n";
 import {
     conciergeChat,
@@ -106,6 +107,17 @@ function storeFeed(storageKey: string, feed: ConciergeFeedEntry[]): void {
 
 function conciergeStorageKey(endpoint: string, machineId: string | null): string {
     return `${CONCIERGE_FEED_STORAGE_PREFIX}:${endpoint}:${machineId ?? "daemon"}`;
+}
+
+function ConciergeMeta({ children }: { children: React.ReactNode }) {
+    return (
+        <div className="flex items-center gap-2 font-mono text-[10.5px] text-muted-foreground">
+            <span className="flex size-[18px] shrink-0 items-center justify-center rounded-[5px] bg-accent/10 font-mono text-[9px] font-bold text-accent">
+                ai
+            </span>
+            {children}
+        </div>
+    );
 }
 
 /** sessionId из результата spawn_agent_session (SpawnSessionResult демона). */
@@ -285,11 +297,17 @@ export function ConciergeChat() {
                             <UserMessage key={entry.id}>{entry.content}</UserMessage>
                         ) : (
                             <div key={entry.id} className="flex flex-col gap-2">
-                                <span className="font-mono text-[10.5px] text-muted-foreground">{t("concierge.title")}</span>
-                                <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{entry.content}</p>
+                                <ConciergeMeta>{t("concierge.title")}</ConciergeMeta>
+                                <p className="select-text whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{entry.content}</p>
                                 {entry.actions?.map((action, index) => (
                                     <ActionLine key={`${entry.id}-${index}`} action={action} />
                                 ))}
+                                <div className="flex gap-2">
+                                    <button type="button" onClick={() => void copyText(entry.content)}
+                                        className="h-11 cursor-pointer rounded-[7px] px-3 font-mono text-[10.5px] text-muted-foreground/60 transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-7 lg:px-2.5">
+                                        {t("chat.copy")}
+                                    </button>
+                                </div>
                             </div>
                         ),
                     )}

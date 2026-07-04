@@ -61,6 +61,7 @@ export {
 } from '@/lib/protocol/store';
 
 export {
+    machineListDirectory,
     machineSpawnNewSession,
     machineListAgentSessions,
     machineStopSession,
@@ -71,6 +72,8 @@ export {
     sessionRpc,
     machineRpc,
     type ConnectionStatus,
+    type DirectoryEntry,
+    type DirectoryListing,
     type SpawnSessionOptions,
     type SpawnSessionResult
 } from '@/lib/protocol/socket';

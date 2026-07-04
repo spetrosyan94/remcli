@@ -13,6 +13,7 @@ import {
     type AgentId, type DiffLine, type Status,
 } from "@/components/kit";
 import { SessionsSidebar } from "@/components/app/SessionsSidebar";
+import { copyText } from "@/lib/clipboard";
 import { t } from "@/lib/i18n";
 import {
     fetchWhisperStatus, getRestConfig, isClientStarted, loadSessionMessages,
@@ -655,6 +656,12 @@ export function ChatPage() {
     const host = session.metadata?.host;
     // локальный const — TS сужает union состояния рекордера в JSX-ветках
     const recorderState = recorder.recorderState;
+    const isRecorderError = recorderState === "error";
+    const isRecorderActive = recorderState === "recording" || recorderState === "transcribing";
+    const startDictation = () => {
+        if (isRecorderError) recorder.reset();
+        void recorder.start();
+    };
 
     return (
         <div className="flex h-dvh flex-col bg-background pt-[env(safe-area-inset-top)] text-foreground lg:grid lg:grid-cols-[288px_1fr] lg:grid-rows-[minmax(0,1fr)]">
@@ -766,7 +773,7 @@ export function ChatPage() {
                                         {isTtsAvailable && (
                                             <ListenButton state={listenState} onClick={() => toggleListen(item.id, groupText)} />
                                         )}
-                                        <button onClick={() => void navigator.clipboard.writeText(groupText)}
+                                        <button type="button" onClick={() => void copyText(groupText)}
                                             className="h-11 cursor-pointer rounded-[7px] px-3 font-mono text-[10.5px] text-muted-foreground/60 transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-7 lg:px-2.5">
                                             {t("chat.copy")}
                                         </button>
@@ -825,47 +832,55 @@ export function ChatPage() {
 
             {/* ввод: текст + диктовка (Whisper) + отправка */}
             <footer className="border-t border-border px-3.5 pb-[max(10px,env(safe-area-inset-bottom))] pt-2">
-                <div className="mx-auto w-full max-w-[720px]">
-                    {recorderState === "idle" ? (
-                        <div className="flex items-end gap-2">
-                            <div className="relative min-w-0 flex-1">
-                                <textarea rows={1} placeholder={t("chat.placeholder")}
-                                    value={draft}
-                                    onChange={(event) => setDraft(event.target.value)}
-                                    onKeyDown={(event) => {
-                                        if (event.key === "Enter" && !event.shiftKey) {
-                                            event.preventDefault();
-                                            sendDraft();
-                                        }
-                                    }}
-                                    className="block min-h-11 w-full resize-none rounded-xl border border-input bg-muted px-3.5 py-3 text-sm outline-none placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15 lg:pr-40" />
-                                {/* десктоп: хинт горячих клавиш внутри поля (desktop.html) */}
-                                <span className="pointer-events-none absolute inset-y-0 right-3.5 hidden items-center font-mono text-[10px] text-muted-foreground/50 lg:flex">
-                                    {t("chat.inputHint")}
-                                </span>
-                            </div>
-                            {isWhisperAvailable && (
-                                <button aria-label={t("chat.aria.dictate")} onClick={() => void recorder.start()}
-                                    className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-border">
-                                    <Mic className="size-4 text-muted-foreground" />
-                                </button>
-                            )}
-                            <button aria-label={t("chat.aria.send")} onClick={sendDraft}
-                                className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary">
-                                <Send className="size-4 text-primary-foreground" />
-                            </button>
-                        </div>
-                    ) : (
+                <div className="mx-auto flex w-full max-w-[720px] flex-col gap-2">
+                    {isRecorderActive ? (
                         <VoiceRecordBar
                             state={recorderState}
                             seconds={formatSeconds(recorder.elapsedSeconds)}
                             onStop={() => void stopDictation()}
                             onCancel={recorder.cancel}
-                            onRetry={() => {
-                                recorder.reset();
-                                void recorder.start();
-                            }}
+                            onRetry={startDictation}
                         />
+                    ) : (
+                        <>
+                            {isRecorderError && (
+                                <VoiceRecordBar
+                                    state="error"
+                                    seconds={formatSeconds(recorder.elapsedSeconds)}
+                                    onStop={() => void stopDictation()}
+                                    onCancel={recorder.cancel}
+                                    onRetry={startDictation}
+                                />
+                            )}
+                            <div className="flex items-end gap-2">
+                                <div className="relative min-w-0 flex-1">
+                                    <textarea rows={1} placeholder={t("chat.placeholder")}
+                                        value={draft}
+                                        onChange={(event) => setDraft(event.target.value)}
+                                        onKeyDown={(event) => {
+                                            if (event.key === "Enter" && !event.shiftKey) {
+                                                event.preventDefault();
+                                                sendDraft();
+                                            }
+                                        }}
+                                        className="block min-h-11 w-full resize-none rounded-xl border border-input bg-muted px-3.5 py-3 text-sm outline-none transition-[border-color,box-shadow,opacity] duration-[120ms] placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15 lg:pr-40" />
+                                    {/* десктоп: хинт горячих клавиш внутри поля (desktop.html) */}
+                                    <span className="pointer-events-none absolute inset-y-0 right-3.5 hidden items-center font-mono text-[10px] text-muted-foreground/50 lg:flex">
+                                        {t("chat.inputHint")}
+                                    </span>
+                                </div>
+                                {isWhisperAvailable && (
+                                    <button aria-label={t("chat.aria.dictate")} onClick={startDictation}
+                                        className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-border transition-[background-color,border-color,transform] duration-[120ms] active:scale-[0.96]">
+                                        <Mic className="size-4 text-muted-foreground" />
+                                    </button>
+                                )}
+                                <button aria-label={t("chat.aria.send")} onClick={sendDraft}
+                                    className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary transition-[background-color,opacity,transform] duration-[120ms] active:scale-[0.96]">
+                                    <Send className="size-4 text-primary-foreground" />
+                                </button>
+                            </div>
+                        </>
                     )}
                 </div>
             </footer>

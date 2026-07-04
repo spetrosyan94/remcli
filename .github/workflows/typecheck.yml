@@ -1,19 +1,23 @@
-name: Web TypeScript typecheck
+name: Web CI
 
 on:
     pull_request:
         paths:
             - 'packages/remcli-web/**'
+            - 'package.json'
+            - 'package-lock.json'
             - '.github/workflows/typecheck.yml'
     push:
         branches:
             - main
         paths:
             - 'packages/remcli-web/**'
+            - 'package.json'
+            - 'package-lock.json'
             - '.github/workflows/typecheck.yml'
 
 jobs:
-    typecheck:
+    web-checks:
         runs-on: ubuntu-latest
         timeout-minutes: 15
         steps:
@@ -30,3 +34,9 @@ jobs:
 
             - name: TypeScript typecheck
               run: npm -w remcli-web run typecheck
+
+            - name: Unit tests
+              run: npm -w remcli-web run test
+
+            - name: Production build
+              run: npm -w remcli-web run build
