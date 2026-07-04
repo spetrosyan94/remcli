@@ -18,6 +18,7 @@ export const zhHant: Dictionary = {
     "common.cancel": "取消",
     "common.save": "儲存",
     "common.delete": "刪除",
+    "common.create": "建立",
 
     "permission.title": "權限請求",
     "permission.danger": "危險指令 · 不可復原",
@@ -194,6 +195,7 @@ export const zhHant: Dictionary = {
     "new.noMachines": "沒有機器 — 請執行 remcli daemon",
     "new.spawning": "正在啟動…",
     "new.promptLabel": "提示詞 · 第一個指令",
+    "new.createDirTitle": "建立目錄？",
     "new.createDirConfirm": "機器上不存在目錄「{dir}」。要建立嗎？",
 
     "stub.title": "頁面開發中",

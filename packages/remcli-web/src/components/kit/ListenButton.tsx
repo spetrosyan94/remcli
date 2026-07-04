@@ -9,7 +9,7 @@ export function ListenButton({ state = "idle", time, onClick }: {
     onClick?: () => void;
 }) {
     // hover/нажатия — 120ms (MOTION.md --dur-micro)
-    const base = "inline-flex h-7 cursor-pointer items-center gap-1.5 overflow-hidden rounded-lg border px-2.5 font-mono text-[10.5px] transition-[color,border-color,background-color,width] duration-[var(--dur-micro)] ease-[var(--ease-out)]";
+    const base = "inline-flex h-11 cursor-pointer items-center gap-1.5 overflow-hidden rounded-lg border px-3 font-mono text-[10.5px] transition-[color,border-color,background-color,width,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] lg:h-7 lg:px-2.5";
     if (state === "playing")
         return (
             <button onClick={onClick} className={`${base} min-w-[82px] border-accent/35 bg-accent/10 text-accent`}>

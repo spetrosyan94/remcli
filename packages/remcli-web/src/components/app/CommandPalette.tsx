@@ -93,7 +93,7 @@ export function CommandPalette() {
                 <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/55 backdrop-blur-[2px] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-[160ms] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-200" />
                 <DialogPrimitive.Content
                     aria-describedby={undefined}
-                    className="fixed inset-x-0 top-[calc(env(safe-area-inset-top)+22px)] z-50 mx-3.5 overflow-hidden rounded-2xl border border-border bg-card shadow-2xl shadow-black/60 outline-none duration-[160ms] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-[0.98] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.98]"
+                    className="fixed left-1/2 top-[calc(env(safe-area-inset-top)+22px)] z-50 w-[calc(100%-28px)] max-w-[390px] -translate-x-1/2 overflow-hidden rounded-2xl border border-border bg-card shadow-2xl shadow-black/60 outline-none duration-[160ms] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-[0.98] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.98] sm:max-w-xl lg:max-w-2xl"
                 >
                     <DialogPrimitive.Title className="sr-only">{t("palette.placeholder")}</DialogPrimitive.Title>
                     <Command loop shouldFilter={false} className="bg-transparent">

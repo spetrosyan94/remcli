@@ -27,7 +27,7 @@ export function TerminalPage() {
             <header className="flex items-center gap-2.5 border-b border-border px-3.5 pb-2.5">
                 <button
                     aria-label={t("terminal.back")}
-                    className="flex size-[38px] items-center justify-center rounded-[10px]"
+                    className="flex size-11 items-center justify-center rounded-[10px] transition-[background-color,transform] active:scale-[0.96]"
                     onClick={() => navigate(id ? `/session/${id}` : "/")}
                 >
                     <ArrowLeft className="size-[17px]" />
@@ -53,7 +53,7 @@ export function TerminalPage() {
                 </span>
                 <button
                     onClick={() => navigate(id ? `/session/${id}` : "/")}
-                    className="mt-2 h-9 rounded-[9px] border border-border px-3.5 font-mono text-[12px] text-muted-foreground"
+                    className="mt-2 h-11 rounded-[9px] border border-border px-3.5 font-mono text-[12px] text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96]"
                 >
                     {t("terminal.back")}
                 </button>

@@ -7,6 +7,7 @@ import { ChevronDown, RotateCcw, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { AgentIcon, Segmented, StatusDot, type AgentId } from "@/components/kit";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
 import { getIntlLocale, t } from "@/lib/i18n";
@@ -21,6 +22,7 @@ import {
     type AgentSessionInfo,
     type Machine,
     type PermissionMode,
+    type SpawnSessionOptions,
     type SpawnSessionResult,
 } from "@/lib/protocol";
 import { linkZenTaskSession } from "@/lib/zenTasks";
@@ -88,6 +90,12 @@ interface RecentDir {
     lastUsedAt: number;
 }
 
+interface PendingDirectoryCreation {
+    directory: string;
+    options: SpawnSessionOptions;
+    resume?: AgentSessionInfo;
+}
+
 const RESUME_LIST_LIMIT = 20;
 
 /* ---------- Разметка ---------- */
@@ -132,6 +140,8 @@ export function NewSessionPage() {
     const [customDir, setCustomDir] = React.useState("");
     const [sheet, setSheet] = React.useState<SheetKind | null>(null);
     const [isSpawning, setIsSpawning] = React.useState(false);
+    const [isApprovingDirectory, setIsApprovingDirectory] = React.useState(false);
+    const [pendingDirectoryCreation, setPendingDirectoryCreation] = React.useState<PendingDirectoryCreation | null>(null);
     const [resumeItems, setResumeItems] = React.useState<AgentSessionInfo[] | null>(null);
 
     const machine = machines.find((m) => m.id === machineId) ?? machines[0] ?? null;
@@ -183,47 +193,72 @@ export function NewSessionPage() {
         setCustomDir("");
     };
 
+    const finishSpawn = async (sessionId: string, resume?: AgentSessionInfo) => {
+        // ждём появления сессии в сторе (нужен cipher для первого сообщения)
+        for (let attempt = 0; attempt < 10 && !useProtocolStore.getState().sessions[sessionId]; attempt++) {
+            await refreshSessions().catch(() => undefined);
+            if (useProtocolStore.getState().sessions[sessionId]) break;
+            await new Promise((resolve) => setTimeout(resolve, 400));
+        }
+
+        if (zenState?.zenTaskId) linkZenTaskSession(zenState.zenTaskId, sessionId);
+        const permissionMode = PERMISSION_BY_AGENT[agent][mode];
+        const modelMeta = model !== "default" ? model : null;
+        if (zenState?.zenTaskTitle && !resume) {
+            await sendSessionMessage(sessionId, zenState.zenTaskTitle, { permissionMode, model: modelMeta })
+                .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)));
+        }
+        navigate(`/session/${sessionId}`, { replace: true, state: { permissionMode, model: modelMeta } });
+    };
+
+    const handleSpawnResult = async (result: SpawnSessionResult, options: SpawnSessionOptions, resume?: AgentSessionInfo) => {
+        if (result.type === "requestToApproveDirectoryCreation") {
+            setPendingDirectoryCreation({
+                directory: result.directory,
+                options,
+                ...(resume ? { resume } : {}),
+            });
+            return;
+        }
+        if (result.type === "error") {
+            toast.error(result.errorMessage);
+            return;
+        }
+        await finishSpawn(result.sessionId, resume);
+    };
+
     const spawn = async (resume?: AgentSessionInfo) => {
         if (!machine || isSpawning) return;
         const directory = resume?.projectPath ?? activeDir;
         if (directory === "") return;
         setIsSpawning(true);
         try {
-            const options = {
+            const options: SpawnSessionOptions = {
                 machineId: machine.id,
                 directory,
                 agent: resume?.agent ?? agent,
                 resumeSessionId: resume?.sessionId,
                 resumeSessionName: resume?.sessionName ?? undefined,
             };
-            let result: SpawnSessionResult = await machineSpawnNewSession(options);
-            if (result.type === "requestToApproveDirectoryCreation") {
-                if (!window.confirm(t("new.createDirConfirm", { dir: result.directory }))) return;
-                result = await machineSpawnNewSession({ ...options, approvedNewDirectoryCreation: true });
-            }
-            if (result.type === "error") {
-                toast.error(result.errorMessage);
-                return;
-            }
-            if (result.type !== "success") return;
-            const sessionId = result.sessionId;
-
-            // ждём появления сессии в сторе (нужен cipher для первого сообщения)
-            for (let attempt = 0; attempt < 10 && !useProtocolStore.getState().sessions[sessionId]; attempt++) {
-                await refreshSessions().catch(() => undefined);
-                if (useProtocolStore.getState().sessions[sessionId]) break;
-                await new Promise((resolve) => setTimeout(resolve, 400));
-            }
-
-            if (zenState?.zenTaskId) linkZenTaskSession(zenState.zenTaskId, sessionId);
-            const permissionMode = PERMISSION_BY_AGENT[agent][mode];
-            const modelMeta = model !== "default" ? model : null;
-            if (zenState?.zenTaskTitle && !resume) {
-                await sendSessionMessage(sessionId, zenState.zenTaskTitle, { permissionMode, model: modelMeta })
-                    .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)));
-            }
-            navigate(`/session/${sessionId}`, { replace: true, state: { permissionMode, model: modelMeta } });
+            const result = await machineSpawnNewSession(options);
+            await handleSpawnResult(result, options, resume);
         } finally {
+            setIsSpawning(false);
+        }
+    };
+
+    const approveDirectoryCreation = async () => {
+        if (!pendingDirectoryCreation || isApprovingDirectory) return;
+        setIsApprovingDirectory(true);
+        setIsSpawning(true);
+        try {
+            const options = { ...pendingDirectoryCreation.options, approvedNewDirectoryCreation: true };
+            const result = await machineSpawnNewSession(options);
+            const resume = pendingDirectoryCreation.resume;
+            setPendingDirectoryCreation(null);
+            await handleSpawnResult(result, options, resume);
+        } finally {
+            setIsApprovingDirectory(false);
             setIsSpawning(false);
         }
     };
@@ -233,7 +268,7 @@ export function NewSessionPage() {
             <header className="flex items-center px-5 pb-3 pt-1.5">
                 <h1 className="text-xl font-semibold">{t("new.title")}</h1>
                 <button aria-label={t("new.close")} onClick={() => navigate(-1)}
-                    className="ml-auto flex size-[38px] items-center justify-center rounded-[10px] border border-border">
+                    className="ml-auto flex size-11 items-center justify-center rounded-[10px] border border-border transition-[background-color,border-color,transform] active:scale-[0.96]">
                     <X className="size-4 text-muted-foreground" />
                 </button>
             </header>
@@ -330,7 +365,7 @@ export function NewSessionPage() {
 
                 {/* resume: bottom-sheet со списком прошлых сессий агента (RPC list-agent-sessions) */}
                 <button onClick={() => setSheet("resume")} disabled={!machine}
-                    className="flex h-10 items-center justify-center gap-2 rounded-[10px] border border-dashed border-border font-mono text-[11.5px] text-muted-foreground">
+                    className="flex h-11 items-center justify-center gap-2 rounded-[10px] border border-dashed border-border font-mono text-[11.5px] text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96]">
                     <RotateCcw className="size-3" /> {t("new.resume", { agent })}
                 </button>
             </main>
@@ -397,6 +432,35 @@ export function NewSessionPage() {
                     )}
                 </DrawerContent>
             </Drawer>
+
+            <Dialog open={pendingDirectoryCreation !== null} onOpenChange={(isOpen) => { if (!isOpen && !isApprovingDirectory) setPendingDirectoryCreation(null); }}>
+                <DialogContent showCloseButton={false} className="max-w-[calc(100%-2rem)] rounded-2xl border-border bg-card sm:max-w-sm">
+                    <DialogHeader>
+                        <DialogTitle className="text-base">{t("new.createDirTitle")}</DialogTitle>
+                        <DialogDescription className="break-words font-mono text-xs">
+                            {pendingDirectoryCreation ? t("new.createDirConfirm", { dir: pendingDirectoryCreation.directory }) : ""}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter className="gap-2">
+                        <button
+                            type="button"
+                            disabled={isApprovingDirectory}
+                            onClick={() => setPendingDirectoryCreation(null)}
+                            className="h-11 w-full rounded-[9px] border border-border text-[13px] font-medium text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96] disabled:opacity-50 lg:h-10 lg:flex-1"
+                        >
+                            {t("common.cancel")}
+                        </button>
+                        <button
+                            type="button"
+                            disabled={isApprovingDirectory}
+                            onClick={() => void approveDirectoryCreation()}
+                            className="h-11 w-full rounded-[9px] bg-accent text-[13px] font-semibold text-accent-foreground transition-[background-color,transform] active:scale-[0.96] disabled:opacity-50 lg:h-10 lg:flex-1"
+                        >
+                            {isApprovingDirectory ? t("new.spawning") : t("common.create")}
+                        </button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

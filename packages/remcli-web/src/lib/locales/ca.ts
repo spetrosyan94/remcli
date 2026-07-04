@@ -18,6 +18,7 @@ export const ca: Dictionary = {
     "common.cancel": "Cancel·la",
     "common.save": "Desa",
     "common.delete": "Elimina",
+    "common.create": "Crea",
 
     "permission.title": "sol·licitud de permís",
     "permission.danger": "ordre perillosa · irreversible",
@@ -194,6 +195,7 @@ export const ca: Dictionary = {
     "new.noMachines": "cap màquina — executa remcli daemon",
     "new.spawning": "iniciant…",
     "new.promptLabel": "prompt · primera ordre",
+    "new.createDirTitle": "Crear directori?",
     "new.createDirConfirm": "El directori «{dir}» no existeix a la màquina. Crear-lo?",
 
     "stub.title": "pantalla en desenvolupament",

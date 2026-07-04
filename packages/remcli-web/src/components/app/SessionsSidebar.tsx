@@ -174,18 +174,18 @@ export function StopSessionDialog({ target, onClose }: { target: StopTarget | nu
     };
     return (
         <Dialog open={target !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
-            <DialogContent showCloseButton={false} className="max-w-sm rounded-2xl border-border bg-card">
+            <DialogContent showCloseButton={false} className="max-w-[calc(100%-2rem)] rounded-2xl border-border bg-card sm:max-w-sm">
                 <DialogHeader>
                     <DialogTitle className="text-[15px]">{t("home.stop.title")}</DialogTitle>
-                    <DialogDescription className="font-mono text-xs">
+                    <DialogDescription className="break-words font-mono text-xs">
                         {target ? `${sessionPath(target.session)} · ` : ""}{t("home.stop.hint")}
                     </DialogDescription>
                 </DialogHeader>
                 <DialogFooter className="gap-2">
-                    <button onClick={onClose} className="h-10 flex-1 rounded-[9px] border border-border text-[13px] font-medium text-muted-foreground">
+                    <button onClick={onClose} className="h-11 w-full rounded-[9px] border border-border text-[13px] font-medium text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96] lg:h-10 lg:flex-1">
                         {t("common.cancel")}
                     </button>
-                    <button onClick={() => void confirmStop()} className="h-10 flex-1 rounded-[9px] bg-status-error text-[13px] font-semibold text-white">
+                    <button onClick={() => void confirmStop()} className="h-11 w-full rounded-[9px] bg-status-error text-[13px] font-semibold text-white transition-[background-color,transform] active:scale-[0.96] lg:h-10 lg:flex-1">
                         {t("home.stop.confirm")}
                     </button>
                 </DialogFooter>
@@ -203,9 +203,9 @@ export function StopOverlayButton({ onClick }: { onClick: () => void }) {
                 event.stopPropagation();
                 onClick();
             }}
-            className="absolute right-12 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-[8px] border border-border bg-card text-status-error lg:opacity-0 lg:transition-opacity lg:group-hover:opacity-100 lg:group-focus-within:opacity-100"
+            className="absolute right-9 top-1/2 flex size-11 -translate-y-1/2 items-center justify-center rounded-xl border border-border bg-card text-status-error transition-[background-color,border-color,color,opacity,transform] active:scale-[0.96] lg:right-10 lg:size-8 lg:opacity-0 lg:group-hover:opacity-100 lg:group-focus-within:opacity-100"
         >
-            <Square className="size-3 fill-status-error" />
+            <Square className="size-3.5 fill-status-error lg:size-3" />
         </button>
     );
 }

@@ -18,6 +18,7 @@ export const en: Dictionary = {
     "common.cancel": "Cancel",
     "common.save": "Save",
     "common.delete": "Delete",
+    "common.create": "Create",
 
     "permission.title": "permission request",
     "permission.danger": "dangerous command · irreversible",
@@ -194,6 +195,7 @@ export const en: Dictionary = {
     "new.noMachines": "no machines — run remcli daemon",
     "new.spawning": "starting…",
     "new.promptLabel": "prompt · first command",
+    "new.createDirTitle": "Create directory?",
     "new.createDirConfirm": "Directory “{dir}” does not exist on the machine. Create it?",
 
     "stub.title": "screen under construction",

@@ -248,7 +248,7 @@ export function ConciergeChat() {
             {/* шапка: назад · консьерж · модель */}
             <header className="flex items-center gap-2.5 border-b border-border px-3.5 pb-2.5">
                 <button aria-label={t("chat.aria.back")} onClick={() => navigate(-1)}
-                    className="flex size-[38px] items-center justify-center rounded-[10px]">
+                    className="flex size-11 items-center justify-center rounded-[10px] transition-[background-color,transform] active:scale-[0.96]">
                     <ArrowLeft className="size-[17px]" />
                 </button>
                 <div className="flex min-w-0 flex-1 flex-col">
@@ -265,7 +265,7 @@ export function ConciergeChat() {
                     {!config && !isCheckingStatus && (
                         <div className="flex flex-col items-center gap-2.5 rounded-xl border border-dashed border-border bg-card/50 px-4 py-6">
                             <span className="font-mono text-[11.5px] text-muted-foreground">{t("concierge.notConnected")}</span>
-                            <Link to="/connect" className="h-9 rounded-[9px] border border-border px-3.5 text-[13px] font-medium leading-9 text-muted-foreground">
+                            <Link to="/connect" className="h-11 rounded-[9px] border border-border px-3.5 text-[13px] font-medium leading-[44px] text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96]">
                                 {t("concierge.connect")}
                             </Link>
                         </div>

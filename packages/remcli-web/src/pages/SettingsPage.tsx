@@ -97,12 +97,14 @@ function PickerRow({ label, value, options, onSelect }: { label: string; value: 
     );
 }
 
-/** Тумблер (разметка эталона settings.html: трек 36×22, бегунок 18px). */
+/** Тумблер: визуальный трек 36×22, реальная mobile touch-зона 44×44. */
 function ToggleSwitch({ isOn, onToggle }: { isOn: boolean; onToggle: () => void }) {
     return (
         <button type="button" role="switch" aria-checked={isOn} onClick={onToggle}
-            className={`relative h-[22px] w-9 rounded-full transition-colors ${isOn ? "bg-accent" : "bg-border"}`}>
-            <span className={`absolute left-0.5 top-0.5 size-[18px] rounded-full transition-transform ${isOn ? "translate-x-[14px] bg-accent-foreground" : "bg-muted-foreground"}`} />
+            className="flex size-11 items-center justify-center rounded-full transition-transform active:scale-[0.96]">
+            <span className={`relative h-[22px] w-9 rounded-full transition-colors ${isOn ? "bg-accent" : "bg-border"}`}>
+                <span className={`absolute left-0.5 top-0.5 size-[18px] rounded-full transition-transform ${isOn ? "translate-x-[14px] bg-accent-foreground" : "bg-muted-foreground"}`} />
+            </span>
         </button>
     );
 }
@@ -244,15 +246,15 @@ export function SettingsPage() {
                             </span>
                             <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
-                                    <button type="button" aria-label={machineName(machine)} className="flex items-center">
+                                    <button type="button" aria-label={machineName(machine)} className="-mr-3 flex size-11 items-center justify-center rounded-lg transition-[background-color,transform] hover:bg-muted active:scale-[0.96]">
                                         <MoreHorizontal className="size-4 text-muted-foreground/60" />
                                     </button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end">
-                                    <DropdownMenuItem className="font-mono text-xs" onSelect={() => openRename(machine)}>
+                                    <DropdownMenuItem className="min-h-11 font-mono text-xs" onSelect={() => openRename(machine)}>
                                         {t("settings.machine.rename")}
                                     </DropdownMenuItem>
-                                    <DropdownMenuItem variant="destructive" className="font-mono text-xs" onSelect={() => setDeleteTarget(machine)}>
+                                    <DropdownMenuItem variant="destructive" className="min-h-11 font-mono text-xs" onSelect={() => setDeleteTarget(machine)}>
                                         {t("settings.machine.delete")}
                                     </DropdownMenuItem>
                                 </DropdownMenuContent>
@@ -276,7 +278,7 @@ export function SettingsPage() {
 
             {/* Переименование машины (machine-update-metadata, OCC retry) */}
             <Dialog open={renameTarget !== null} onOpenChange={(isOpen) => { if (!isOpen) setRenameTarget(null); }}>
-                <DialogContent className="max-w-sm">
+                <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-sm">
                     <DialogHeader>
                         <DialogTitle className="text-base">{t("settings.machine.renameTitle")}</DialogTitle>
                     </DialogHeader>
@@ -289,24 +291,24 @@ export function SettingsPage() {
                         autoFocus
                     />
                     <DialogFooter>
-                        <Button variant="outline" size="sm" onClick={() => setRenameTarget(null)}>{t("common.cancel")}</Button>
-                        <Button size="sm" disabled={isRenaming} onClick={() => void submitRename()}>{t("common.save")}</Button>
+                        <Button variant="outline" size="sm" className="h-11 w-full lg:h-8 lg:w-auto" onClick={() => setRenameTarget(null)}>{t("common.cancel")}</Button>
+                        <Button size="sm" className="h-11 w-full lg:h-8 lg:w-auto" disabled={isRenaming} onClick={() => void submitRename()}>{t("common.save")}</Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
 
             {/* Удаление машины (DELETE /v1/machines/:id, 'delete-machine' разлетается всем клиентам) */}
             <Dialog open={deleteTarget !== null} onOpenChange={(isOpen) => { if (!isOpen) setDeleteTarget(null); }}>
-                <DialogContent className="max-w-sm">
+                <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-sm">
                     <DialogHeader>
                         <DialogTitle className="text-base">{t("settings.machine.deleteTitle")}</DialogTitle>
-                        <DialogDescription className="font-mono text-xs">
+                        <DialogDescription className="break-words font-mono text-xs">
                             {deleteTarget ? machineName(deleteTarget) : ""} · {t("settings.machine.deleteHint")}
                         </DialogDescription>
                     </DialogHeader>
                     <DialogFooter>
-                        <Button variant="outline" size="sm" onClick={() => setDeleteTarget(null)}>{t("common.cancel")}</Button>
-                        <Button variant="destructive" size="sm" disabled={isDeleting} onClick={() => void submitDelete()}>{t("common.delete")}</Button>
+                        <Button variant="outline" size="sm" className="h-11 w-full lg:h-8 lg:w-auto" onClick={() => setDeleteTarget(null)}>{t("common.cancel")}</Button>
+                        <Button variant="destructive" size="sm" className="h-11 w-full lg:h-8 lg:w-auto" disabled={isDeleting} onClick={() => void submitDelete()}>{t("common.delete")}</Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>

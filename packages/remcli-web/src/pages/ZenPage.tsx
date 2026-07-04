@@ -37,23 +37,31 @@ function sessionPath(session: Session): string {
 function TaskCheckbox({ isDone, onToggle }: { isDone: boolean; onToggle: () => void }) {
     if (isDone) {
         return (
+            <span className="relative mt-0.5 size-[18px] shrink-0">
+                <button
+                    type="button"
+                    aria-label={t("zen.toggleTask")}
+                    onClick={onToggle}
+                    className="absolute left-1/2 top-1/2 flex size-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-lg transition-transform active:scale-[0.96]"
+                >
+                    <span className="flex size-[18px] items-center justify-center rounded-md bg-accent">
+                        <Check className="size-2.5 text-accent-foreground" strokeWidth={3} />
+                    </span>
+                </button>
+            </span>
+        );
+    }
+    return (
+        <span className="relative mt-0.5 size-[18px] shrink-0">
             <button
                 type="button"
                 aria-label={t("zen.toggleTask")}
                 onClick={onToggle}
-                className="mt-0.5 flex size-[18px] shrink-0 items-center justify-center rounded-md bg-accent"
+                className="absolute left-1/2 top-1/2 flex size-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-lg transition-transform active:scale-[0.96]"
             >
-                <Check className="size-2.5 text-accent-foreground" strokeWidth={3} />
+                <span className="size-[18px] rounded-md border-[1.5px] border-muted-foreground/40" />
             </button>
-        );
-    }
-    return (
-        <button
-            type="button"
-            aria-label={t("zen.toggleTask")}
-            onClick={onToggle}
-            className="mt-0.5 size-[18px] shrink-0 rounded-md border-[1.5px] border-muted-foreground/40"
-        />
+        </span>
     );
 }
 
@@ -142,7 +150,7 @@ export function ZenPage() {
                                     <button
                                         type="button"
                                         onClick={() => navigate(`/session/${linkedSession.id}`)}
-                                        className="flex w-fit items-center gap-1.5 rounded-[7px] border border-border bg-card px-2.5 py-1 font-mono text-[10.5px] text-muted-foreground"
+                                        className="flex min-h-11 w-fit items-center gap-1.5 rounded-[7px] border border-border bg-card px-3 font-mono text-[10.5px] text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96] lg:min-h-8 lg:px-2.5"
                                     >
                                         <StatusDot status={sessionStatus(linkedSession)} className="size-[5px]" />
                                         {sessionPath(linkedSession)} · {sessionAgent(linkedSession)}
@@ -161,7 +169,7 @@ export function ZenPage() {
                                 <button
                                     type="button"
                                     onClick={() => navigate("/new", { state: { zenTaskTitle: task.title, zenTaskId: task.id } })}
-                                    className="flex h-8 w-fit items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-semibold text-primary-foreground"
+                                    className="flex h-11 w-fit items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-semibold text-primary-foreground transition-transform active:scale-[0.96] lg:h-8"
                                 >
                                     <Play className="size-2.5 fill-current" /> {t("zen.workOnTask")}
                                 </button>

@@ -135,7 +135,7 @@ function MobileHome({ groups, controls, isConciergeAvailable }: {
                 <button
                     aria-label={t("home.searchAria")}
                     onClick={openCommandPalette}
-                    className="flex size-[38px] items-center justify-center rounded-[10px] border border-border"
+                    className="flex size-11 items-center justify-center rounded-[10px] border border-border transition-[background-color,border-color,transform] active:scale-[0.96]"
                 >
                     <Search className="size-[15px] text-muted-foreground" />
                 </button>
@@ -159,7 +159,7 @@ function MobileHome({ groups, controls, isConciergeAvailable }: {
                             action={
                                 <button
                                     onClick={() => navigate("/new")}
-                                    className="h-9 rounded-[9px] bg-primary px-4 text-[13px] font-semibold text-primary-foreground"
+                                    className="h-11 rounded-[9px] bg-primary px-4 text-[13px] font-semibold text-primary-foreground transition-transform active:scale-[0.96]"
                                 >
                                     {t("home.newSession")}
                                 </button>
@@ -214,6 +214,7 @@ function MachineSection({ group, controls, isFirst }: { group: MachineGroup; con
                             message={sessionMessage(session)}
                             status={status}
                             time={formatTimeLabel(session.activeAt)}
+                            hasTrailingAction={status !== "offline"}
                             onClick={() => navigate(`/session/${session.id}`)}
                         />
                         {status !== "offline" && (

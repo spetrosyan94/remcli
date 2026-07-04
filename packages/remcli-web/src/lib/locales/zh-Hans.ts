@@ -18,6 +18,7 @@ export const zhHans: Dictionary = {
     "common.cancel": "取消",
     "common.save": "保存",
     "common.delete": "删除",
+    "common.create": "创建",
 
     "permission.title": "权限请求",
     "permission.danger": "危险命令 · 不可撤销",
@@ -194,6 +195,7 @@ export const zhHans: Dictionary = {
     "new.noMachines": "没有机器 — 请运行 remcli daemon",
     "new.spawning": "正在启动…",
     "new.promptLabel": "提示词 · 第一条命令",
+    "new.createDirTitle": "创建目录？",
     "new.createDirConfirm": "机器上不存在目录「{dir}」。要创建吗？",
 
     "stub.title": "页面开发中",

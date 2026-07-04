@@ -18,6 +18,7 @@ export const pt: Dictionary = {
     "common.cancel": "Cancelar",
     "common.save": "Salvar",
     "common.delete": "Excluir",
+    "common.create": "Criar",
 
     "permission.title": "solicitação de permissão",
     "permission.danger": "comando perigoso · irreversível",
@@ -194,6 +195,7 @@ export const pt: Dictionary = {
     "new.noMachines": "nenhuma máquina — execute remcli daemon",
     "new.spawning": "iniciando…",
     "new.promptLabel": "prompt · primeiro comando",
+    "new.createDirTitle": "Criar diretório?",
     "new.createDirConfirm": "O diretório «{dir}» não existe na máquina. Criar?",
 
     "stub.title": "tela em desenvolvimento",

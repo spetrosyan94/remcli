@@ -18,6 +18,7 @@ export const ja: Dictionary = {
     "common.cancel": "キャンセル",
     "common.save": "保存",
     "common.delete": "削除",
+    "common.create": "作成",
 
     "permission.title": "許可リクエスト",
     "permission.danger": "危険なコマンド · 取り消し不可",
@@ -194,6 +195,7 @@ export const ja: Dictionary = {
     "new.noMachines": "マシンがありません — remcli daemon を実行してください",
     "new.spawning": "起動中…",
     "new.promptLabel": "プロンプト · 最初のコマンド",
+    "new.createDirTitle": "ディレクトリを作成しますか？",
     "new.createDirConfirm": "ディレクトリ「{dir}」はマシンに存在しません。作成しますか？",
 
     "stub.title": "開発中の画面",

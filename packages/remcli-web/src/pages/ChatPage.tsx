@@ -598,7 +598,7 @@ export function ChatPage() {
                     <>
                         <span className="font-mono text-[11.5px] text-muted-foreground">{t("chat.notFound")}</span>
                         <button onClick={() => navigate("/")}
-                            className="h-9 rounded-[9px] border border-border px-3.5 text-[13px] font-medium text-muted-foreground">
+                            className="h-11 rounded-[9px] border border-border px-3.5 text-[13px] font-medium text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96]">
                             {t("chat.ended.toList")}
                         </button>
                     </>
@@ -664,7 +664,7 @@ export function ChatPage() {
             {/* шапка: проект · агент/хост/статус · режим разрешений · меню */}
             <header className="flex items-center gap-2.5 border-b border-border px-3.5 pb-2.5 lg:pt-2.5">
                 <button aria-label={t("chat.aria.back")} onClick={() => navigate(-1)}
-                    className="flex size-[38px] items-center justify-center rounded-[10px] lg:hidden">
+                    className="flex size-11 items-center justify-center rounded-[10px] transition-[background-color,transform] active:scale-[0.96] lg:hidden">
                     <ArrowLeft className="size-[17px]" />
                 </button>
                 <div className="flex min-w-0 flex-1 flex-col">
@@ -683,10 +683,10 @@ export function ChatPage() {
                     </Link>
                 </div>
                 <button onClick={cycleMode}
-                    className="flex items-center gap-1 rounded-lg bg-muted px-2.5 py-1.5 font-mono text-[10.5px] md:hidden">
+                    className="flex h-11 items-center gap-1 rounded-lg bg-muted px-3 font-mono text-[10.5px] transition-[background-color,color,transform] active:scale-[0.96] md:hidden">
                     {uiMode} <ChevronDown className="size-2.5 text-muted-foreground" />
                 </button>
-                <button aria-label={t("chat.aria.menu")} className="flex size-[38px] items-center justify-center rounded-[10px]">
+                <button aria-label={t("chat.aria.menu")} className="flex size-11 items-center justify-center rounded-[10px] transition-[background-color,transform] active:scale-[0.96]">
                     <MoreHorizontal className="size-[17px] text-muted-foreground" />
                 </button>
             </header>
@@ -710,7 +710,7 @@ export function ChatPage() {
                     {messagesLoaded && hasMore && (
                         <div className="flex justify-center pb-1">
                             <button onClick={() => void loadOlder()} disabled={isLoadingOlder}
-                                className="flex h-8 items-center gap-2 rounded-[9px] border border-border px-3 font-mono text-[10.5px] text-muted-foreground disabled:opacity-60">
+                                className="flex h-11 items-center gap-2 rounded-[9px] border border-border px-3 font-mono text-[10.5px] text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96] disabled:opacity-60 lg:h-8">
                                 {isLoadingOlder && <Loader2 className="size-3 animate-spin" />}
                                 {t("chat.loadEarlier")}
                             </button>
@@ -764,12 +764,10 @@ export function ChatPage() {
                                 {item.texts.length > 0 && (
                                     <div className="flex gap-2">
                                         {isTtsAvailable && (
-                                            <span onClick={() => toggleListen(item.id, groupText)}>
-                                                <ListenButton state={listenState} />
-                                            </span>
+                                            <ListenButton state={listenState} onClick={() => toggleListen(item.id, groupText)} />
                                         )}
                                         <button onClick={() => void navigator.clipboard.writeText(groupText)}
-                                            className="h-7 cursor-pointer rounded-[7px] px-2.5 font-mono text-[10.5px] text-muted-foreground/60 transition-colors duration-[120ms] hover:bg-muted hover:text-foreground">
+                                            className="h-11 cursor-pointer rounded-[7px] px-3 font-mono text-[10.5px] text-muted-foreground/60 transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-7 lg:px-2.5">
                                             {t("chat.copy")}
                                         </button>
                                     </div>
@@ -804,12 +802,12 @@ export function ChatPage() {
                             <span className="font-mono text-[11px] text-muted-foreground">{t("chat.ended")}</span>
                             <div className="flex gap-2">
                                 <button onClick={() => void resumeSession()} disabled={isResuming}
-                                    className="flex h-9 items-center gap-1.5 rounded-[9px] bg-primary px-3.5 text-[13px] font-semibold text-primary-foreground disabled:opacity-60">
+                                    className="flex h-11 items-center gap-1.5 rounded-[9px] bg-primary px-3.5 text-[13px] font-semibold text-primary-foreground transition-transform active:scale-[0.96] disabled:opacity-60 lg:h-9">
                                     {isResuming && <Loader2 className="size-3.5 animate-spin" />}
                                     {t("chat.ended.resume")}
                                 </button>
                                 <button onClick={() => navigate("/")}
-                                    className="h-9 rounded-[9px] border border-border px-3.5 text-[13px] font-medium text-muted-foreground">
+                                    className="h-11 rounded-[9px] border border-border px-3.5 text-[13px] font-medium text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96] lg:h-9">
                                     {t("chat.ended.toList")}
                                 </button>
                             </div>

@@ -19,6 +19,7 @@ export const ru = {
     "common.cancel": "Отмена",
     "common.save": "Сохранить",
     "common.delete": "Удалить",
+    "common.create": "Создать",
 
     "permission.title": "запрос разрешения",
     "permission.danger": "опасная команда · необратимо",
@@ -195,6 +196,7 @@ export const ru = {
     "new.noMachines": "нет машин — запустите remcli daemon",
     "new.spawning": "запускаем…",
     "new.promptLabel": "промпт · первая команда",
+    "new.createDirTitle": "Создать директорию?",
     "new.createDirConfirm": "Директории «{dir}» нет на машине. Создать?",
 
     "stub.title": "экран в разработке",

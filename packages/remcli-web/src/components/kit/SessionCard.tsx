@@ -4,9 +4,9 @@ import { StatusDot } from "@/components/kit/StatusBadge";
 import type { AgentId, Status } from "@/components/kit/types";
 
 export function SessionCard(props: {
-    agent: AgentId; path: string; message: string; status: Status; time?: string; onClick?: () => void;
+    agent: AgentId; path: string; message: string; status: Status; time?: string; hasTrailingAction?: boolean; onClick?: () => void;
 }) {
-    const { agent, path, message, status, time, onClick } = props;
+    const { agent, path, message, status, time, hasTrailingAction, onClick } = props;
     const frame =
         status === "permission"
             ? "border-status-permission/40 bg-gradient-to-r from-status-permission/10 to-card [--status-glow-color:hsl(var(--status-permission)_/_0.24)]"
@@ -23,7 +23,7 @@ export function SessionCard(props: {
         : status === "thinking" ? "text-status-thinking"
         : "text-muted-foreground";
     return (
-        <button key={status} onClick={onClick} className={`flex w-full animate-status-glow items-center gap-3 rounded-xl border p-3 text-left transition-[background-color,border-color,color,box-shadow,opacity] duration-[250ms] ease-[var(--ease-out)] ${frame}`}>
+        <button key={status} onClick={onClick} className={`flex w-full animate-status-glow items-center gap-3 rounded-xl border p-3 text-left transition-[background-color,border-color,color,box-shadow,opacity] duration-[250ms] ease-[var(--ease-out)] ${hasTrailingAction ? "pr-20" : ""} ${frame}`}>
             <AgentIcon agent={agent} />
             <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <span className="truncate font-mono text-[13px] font-semibold">{path}</span>
