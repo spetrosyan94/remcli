@@ -4,6 +4,9 @@ let agentOptions: Array<{ id: string; models: string[] }> = [];
 let getModelOverride = (_model: string): string | null => {
     throw new Error('NewSessionPage module was not loaded');
 };
+let modelOverrideState = (_model: string, _hasExplicitModelSelection: boolean): { model?: string | null } => {
+    throw new Error('NewSessionPage module was not loaded');
+};
 
 beforeAll(async () => {
     vi.stubGlobal('localStorage', {
@@ -20,6 +23,7 @@ beforeAll(async () => {
     const pageModule = await import('@/pages/NewSessionPage');
     agentOptions = pageModule.AGENT_OPTIONS;
     getModelOverride = pageModule.getModelOverride;
+    modelOverrideState = pageModule.modelOverrideState;
 });
 
 afterAll(() => {
@@ -32,6 +36,14 @@ describe('NewSessionPage model selection', () => {
 
         expect(codex?.models[0]).toBe('default');
         expect(getModelOverride(codex?.models[0] ?? '')).toBeNull();
+    });
+
+    it('does not send model metadata for the initial default selection', () => {
+        expect(modelOverrideState('default', false)).toEqual({});
+    });
+
+    it('sends explicit default as a deliberate model reset only after user selection', () => {
+        expect(modelOverrideState('default', true)).toEqual({ model: null });
     });
 
     it('exposes current Codex model choices after default', () => {

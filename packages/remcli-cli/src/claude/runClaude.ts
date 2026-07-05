@@ -26,7 +26,7 @@ import { resolve } from 'node:path';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { Session } from './session';
 import { replaySessionHistory, extractResumeIdFromArgs } from '@/claude/utils/replaySessionHistory';
-import { normalizeClaudeMode } from '@/claude/utils/permissionMode';
+import { isClaudePermissionMode, normalizeClaudeMode } from '@/claude/utils/permissionMode';
 
 /** JavaScript runtime to use for spawning Claude Code */
 export type JsRuntime = 'node' | 'bun'
@@ -49,6 +49,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     
     const workingDirectory = process.cwd();
     const sessionTag = randomUUID();
+    const resumeId = extractResumeIdFromArgs(options.claudeArgs);
 
     // Log environment info at startup
     logger.debugLargeJson('[START] Remcli process started', getEnvironmentInfo());
@@ -96,6 +97,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         flavor: 'claude',
         // Session name from daemon spawn (resume flow)
         ...(process.env.REMCLI_SESSION_NAME ? { name: process.env.REMCLI_SESSION_NAME } : {}),
+        ...(resumeId ? { agentSessionId: resumeId, claudeSessionId: resumeId } : {}),
     };
     const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
 
@@ -212,7 +214,13 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         // Resolve permission mode from meta. Claude accepts only Claude-native modes.
         let messagePermissionMode: PermissionMode | undefined = currentPermissionMode;
         if (message.meta?.permissionMode) {
-            messagePermissionMode = normalizeClaudeMode(message.meta.permissionMode);
+            if (!isClaudePermissionMode(message.meta.permissionMode)) {
+                const errorText = `Unsupported Claude permission mode "${message.meta.permissionMode}".`;
+                logger.warn(`[loop] ${errorText}`);
+                session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
+                return;
+            }
+            messagePermissionMode = message.meta.permissionMode;
             currentPermissionMode = messagePermissionMode;
             logger.debug(`[loop] Permission mode updated from user message to: ${currentPermissionMode}`);
         } else {
@@ -388,7 +396,6 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     registerKillSessionHandler(session.rpcHandlerManager, cleanup);
 
     // Replay history from the original session into P2P store (for --resume)
-    const resumeId = extractResumeIdFromArgs(options.claudeArgs);
     if (resumeId) {
         const count = await replaySessionHistory(
             resumeId,

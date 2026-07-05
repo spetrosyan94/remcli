@@ -386,7 +386,7 @@ Payload, хранящийся в `SessionMessage.content`, всегда заши
       "completedAt": 123,
       "status": "canceled | denied | approved",
       "reason": "...",
-      "mode": "manual | default | acceptEdits | bypassPermissions | plan | auto | dontAsk | read-only | workspace-write | danger-full-access | auto_edit | yolo | agent | ask | force | auto-review",
+      "mode": "manual | acceptEdits | bypassPermissions | plan | auto | dontAsk | read-only | workspace-write | danger-full-access | auto_edit | agent | ask | force | auto-review",
       "decision": "approved | approved_for_session | denied | abort",
       "allowTools": ["..."]
     }

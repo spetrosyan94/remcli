@@ -59,6 +59,10 @@ export function getModelOverride(model: string): string | null {
     return model !== DEFAULT_MODEL_ID ? model : null;
 }
 
+export function modelOverrideState(model: string, hasExplicitModelSelection: boolean): { model?: string | null } {
+    return hasExplicitModelSelection ? { model: getModelOverride(model) } : {};
+}
+
 /* ---------- Хелперы ---------- */
 
 function formatRelativeTime(timestamp: number): string {
@@ -132,6 +136,7 @@ export function NewSessionPage() {
     const [machineId, setMachineId] = React.useState<string | null>(null);
     const [agent, setAgent] = React.useState<AgentId>("claude");
     const [model, setModel] = React.useState(AGENT_OPTIONS[0].models[0]);
+    const [hasExplicitModelSelection, setHasExplicitModelSelection] = React.useState(false);
     const [mode, setMode] = React.useState<PermissionMode>(() => getDefaultPermissionMode("claude"));
     const [dir, setDir] = React.useState<string | null>(null);
     const [dirDisplayPath, setDirDisplayPath] = React.useState<string | null>(null);
@@ -214,6 +219,7 @@ export function NewSessionPage() {
         setAgent(id);
         const nextModel = AGENT_OPTIONS.find((a) => a.id === id)?.models[0];
         if (nextModel) setModel(nextModel);
+        setHasExplicitModelSelection(false);
         setMode(getDefaultPermissionMode(id));
     };
 
@@ -252,12 +258,12 @@ export function NewSessionPage() {
 
         if (zenState?.zenTaskId) linkZenTaskSession(zenState.zenTaskId, sessionId);
         const permissionMode = normalizeAgentPermissionMode(agent, mode);
-        const modelMeta = getModelOverride(model);
+        const modelState = modelOverrideState(model, hasExplicitModelSelection);
         if (zenState?.zenTaskTitle && !resume) {
-            await sendSessionMessage(sessionId, zenState.zenTaskTitle, { permissionMode, model: modelMeta })
+            await sendSessionMessage(sessionId, zenState.zenTaskTitle, { permissionMode, ...modelState })
                 .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)));
         }
-        navigate(`/session/${sessionId}`, { replace: true, state: { permissionMode, model: modelMeta } });
+        navigate(`/session/${sessionId}`, { replace: true, state: { permissionMode, ...modelState } });
     };
 
     const handleSpawnResult = async (result: SpawnSessionResult, options: SpawnSessionOptions, resume?: AgentSessionInfo) => {
@@ -463,7 +469,11 @@ export function NewSessionPage() {
                             <SheetHeader title={t("new.modelTitle")} tag={agent} />
                             {agentModels.map((m) => (
                                 <SheetRow key={m} isActive={m === model} label={m}
-                                    onClick={() => { setModel(m); setSheet(null); }} />
+                                    onClick={() => {
+                                        setModel(m);
+                                        setHasExplicitModelSelection(true);
+                                        setSheet(null);
+                                    }} />
                             ))}
                         </>
                     )}

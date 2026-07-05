@@ -25,6 +25,7 @@ import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { PermissionMode } from '@/api/types';
+import { replayCodexSessionHistory } from './utils/replayCodexSessionHistory';
 
 type ReadyEventOptions = {
     pending: unknown;
@@ -188,6 +189,10 @@ export async function runCodex(opts: {
         machineId,
         startedBy: opts.startedBy
     });
+    if (opts.resumeSessionId) {
+        metadata.agentSessionId = opts.resumeSessionId;
+        metadata.codexSessionId = opts.resumeSessionId;
+    }
     const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
 
     // Handle server unreachable case - create offline stub with hot reconnection
@@ -237,6 +242,11 @@ export async function runCodex(opts: {
     let currentModel: string | undefined = undefined;
 
     session.onUserMessage((message) => {
+        if (message.meta?.sentFrom === 'history') {
+            logger.debug('[Codex] Ignoring replayed user message from session history');
+            return;
+        }
+
         // Resolve permission mode (accept all modes, will be mapped in switch statement)
         let messagePermissionMode = currentPermissionMode;
         if (message.meta?.permissionMode) {
@@ -249,19 +259,18 @@ export async function runCodex(opts: {
                 const errorText = formatUnsupportedCodexPermissionMessage(requestedPermissionMode);
                 logger.warn(`[Codex] ${errorText}`);
                 session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
-                messagePermissionMode = CODEX_DEFAULT_PERMISSION_MODE;
-                currentPermissionMode = CODEX_DEFAULT_PERMISSION_MODE;
+                return;
             }
         } else {
             const effectivePermissionMode = currentPermissionMode ?? `${CODEX_DEFAULT_PERMISSION_MODE} (effective)`;
             logger.debug(`[Codex] User message received with no permission mode override, using current: ${effectivePermissionMode}`);
         }
 
-        // Resolve model; explicit null or 'default' resets to undefined (let Codex choose)
+        // Resolve model; explicit null resets to undefined (let Codex choose)
         let messageModel = currentModel;
         if (message.meta?.hasOwnProperty('model')) {
             const raw = message.meta.model;
-            messageModel = (raw && raw !== 'default') ? raw : undefined;
+            messageModel = raw ? raw : undefined;
             currentModel = messageModel;
             logger.debug(`[Codex] Model updated from user message: ${messageModel || 'reset to default'}`);
         } else {
@@ -420,10 +429,28 @@ export async function runCodex(opts: {
     //
 
     const client = new CodexMcpClient();
+    client.setThreadIdChangeHandler((threadId) => {
+        session.updateMetadata((currentMetadata) => ({
+            ...currentMetadata,
+            agentSessionId: threadId,
+            codexSessionId: threadId,
+        }));
+    });
 
     if (opts.resumeSessionId) {
         client.setThreadId(opts.resumeSessionId);
         logger.debug(`[codex] Resume requested for Codex thread ${opts.resumeSessionId}`);
+        const count = await replayCodexSessionHistory(
+            opts.resumeSessionId,
+            process.cwd(),
+            (text) => session.sendUserTextMessage(text, { sentFrom: 'history' }),
+            (text) => session.sendCodexMessage({
+                type: 'message',
+                message: text,
+                id: randomUUID()
+            })
+        );
+        logger.debug(`[RESUME] Replayed ${count} historical Codex messages for thread ${opts.resumeSessionId}`);
     }
 
     permissionHandler = new CodexPermissionHandler(session);

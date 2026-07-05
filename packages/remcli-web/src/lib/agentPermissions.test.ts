@@ -10,14 +10,14 @@ describe('agent permission modes', () => {
     it('exposes backend-native permission modes for each agent', () => {
         expect(getAgentPermissionModes('claude')).toEqual(['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions']);
         expect(getAgentPermissionModes('codex')).toEqual(['read-only', 'workspace-write', 'danger-full-access']);
-        expect(getAgentPermissionModes('gemini')).toEqual(['default', 'auto_edit', 'plan', 'yolo']);
+        expect(getAgentPermissionModes('gemini')).toEqual(['manual', 'auto_edit', 'plan']);
         expect(getAgentPermissionModes('cursor')).toEqual(['agent', 'plan', 'ask', 'force', 'auto-review']);
     });
 
     it('uses the agent-specific initial permission mode', () => {
         expect(getDefaultPermissionMode('claude')).toBe('manual');
         expect(getDefaultPermissionMode('codex')).toBe('workspace-write');
-        expect(getDefaultPermissionMode('gemini')).toBe('default');
+        expect(getDefaultPermissionMode('gemini')).toBe('manual');
         expect(getDefaultPermissionMode('cursor')).toBe('agent');
     });
 
@@ -29,9 +29,8 @@ describe('agent permission modes', () => {
     });
 
     it('falls back instead of sending unsupported modes to an agent', () => {
-        expect(normalizeAgentPermissionMode('gemini', 'workspace-write')).toBe('default');
+        expect(normalizeAgentPermissionMode('gemini', 'workspace-write')).toBe('manual');
         expect(normalizeAgentPermissionMode('claude', 'read-only')).toBe('manual');
-        expect(normalizeAgentPermissionMode('cursor', 'yolo')).toBe('agent');
     });
 
     it('falls back for unsupported Codex modes instead of aliasing them', () => {

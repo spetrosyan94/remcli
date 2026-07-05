@@ -321,16 +321,16 @@ export async function sendSessionMessage(
 ): Promise<void> {
     const localId = randomUUID();
     const permissionMode = options?.permissionMode;
+    const meta: NonNullable<RawRecord['meta']> = {
+        sentFrom: 'web',
+        ...(permissionMode ? { permissionMode } : {}),
+        ...(options && Object.prototype.hasOwnProperty.call(options, 'model') ? { model: options.model ?? null } : {}),
+        ...(options?.displayText ? { displayText: options.displayText } : {})
+    };
     const record: RawRecord = {
         role: 'user',
         content: { type: 'text', text },
-        meta: {
-            sentFrom: 'web',
-            ...(permissionMode ? { permissionMode } : {}),
-            model: options?.model ?? null,
-            fallbackModel: null,
-            ...(options?.displayText ? { displayText: options.displayText } : {})
-        }
+        meta
     };
 
     // Fixture-режим: только локальное эхо, без шифрования и сети
@@ -367,7 +367,7 @@ export async function sendSessionMessage(
 export async function sessionAllow(
     sessionId: string,
     id: string,
-    mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk',
+    mode?: 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk',
     allowedTools?: string[],
     decision?: 'approved' | 'approved_for_session'
 ): Promise<void> {
@@ -382,7 +382,7 @@ export async function sessionAllow(
 export async function sessionDeny(
     sessionId: string,
     id: string,
-    mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk',
+    mode?: 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk',
     allowedTools?: string[],
     decision?: 'denied' | 'abort'
 ): Promise<void> {

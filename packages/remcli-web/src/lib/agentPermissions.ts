@@ -4,7 +4,7 @@ import type { PermissionMode } from "@/lib/protocol";
 export const PERMISSIONS_BY_AGENT: Record<AgentId, PermissionMode[]> = {
     claude: ["manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"],
     codex: ["read-only", "workspace-write", "danger-full-access"],
-    gemini: ["default", "auto_edit", "plan", "yolo"],
+    gemini: ["manual", "auto_edit", "plan"],
     cursor: ["agent", "plan", "ask", "force", "auto-review"],
 };
 
@@ -30,7 +30,7 @@ export function getDefaultPermissionMode(agent: AgentId): PermissionMode {
     if (agent === "claude") return "manual";
     if (agent === "cursor") return "agent";
     const modes = getAgentPermissionModes(agent);
-    return modes.includes("default") ? "default" : modes[0];
+    return modes[0];
 }
 
 export function isAgentPermissionMode(agent: AgentId, mode: PermissionMode): boolean {

@@ -41,6 +41,10 @@ function isCursorPermissionMode(mode: PermissionMode): mode is CursorPermissionM
         || mode === 'auto-review';
 }
 
+function formatUnsupportedCursorPermissionMessage(permissionMode: PermissionMode): string {
+    return `Unsupported Cursor permission mode "${permissionMode}".`;
+}
+
 /**
  * Main entry point for the cursor command with ink UI
  */
@@ -81,6 +85,10 @@ export async function runCursor(opts: {
         machineId,
         startedBy: opts.startedBy,
     });
+    if (opts.resumeSessionId) {
+        metadata.agentSessionId = opts.resumeSessionId;
+        metadata.cursorSessionId = opts.resumeSessionId;
+    }
     const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
 
     // Handle server unreachable — create offline stub with hot reconnection
@@ -129,7 +137,10 @@ export async function runCursor(opts: {
                 currentPermissionMode = messagePermissionMode;
                 logger.debug(`[Cursor] Permission mode updated: ${currentPermissionMode}`);
             } else {
-                logger.debug(`[Cursor] Ignoring unsupported permission mode: ${requestedMode}`);
+                const errorText = formatUnsupportedCursorPermissionMessage(requestedMode);
+                logger.warn(`[Cursor] ${errorText}`);
+                session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
+                return;
             }
         }
 
@@ -367,6 +378,11 @@ export async function runCursor(opts: {
                     if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
                         cursorSessionId = event.session_id;
                         logger.debug(`[Cursor] Session ID: ${cursorSessionId}`);
+                        session.updateMetadata((currentMetadata) => ({
+                            ...currentMetadata,
+                            agentSessionId: cursorSessionId ?? undefined,
+                            cursorSessionId: cursorSessionId ?? undefined,
+                        }));
                     }
                 }
 

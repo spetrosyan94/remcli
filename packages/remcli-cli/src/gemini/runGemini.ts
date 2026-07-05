@@ -127,6 +127,10 @@ export async function runGemini(opts: {
     machineId,
     startedBy: opts.startedBy
   });
+  if (opts.resumeSessionId) {
+    metadata.agentSessionId = opts.resumeSessionId;
+    metadata.geminiSessionId = opts.resumeSessionId;
+  }
   const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
 
   // Handle server unreachable case - create offline stub with hot reconnection
@@ -209,7 +213,7 @@ export async function runGemini(opts: {
     // Resolve permission mode (validate) - same as Codex
     let messagePermissionMode = currentPermissionMode;
     if (message.meta?.permissionMode) {
-      const validModes: GeminiPermissionMode[] = ['default', 'auto_edit', 'yolo', 'plan'];
+      const validModes: GeminiPermissionMode[] = ['manual', 'auto_edit', 'plan'];
       if (validModes.includes(message.meta.permissionMode as GeminiPermissionMode)) {
         messagePermissionMode = message.meta.permissionMode as GeminiPermissionMode;
         currentPermissionMode = messagePermissionMode;
@@ -217,16 +221,19 @@ export async function runGemini(opts: {
         updatePermissionMode(messagePermissionMode);
         logger.debug(`[Gemini] Permission mode updated from user message to: ${currentPermissionMode}`);
       } else {
-        logger.debug(`[Gemini] Invalid permission mode received: ${message.meta.permissionMode}`);
+        const errorText = `Unsupported Gemini permission mode "${message.meta.permissionMode}".`;
+        logger.warn(`[Gemini] ${errorText}`);
+        session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
+        return;
       }
     } else {
-      logger.debug(`[Gemini] User message received with no permission mode override, using current: ${currentPermissionMode ?? 'default (effective)'}`);
+      logger.debug(`[Gemini] User message received with no permission mode override, using current: ${currentPermissionMode ?? 'manual (effective)'}`);
     }
     
     // Initialize permission mode if not set yet
     if (currentPermissionMode === undefined) {
-      currentPermissionMode = 'default';
-      updatePermissionMode('default');
+      currentPermissionMode = 'manual';
+      updatePermissionMode('manual');
     }
 
     // Resolve model; explicit null resets to default (undefined)
@@ -271,7 +278,7 @@ export async function runGemini(opts: {
     }
 
     const mode: GeminiMode = {
-      permissionMode: messagePermissionMode || 'default',
+      permissionMode: messagePermissionMode || 'manual',
       model: messageModel,
       originalUserMessage, // Store original message separately
     };
@@ -920,6 +927,11 @@ export async function runGemini(opts: {
         const { sessionId } = await geminiBackend.startSession();
         acpSessionId = sessionId;
         logger.debug(`[gemini] New ACP session started: ${acpSessionId}`);
+        session.updateMetadata((currentMetadata) => ({
+          ...currentMetadata,
+          agentSessionId: sessionId,
+          geminiSessionId: sessionId,
+        }));
         
         // Update displayed model in UI (don't save to config - this is backend initialization)
         logger.debug(`[gemini] Calling updateDisplayedModel with: ${actualModel}`);
@@ -983,6 +995,11 @@ export async function runGemini(opts: {
             const { sessionId } = await geminiBackend.startSession();
             acpSessionId = sessionId;
             logger.debug(`[gemini] ACP session started: ${acpSessionId}`);
+            session.updateMetadata((currentMetadata) => ({
+              ...currentMetadata,
+              agentSessionId: sessionId,
+              geminiSessionId: sessionId,
+            }));
             wasSessionCreated = true;
             currentModeHash = message.hash;
             

@@ -599,9 +599,6 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('remcli doctor 
         unknownArgs.push(arg)
       } else if (arg === '--remcli-starting-mode') {
         options.startingMode = z.enum(['local', 'remote']).parse(args[++i])
-      } else if (arg === '--yolo') {
-        // Shortcut for --dangerously-skip-permissions
-        unknownArgs.push('--dangerously-skip-permissions')
       } else if (arg === '--started-by') {
         options.startedBy = args[++i] as 'daemon' | 'terminal'
       } else if (arg === '--js-runtime') {
@@ -678,8 +675,6 @@ ${chalk.bold('Usage:')}
 
 ${chalk.bold('Examples:')}
   remcli                    Start session
-  remcli --yolo             Start with bypassing permissions
-                            remcli sugar for --dangerously-skip-permissions
   remcli --chrome           Enable Chrome browser access for this session
   remcli --no-chrome        Disable Chrome even if default is on
   remcli --js-runtime bun   Use bun instead of node to spawn Claude Code

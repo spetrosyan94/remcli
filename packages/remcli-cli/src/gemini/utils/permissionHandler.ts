@@ -72,7 +72,7 @@ function isAutoEditOperation(toolName: string, input: unknown): boolean {
  * Gemini-specific permission handler with permission mode support.
  */
 export class GeminiPermissionHandler extends BasePermissionHandler {
-    private currentPermissionMode: GeminiPermissionMode = 'default';
+    private currentPermissionMode: GeminiPermissionMode = 'manual';
 
     constructor(session: ApiSessionClient) {
         super(session);
@@ -107,13 +107,11 @@ export class GeminiPermissionHandler extends BasePermissionHandler {
         }
 
         switch (this.currentPermissionMode) {
-            case 'yolo':
-                return true;
             case 'auto_edit':
                 return isAutoEditOperation(toolName, input);
             case 'plan':
                 return isReadOnlyOperation(toolName, input);
-            case 'default':
+            case 'manual':
                 return false;
             default:
                 // Unknown modes must ask rather than silently auto-approve.
@@ -170,13 +168,13 @@ export class GeminiPermissionHandler extends BasePermissionHandler {
                         createdAt: Date.now(),
                         completedAt: Date.now(),
                         status: 'approved',
-                        decision: this.currentPermissionMode === 'yolo' ? 'approved_for_session' : 'approved'
+                        decision: 'approved'
                     }
                 }
             }));
 
             return {
-                decision: this.currentPermissionMode === 'yolo' ? 'approved_for_session' : 'approved'
+                decision: 'approved'
             };
         }
 

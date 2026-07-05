@@ -6,7 +6,6 @@ export type ClaudeSdkPermissionMode = NonNullable<QueryOptions['permissionMode']
 
 export function isClaudePermissionMode(mode: PermissionMode): mode is ClaudePermissionMode {
     return mode === 'manual'
-        || mode === 'default'
         || mode === 'acceptEdits'
         || mode === 'bypassPermissions'
         || mode === 'plan'
@@ -16,8 +15,8 @@ export function isClaudePermissionMode(mode: PermissionMode): mode is ClaudePerm
 
 export function normalizeClaudeMode(mode: PermissionMode | undefined): ClaudePermissionMode {
     if (!mode) return 'manual';
-    if (isClaudePermissionMode(mode)) return mode === 'default' ? 'manual' : mode;
-    return 'manual';
+    if (isClaudePermissionMode(mode)) return mode;
+    throw new Error(`Unsupported Claude permission mode "${mode}".`);
 }
 
 export function mapToClaudeMode(mode: PermissionMode | undefined): ClaudeSdkPermissionMode {

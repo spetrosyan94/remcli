@@ -85,11 +85,11 @@ export const AIBackendProfileSchema = z.object({
     // Default session type for this profile
     defaultSessionType: z.enum(['simple', 'worktree']).optional(),
 
-    // Default permission mode for this profile (shared across supported agent backends)
+    // Default permission mode for this profile. Values must be native Remcli permission modes.
     defaultPermissionMode: z.enum([
-        'manual', 'default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk',
+        'manual', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk',
         'read-only', 'workspace-write', 'danger-full-access',
-        'auto_edit', 'yolo',
+        'auto_edit',
         'agent', 'ask', 'force', 'auto-review'
     ]).optional(),
 

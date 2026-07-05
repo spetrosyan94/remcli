@@ -20,7 +20,7 @@ interface PermissionResponse {
     id: string;
     approved: boolean;
     reason?: string;
-    mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk';
+    mode?: 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk';
     allowTools?: string[];
     receivedAt?: number;
 }
@@ -81,7 +81,7 @@ export class PermissionHandler {
 
         // Update permission mode
         if (response.mode) {
-            this.permissionMode = response.mode === 'default' ? 'manual' : response.mode;
+            this.permissionMode = response.mode;
         }
 
         // Handle 
@@ -91,8 +91,8 @@ export class PermissionHandler {
             if (response.approved) {
                 logger.debug('Plan approved - injecting PLAN_FAKE_RESTART');
                 // Inject the approval message at the beginning of the queue
-                if (response.mode && ['manual', 'default', 'acceptEdits', 'bypassPermissions', 'auto', 'dontAsk'].includes(response.mode)) {
-                    this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: response.mode === 'default' ? 'manual' : response.mode });
+                if (response.mode && ['manual', 'acceptEdits', 'bypassPermissions', 'auto', 'dontAsk'].includes(response.mode)) {
+                    this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: response.mode });
                 } else {
                     this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: 'manual' });
                 }

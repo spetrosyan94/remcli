@@ -11,7 +11,6 @@ import { z } from 'zod';
 
 const permissionModeSchema = z.enum([
     'manual',
-    'default',
     'acceptEdits',
     'bypassPermissions',
     'plan',
@@ -21,7 +20,6 @@ const permissionModeSchema = z.enum([
     'workspace-write',
     'danger-full-access',
     'auto_edit',
-    'yolo',
     'agent',
     'ask',
     'force',

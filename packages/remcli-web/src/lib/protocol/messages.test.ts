@@ -9,11 +9,16 @@ describe('normalizeRawMessage', () => {
         expect(MessageMetaSchema.parse({ permissionMode: 'danger-full-access' }).permissionMode).toBe('danger-full-access');
     });
 
+    it('rejects removed legacy permission modes', () => {
+        expect(() => MessageMetaSchema.parse({ permissionMode: 'default' })).toThrow();
+        expect(() => MessageMetaSchema.parse({ permissionMode: 'yolo' })).toThrow();
+    });
+
     it('normalizes a plain user message with meta', () => {
         const result = normalizeRawMessage('m1', 'local-1', 5, 1000, {
             role: 'user',
             content: { type: 'text', text: 'hello agent' },
-            meta: { sentFrom: 'web', permissionMode: 'default' }
+            meta: { sentFrom: 'web', permissionMode: 'manual' }
         });
         expect(result).toMatchObject({
             id: 'm1',

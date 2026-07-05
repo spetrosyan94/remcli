@@ -280,6 +280,25 @@ export class ApiSessionClient extends EventEmitter {
         });
     }
 
+    sendUserTextMessage(text: string, meta: { sentFrom?: string } = { sentFrom: 'cli' }) {
+        const content: MessageContent = {
+            role: 'user',
+            content: {
+                type: 'text',
+                text
+            },
+            meta: {
+                sentFrom: meta.sentFrom ?? 'cli'
+            }
+        };
+
+        const encrypted = encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, content));
+        this.socket.emit('message', {
+            sid: this.sessionId,
+            message: encrypted
+        });
+    }
+
     /**
      * Send a generic agent message to the session using ACP (Agent Communication Protocol) format.
      * Works for any agent type (Gemini, Codex, Claude, etc.) - CLI normalizes to unified ACP format.
@@ -314,7 +333,7 @@ export class ApiSessionClient extends EventEmitter {
     } | {
         type: 'message', message: string, isError?: boolean
     } | {
-        type: 'permission-mode-changed', mode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
+        type: 'permission-mode-changed', mode: 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk'
     } | {
         type: 'ready'
     }, id?: string) {

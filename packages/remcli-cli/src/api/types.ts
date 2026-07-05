@@ -1,9 +1,9 @@
 import { z } from 'zod'
 import { UsageSchema } from '@/claude/types'
 
-export type ClaudePermissionMode = 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk'
+export type ClaudePermissionMode = 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk'
 export type CodexPermissionMode = 'read-only' | 'workspace-write' | 'danger-full-access'
-export type GeminiPermissionMode = 'default' | 'auto_edit' | 'yolo' | 'plan'
+export type GeminiPermissionMode = 'manual' | 'auto_edit' | 'plan'
 export type CursorPermissionMode = 'agent' | 'plan' | 'ask' | 'force' | 'auto-review'
 
 /**
@@ -11,7 +11,7 @@ export type CursorPermissionMode = 'agent' | 'plan' | 'ask' | 'force' | 'auto-re
  * Must match MessageMetaSchema.permissionMode enum values.
  *
  * Agent-specific modes are validated at each backend boundary.
- * `default` remains only where it is native (Claude/Gemini) or a model sentinel.
+ * `default` is a model sentinel only, never a permission mode.
  */
 export type PermissionMode = ClaudePermissionMode | CodexPermissionMode | GeminiPermissionMode | CursorPermissionMode
 
@@ -243,9 +243,9 @@ export type SessionMessage = z.infer<typeof SessionMessageSchema>
 export const MessageMetaSchema = z.object({
   sentFrom: z.string().optional(), // Source identifier
   permissionMode: z.enum([
-    'manual', 'default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk',
+    'manual', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk',
     'read-only', 'workspace-write', 'danger-full-access',
-    'auto_edit', 'yolo',
+    'auto_edit',
     'agent', 'ask', 'force', 'auto-review'
   ]).optional(), // Permission mode for this message
   model: z.string().nullable().optional(), // Model name for this message (null = reset)
@@ -315,7 +315,11 @@ export type Metadata = {
     updatedAt: number
   },
   machineId?: string,
+  agentSessionId?: string, // Native agent session/thread ID for the current flavor
   claudeSessionId?: string, // Claude Code session ID
+  codexSessionId?: string, // Codex thread ID
+  cursorSessionId?: string, // Cursor agent session ID
+  geminiSessionId?: string, // Gemini ACP session ID
   tools?: string[],
   slashCommands?: string[],
   homeDir: string,

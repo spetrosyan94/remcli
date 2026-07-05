@@ -89,16 +89,34 @@ function agentOf(session: Session | null): AgentId {
     return flavor === "codex" || flavor === "gemini" || flavor === "cursor" ? flavor : "claude";
 }
 
+interface ChatNavState {
+    permissionMode?: PermissionMode;
+    model?: string | null;
+    hasModelOverride: boolean;
+}
+
 /** Начальные model/permissionMode из navigate state (контракт NewSessionPage → /session/:id). */
-function parseNavState(state: unknown): { permissionMode?: PermissionMode; model?: string | null } {
-    if (!state || typeof state !== "object") return {};
+export function parseNavState(state: unknown): ChatNavState {
+    if (!state || typeof state !== "object") return { hasModelOverride: false };
     const record = state as Record<string, unknown>;
+    const hasModelOverride = Object.prototype.hasOwnProperty.call(record, "model")
+        && (record.model === null || typeof record.model === "string");
     return {
         permissionMode: typeof record.permissionMode === "string"
             ? (record.permissionMode as PermissionMode)
             : undefined,
-        model: typeof record.model === "string" ? record.model : undefined,
+        model: hasModelOverride ? record.model as string | null : undefined,
+        hasModelOverride,
     };
+}
+
+export function agentSessionIdOf(session: Session | null, agent: AgentId): string | undefined {
+    const meta = session?.metadata;
+    if (!meta) return undefined;
+    if (agent === "codex") return meta.codexSessionId ?? meta.agentSessionId;
+    if (agent === "gemini") return meta.geminiSessionId ?? meta.agentSessionId;
+    if (agent === "cursor") return meta.cursorSessionId ?? meta.agentSessionId;
+    return meta.claudeSessionId ?? meta.agentSessionId;
 }
 
 function displayPath(session: Session): string {
@@ -566,7 +584,7 @@ export function ChatPage() {
         return active.length === 1 ? active[0].id : null;
     }, [machines, session]);
 
-    const resumeAgentSessionId = session?.metadata?.claudeSessionId;
+    const resumeAgentSessionId = agentSessionIdOf(session, agent);
     const isEnded = session ? session.presence !== "online" : false;
     const canResume = isEnded && !!resumeAgentSessionId && !!session?.metadata?.path && !!rpcMachineId;
 
@@ -654,7 +672,10 @@ export function ChatPage() {
         const text = draft.trim();
         if (!text) return;
         setDraft("");
-        void sendSessionMessage(sessionId, text, { permissionMode: activePermissionMode, model: navState.model ?? null })
+        const options = navState.hasModelOverride
+            ? { permissionMode: activePermissionMode, model: navState.model ?? null }
+            : { permissionMode: activePermissionMode };
+        void sendSessionMessage(sessionId, text, options)
             .catch((error: unknown) => {
                 const message = error instanceof Error ? error.message : String(error);
                 toast.error(t("chat.sendFailed"), { description: message });

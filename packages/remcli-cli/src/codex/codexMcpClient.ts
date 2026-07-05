@@ -106,6 +106,7 @@ export class CodexMcpClient {
     private sessionId: string | null = null;
     private conversationId: string | null = null;
     private handler: ((event: any) => void) | null = null;
+    private threadIdChangeHandler: ((threadId: string) => void) | null = null;
     private permissionHandler: CodexPermissionHandler | null = null;
 
     constructor() {
@@ -128,6 +129,10 @@ export class CodexMcpClient {
 
     setHandler(handler: ((event: any) => void) | null): void {
         this.handler = handler;
+    }
+
+    setThreadIdChangeHandler(handler: ((threadId: string) => void) | null): void {
+        this.threadIdChangeHandler = handler;
     }
 
     /**
@@ -391,6 +396,7 @@ export class CodexMcpClient {
     }
 
     private rememberThreadId(threadId: string, source: string): void {
+        const previousThreadId = this.threadId;
         this.threadId = threadId;
         if (!this.sessionId) {
             this.sessionId = threadId;
@@ -399,6 +405,9 @@ export class CodexMcpClient {
             this.conversationId = threadId;
         }
         logger.debug(`[CodexMCP] Thread ID extracted from ${source}:`, threadId);
+        if (previousThreadId !== threadId) {
+            this.threadIdChangeHandler?.(threadId);
+        }
     }
 
     hasActiveSession(): boolean {

@@ -12,6 +12,9 @@ export interface TrackedSession {
   startedBy: 'daemon' | string;
   remcliSessionId?: string;
   remcliSessionMetadataFromLocalWebhook?: Metadata;
+  expectedAgent?: 'claude' | 'codex' | 'cursor' | 'gemini';
+  expectedResumeSessionId?: string;
+  expectedResumeKey?: string;
   pid: number;
   childProcess?: ChildProcess;
   error?: string;

@@ -173,7 +173,11 @@ export const MetadataSchema = z.object({
         updatedAt: z.number()
     }).optional(),
     machineId: z.string().optional(),
+    agentSessionId: z.string().optional(),
     claudeSessionId: z.string().optional(), // Claude Code session ID
+    codexSessionId: z.string().optional(),
+    cursorSessionId: z.string().optional(),
+    geminiSessionId: z.string().optional(),
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),
     homeDir: z.string().optional(),
@@ -265,7 +269,6 @@ export type ApiMachine = z.infer<typeof ApiMachineSchema>;
 
 export type PermissionMode =
     | 'manual'
-    | 'default'
     | 'acceptEdits'
     | 'bypassPermissions'
     | 'plan'
@@ -275,7 +278,6 @@ export type PermissionMode =
     | 'workspace-write'
     | 'danger-full-access'
     | 'auto_edit'
-    | 'yolo'
     | 'agent'
     | 'ask'
     | 'force'

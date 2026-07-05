@@ -160,18 +160,18 @@ describe('GeminiPermissionHandler permission modes', () => {
         expect(getState().completedRequests?.[command]).toBeUndefined();
     });
 
-    it.each(['default', 'auto_edit', 'plan', 'yolo'] as const)('auto-approves change_title in %s mode', async (mode) => {
+    it.each(['manual', 'auto_edit', 'plan'] as const)('auto-approves change_title in %s mode', async (mode) => {
         const { session, getState } = createSessionMock();
         const handler = new GeminiPermissionHandler(session);
         handler.setPermissionMode(mode);
 
         const result = await handler.handleToolCall(`change-title-${mode}`, 'change_title', { title: 'New title' });
 
-        expect(result).toEqual({ decision: mode === 'yolo' ? 'approved_for_session' : 'approved' });
+        expect(result).toEqual({ decision: 'approved' });
         expect(getState().completedRequests?.[`change-title-${mode}`]).toMatchObject({
             tool: 'change_title',
             status: 'approved',
-            decision: mode === 'yolo' ? 'approved_for_session' : 'approved',
+            decision: 'approved',
         });
     });
 });

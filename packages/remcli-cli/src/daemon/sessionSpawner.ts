@@ -88,6 +88,7 @@ export function resolveSpawnAuthEnvironment(options: Pick<SpawnSessionOptions, '
 export function createSessionManager(): SessionManager {
     // State - key by PID
     const pidToTrackedSession = new Map<number, TrackedSession>();
+    const resumeSpawnPromises = new Map<string, Promise<SpawnSessionResult>>();
 
     // Session spawning awaiter system
     const pidToAwaiter = new Map<number, (session: TrackedSession) => void>();
@@ -96,6 +97,52 @@ export function createSessionManager(): SessionManager {
     const daemonTmuxSessions = new Set<string>();
 
     const getChildren = () => Array.from(pidToTrackedSession.values());
+
+    const agentOf = (options: Pick<SpawnSessionOptions, 'agent'>): 'claude' | 'codex' | 'cursor' | 'gemini' => (
+        options.agent === 'gemini' ? 'gemini'
+            : options.agent === 'cursor' ? 'cursor'
+                : options.agent === 'codex' ? 'codex'
+                    : 'claude'
+    );
+
+    const getNativeSessionId = (metadata: Metadata | undefined, agent: 'claude' | 'codex' | 'cursor' | 'gemini'): string | undefined => {
+        if (!metadata) return undefined;
+        switch (agent) {
+            case 'codex':
+                return metadata.codexSessionId ?? metadata.agentSessionId;
+            case 'cursor':
+                return metadata.cursorSessionId ?? metadata.agentSessionId;
+            case 'gemini':
+                return metadata.geminiSessionId ?? metadata.agentSessionId;
+            case 'claude':
+                return metadata.claudeSessionId ?? metadata.agentSessionId;
+        }
+    };
+
+    const resumeKeyOf = (agent: 'claude' | 'codex' | 'cursor' | 'gemini', resumeSessionId: string | undefined): string | null => (
+        resumeSessionId ? `${agent}:${resumeSessionId}` : null
+    );
+
+    const findTrackedResumeSession = (agent: 'claude' | 'codex' | 'cursor' | 'gemini', resumeSessionId: string): TrackedSession | null => {
+        for (const [pid, session] of pidToTrackedSession.entries()) {
+            const reportedAgent = session.remcliSessionMetadataFromLocalWebhook?.flavor;
+            const trackedAgent = reportedAgent ?? session.expectedAgent;
+            if (trackedAgent !== agent) continue;
+            const trackedResumeSessionId = session.remcliSessionMetadataFromLocalWebhook
+                ? getNativeSessionId(session.remcliSessionMetadataFromLocalWebhook, agent)
+                : session.expectedResumeSessionId;
+            if (trackedResumeSessionId === resumeSessionId) {
+                try {
+                    process.kill(pid, 0);
+                } catch {
+                    pidToTrackedSession.delete(pid);
+                    continue;
+                }
+                return session;
+            }
+        }
+        return null;
+    };
 
     // Handle webhook from remcli session reporting itself
     const onRemcliSessionWebhook = (sessionId: string, sessionMetadata: Metadata) => {
@@ -140,7 +187,7 @@ export function createSessionManager(): SessionManager {
     };
 
     // Spawn a new session (sessionId reserved for future --resume functionality)
-    const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
+    const spawnSessionWithoutResumeDedup = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
         logger.debugLargeJson('[DAEMON RUN] Spawning session', buildSafeSpawnSessionLogPayload(options));
 
         const { directory, approvedNewDirectoryCreation = true } = options;
@@ -330,6 +377,9 @@ export function createSessionManager(): SessionManager {
                     startedBy: 'daemon',
                     pid: tmuxResult.pid,
                     tmuxSessionId: tmuxResult.sessionId,
+                    expectedAgent: agent,
+                    expectedResumeSessionId: options.resumeSessionId,
+                    expectedResumeKey: resumeKeyOf(agent, options.resumeSessionId) ?? undefined,
                     directoryCreated,
                     message: directoryCreated
                         ? `The path '${directory}' did not exist. Created folder and spawned session in tmux '${tmuxSessionName}'.`
@@ -384,6 +434,40 @@ export function createSessionManager(): SessionManager {
                 errorMessage: `Failed to spawn session: ${errorMessage}`
             };
         }
+    };
+
+    const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
+        const agent = agentOf(options);
+        const resumeKey = resumeKeyOf(agent, options.resumeSessionId);
+
+        if (!resumeKey || !options.resumeSessionId) {
+            return spawnSessionWithoutResumeDedup(options);
+        }
+
+        const existing = findTrackedResumeSession(agent, options.resumeSessionId);
+        if (existing?.remcliSessionId) {
+            logger.debug(`[DAEMON RUN] Reusing active ${agent} session ${existing.remcliSessionId} for resume ${options.resumeSessionId}`);
+            return { type: 'success', sessionId: existing.remcliSessionId };
+        }
+
+        const pending = resumeSpawnPromises.get(resumeKey);
+        if (pending) {
+            logger.debug(`[DAEMON RUN] Joining pending ${agent} resume spawn for ${options.resumeSessionId}`);
+            return pending;
+        }
+
+        if (existing) {
+            const errorMessage = `${agent} session ${options.resumeSessionId} is already starting. Wait for it to appear instead of opening it again.`;
+            logger.debug(`[DAEMON RUN] Refusing duplicate resume spawn: ${errorMessage}`);
+            return { type: 'error', errorMessage };
+        }
+
+        const spawnPromise = spawnSessionWithoutResumeDedup(options)
+            .finally(() => {
+                resumeSpawnPromises.delete(resumeKey);
+            });
+        resumeSpawnPromises.set(resumeKey, spawnPromise);
+        return spawnPromise;
     };
 
     // Stop a session by sessionId or PID fallback

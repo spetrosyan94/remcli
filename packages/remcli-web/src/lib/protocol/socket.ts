@@ -365,7 +365,7 @@ interface SessionPermissionRequest {
     id: string;
     approved: boolean;
     reason?: string;
-    mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk';
+    mode?: 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk';
     allowTools?: string[];
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
 }
@@ -374,7 +374,7 @@ interface SessionPermissionRequest {
 export async function sessionAllow(
     sessionId: string,
     id: string,
-    mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk',
+    mode?: 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk',
     allowedTools?: string[],
     decision?: 'approved' | 'approved_for_session'
 ): Promise<void> {
@@ -386,7 +386,7 @@ export async function sessionAllow(
 export async function sessionDeny(
     sessionId: string,
     id: string,
-    mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk',
+    mode?: 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk',
     allowedTools?: string[],
     decision?: 'denied' | 'abort'
 ): Promise<void> {
