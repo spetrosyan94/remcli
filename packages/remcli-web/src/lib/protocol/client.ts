@@ -8,9 +8,11 @@
 
 import {
     fixtureAnswerPermission,
+    fixtureListAgentSessions,
     fixtureListDirectory,
     fixtureLoadSessionMessages,
     fixtureRestConfig,
+    fixtureSpawnNewSession,
     initFixturesIfEnabled
 } from '@/lib/fixtures';
 import {
@@ -32,7 +34,9 @@ import {
     type RestConfig
 } from '@/lib/protocol/rest';
 import {
+    machineListAgentSessions as socketMachineListAgentSessions,
     machineListDirectory as socketMachineListDirectory,
+    machineSpawnNewSession as socketMachineSpawnNewSession,
     onSocketMessage,
     onSocketReconnected,
     onSocketStatusChange,
@@ -42,7 +46,9 @@ import {
     socketConnect,
     socketDisconnect,
     socketEmitWithAck,
-    type DirectoryListing
+    type DirectoryListing,
+    type SpawnSessionOptions,
+    type SpawnSessionResult
 } from '@/lib/protocol/socket';
 import { useProtocolStore } from '@/lib/protocol/store';
 import {
@@ -52,6 +58,7 @@ import {
     MachineMetadataSchema,
     MetadataSchema,
     type AgentState,
+    type AgentSessionInfo,
     type ApiMachine,
     type ApiMessage,
     type ApiSession,
@@ -117,6 +124,27 @@ export async function machineListDirectory(machineId: string, path?: string): Pr
         return fixtureListDirectory(machineId, path);
     }
     return socketMachineListDirectory(machineId, path);
+}
+
+/** Spawn a new agent session on a machine; fixture mode creates a local store session. */
+export async function machineSpawnNewSession(options: SpawnSessionOptions): Promise<SpawnSessionResult> {
+    if (isFixturesActive) {
+        return fixtureSpawnNewSession(options);
+    }
+    return socketMachineSpawnNewSession(options);
+}
+
+/** List resumable agent sessions on a machine; fixture mode returns deterministic seeded sessions. */
+export async function machineListAgentSessions(
+    machineId: string,
+    agent?: string,
+    directory?: string,
+    limit?: number
+): Promise<AgentSessionInfo[]> {
+    if (isFixturesActive) {
+        return fixtureListAgentSessions(machineId, agent, directory, limit);
+    }
+    return socketMachineListAgentSessions(machineId, agent, directory, limit);
 }
 
 function requireContext(): ClientContext {

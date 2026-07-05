@@ -27,6 +27,7 @@ import type { PermissionMode } from '@/api/types';
 import { replayCodexSessionHistory } from './utils/replayCodexSessionHistory';
 import type { CodexApprovalPolicy, CodexSandbox, CodexToolResponse } from './types';
 import { isCodexAppServerStateUsable } from './codexAppServerHost';
+import { createCodexRemoteTuiOpener } from './codexRemoteTui';
 
 type ReadyEventOptions = {
     pending: unknown;
@@ -112,6 +113,7 @@ export function emitReadyIfIdle({ pending, queueSize, shouldExit, sendReady, not
 interface CodexAppServerClientSelection {
     client: CodexAppServerClient;
     usesSharedEndpoint: boolean;
+    remoteTuiEndpoint?: string;
 }
 
 async function createCodexAppServerClient(): Promise<CodexAppServerClientSelection> {
@@ -119,7 +121,11 @@ async function createCodexAppServerClient(): Promise<CodexAppServerClientSelecti
     const sharedEndpoint = daemonState?.codexAppServerEndpoint;
     if (sharedEndpoint && await isCodexAppServerStateUsable(daemonState)) {
         logger.debug(`[Codex] Using shared daemon Codex app-server ${sharedEndpoint}`);
-        return { client: new CodexAppServerClient({ endpoint: sharedEndpoint }), usesSharedEndpoint: true };
+        return {
+            client: new CodexAppServerClient({ endpoint: sharedEndpoint }),
+            usesSharedEndpoint: true,
+            remoteTuiEndpoint: sharedEndpoint,
+        };
     }
 
     if (sharedEndpoint) {
@@ -428,6 +434,7 @@ export async function runCodex(opts: {
     const appServerSelection = await createCodexAppServerClient();
     let appServerClient = appServerSelection.client;
     let usesSharedAppServer = appServerSelection.usesSharedEndpoint;
+    let remoteTuiEndpoint = appServerSelection.remoteTuiEndpoint;
     activeClient = appServerClient;
     let activeCodexThreadId = opts.resumeSessionId ?? appServerClient.getActiveThreadId();
 
@@ -597,6 +604,7 @@ export async function runCodex(opts: {
             }
             appServerClient = new CodexAppServerClient();
             usesSharedAppServer = false;
+            remoteTuiEndpoint = undefined;
             activeClient = appServerClient;
             activeCodexThreadId = opts.resumeSessionId ?? appServerClient.getActiveThreadId();
             appServerClient.setThreadIdChangeHandler(handleThreadIdChange);
@@ -607,6 +615,14 @@ export async function runCodex(opts: {
         logger.debug('[codex]: client.connect done');
         let wasCreated = false;
         let pending: QueuedCodexMessage | null = null;
+        const remoteTuiOpener = createCodexRemoteTuiOpener({
+            startedBy: opts.startedBy,
+            getEndpoint: () => remoteTuiEndpoint,
+        });
+
+        if (opts.resumeSessionId) {
+            remoteTuiOpener.openOnce(opts.resumeSessionId);
+        }
 
         const handleTurnResponse = (response: CodexToolResponse) => {
             if (!response.isError) {
@@ -744,6 +760,7 @@ export async function runCodex(opts: {
                             approvalPolicy: permissionConfig.approvalPolicy,
                             model: message.mode.model,
                         });
+                        remoteTuiOpener.openOnce(activeCodexThreadId);
                     } else {
                         activeCodexThreadId = await appServerClient.startThread({
                             cwd: process.cwd(),
@@ -751,6 +768,7 @@ export async function runCodex(opts: {
                             approvalPolicy: permissionConfig.approvalPolicy,
                             model: message.mode.model,
                         });
+                        remoteTuiOpener.openOnce(activeCodexThreadId);
                     }
                     wasCreated = true;
                 }

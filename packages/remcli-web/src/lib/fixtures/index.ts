@@ -10,11 +10,13 @@
  * - стор наполняется детерминированными данными (./data.ts, фиксированные времена);
  * - fetch к FIXTURE_ENDPOINT перехватывается и отвечает локально (zen-задачи в KV,
  *   статусы TTS/Whisper/concierge, concierge chat, /health);
+ * - spawn/resume agent session создаёт локальную session в store, без machine RPC;
  * - кнопки работают без сети: allow/deny убирают permission-карточку локально
  *   (fixtureAnswerPermission), отправка сообщения — локальное эхо (client.ts).
  */
 
 import {
+    FIXTURE_BASE_TIME,
     FIXTURE_CHAT_MESSAGES,
     FIXTURE_CHAT_SESSION_ID,
     FIXTURE_CONCIERGE_CHAT_RESPONSE,
@@ -25,8 +27,9 @@ import {
     FIXTURE_ZEN_TASKS,
     type FixtureConciergeFeedEntry
 } from '@/lib/fixtures/data';
-import type { DirectoryListing } from '@/lib/protocol/socket';
+import type { DirectoryListing, SpawnSessionOptions, SpawnSessionResult } from '@/lib/protocol/socket';
 import { useProtocolStore } from '@/lib/protocol/store';
+import type { AgentKind, AgentSessionInfo, Session, SessionMetadata } from '@/lib/protocol/types';
 
 export { FIXTURE_CHAT_SESSION_ID };
 
@@ -70,6 +73,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 // Zen-задачи живут в «KV» перехватчика: add/toggle на ZenPage работают без сети
 let zenTasksValue = JSON.stringify(FIXTURE_ZEN_TASKS);
 let zenTasksVersion = 1;
+let spawnedSessionCounter = 0;
 
 const FIXTURE_DIRECTORY_CHILDREN: Record<string, string[]> = {
     '/Users/dev': ['projects', 'Downloads', '.config'],
@@ -111,6 +115,32 @@ function normalizeFixtureDirectoryPath(path: string | undefined, homePath: strin
     if (!path || path === '~') return homePath;
     if (path.startsWith('~/')) return `${homePath}/${path.slice(2)}`;
     return trimTrailingSlash(path);
+}
+
+function isAgentKind(value: string | null | undefined): value is AgentKind {
+    return value === 'claude' || value === 'codex' || value === 'cursor' || value === 'gemini';
+}
+
+function fixtureSessionAgent(session: Session): AgentKind {
+    const flavor = session.metadata?.flavor;
+    return isAgentKind(flavor) ? flavor : 'claude';
+}
+
+function fixtureSessionName(path: string): string {
+    const trimmed = trimTrailingSlash(path);
+    if (trimmed === '/') return '/';
+    return trimmed.slice(trimmed.lastIndexOf('/') + 1) || trimmed;
+}
+
+function fixtureNativeSessionId(agent: AgentKind, sessionId: string): string {
+    return `fixture-${agent}-${sessionId}`;
+}
+
+function providerSessionMetadata(agent: AgentKind, nativeSessionId: string): Partial<SessionMetadata> {
+    if (agent === 'codex') return { codexSessionId: nativeSessionId };
+    if (agent === 'cursor') return { cursorSessionId: nativeSessionId };
+    if (agent === 'gemini') return { geminiSessionId: nativeSessionId };
+    return { claudeSessionId: nativeSessionId };
 }
 
 async function handleFixtureRequest(path: string, init?: RequestInit): Promise<Response> {
@@ -255,6 +285,102 @@ export function fixtureListDirectory(machineId: string, path?: string): Director
             };
         })
     };
+}
+
+/** Локальный список native agent sessions для resume-sheet; shape совпадает с daemon `list-agent-sessions`. */
+export function fixtureListAgentSessions(
+    machineId: string,
+    agent?: string,
+    directory?: string,
+    limit = 20
+): AgentSessionInfo[] {
+    return FIXTURE_SESSIONS
+        .filter((session) => session.metadata?.machineId === machineId)
+        .filter((session) => {
+            if (!agent) return true;
+            return fixtureSessionAgent(session) === agent;
+        })
+        .filter((session) => {
+            if (!directory) return true;
+            const metadata = session.metadata;
+            if (!metadata) return false;
+            return metadata.path === normalizeFixtureDirectoryPath(directory, metadata.homeDir ?? '');
+        })
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, limit)
+        .map((session) => {
+            const sessionAgent = fixtureSessionAgent(session);
+            const projectPath = session.metadata?.path ?? '';
+            return {
+                sessionId: fixtureNativeSessionId(sessionAgent, session.id),
+                agent: sessionAgent,
+                projectPath,
+                lastModified: session.updatedAt,
+                firstMessage: session.metadata?.summary?.text ?? null,
+                messageCount: useProtocolStore.getState().sessionMessages[session.id]?.messages.length ?? 0,
+                createdAt: session.createdAt,
+                sessionName: session.metadata?.name ?? fixtureSessionName(projectPath)
+            };
+        });
+}
+
+/** Локальный spawn/remcli-session для fixture-mode: без machine encryption и daemon RPC. */
+export function fixtureSpawnNewSession(options: SpawnSessionOptions): SpawnSessionResult {
+    const machine = FIXTURE_MACHINES.find((item) => item.id === options.machineId);
+    if (!machine?.metadata) {
+        return { type: 'error', errorMessage: `Fixture machine not found: ${options.machineId}` };
+    }
+
+    const directory = normalizeFixtureDirectoryPath(options.directory, machine.metadata.homeDir);
+    if (!FIXTURE_DIRECTORY_CHILDREN[directory] && !options.approvedNewDirectoryCreation) {
+        return { type: 'requestToApproveDirectoryCreation', directory };
+    }
+
+    spawnedSessionCounter += 1;
+    const agent = options.agent ?? 'claude';
+    const nativeSessionId = options.resumeSessionId ?? fixtureNativeSessionId(agent, `spawn-${spawnedSessionCounter}`);
+    const sessionIdPrefix = options.resumeSessionId ? 'fx-resume' : 'fx-spawn';
+    const sessionId = `${sessionIdPrefix}-${agent}-${spawnedSessionCounter}`;
+    const now = FIXTURE_BASE_TIME + 24 * 60 * 60 * 1000 + spawnedSessionCounter * 60_000;
+    const summary = options.resumeSessionName
+        ? { text: `Возобновлена ${options.resumeSessionName}`, updatedAt: now }
+        : undefined;
+    const metadata: SessionMetadata = {
+        path: directory,
+        host: machine.metadata.host,
+        homeDir: machine.metadata.homeDir,
+        remcliHomeDir: machine.metadata.remcliHomeDir,
+        machineId: machine.id,
+        flavor: agent,
+        name: fixtureSessionName(directory),
+        summary,
+        agentSessionId: nativeSessionId,
+        ...providerSessionMetadata(agent, nativeSessionId)
+    };
+    const session: Session = {
+        id: sessionId,
+        seq: 100 + spawnedSessionCounter,
+        createdAt: now,
+        updatedAt: now,
+        active: true,
+        activeAt: now,
+        metadata,
+        metadataVersion: 1,
+        agentState: {
+            controlledByUser: false,
+            requests: {},
+            completedRequests: {}
+        },
+        agentStateVersion: 1,
+        thinking: false,
+        thinkingAt: 0,
+        presence: 'online'
+    };
+
+    const store = useProtocolStore.getState();
+    store.applySessions([session]);
+    store.applyMessages(sessionId, [], { markLoaded: true });
+    return { type: 'success', sessionId };
 }
 
 /**

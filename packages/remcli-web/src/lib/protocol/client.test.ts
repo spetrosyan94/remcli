@@ -65,4 +65,48 @@ describe('protocol client message meta', () => {
             model: null,
         });
     });
+
+    it('routes fixture session spawn through the client wrapper instead of encrypted machine RPC', async () => {
+        vi.resetModules();
+        installFixtureGlobals();
+
+        const { machineSpawnNewSession, useProtocolStore } = await import('@/lib/protocol');
+
+        const result = await machineSpawnNewSession({
+            machineId: 'fx-machine-online',
+            directory: '~/projects/remcli',
+            agent: 'codex',
+        });
+
+        expect(result.type).toBe('success');
+        if (result.type !== 'success') return;
+
+        const session = useProtocolStore.getState().sessions[result.sessionId];
+        expect(session).toMatchObject({
+            id: result.sessionId,
+            active: true,
+            metadata: {
+                path: '/Users/dev/projects/remcli',
+                machineId: 'fx-machine-online',
+                flavor: 'codex',
+                codexSessionId: expect.stringContaining('fixture-codex-'),
+            },
+        });
+    });
+
+    it('routes fixture resumable agent sessions through the client wrapper', async () => {
+        vi.resetModules();
+        installFixtureGlobals();
+
+        const { machineListAgentSessions } = await import('@/lib/protocol');
+
+        const sessions = await machineListAgentSessions('fx-machine-online', 'codex', undefined, 5);
+
+        expect(sessions).toContainEqual(expect.objectContaining({
+            sessionId: 'fixture-codex-fx-running',
+            agent: 'codex',
+            projectPath: '/Users/dev/projects/webapp',
+            sessionName: 'webapp',
+        }));
+    });
 });

@@ -117,7 +117,7 @@ describe('createSessionManager resume deduplication', () => {
         await vi.waitFor(() => {
             expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(1);
         });
-        expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledWith(expect.stringMatching(/^env -u TMUX tmux attach -t remcli-\d+-codex$/));
+        expect(openTerminalMocks.openTerminalWithCommand).not.toHaveBeenCalled();
 
         manager.onRemcliSessionWebhook('remcli-session-1', {
             path: process.cwd(),
@@ -155,7 +155,7 @@ describe('createSessionManager resume deduplication', () => {
         await vi.waitFor(() => {
             expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(1);
         });
-        expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledWith(expect.stringMatching(/^env -u TMUX tmux attach -t remcli-\d+-codex$/));
+        expect(openTerminalMocks.openTerminalWithCommand).not.toHaveBeenCalled();
         manager.onRemcliSessionWebhook('remcli-session-2', {
             path: process.cwd(),
             host: 'test-host',
@@ -214,5 +214,43 @@ describe('createSessionManager resume deduplication', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    it('keeps opening a tmux terminal attach for non-Codex agents', async () => {
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-session',
+            pid: process.pid,
+        });
+
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'claude',
+        });
+
+        await vi.waitFor(() => {
+            expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(1);
+        });
+
+        expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledWith(
+            expect.stringMatching(/^env -u TMUX tmux attach -t remcli-\d+-claude$/)
+        );
+
+        manager.onRemcliSessionWebhook('remcli-session-claude', {
+            path: process.cwd(),
+            host: 'test-host',
+            homeDir: '/Users/test',
+            remcliHomeDir: '/Users/test/.remcli',
+            remcliLibDir: process.cwd(),
+            remcliToolsDir: `${process.cwd()}/tools/unpacked`,
+            hostPid: process.pid,
+            startedBy: 'daemon',
+            flavor: 'claude',
+            agentSessionId: 'claude-session-1',
+            claudeSessionId: 'claude-session-1',
+        });
+
+        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-claude' });
     });
 });

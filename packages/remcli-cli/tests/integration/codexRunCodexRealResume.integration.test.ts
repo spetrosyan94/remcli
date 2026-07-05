@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Metadata, UserMessage } from '@/api/types';
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
+import type { CodexToolResponse } from '@/codex/types';
 
 const runRealAi = process.env.REMCLI_REAL_AI === '1';
 const realCodexDescribe = runRealAi ? describe : describe.skip;
@@ -166,6 +167,18 @@ vi.mock('@/utils/MessageQueue2', () => {
 
 let threadIdToDelete: string | null = null;
 
+function responseText(response: CodexToolResponse): string {
+    return response.content
+        .map((part) => ('text' in part && typeof part.text === 'string' ? part.text : ''))
+        .filter(Boolean)
+        .join('\n');
+}
+
+function expectTurnSucceeded(response: CodexToolResponse, phase: string): void {
+    if (!response.isError) return;
+    throw new Error(`Codex ${phase} failed: ${responseText(response) || 'unknown app-server error'}`);
+}
+
 afterEach(() => {
     if (!threadIdToDelete) return;
     try {
@@ -188,13 +201,14 @@ realCodexDescribe('runCodex real Codex resume smoke', { timeout: 180_000 }, () =
             model: realCodexModel,
         });
         threadIdToDelete = threadId;
-        await seedClient.startTurn({
+        const seedTurn = await seedClient.startTurn({
             threadId,
             prompt: `Запомни токен ${token}. Ответь только OK.`,
             sandbox: 'read-only',
             approvalPolicy: 'never',
             model: realCodexModel,
         });
+        expectTurnSucceeded(seedTurn, 'seed turn');
         await seedClient.disconnect();
 
         fakeSessionState.reset('Какой токен я просил запомнить? Ответь только токеном.');

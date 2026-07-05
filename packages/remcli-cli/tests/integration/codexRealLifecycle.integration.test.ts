@@ -2,12 +2,25 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
+import type { CodexToolResponse } from '@/codex/types';
 
 const runRealAi = process.env.REMCLI_REAL_AI === '1';
 const realCodexDescribe = runRealAi ? describe : describe.skip;
 const realCodexModel = process.env.REMCLI_REAL_CODEX_MODEL ?? 'gpt-5.3-codex-spark';
 
 let threadIdToDelete: string | null = null;
+
+function responseText(response: CodexToolResponse): string {
+    return response.content
+        .map((part) => ('text' in part && typeof part.text === 'string' ? part.text : ''))
+        .filter(Boolean)
+        .join('\n');
+}
+
+function expectTurnSucceeded(response: CodexToolResponse, phase: string): void {
+    if (!response.isError) return;
+    throw new Error(`Codex ${phase} failed: ${responseText(response) || 'unknown app-server error'}`);
+}
 
 afterEach(() => {
     if (!threadIdToDelete) return;
@@ -39,13 +52,14 @@ realCodexDescribe('Codex real lifecycle smoke', { timeout: 180_000 }, () => {
         });
         threadIdToDelete = threadId;
 
-        await firstClient.startTurn({
+        const firstTurn = await firstClient.startTurn({
             threadId,
             prompt: `Запомни токен ${token}. Ответь только OK.`,
             sandbox: 'read-only',
             approvalPolicy: 'never',
             model: realCodexModel,
         });
+        expectTurnSucceeded(firstTurn, 'seed turn');
         await firstClient.disconnect();
 
         expect(firstMessages.join('\n')).not.toContain('Session not found');
@@ -65,17 +79,19 @@ realCodexDescribe('Codex real lifecycle smoke', { timeout: 180_000 }, () => {
             approvalPolicy: 'never',
             model: realCodexModel,
         });
-        await resumedClient.startTurn({
+        const resumedTurn = await resumedClient.startTurn({
             threadId,
             prompt: 'Какой токен я попросил запомнить? Ответь только токеном.',
             sandbox: 'read-only',
             approvalPolicy: 'never',
             model: realCodexModel,
         });
+        expectTurnSucceeded(resumedTurn, 'resume turn');
         await resumedClient.disconnect();
 
-        const answer = resumedMessages.join('\n');
+        const answer = [resumedMessages.join('\n'), responseText(resumedTurn)].filter(Boolean).join('\n');
         expect(answer).not.toContain('Session not found');
+        expect(answer, 'Codex resume turn did not emit an agent_message response').not.toBe('');
         expect(answer).toContain(token);
     });
 });

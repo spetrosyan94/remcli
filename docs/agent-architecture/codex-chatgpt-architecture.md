@@ -145,10 +145,20 @@ codex resume <threadId> --remote ws://127.0.0.1:<port>
 ```
 
 This makes the target architecture possible: phone and desktop terminal can use
-one app-server-owned Codex thread model. Remcli currently routes phone prompts
-through app-server JSON-RPC. A future terminal attach step should open a Codex
-TUI with `--remote` to the daemon-owned endpoint instead of launching an
-independent Codex process.
+one app-server-owned Codex thread model.
+
+For daemon-started Codex sessions, Remcli runs its P2P wrapper process headless
+inside tmux and opens a real Codex TUI separately through the shared app-server:
+
+- saved/resumed thread: opens immediately with
+  `codex resume <threadId> --remote <endpoint>`;
+- new thread: opens after the first phone prompt creates a native Codex
+  `threadId`, then uses the same `codex resume <threadId> --remote <endpoint>`;
+- terminal-started `remcli codex` does not open another Terminal.app window.
+
+If the shared daemon endpoint is stale and `runCodex.ts` falls back to a private
+stdio app-server, remote TUI attach is skipped because there is no WebSocket
+endpoint for `codex --remote`.
 
 ## Not Implemented Yet
 
@@ -163,6 +173,9 @@ Required gates for this architecture:
 - Unit: app-server WebSocket client sends JSON-RPC over shared endpoint.
 - Unit: `turn/steer` sends `threadId`, `expectedTurnId` and text input to the
   active turn.
+- Unit: daemon-spawned Codex no longer opens a tmux attach terminal; `runCodex`
+  opens a real Codex TUI through `codex resume <threadId> --remote <endpoint>`
+  only for daemon-started shared app-server sessions.
 - Unit: daemon host starts `codex app-server --listen ws://127.0.0.1:<port>` and
   waits for `/readyz`.
 - CLI: `npm -w remcli run typecheck`, `npm -w remcli run build`,

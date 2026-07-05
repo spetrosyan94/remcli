@@ -388,18 +388,22 @@ export function createSessionManager(): SessionManager {
 
                 pidToTrackedSession.set(tmuxResult.pid, trackedSession);
 
-                // Always open a new Terminal.app context for this session.
-                // Unset TMUX so the attach command works even when the daemon
-                // process was started from inside an existing tmux client.
-                try {
-                    const didOpenTerminal = await openTerminalWithCommand(`env -u TMUX tmux attach -t ${tmuxSessionName}`);
-                    if (didOpenTerminal) {
-                        logger.debug(`[DAEMON RUN] Opened terminal context for tmux session ${tmuxSessionName}`);
-                    } else {
-                        logger.debug(`[DAEMON RUN] Terminal context was not opened for tmux session ${tmuxSessionName}`);
+                if (agent === 'codex') {
+                    logger.debug('[DAEMON RUN] Codex runner started headless; runCodex opens the real Codex TUI through app-server --remote');
+                } else {
+                    // Always open a new Terminal.app context for this session.
+                    // Unset TMUX so the attach command works even when the daemon
+                    // process was started from inside an existing tmux client.
+                    try {
+                        const didOpenTerminal = await openTerminalWithCommand(`env -u TMUX tmux attach -t ${tmuxSessionName}`);
+                        if (didOpenTerminal) {
+                            logger.debug(`[DAEMON RUN] Opened terminal context for tmux session ${tmuxSessionName}`);
+                        } else {
+                            logger.debug(`[DAEMON RUN] Terminal context was not opened for tmux session ${tmuxSessionName}`);
+                        }
+                    } catch (error) {
+                        logger.debug(`[DAEMON RUN] Failed to open terminal for tmux:`, error);
                     }
-                } catch (error) {
-                    logger.debug(`[DAEMON RUN] Failed to open terminal for tmux:`, error);
                 }
 
                 // Wait for webhook to populate session with remcliSessionId (exact same as regular flow)
