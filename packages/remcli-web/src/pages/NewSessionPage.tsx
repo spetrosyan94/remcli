@@ -7,9 +7,14 @@ import * as React from "react";
 import { ArrowUp, ChevronDown, Folder, FolderOpen, Loader2, RotateCcw, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
-import { AgentIcon, Segmented, StatusDot, type AgentId } from "@/components/kit";
+import { AgentIcon, StatusDot, type AgentId } from "@/components/kit";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
+import {
+    getAgentPermissionModes,
+    getDefaultPermissionMode,
+    normalizeAgentPermissionMode,
+} from "@/lib/agentPermissions";
 import { getIntlLocale, t } from "@/lib/i18n";
 import {
     machineListDirectory,
@@ -29,8 +34,7 @@ import {
 } from "@/lib/protocol";
 import { linkZenTaskSession } from "@/lib/zenTasks";
 
-type SheetKind = "machine" | "model" | "resume" | "directory";
-type PermissionChoice = "safe" | "ask" | "auto";
+type SheetKind = "machine" | "model" | "permission" | "resume" | "directory";
 
 /* ---------- Конфигурация агентов (зеркало remcli-app sources/utils/agents.ts) ---------- */
 
@@ -53,14 +57,6 @@ export const AGENT_OPTIONS: AgentOption[] = [
 export function getModelOverride(model: string): string | null {
     return model !== DEFAULT_MODEL_ID ? model : null;
 }
-
-/** safe/ask/auto → PermissionMode протокола (AGENT_PERMISSIONS в remcli-app). */
-const PERMISSION_BY_AGENT: Record<AgentId, Record<PermissionChoice, PermissionMode>> = {
-    claude: { safe: "plan", ask: "default", auto: "bypassPermissions" },
-    codex: { safe: "read-only", ask: "default", auto: "yolo" },
-    gemini: { safe: "read-only", ask: "default", auto: "yolo" },
-    cursor: { safe: "read-only", ask: "default", auto: "yolo" },
-};
 
 /* ---------- Хелперы ---------- */
 
@@ -135,7 +131,7 @@ export function NewSessionPage() {
     const [machineId, setMachineId] = React.useState<string | null>(null);
     const [agent, setAgent] = React.useState<AgentId>("claude");
     const [model, setModel] = React.useState(AGENT_OPTIONS[0].models[0]);
-    const [mode, setMode] = React.useState<PermissionChoice>("ask");
+    const [mode, setMode] = React.useState<PermissionMode>(() => getDefaultPermissionMode("claude"));
     const [dir, setDir] = React.useState<string | null>(null);
     const [dirDisplayPath, setDirDisplayPath] = React.useState<string | null>(null);
     const [directoryRequestPath, setDirectoryRequestPath] = React.useState<string | undefined>(undefined);
@@ -153,6 +149,7 @@ export function NewSessionPage() {
     const machine = machines.find((m) => m.id === machineId) ?? machines[0] ?? null;
     const homeDir = machine?.metadata?.homeDir;
     const agentModels = AGENT_OPTIONS.find((a) => a.id === agent)?.models ?? [];
+    const agentPermissionModes = getAgentPermissionModes(agent);
 
     // недавние директории — из прошлых сессий выбранной машины (metadata.path)
     const recentDirs = React.useMemo<RecentDir[]>(() => {
@@ -215,6 +212,7 @@ export function NewSessionPage() {
         setAgent(id);
         const nextModel = AGENT_OPTIONS.find((a) => a.id === id)?.models[0];
         if (nextModel) setModel(nextModel);
+        setMode(getDefaultPermissionMode(id));
     };
 
     const selectDir = (path: string, displayPath?: string) => {
@@ -251,7 +249,7 @@ export function NewSessionPage() {
         }
 
         if (zenState?.zenTaskId) linkZenTaskSession(zenState.zenTaskId, sessionId);
-        const permissionMode = PERMISSION_BY_AGENT[agent][mode];
+        const permissionMode = normalizeAgentPermissionMode(agent, mode);
         const modelMeta = getModelOverride(model);
         if (zenState?.zenTaskTitle && !resume) {
             await sendSessionMessage(sessionId, zenState.zenTaskTitle, { permissionMode, model: modelMeta })
@@ -366,8 +364,11 @@ export function NewSessionPage() {
                     </section>
                     <section className="flex flex-[1.6] flex-col gap-2">
                         <span className="font-mono text-[10px] text-muted-foreground/70">{t("new.permissions")}</span>
-                        <Segmented options={["safe", "ask", "auto"]} value={mode}
-                            onChange={(v) => { if (v === "safe" || v === "ask" || v === "auto") setMode(v); }} />
+                        <button onClick={() => setSheet("permission")}
+                            className="flex h-11 items-center rounded-[10px] border border-input bg-muted px-3 font-mono text-xs transition-[background-color,border-color,transform] active:scale-[0.96]">
+                            <span className="min-w-0 truncate">{mode}</span>
+                            <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
+                        </button>
                     </section>
                 </div>
 
@@ -461,6 +462,15 @@ export function NewSessionPage() {
                             {agentModels.map((m) => (
                                 <SheetRow key={m} isActive={m === model} label={m}
                                     onClick={() => { setModel(m); setSheet(null); }} />
+                            ))}
+                        </>
+                    )}
+                    {sheet === "permission" && (
+                        <>
+                            <SheetHeader title={t("new.permissions")} tag={agent} />
+                            {agentPermissionModes.map((permission) => (
+                                <SheetRow key={permission} isActive={permission === mode} label={permission}
+                                    onClick={() => { setMode(permission); setSheet(null); }} />
                             ))}
                         </>
                     )}

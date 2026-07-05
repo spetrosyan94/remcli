@@ -8,10 +8,52 @@ import { logger } from '@/ui/logger';
 import type { CodexSessionConfig, CodexToolResponse } from './types';
 import { z } from 'zod';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import type { ElicitResult } from '@modelcontextprotocol/sdk/types.js';
 import { CodexPermissionHandler } from './utils/permissionHandler';
+import type { PermissionResult } from '@/utils/BasePermissionHandler';
 import { execSync } from 'child_process';
 
 const DEFAULT_TIMEOUT = 14 * 24 * 60 * 60 * 1000; // 14 days, which is the half of the maximum possible timeout (~28 days for int32 value in NodeJS)
+
+interface CodexElicitationMeta {
+    codex_approval_kind?: string;
+    tool_title?: string;
+    tool_params?: Record<string, unknown>;
+    [key: string]: unknown;
+}
+
+export interface CodexElicitationParams {
+    _meta?: CodexElicitationMeta;
+    message?: string;
+    codex_mcp_tool_call_id?: string;
+    codex_call_id?: string;
+    codex_command?: string[];
+    codex_cwd?: string;
+}
+
+export function isRemcliChangeTitleElicitation(params: CodexElicitationParams): boolean {
+    const meta = params._meta;
+    const title = meta?.tool_params?.title;
+    const message = params.message ?? '';
+
+    return meta?.codex_approval_kind === 'mcp_tool_call'
+        && meta.tool_title === 'Change Chat Title'
+        && typeof title === 'string'
+        && message.includes('remcli MCP server')
+        && message.includes('"change_title"');
+}
+
+export function permissionResultToElicitResult(result: PermissionResult): ElicitResult {
+    if (result.decision === 'approved' || result.decision === 'approved_for_session') {
+        return { action: 'accept', content: {} };
+    }
+
+    if (result.decision === 'denied') {
+        return { action: 'decline' };
+    }
+
+    return { action: 'cancel' };
+}
 
 /**
  * Get the correct MCP subcommand based on installed codex version
@@ -130,30 +172,31 @@ export class CodexMcpClient {
             async (request) => {
                 logger.debug('[CodexMCP] Received elicitation request:', request.params);
 
-                // Load params
-                const params = request.params as unknown as {
-                    message: string,
-                    codex_elicitation: string,
-                    codex_mcp_tool_call_id: string,
-                    codex_event_id: string,
-                    codex_call_id: string,
-                    codex_command: string[],
-                    codex_cwd: string
+                const params = request.params as unknown as CodexElicitationParams;
+
+                if (isRemcliChangeTitleElicitation(params)) {
+                    logger.debug('[CodexMCP] Auto-approving remcli change_title elicitation');
+                    return { action: 'accept', content: {} } satisfies ElicitResult;
                 }
+
                 const toolName = 'CodexBash';
+                const toolCallId = params.codex_call_id ?? params.codex_mcp_tool_call_id;
 
                 // If no permission handler set, deny by default
                 if (!this.permissionHandler) {
                     logger.debug('[CodexMCP] No permission handler set, denying by default');
-                    return {
-                        decision: 'denied' as const,
-                    };
+                    return { action: 'decline' } satisfies ElicitResult;
+                }
+
+                if (!toolCallId || !Array.isArray(params.codex_command)) {
+                    logger.debug('[CodexMCP] Unsupported elicitation request shape, declining');
+                    return { action: 'decline' } satisfies ElicitResult;
                 }
 
                 try {
                     // Request permission through the handler
                     const result = await this.permissionHandler.handleToolCall(
-                        params.codex_call_id,
+                        toolCallId,
                         toolName,
                         {
                             command: params.codex_command,
@@ -162,15 +205,10 @@ export class CodexMcpClient {
                     );
 
                     logger.debug('[CodexMCP] Permission result:', result);
-                    return {
-                        decision: result.decision
-                    }
+                    return permissionResultToElicitResult(result);
                 } catch (error) {
                     logger.debug('[CodexMCP] Error handling permission request:', error);
-                    return {
-                        decision: 'denied' as const,
-                        reason: error instanceof Error ? error.message : 'Permission request failed'
-                    };
+                    return { action: 'decline' } satisfies ElicitResult;
                 }
             }
         );

@@ -108,4 +108,54 @@ describe('ChatPage feed mapping', () => {
             items: [{ kind: 'tool', id: 'agent-2:tool-1', tool: 'Bash' }]
         });
     });
+
+    it('closes a Gemini permission tool card when a matching tool-result arrives', () => {
+        const messages: NormalizedMessage[] = [
+            {
+                id: 'permission-1',
+                localId: null,
+                seq: 1,
+                createdAt: 1000,
+                isSidechain: false,
+                role: 'agent',
+                content: [{
+                    type: 'tool-call',
+                    id: 'perm-1',
+                    name: 'change_title',
+                    input: { title: 'New title' },
+                    description: 'Change title',
+                    uuid: 'permission-1',
+                    parentUUID: null
+                }]
+            },
+            {
+                id: 'permission-result-1',
+                localId: null,
+                seq: 2,
+                createdAt: 1001,
+                isSidechain: false,
+                role: 'agent',
+                content: [{
+                    type: 'tool-result',
+                    tool_use_id: 'perm-1',
+                    content: { status: 'approved', decision: 'approved' },
+                    is_error: false,
+                    uuid: 'permission-result-1',
+                    parentUUID: null
+                }]
+            }
+        ];
+
+        const feed = buildFeed(messages, 'gemini');
+
+        expect(feed).toHaveLength(1);
+        expect(feed[0]).toMatchObject({
+            kind: 'agent-group',
+            items: [{
+                kind: 'tool',
+                tool: 'change_title',
+                state: 'success'
+            }]
+        });
+    });
 });

@@ -17,6 +17,50 @@ import {
 // Re-export types for backwards compatibility
 export type { PermissionResult, PendingRequest };
 
+const DISPLAY_ONLY_TOOL_NAMES = ['GeminiReasoning', 'CodexReasoning'];
+const UI_ONLY_TOOL_NAMES = ['change_title', 'remcli__change_title'];
+const UI_ONLY_TOOL_IDS = ['change_title'];
+const READ_ONLY_TOOL_NAMES = ['read', 'list', 'ls', 'glob', 'grep', 'search', 'find', 'view', 'cat', 'stat', 'inspect'];
+const WRITE_TOOL_NAMES = ['write', 'edit', 'create', 'delete', 'patch', 'replace', 'remove', 'rename', 'move', 'copy', 'fs-edit'];
+const WRITE_COMMAND_RE =
+    /(?:^|[;&|]\s*)(?:rm|mv|cp|mkdir|rmdir|touch|chmod|chown|ln|dd|mkfs)\b|(?:^|[;&|]\s*)git\s+(?:commit|push|reset|checkout|merge|rebase|clean|tag)\b|(?:^|[;&|]\s*)(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|remove|update|upgrade)\b|(?:^|[;&|]\s*)sed\s+-i\b|(?:^|[;&|]\s*)tee\b|>>?[^&]/i;
+
+function normalizedText(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (!value || typeof value !== 'object') return '';
+    const record = value as Record<string, unknown>;
+    const parts: string[] = [];
+    for (const key of ['command', 'cmd', 'script', 'path', 'file_path', 'filePath', 'operation']) {
+        const part = record[key];
+        if (typeof part === 'string') parts.push(part);
+    }
+    return parts.join('\n');
+}
+
+function isDisplayOnlyTool(toolName: string): boolean {
+    const lowerName = toolName.toLowerCase();
+    return DISPLAY_ONLY_TOOL_NAMES.some((name) => lowerName.includes(name.toLowerCase()));
+}
+
+function isUiOnlyTool(toolName: string, toolCallId: string): boolean {
+    const lowerName = toolName.toLowerCase();
+    const lowerId = toolCallId.toLowerCase();
+    return UI_ONLY_TOOL_NAMES.some((name) => lowerName.includes(name.toLowerCase()))
+        || UI_ONLY_TOOL_IDS.some((id) => lowerId.includes(id.toLowerCase()));
+}
+
+function isWriteOperation(toolName: string, input: unknown): boolean {
+    const lowerName = toolName.toLowerCase();
+    if (WRITE_TOOL_NAMES.some((name) => lowerName.includes(name))) return true;
+    return WRITE_COMMAND_RE.test(normalizedText(input));
+}
+
+function isReadOnlyOperation(toolName: string, input: unknown): boolean {
+    if (isWriteOperation(toolName, input)) return false;
+    const lowerName = toolName.toLowerCase();
+    return READ_ONLY_TOOL_NAMES.some((name) => lowerName.includes(name));
+}
+
 /**
  * Gemini-specific permission handler with permission mode support.
  */
@@ -51,43 +95,45 @@ export class GeminiPermissionHandler extends BasePermissionHandler {
      * Check if a tool should be auto-approved based on permission mode
      */
     private shouldAutoApprove(toolName: string, toolCallId: string, input: unknown): boolean {
-        // Always auto-approve these tools regardless of permission mode:
-        // - change_title: Changing chat title is safe and should be automatic
-        // - GeminiReasoning: Reasoning is just display of thinking process, not an action
-        // - think: Thinking/saving memories is safe
-        // - save_memory: Saving memories is safe
-        const alwaysAutoApproveNames = ['change_title', 'remcli__change_title', 'GeminiReasoning', 'CodexReasoning', 'think', 'save_memory'];
-        const alwaysAutoApproveIds = ['change_title', 'save_memory'];
-        
-        // Check by tool name
-        if (alwaysAutoApproveNames.some(name => toolName.toLowerCase().includes(name.toLowerCase()))) {
+        if (isDisplayOnlyTool(toolName) || isUiOnlyTool(toolName, toolCallId)) {
             return true;
         }
-        
-        // Check by toolCallId (Gemini CLI may send change_title as "other" but toolCallId contains "change_title")
-        if (alwaysAutoApproveIds.some(id => toolCallId.toLowerCase().includes(id.toLowerCase()))) {
-            return true;
-        }
-        
+
         switch (this.currentPermissionMode) {
             case 'yolo':
                 // Auto-approve everything in yolo mode
                 return true;
             case 'safe-yolo':
-                // Auto-approve read-only operations, ask for write operations
-                // For now, we'll auto-approve everything (can be enhanced later)
-                return true;
+                return isReadOnlyOperation(toolName, input);
             case 'read-only':
-                // Deny all write operations - only allow read operations
-                // Check if tool is a write operation (can be enhanced with tool metadata)
-                const writeTools = ['write', 'edit', 'create', 'delete', 'patch', 'fs-edit'];
-                const isWriteTool = writeTools.some(wt => toolName.toLowerCase().includes(wt));
-                return !isWriteTool;
+                return isReadOnlyOperation(toolName, input);
             case 'default':
+                return false;
             default:
-                // Default mode - always ask for permission (except for always-auto-approve tools above)
+                // Unknown modes must ask rather than silently auto-approve.
                 return false;
         }
+    }
+
+    private denyToolCall(toolCallId: string, toolName: string, input: unknown): PermissionResult {
+        logger.debug(`${this.getLogPrefix()} Denying write tool ${toolName} (${toolCallId}) in read-only mode`);
+
+        this.session.updateAgentState((currentState) => ({
+            ...currentState,
+            completedRequests: {
+                ...currentState.completedRequests,
+                [toolCallId]: {
+                    tool: toolName,
+                    arguments: input,
+                    createdAt: Date.now(),
+                    completedAt: Date.now(),
+                    status: 'denied',
+                    decision: 'denied'
+                }
+            }
+        }));
+
+        return { decision: 'denied' };
     }
 
     /**
@@ -128,6 +174,10 @@ export class GeminiPermissionHandler extends BasePermissionHandler {
             };
         }
 
+        if (this.currentPermissionMode === 'read-only') {
+            return this.denyToolCall(toolCallId, toolName, input);
+        }
+
         // Otherwise, ask for permission
         return new Promise<PermissionResult>((resolve, reject) => {
             // Store the pending request
@@ -145,4 +195,3 @@ export class GeminiPermissionHandler extends BasePermissionHandler {
         });
     }
 }
-

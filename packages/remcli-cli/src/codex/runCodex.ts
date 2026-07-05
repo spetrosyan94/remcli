@@ -12,15 +12,10 @@ import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
-import { projectPath } from '@/projectPath';
-import { join } from 'node:path';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
-import { startRemcliServer } from '@/claude/utils/startRemcliServer';
 import { MessageBuffer } from "@/ui/ink/messageBuffer";
 import { CodexDisplay } from "@/ui/ink/CodexDisplay";
-import { trimIdent } from "@/utils/trimIdent";
 import type { CodexSessionConfig } from './types';
-import { CHANGE_TITLE_INSTRUCTION } from '@/gemini/constants';
 import { notifyDaemonSessionStarted } from "@/daemon/controlClient";
 import { registerKillSessionHandler } from "@/claude/registerKillSessionHandler";
 import { delay } from "@/utils/time";
@@ -37,6 +32,32 @@ type ReadyEventOptions = {
     sendReady: () => void;
     notify?: () => void;
 };
+
+interface CodexStartConfigOptions {
+    prompt: string;
+    sandbox: CodexSessionConfig['sandbox'];
+    approvalPolicy: CodexSessionConfig['approval-policy'];
+    model?: string;
+}
+
+export function createCodexStartConfig({
+    prompt,
+    sandbox,
+    approvalPolicy,
+    model,
+}: CodexStartConfigOptions): CodexSessionConfig {
+    const config: CodexSessionConfig = {
+        prompt,
+        sandbox,
+        'approval-policy': approvalPolicy,
+    };
+
+    if (model) {
+        config.model = model;
+    }
+
+    return config;
+}
 
 /**
  * Notify connected clients when Codex finishes processing and the queue is idle.
@@ -279,9 +300,6 @@ export async function runCodex(opts: {
             // Stop caffeinate
             stopCaffeinate();
 
-            // Stop Remcli MCP server
-            remcliServer.stop();
-
             logger.debug('[Codex] Session termination complete, exiting');
             process.exit(0);
         } catch (error) {
@@ -471,16 +489,6 @@ export async function runCodex(opts: {
         }
     });
 
-    // Start Remcli MCP server (HTTP) and prepare STDIO bridge config for Codex
-    const remcliServer = await startRemcliServer(session);
-    const bridgeCommand = join(projectPath(), 'bin', 'remcli-mcp.mjs');
-    const mcpServers = {
-        remcli: {
-            command: bridgeCommand,
-            args: ['--url', remcliServer.url]
-        }
-    } as const;
-    let first = true;
     const autoSetTitle = createAutoTitleSetter(session);
 
     try {
@@ -572,19 +580,17 @@ export async function runCodex(opts: {
                 })();
 
                 if (!wasCreated) {
-                    const startConfig: CodexSessionConfig = {
-                        prompt: first ? message.message + '\n\n' + CHANGE_TITLE_INSTRUCTION : message.message,
+                    const startConfig = createCodexStartConfig({
+                        prompt: message.message,
                         sandbox,
-                        'approval-policy': approvalPolicy,
-                        config: { mcp_servers: mcpServers }
-                    };
-                    if (message.mode.model) {
-                        startConfig.model = message.mode.model;
-                    }
+                        approvalPolicy,
+                        model: message.mode.model,
+                    });
 
                     // NOTE: No `experimental_resume` here — the key was removed from the Codex
                     // CLI in late 2025 (openai/codex #4393, #4435). Each start is a fresh session.
 
+                    autoSetTitle(message.message);
                     const startResponse = await client.startSession(
                         startConfig,
                         { signal: abortController.signal }
@@ -603,9 +609,6 @@ export async function runCodex(opts: {
                     }
 
                     wasCreated = true;
-                    first = false;
-                    // Fallback: auto-set title in case AI doesn't call change_title
-                    autoSetTitle(message.message);
                 } else {
                     const response = await client.continueSession(
                         message.message,
@@ -670,10 +673,6 @@ export async function runCodex(opts: {
         logger.debug('[codex]: client.forceCloseSession begin');
         await client.forceCloseSession();
         logger.debug('[codex]: client.forceCloseSession done');
-        // Stop Remcli MCP server
-        logger.debug('[codex]: remcliServer.stop');
-        remcliServer.stop();
-
         // Clean up ink UI
         if (process.stdin.isTTY) {
             logger.debug('[codex]: setRawMode(false)');

@@ -120,6 +120,31 @@ describe('normalizeRawMessage', () => {
         expect(content[0]).toMatchObject({ type: 'tool-call', id: 'perm-1', name: 'write_file', description: 'Write to /tmp/x' });
     });
 
+    it('normalizes ACP permission tool-result into a matching tool-result block', () => {
+        const result = normalizeRawMessage('m5-result', null, 10, 5001, {
+            role: 'agent',
+            content: {
+                type: 'acp',
+                provider: 'gemini',
+                data: {
+                    type: 'tool-result',
+                    callId: 'perm-1',
+                    output: { status: 'approved', decision: 'approved' },
+                    id: 'result-1',
+                    isError: false
+                }
+            }
+        });
+
+        const content = (result as Extract<NormalizedMessage, { role: 'agent' }>).content;
+        expect(content[0]).toMatchObject({
+            type: 'tool-result',
+            tool_use_id: 'perm-1',
+            content: { status: 'approved', decision: 'approved' },
+            is_error: false
+        });
+    });
+
     it('normalizes event records', () => {
         const result = normalizeRawMessage('m6', null, 10, 6000, {
             role: 'agent',

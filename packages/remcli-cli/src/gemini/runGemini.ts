@@ -511,6 +511,24 @@ export async function runGemini(opts: {
     permissionHandler.setPermissionMode(mode);
   };
 
+  const isPermissionResolutionResult = (result: unknown): boolean => {
+    if (!result || typeof result !== 'object') return false;
+    const record = result as Record<string, unknown>;
+    return (record.status === 'approved' || record.status === 'denied')
+      && (record.decision === 'approved'
+        || record.decision === 'approved_for_session'
+        || record.decision === 'denied'
+        || record.decision === 'abort');
+  };
+
+  const isPermissionResolutionError = (result: unknown): boolean => {
+    if (!result || typeof result !== 'object') return false;
+    const record = result as Record<string, unknown>;
+    return record.status === 'denied'
+      || record.decision === 'denied'
+      || record.decision === 'abort';
+  };
+
   // Accumulate Gemini response text for sending complete message to mobile
   let accumulatedResponse = '';
   let isResponseInProgress = false;
@@ -666,7 +684,16 @@ export async function runGemini(opts: {
           const errorMsg = (msg.result as any).error || 'Tool call failed';
           messageBuffer.addMessage(`Error: ${errorMsg}`, 'status');
         }
-        // No tool-result sent to mobile — informational only
+
+        if (msg.callId && isPermissionResolutionResult(msg.result)) {
+          session.sendAgentMessage('gemini', {
+            type: 'tool-result',
+            callId: msg.callId,
+            output: msg.result,
+            id: randomUUID(),
+            isError: isPermissionResolutionError(msg.result),
+          });
+        }
         break;
       }
 
@@ -1275,4 +1302,3 @@ export async function runGemini(opts: {
     logger.debug('[gemini]: Final cleanup completed');
   }
 }
-

@@ -13,6 +13,8 @@ import {
     type AgentId, type DiffLine, type Status,
 } from "@/components/kit";
 import { SessionsSidebar } from "@/components/app/SessionsSidebar";
+import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
+import { getAgentPermissionModes, normalizeAgentPermissionMode } from "@/lib/agentPermissions";
 import { copyText } from "@/lib/clipboard";
 import { t } from "@/lib/i18n";
 import {
@@ -20,17 +22,17 @@ import {
     machineSpawnNewSession, refreshSessions, restoreProtocolClient, sendSessionMessage,
     sessionAllow, sessionDeny, useConnectionStatus, useMachines, useProtocolStore,
     useSession, useSessionMessages, useSessionMessagesLoaded,
-    type NormalizedMessage, type PermissionMode as ProtocolPermissionMode, type Session,
+    type NormalizedMessage, type PermissionMode, type Session,
 } from "@/lib/protocol";
 import { useVoiceRecorder } from "@/lib/voice/recorder";
 import { useTts, useTtsAvailability } from "@/lib/voice/tts";
 
-type UiPermissionMode = "safe" | "ask" | "auto";
-
-const UI_PERMISSION_MODES: UiPermissionMode[] = ["safe", "ask", "auto"];
-
 // Опасные команды (DESIGN.md): rm -rf, force-push, drop … — красный вариант PermissionCard
 const DANGEROUS_COMMAND_RE = /\brm\s+-\w*[rf]|--force\b|force[- ]push|\bdrop\s+(table|database|schema)\b|\bmkfs\b|\bdd\s+if=/i;
+
+const PERMISSION_SHEET_CONTENT_CLASS =
+    "data-[vaul-drawer-direction=bottom]:rounded-t-[20px] border-border bg-card pb-[max(10px,env(safe-area-inset-bottom))] " +
+    "[&>div:first-child]:mt-2 [&>div:first-child]:mb-1 [&>div:first-child]:h-[4.5px] [&>div:first-child]:w-[38px] [&>div:first-child]:bg-muted-foreground/40";
 
 // ─── Маппинг протокола на модель ленты ───────────────────────────
 
@@ -87,28 +89,13 @@ function agentOf(session: Session | null): AgentId {
     return flavor === "codex" || flavor === "gemini" || flavor === "cursor" ? flavor : "claude";
 }
 
-/** UI-режим (safe/ask/auto, DESIGN.md) → протокольный permissionMode по семейству агента. */
-function toProtocolMode(mode: UiPermissionMode, agent: AgentId): ProtocolPermissionMode {
-    if (agent === "codex") {
-        return mode === "safe" ? "read-only" : mode === "auto" ? "yolo" : "default";
-    }
-    return mode === "safe" ? "plan" : mode === "auto" ? "bypassPermissions" : "default";
-}
-
-/** Обратный маппинг для navigate state из NewSessionPage: протокольный режим → UI-режим. */
-function fromProtocolMode(mode: ProtocolPermissionMode): UiPermissionMode {
-    if (mode === "plan" || mode === "read-only") return "safe";
-    if (mode === "bypassPermissions" || mode === "yolo") return "auto";
-    return "ask";
-}
-
 /** Начальные model/permissionMode из navigate state (контракт NewSessionPage → /session/:id). */
-function parseNavState(state: unknown): { permissionMode?: ProtocolPermissionMode; model?: string | null } {
+function parseNavState(state: unknown): { permissionMode?: PermissionMode; model?: string | null } {
     if (!state || typeof state !== "object") return {};
     const record = state as Record<string, unknown>;
     return {
         permissionMode: typeof record.permissionMode === "string"
-            ? (record.permissionMode as ProtocolPermissionMode)
+            ? (record.permissionMode as PermissionMode)
             : undefined,
         model: typeof record.model === "string" ? record.model : undefined,
     };
@@ -369,8 +356,8 @@ export function ChatPage() {
 
     const [isBooting, setIsBooting] = React.useState(true);
     const [draft, setDraft] = React.useState("");
-    const [uiMode, setUiMode] = React.useState<UiPermissionMode>(() =>
-        navState.permissionMode ? fromProtocolMode(navState.permissionMode) : "ask"
+    const [uiMode, setUiMode] = React.useState<PermissionMode>(() =>
+        navState.permissionMode ?? normalizeAgentPermissionMode(agent, undefined)
     );
     const [busyPermissionIds, setBusyPermissionIds] = React.useState<readonly string[]>([]);
     const [expandedTools, setExpandedTools] = React.useState<Record<string, boolean>>({});
@@ -378,6 +365,7 @@ export function ChatPage() {
     const [banner, setBanner] = React.useState<"ok" | "lost" | "restored">("ok");
     const [isResuming, setIsResuming] = React.useState(false);
     const [hasDetachedAutoscroll, setHasDetachedAutoscroll] = React.useState(false);
+    const [isPermissionSheetOpen, setIsPermissionSheetOpen] = React.useState(false);
     const feedRef = React.useRef<HTMLElement>(null);
     const hadConnectedRef = React.useRef(false);
     const hasDetachedAutoscrollRef = React.useRef(false);
@@ -385,6 +373,13 @@ export function ChatPage() {
     const feed = React.useMemo(() => buildFeed(messages, agent), [messages, agent]);
     const pendingPermissions = React.useMemo(() => pendingPermissionsOf(session), [session]);
     const status = session ? statusOf(session, pendingPermissions.length > 0) : "offline";
+    const permissionModes = React.useMemo(() => getAgentPermissionModes(agent), [agent]);
+    const activePermissionMode = normalizeAgentPermissionMode(agent, uiMode);
+
+    React.useEffect(() => {
+        if (!session) return;
+        setUiMode((current) => normalizeAgentPermissionMode(agent, current));
+    }, [agent, session]);
 
     // ── Пагинация истории (паттерн remcli-app useLoadMoreMessages): offset = число
     // загруженных сообщений (live-сообщения тоже двигают его), страницы — newest-first ──
@@ -618,12 +613,13 @@ export function ChatPage() {
     }
 
     const handleModeChange = (value: string) => {
-        if (value === "safe" || value === "ask" || value === "auto") setUiMode(value);
+        const nextMode = value as PermissionMode;
+        if (permissionModes.includes(nextMode)) setUiMode(nextMode);
     };
 
-    const cycleMode = () => {
-        const nextIndex = (UI_PERMISSION_MODES.indexOf(uiMode) + 1) % UI_PERMISSION_MODES.length;
-        setUiMode(UI_PERMISSION_MODES[nextIndex]);
+    const selectPermissionMode = (nextMode: PermissionMode) => {
+        setUiMode(nextMode);
+        setIsPermissionSheetOpen(false);
     };
 
     // Ответ на permission-запрос (референс PermissionFooter.tsx: codex — через decision)
@@ -654,7 +650,7 @@ export function ChatPage() {
         const text = draft.trim();
         if (!text) return;
         setDraft("");
-        void sendSessionMessage(sessionId, text, { permissionMode: toProtocolMode(uiMode, agent), model: navState.model ?? null })
+        void sendSessionMessage(sessionId, text, { permissionMode: activePermissionMode, model: navState.model ?? null })
             .catch((error: unknown) => {
                 const message = error instanceof Error ? error.message : String(error);
                 toast.error(t("chat.sendFailed"), { description: message });
@@ -694,17 +690,18 @@ export function ChatPage() {
                         {agent}{host ? ` · ${host}` : ""} · {statusLabel(status)}
                     </span>
                 </div>
-                {/* десктоп (3a): segmented safe/ask/auto полностью + кнопка «терминал» */}
+                {/* десктоп (3a): реальные режимы разрешений текущего агента + кнопка «терминал» */}
                 <div className="hidden items-center gap-2 md:flex">
-                    <Segmented options={["safe", "ask", "auto"]} value={uiMode} onChange={handleModeChange} />
+                    <Segmented options={permissionModes} value={activePermissionMode} onChange={handleModeChange} />
                     <Link to={`/session/${session.id}/terminal`}
                         className="flex h-10 items-center rounded-lg border border-border px-3 font-mono text-[11px] text-muted-foreground">
                         {t("chat.terminal")}
                     </Link>
                 </div>
-                <button onClick={cycleMode}
-                    className="flex h-11 items-center gap-1 rounded-lg bg-muted px-3 font-mono text-[10.5px] transition-[background-color,color,transform] active:scale-[0.96] md:hidden">
-                    {uiMode} <ChevronDown className="size-2.5 text-muted-foreground" />
+                <button onClick={() => setIsPermissionSheetOpen(true)}
+                    className="flex h-11 max-w-[118px] items-center gap-1 rounded-lg bg-muted px-3 font-mono text-[10.5px] transition-[background-color,color,transform] active:scale-[0.96] md:hidden">
+                    <span className="truncate">{activePermissionMode}</span>
+                    <ChevronDown className="size-2.5 shrink-0 text-muted-foreground" />
                 </button>
                 <button aria-label={t("chat.aria.menu")} className="flex size-11 items-center justify-center rounded-[10px] transition-[background-color,transform] active:scale-[0.96]">
                     <MoreHorizontal className="size-[17px] text-muted-foreground" />
@@ -902,6 +899,23 @@ export function ChatPage() {
                     )}
                 </div>
             </footer>
+            <Drawer open={isPermissionSheetOpen} onOpenChange={setIsPermissionSheetOpen}>
+                <DrawerContent className={PERMISSION_SHEET_CONTENT_CLASS}>
+                    <div className="flex items-center px-[18px] pb-2 pt-1">
+                        <DrawerTitle className="text-[14.5px] font-semibold">{t("new.permissions")}</DrawerTitle>
+                        <span className="ml-auto font-mono text-[10px] text-muted-foreground/70">{agent}</span>
+                    </div>
+                    {permissionModes.map((permission) => (
+                        <button key={permission} onClick={() => selectPermissionMode(permission)}
+                            className="flex min-h-11 w-full items-center gap-[11px] border-t border-border px-[18px] py-3 text-left">
+                            <span className={`min-w-0 flex-1 truncate font-mono text-[12.5px] ${permission === activePermissionMode ? "text-foreground" : "text-muted-foreground"}`}>
+                                {permission}
+                            </span>
+                            <span className={`size-1.5 shrink-0 rounded-full ${permission === activePermissionMode ? "bg-accent" : "bg-muted-foreground/25"}`} />
+                        </button>
+                    ))}
+                </DrawerContent>
+            </Drawer>
             </div>
         </div>
     );
