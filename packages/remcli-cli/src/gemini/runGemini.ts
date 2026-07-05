@@ -38,7 +38,7 @@ import { GeminiPermissionHandler } from '@/gemini/utils/permissionHandler';
 import { GeminiReasoningProcessor } from '@/gemini/utils/reasoningProcessor';
 import { GeminiDiffProcessor } from '@/gemini/utils/diffProcessor';
 import type { GeminiMode, CodexMessagePayload } from '@/gemini/types';
-import type { PermissionMode } from '@/api/types';
+import type { GeminiPermissionMode, PermissionMode } from '@/api/types';
 import { GEMINI_MODEL_ENV, DEFAULT_GEMINI_MODEL, CHANGE_TITLE_INSTRUCTION } from '@/gemini/constants';
 import {
   readGeminiLocalConfig,
@@ -202,16 +202,16 @@ export async function runGemini(opts: {
   const conversationHistory = new ConversationHistory({ maxMessages: 20, maxCharacters: 50000 });
 
   // Track current overrides to apply per message
-  let currentPermissionMode: PermissionMode | undefined = undefined;
+  let currentPermissionMode: GeminiPermissionMode | undefined = undefined;
   let currentModel: string | undefined = undefined;
 
   session.onUserMessage((message) => {
     // Resolve permission mode (validate) - same as Codex
     let messagePermissionMode = currentPermissionMode;
     if (message.meta?.permissionMode) {
-      const validModes: PermissionMode[] = ['default', 'read-only', 'safe-yolo', 'yolo'];
-      if (validModes.includes(message.meta.permissionMode as PermissionMode)) {
-        messagePermissionMode = message.meta.permissionMode as PermissionMode;
+      const validModes: GeminiPermissionMode[] = ['default', 'auto_edit', 'yolo', 'plan'];
+      if (validModes.includes(message.meta.permissionMode as GeminiPermissionMode)) {
+        messagePermissionMode = message.meta.permissionMode as GeminiPermissionMode;
         currentPermissionMode = messagePermissionMode;
         // Update permission handler with new mode
         updatePermissionMode(messagePermissionMode);
@@ -507,7 +507,7 @@ export async function runGemini(opts: {
   });
   
   // Update permission handler when permission mode changes
-  const updatePermissionMode = (mode: PermissionMode) => {
+  const updatePermissionMode = (mode: GeminiPermissionMode) => {
     permissionHandler.setPermissionMode(mode);
   };
 

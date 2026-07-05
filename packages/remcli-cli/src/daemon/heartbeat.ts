@@ -22,7 +22,7 @@ import packageJson from '../../package.json';
 import { encodeSharedSecret } from './p2p/p2pAuth';
 
 type ShutdownRequester = (
-    source: 'remcli-app' | 'remcli-cli' | 'os-signal' | 'exception',
+    source: 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception',
     errorMessage?: string
 ) => void;
 

@@ -33,6 +33,8 @@ export interface CursorQueryOptions {
     mode?: 'agent' | 'plan' | 'ask';
     /** Force allow all commands without prompting (maps to --force / -f) */
     force?: boolean;
+    /** Enable Cursor's auto-review mode when supported by the local CLI */
+    autoReview?: boolean;
 }
 
 /**
@@ -57,6 +59,7 @@ export async function* cursorQuery(options: CursorQueryOptions): AsyncGenerator<
         executable = 'agent',
         mode,
         force,
+        autoReview,
     } = options;
 
     // Build arguments
@@ -73,6 +76,7 @@ export async function* cursorQuery(options: CursorQueryOptions): AsyncGenerator<
     if (apiKey) args.push('--api-key', apiKey);
     if (mode && mode !== 'agent') args.push('--mode', mode);
     if (force) args.push('--force');
+    if (autoReview) args.push('--auto-review');
 
     logger.debug(`[cursor] Spawning: ${executable} ${args.map(a => a.length > 100 ? a.substring(0, 100) + '...' : a).join(' ')}`);
 

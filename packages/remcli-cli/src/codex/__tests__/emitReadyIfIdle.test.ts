@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createCodexStartConfig, emitReadyIfIdle } from '../runCodex';
+import {
+    CODEX_DEFAULT_PERMISSION_MODE,
+    createCodexStartConfig,
+    emitReadyIfIdle,
+    resolveCodexPermissionConfig,
+} from '../runCodex';
 
 describe('emitReadyIfIdle', () => {
     it('emits ready and notification when queue is idle', () => {
@@ -67,14 +72,14 @@ describe('createCodexStartConfig', () => {
         const config = createCodexStartConfig({
             prompt: 'Тест',
             sandbox: 'workspace-write',
-            approvalPolicy: 'untrusted',
+            approvalPolicy: 'on-request',
             model: 'gpt-5.5',
         });
 
         expect(config).toEqual({
             prompt: 'Тест',
             sandbox: 'workspace-write',
-            'approval-policy': 'untrusted',
+            'approval-policy': 'on-request',
             model: 'gpt-5.5',
         });
         expect(config.prompt).not.toContain('change_title');
@@ -93,5 +98,56 @@ describe('createCodexStartConfig', () => {
             sandbox: 'read-only',
             'approval-policy': 'never',
         });
+    });
+
+    it('passes Codex config overrides when needed', () => {
+        const config = createCodexStartConfig({
+            prompt: 'Hello',
+            sandbox: 'workspace-write',
+            approvalPolicy: 'on-request',
+            config: { approvals_reviewer: 'user' },
+        });
+
+        expect(config).toEqual({
+            prompt: 'Hello',
+            sandbox: 'workspace-write',
+            'approval-policy': 'on-request',
+            config: { approvals_reviewer: 'user' },
+        });
+    });
+});
+
+describe('resolveCodexPermissionConfig', () => {
+    it('uses workspace-write as Codex runtime default permission', () => {
+        expect(CODEX_DEFAULT_PERMISSION_MODE).toBe('workspace-write');
+    });
+
+    it('maps read-only to a read-only sandbox with interactive approval', () => {
+        expect(resolveCodexPermissionConfig('read-only')).toEqual({
+            sandbox: 'read-only',
+            approvalPolicy: 'on-request',
+        });
+    });
+
+    it('maps workspace-write to the workspace sandbox with interactive approval', () => {
+        expect(resolveCodexPermissionConfig('workspace-write')).toEqual({
+            sandbox: 'workspace-write',
+            approvalPolicy: 'on-request',
+        });
+    });
+
+    it('maps danger-full-access to unrestricted sandbox without approval prompts', () => {
+        expect(resolveCodexPermissionConfig('danger-full-access')).toEqual({
+            sandbox: 'danger-full-access',
+            approvalPolicy: 'never',
+        });
+    });
+
+    it.each([
+        'read-only',
+        'workspace-write',
+        'danger-full-access',
+    ] as const)('does not use deprecated on-failure for %s', (permissionMode) => {
+        expect(resolveCodexPermissionConfig(permissionMode).approvalPolicy).not.toBe('on-failure');
     });
 });

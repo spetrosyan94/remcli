@@ -1,6 +1,5 @@
 // remcli-web — задачи Zen в KV демона (/v1/kv, ключ 'zen-tasks').
-// Значение — JSON-массив ZenTask (формат совместим с TodoItem из remcli-app
-// sources/-zen/model/ops.ts). OCC: мутации ретраятся при version-mismatch —
+// Значение — JSON-массив ZenTask. OCC: мутации ретраятся при version-mismatch —
 // transform применяется заново к свежему серверному списку (merge).
 // Миграция: задачи из localStorage (remcli-zen-tasks) заливаются на демон при
 // первом чтении, если ключа там ещё нет, затем localStorage очищается.

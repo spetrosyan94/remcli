@@ -1,7 +1,6 @@
 /**
  * Binary <-> string encoding helpers (browser-native, no dependencies).
- * Ported 1:1 from remcli-app sources/encryption/{base64,hex,text}.ts —
- * formats must match the CLI daemon exactly.
+ * Formats must match the CLI daemon exactly.
  */
 
 export function decodeBase64(base64: string, encoding: 'base64' | 'base64url' = 'base64'): Uint8Array {

@@ -36,6 +36,6 @@ export type ContentPart =
 
 /** Mode config for MessageQueue2 hashing */
 export interface CursorMode {
-    permissionMode: import('@/api/types').PermissionMode;
+    permissionMode: import('@/api/types').CursorPermissionMode;
     model?: string;
 }

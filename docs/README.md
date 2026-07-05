@@ -14,6 +14,6 @@
 
 - Пути и имена полей соответствуют текущей реализации в `packages/remcli-cli`.
 - Демон запускает встроенный P2P-сервер (Fastify + Socket.IO) — отдельного серверного пакета нет.
-- Демон также раздаёт сборку веб-приложения (`packages/remcli-app/dist/`) как статические файлы через `@fastify/static`, с SPA-fallback для клиентского роутинга.
-- Клиент мигрирует на web-only пакет (`remcli-web`, Vite + React + PWA); `remcli-app` (React Native) находится в режиме поддержки.
+- Демон также раздаёт сборку веб-приложения (`packages/remcli-web/dist/` или bundled `web-dist/`) как статические файлы через `@fastify/static`, с SPA-fallback для клиентского роутинга.
+- Клиентская часть живёт в web-only пакете `remcli-web` (Vite + React + PWA).
 - Примеры иллюстративны; канонический источник — код.

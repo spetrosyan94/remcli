@@ -7,7 +7,7 @@
 
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
-import type { PermissionMode } from '@/api/types';
+import type { GeminiPermissionMode } from '@/api/types';
 import {
     BasePermissionHandler,
     PermissionResult,
@@ -21,6 +21,7 @@ const DISPLAY_ONLY_TOOL_NAMES = ['GeminiReasoning', 'CodexReasoning'];
 const UI_ONLY_TOOL_NAMES = ['change_title', 'remcli__change_title'];
 const UI_ONLY_TOOL_IDS = ['change_title'];
 const READ_ONLY_TOOL_NAMES = ['read', 'list', 'ls', 'glob', 'grep', 'search', 'find', 'view', 'cat', 'stat', 'inspect'];
+const AUTO_EDIT_TOOL_NAMES = ['replace', 'write_file', 'writefile', 'write'];
 const WRITE_TOOL_NAMES = ['write', 'edit', 'create', 'delete', 'patch', 'replace', 'remove', 'rename', 'move', 'copy', 'fs-edit'];
 const WRITE_COMMAND_RE =
     /(?:^|[;&|]\s*)(?:rm|mv|cp|mkdir|rmdir|touch|chmod|chown|ln|dd|mkfs)\b|(?:^|[;&|]\s*)git\s+(?:commit|push|reset|checkout|merge|rebase|clean|tag)\b|(?:^|[;&|]\s*)(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|remove|update|upgrade)\b|(?:^|[;&|]\s*)sed\s+-i\b|(?:^|[;&|]\s*)tee\b|>>?[^&]/i;
@@ -61,11 +62,17 @@ function isReadOnlyOperation(toolName: string, input: unknown): boolean {
     return READ_ONLY_TOOL_NAMES.some((name) => lowerName.includes(name));
 }
 
+function isAutoEditOperation(toolName: string, input: unknown): boolean {
+    if (WRITE_COMMAND_RE.test(normalizedText(input))) return false;
+    const lowerName = toolName.toLowerCase();
+    return AUTO_EDIT_TOOL_NAMES.some((name) => lowerName.includes(name));
+}
+
 /**
  * Gemini-specific permission handler with permission mode support.
  */
 export class GeminiPermissionHandler extends BasePermissionHandler {
-    private currentPermissionMode: PermissionMode = 'default';
+    private currentPermissionMode: GeminiPermissionMode = 'default';
 
     constructor(session: ApiSessionClient) {
         super(session);
@@ -86,7 +93,7 @@ export class GeminiPermissionHandler extends BasePermissionHandler {
      * Set the current permission mode
      * This affects how tool calls are automatically approved/denied
      */
-    setPermissionMode(mode: PermissionMode): void {
+    setPermissionMode(mode: GeminiPermissionMode): void {
         this.currentPermissionMode = mode;
         logger.debug(`${this.getLogPrefix()} Permission mode set to: ${mode}`);
     }
@@ -101,11 +108,10 @@ export class GeminiPermissionHandler extends BasePermissionHandler {
 
         switch (this.currentPermissionMode) {
             case 'yolo':
-                // Auto-approve everything in yolo mode
                 return true;
-            case 'safe-yolo':
-                return isReadOnlyOperation(toolName, input);
-            case 'read-only':
+            case 'auto_edit':
+                return isAutoEditOperation(toolName, input);
+            case 'plan':
                 return isReadOnlyOperation(toolName, input);
             case 'default':
                 return false;
@@ -116,7 +122,7 @@ export class GeminiPermissionHandler extends BasePermissionHandler {
     }
 
     private denyToolCall(toolCallId: string, toolName: string, input: unknown): PermissionResult {
-        logger.debug(`${this.getLogPrefix()} Denying write tool ${toolName} (${toolCallId}) in read-only mode`);
+        logger.debug(`${this.getLogPrefix()} Denying write tool ${toolName} (${toolCallId}) in ${this.currentPermissionMode} mode`);
 
         this.session.updateAgentState((currentState) => ({
             ...currentState,
@@ -174,7 +180,7 @@ export class GeminiPermissionHandler extends BasePermissionHandler {
             };
         }
 
-        if (this.currentPermissionMode === 'read-only') {
+        if (this.currentPermissionMode === 'plan') {
             return this.denyToolCall(toolCallId, toolName, input);
         }
 

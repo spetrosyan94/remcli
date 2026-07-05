@@ -78,8 +78,8 @@ export async function startDaemon(): Promise<void> {
   //
   // In case the setup malfunctions - our signal handlers will not properly
   // shut down. We will force exit the process with code 1.
-  let requestShutdown: (source: 'remcli-app' | 'remcli-cli' | 'os-signal' | 'exception', errorMessage?: string) => void;
-  let resolvesWhenShutdownRequested = new Promise<({ source: 'remcli-app' | 'remcli-cli' | 'os-signal' | 'exception', errorMessage?: string })>((resolve) => {
+  let requestShutdown: (source: 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception', errorMessage?: string) => void;
+  let resolvesWhenShutdownRequested = new Promise<({ source: 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception', errorMessage?: string })>((resolve) => {
     requestShutdown = (source, errorMessage) => {
       logger.debug(`[DAEMON RUN] Requesting shutdown (source: ${source}, errorMessage: ${errorMessage})`);
 
@@ -355,7 +355,7 @@ export async function startDaemon(): Promise<void> {
         spawnSession: sessionManager.spawnSession,
         stopSession: sessionManager.stopSession,
         onSessionStopped: (sessionId) => publishStoppedSessionInactive?.(sessionId),
-        requestShutdown: () => requestShutdown('remcli-app')
+        requestShutdown: () => requestShutdown('remcli-web')
     });
 
     // Optionally start cloudflared tunnel for remote access
@@ -415,7 +415,7 @@ export async function startDaemon(): Promise<void> {
     });
 
     // Setup signal handlers
-    const cleanupAndShutdown = async (source: 'remcli-app' | 'remcli-cli' | 'os-signal' | 'exception', errorMessage?: string) => {
+    const cleanupAndShutdown = async (source: 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception', errorMessage?: string) => {
       logger.debug(`[DAEMON RUN] Starting proper cleanup (source: ${source}, errorMessage: ${errorMessage})...`);
 
       // Clear health check interval

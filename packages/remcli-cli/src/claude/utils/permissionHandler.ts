@@ -20,7 +20,7 @@ interface PermissionResponse {
     id: string;
     approved: boolean;
     reason?: string;
-    mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+    mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk';
     allowTools?: string[];
     receivedAt?: number;
 }
@@ -41,7 +41,7 @@ export class PermissionHandler {
     private allowedTools = new Set<string>();
     private allowedBashLiterals = new Set<string>();
     private allowedBashPrefixes = new Set<string>();
-    private permissionMode: PermissionMode = 'default';
+    private permissionMode: PermissionMode = 'manual';
     private onPermissionRequestCallback?: (toolCallId: string) => void;
 
     constructor(session: Session) {
@@ -81,7 +81,7 @@ export class PermissionHandler {
 
         // Update permission mode
         if (response.mode) {
-            this.permissionMode = response.mode;
+            this.permissionMode = response.mode === 'default' ? 'manual' : response.mode;
         }
 
         // Handle 
@@ -91,10 +91,10 @@ export class PermissionHandler {
             if (response.approved) {
                 logger.debug('Plan approved - injecting PLAN_FAKE_RESTART');
                 // Inject the approval message at the beginning of the queue
-                if (response.mode && ['default', 'acceptEdits', 'bypassPermissions'].includes(response.mode)) {
-                    this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: response.mode });
+                if (response.mode && ['manual', 'default', 'acceptEdits', 'bypassPermissions', 'auto', 'dontAsk'].includes(response.mode)) {
+                    this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: response.mode === 'default' ? 'manual' : response.mode });
                 } else {
-                    this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: 'default' });
+                    this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: 'manual' });
                 }
                 pending.resolve({ behavior: 'deny', message: PLAN_FAKE_REJECT });
             } else {
@@ -147,6 +147,10 @@ export class PermissionHandler {
 
         if (this.permissionMode === 'acceptEdits' && descriptor.edit) {
             return { behavior: 'allow', updatedInput: input as Record<string, unknown> };
+        }
+
+        if (this.permissionMode === 'dontAsk') {
+            return { behavior: 'deny', message: 'Permission mode dontAsk denied this tool request.' };
         }
 
         //

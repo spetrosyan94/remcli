@@ -1,19 +1,19 @@
 import { z } from 'zod'
 import { UsageSchema } from '@/claude/types'
 
+export type ClaudePermissionMode = 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk'
+export type CodexPermissionMode = 'read-only' | 'workspace-write' | 'danger-full-access'
+export type GeminiPermissionMode = 'default' | 'auto_edit' | 'yolo' | 'plan'
+export type CursorPermissionMode = 'agent' | 'plan' | 'ask' | 'force' | 'auto-review'
+
 /**
- * Permission mode type - includes both Claude and Codex modes
- * Must match MessageMetaSchema.permissionMode enum values
+ * Permission mode type - union of native agent modes.
+ * Must match MessageMetaSchema.permissionMode enum values.
  *
- * Claude modes: default, acceptEdits, bypassPermissions, plan
- * Codex modes: read-only, safe-yolo, yolo
- *
- * When calling Claude SDK, Codex modes are mapped at the SDK boundary:
- * - yolo → bypassPermissions
- * - safe-yolo → default
- * - read-only → default
+ * Agent-specific modes are validated at each backend boundary.
+ * `default` remains only where it is native (Claude/Gemini) or a model sentinel.
  */
-export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'read-only' | 'safe-yolo' | 'yolo'
+export type PermissionMode = ClaudePermissionMode | CodexPermissionMode | GeminiPermissionMode | CursorPermissionMode
 
 /**
  * Usage data type from Claude
@@ -207,7 +207,7 @@ export const DaemonStateSchema = z.object({
   shutdownRequestedAt: z.number().optional(),
   shutdownSource:
     z.union([
-      z.enum(['mobile-app', 'cli', 'os-signal', 'unknown']),
+      z.enum(['remcli-web', 'remcli-cli', 'os-signal', 'unknown']),
       z.string() // Forward compatibility
     ]).optional()
 })
@@ -242,7 +242,12 @@ export type SessionMessage = z.infer<typeof SessionMessageSchema>
  */
 export const MessageMetaSchema = z.object({
   sentFrom: z.string().optional(), // Source identifier
-  permissionMode: z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'read-only', 'safe-yolo', 'yolo']).optional(), // Permission mode for this message
+  permissionMode: z.enum([
+    'manual', 'default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk',
+    'read-only', 'workspace-write', 'danger-full-access',
+    'auto_edit', 'yolo',
+    'agent', 'ask', 'force', 'auto-review'
+  ]).optional(), // Permission mode for this message
   model: z.string().nullable().optional(), // Model name for this message (null = reset)
   fallbackModel: z.string().nullable().optional(), // Fallback model for this message (null = reset)
   customSystemPrompt: z.string().nullable().optional(), // Custom system prompt for this message (null = reset)

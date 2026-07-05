@@ -1,5 +1,5 @@
 /**
- * TTS (Text-to-Speech) — web port of remcli-app sources/hooks/useTts.ts.
+ * TTS (Text-to-Speech) for the web client.
  *
  * useTts state machine: idle -> synthesizing -> playing -> idle.
  * - Generation counter: stale callbacks of cancelled requests cannot

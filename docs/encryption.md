@@ -386,7 +386,7 @@ Payload, хранящийся в `SessionMessage.content`, всегда заши
       "completedAt": 123,
       "status": "canceled | denied | approved",
       "reason": "...",
-      "mode": "default | acceptEdits | bypassPermissions | plan | read-only | safe-yolo | yolo",
+      "mode": "manual | default | acceptEdits | bypassPermissions | plan | auto | dontAsk | read-only | workspace-write | danger-full-access | auto_edit | yolo | agent | ask | force | auto-review",
       "decision": "approved | approved_for_session | denied | abort",
       "allowTools": ["..."]
     }
@@ -414,7 +414,7 @@ Payload, хранящийся в `SessionMessage.content`, всегда заши
   "httpPort": 123,
   "startedAt": 123,
   "shutdownRequestedAt": 123,
-  "shutdownSource": "mobile-app | cli | os-signal | unknown"
+  "shutdownSource": "remcli-web | remcli-cli | os-signal | unknown"
 }
 ```
 

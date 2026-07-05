@@ -1,6 +1,5 @@
 /**
- * Socket.IO client for the daemon's P2P server — port of remcli-app
- * sources/sync/apiSocket.ts + ops.ts.
+ * Socket.IO client for the daemon's P2P server.
  *
  * Handshake: path /v1/updates, auth { token, clientType: 'user-scoped' },
  * transports websocket+polling (LAN/HTTP compatibility), infinite reconnect.
@@ -366,7 +365,7 @@ interface SessionPermissionRequest {
     id: string;
     approved: boolean;
     reason?: string;
-    mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+    mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk';
     allowTools?: string[];
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
 }
@@ -375,7 +374,7 @@ interface SessionPermissionRequest {
 export async function sessionAllow(
     sessionId: string,
     id: string,
-    mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan',
+    mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk',
     allowedTools?: string[],
     decision?: 'approved' | 'approved_for_session'
 ): Promise<void> {
@@ -387,7 +386,7 @@ export async function sessionAllow(
 export async function sessionDeny(
     sessionId: string,
     id: string,
-    mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan',
+    mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk',
     allowedTools?: string[],
     decision?: 'denied' | 'abort'
 ): Promise<void> {
@@ -431,6 +430,6 @@ export function sendEncryptedMessage(options: {
         message: options.encryptedRecord,
         localId: options.localId,
         sentFrom: 'web',
-        permissionMode: options.permissionMode ?? 'default'
+        ...(options.permissionMode ? { permissionMode: options.permissionMode } : {})
     });
 }

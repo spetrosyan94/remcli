@@ -26,6 +26,7 @@ import { resolve } from 'node:path';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { Session } from './session';
 import { replaySessionHistory, extractResumeIdFromArgs } from '@/claude/utils/replaySessionHistory';
+import { normalizeClaudeMode } from '@/claude/utils/permissionMode';
 
 /** JavaScript runtime to use for spawning Claude Code */
 export type JsRuntime = 'node' | 'bun'
@@ -199,7 +200,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
     // Forward messages to the queue
     // Permission modes: Use the unified 7-mode type, mapping happens at SDK boundary in claudeRemote.ts
-    let currentPermissionMode: PermissionMode | undefined = options.permissionMode;
+    let currentPermissionMode: PermissionMode | undefined = normalizeClaudeMode(options.permissionMode);
     let currentModel = options.model; // Track current model state
     let currentFallbackModel: string | undefined = undefined; // Track current fallback model
     let currentCustomSystemPrompt: string | undefined = undefined; // Track current custom system prompt
@@ -208,10 +209,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     let currentDisallowedTools: string[] | undefined = undefined; // Track current disallowed tools
     session.onUserMessage((message) => {
 
-        // Resolve permission mode from meta - pass through as-is, mapping happens at SDK boundary
+        // Resolve permission mode from meta. Claude accepts only Claude-native modes.
         let messagePermissionMode: PermissionMode | undefined = currentPermissionMode;
         if (message.meta?.permissionMode) {
-            messagePermissionMode = message.meta.permissionMode;
+            messagePermissionMode = normalizeClaudeMode(message.meta.permissionMode);
             currentPermissionMode = messagePermissionMode;
             logger.debug(`[loop] Permission mode updated from user message to: ${currentPermissionMode}`);
         } else {
@@ -284,7 +285,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         if (specialCommand.type === 'compact') {
             logger.debug('[start] Detected /compact command');
             const enhancedMode: EnhancedMode = {
-                permissionMode: messagePermissionMode || 'default',
+                permissionMode: messagePermissionMode || 'manual',
                 model: messageModel,
                 fallbackModel: messageFallbackModel,
                 customSystemPrompt: messageCustomSystemPrompt,
@@ -300,7 +301,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         if (specialCommand.type === 'clear') {
             logger.debug('[start] Detected /clear command');
             const enhancedMode: EnhancedMode = {
-                permissionMode: messagePermissionMode || 'default',
+                permissionMode: messagePermissionMode || 'manual',
                 model: messageModel,
                 fallbackModel: messageFallbackModel,
                 customSystemPrompt: messageCustomSystemPrompt,
@@ -315,7 +316,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
         // Push with resolved permission mode, model, system prompts, and tools
         const enhancedMode: EnhancedMode = {
-            permissionMode: messagePermissionMode || 'default',
+            permissionMode: messagePermissionMode || 'manual',
             model: messageModel,
             fallbackModel: messageFallbackModel,
             customSystemPrompt: messageCustomSystemPrompt,

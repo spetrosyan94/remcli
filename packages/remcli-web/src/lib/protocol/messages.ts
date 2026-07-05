@@ -1,6 +1,5 @@
 /**
- * Message content schema + normalization — port of remcli-app
- * sources/sync/typesRaw.ts + typesMessageMeta.ts.
+ * Message content schema + normalization for daemon message payloads.
  *
  * Decrypted message payloads (RawRecord) come from Claude/Codex/Gemini/Cursor
  * via the daemon; normalizeRawMessage() converts them to a uniform shape for
@@ -10,11 +9,30 @@
 
 import { z } from 'zod';
 
+const permissionModeSchema = z.enum([
+    'manual',
+    'default',
+    'acceptEdits',
+    'bypassPermissions',
+    'plan',
+    'auto',
+    'dontAsk',
+    'read-only',
+    'workspace-write',
+    'danger-full-access',
+    'auto_edit',
+    'yolo',
+    'agent',
+    'ask',
+    'force',
+    'auto-review',
+]);
+
 // ─── Message meta ────────────────────────────────────────────────
 
 export const MessageMetaSchema = z.object({
     sentFrom: z.string().optional(),
-    permissionMode: z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'read-only', 'safe-yolo', 'yolo']).optional(),
+    permissionMode: permissionModeSchema.optional(),
     model: z.string().nullable().optional(),
     fallbackModel: z.string().nullable().optional(),
     customSystemPrompt: z.string().nullable().optional(),
@@ -73,7 +91,7 @@ const rawToolResultContentSchema = z.object({
     permissions: z.object({
         date: z.number(),
         result: z.enum(['approved', 'denied']),
-        mode: z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'read-only', 'safe-yolo', 'yolo']).optional(),
+        mode: permissionModeSchema.optional(),
         allowedTools: z.array(z.string()).optional(),
         decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).optional(),
     }).optional(),

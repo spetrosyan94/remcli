@@ -2,7 +2,7 @@
 // Машина/сессии — из стора протокола; спавн — RPC spawn-remcli-session
 // (payload как в remcli-cli/src/daemon/machineSocket.ts), resume-sheet —
 // RPC list-agent-sessions, directory-picker — RPC list-directory.
-// Модели/режимы — как в remcli-app sources/utils/agents.ts.
+// Модели/режимы — локальная web-конфигурация поверх daemon protocol.
 import * as React from "react";
 import { ArrowUp, ChevronDown, Folder, FolderOpen, Loader2, RotateCcw, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router";
@@ -11,6 +11,7 @@ import { AgentIcon, StatusDot, type AgentId } from "@/components/kit";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import {
+    getAgentPermissionLabel,
     getAgentPermissionModes,
     getDefaultPermissionMode,
     normalizeAgentPermissionMode,
@@ -36,7 +37,7 @@ import { linkZenTaskSession } from "@/lib/zenTasks";
 
 type SheetKind = "machine" | "model" | "permission" | "resume" | "directory";
 
-/* ---------- Конфигурация агентов (зеркало remcli-app sources/utils/agents.ts) ---------- */
+/* ---------- Конфигурация агентов ---------- */
 
 interface AgentOption {
     id: AgentId;
@@ -150,6 +151,7 @@ export function NewSessionPage() {
     const homeDir = machine?.metadata?.homeDir;
     const agentModels = AGENT_OPTIONS.find((a) => a.id === agent)?.models ?? [];
     const agentPermissionModes = getAgentPermissionModes(agent);
+    const activeModeLabel = getAgentPermissionLabel(agent, mode);
 
     // недавние директории — из прошлых сессий выбранной машины (metadata.path)
     const recentDirs = React.useMemo<RecentDir[]>(() => {
@@ -366,7 +368,7 @@ export function NewSessionPage() {
                         <span className="font-mono text-[10px] text-muted-foreground/70">{t("new.permissions")}</span>
                         <button onClick={() => setSheet("permission")}
                             className="flex h-11 items-center rounded-[10px] border border-input bg-muted px-3 font-mono text-xs transition-[background-color,border-color,transform] active:scale-[0.96]">
-                            <span className="min-w-0 truncate">{mode}</span>
+                            <span className="min-w-0 truncate">{activeModeLabel}</span>
                             <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
                         </button>
                     </section>
@@ -469,7 +471,7 @@ export function NewSessionPage() {
                         <>
                             <SheetHeader title={t("new.permissions")} tag={agent} />
                             {agentPermissionModes.map((permission) => (
-                                <SheetRow key={permission} isActive={permission === mode} label={permission}
+                                <SheetRow key={permission} isActive={permission === mode} label={getAgentPermissionLabel(agent, permission)}
                                     onClick={() => { setMode(permission); setSheet(null); }} />
                             ))}
                         </>

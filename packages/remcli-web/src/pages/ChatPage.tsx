@@ -14,7 +14,7 @@ import {
 } from "@/components/kit";
 import { SessionsSidebar } from "@/components/app/SessionsSidebar";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
-import { getAgentPermissionModes, normalizeAgentPermissionMode } from "@/lib/agentPermissions";
+import { getAgentPermissionLabel, getAgentPermissionModes, normalizeAgentPermissionMode } from "@/lib/agentPermissions";
 import { copyText } from "@/lib/clipboard";
 import { t } from "@/lib/i18n";
 import {
@@ -210,7 +210,7 @@ function diffEntryOf(id: string, name: string, input: unknown): DiffFeedEntry | 
 }
 
 /**
- * Лента из NormalizedMessage[] (маппинг как в remcli-app reducer, упрощённо):
+ * Лента из NormalizedMessage[]:
  * user → пузырь; agent text → новая группа; tool-call → карточка/diff в текущей группе;
  * tool-result — завершает карточку по tool_use_id; thinking/события/sidechain — пропуск.
  */
@@ -375,13 +375,17 @@ export function ChatPage() {
     const status = session ? statusOf(session, pendingPermissions.length > 0) : "offline";
     const permissionModes = React.useMemo(() => getAgentPermissionModes(agent), [agent]);
     const activePermissionMode = normalizeAgentPermissionMode(agent, uiMode);
+    const formatPermissionMode = React.useCallback(
+        (permission: string) => getAgentPermissionLabel(agent, permission as PermissionMode),
+        [agent],
+    );
 
     React.useEffect(() => {
         if (!session) return;
         setUiMode((current) => normalizeAgentPermissionMode(agent, current));
     }, [agent, session]);
 
-    // ── Пагинация истории (паттерн remcli-app useLoadMoreMessages): offset = число
+    // ── Пагинация истории: offset = число
     // загруженных сообщений (live-сообщения тоже двигают его), страницы — newest-first ──
     const [hasMore, setHasMore] = React.useState(false);
     const [isLoadingOlder, setIsLoadingOlder] = React.useState(false);
@@ -692,7 +696,7 @@ export function ChatPage() {
                 </div>
                 {/* десктоп (3a): реальные режимы разрешений текущего агента + кнопка «терминал» */}
                 <div className="hidden items-center gap-2 md:flex">
-                    <Segmented options={permissionModes} value={activePermissionMode} onChange={handleModeChange} />
+                    <Segmented options={permissionModes} value={activePermissionMode} onChange={handleModeChange} getLabel={formatPermissionMode} />
                     <Link to={`/session/${session.id}/terminal`}
                         className="flex h-10 items-center rounded-lg border border-border px-3 font-mono text-[11px] text-muted-foreground">
                         {t("chat.terminal")}
@@ -700,7 +704,7 @@ export function ChatPage() {
                 </div>
                 <button onClick={() => setIsPermissionSheetOpen(true)}
                     className="flex h-11 max-w-[118px] items-center gap-1 rounded-lg bg-muted px-3 font-mono text-[10.5px] transition-[background-color,color,transform] active:scale-[0.96] md:hidden">
-                    <span className="truncate">{activePermissionMode}</span>
+                    <span className="truncate">{formatPermissionMode(activePermissionMode)}</span>
                     <ChevronDown className="size-2.5 shrink-0 text-muted-foreground" />
                 </button>
                 <button aria-label={t("chat.aria.menu")} className="flex size-11 items-center justify-center rounded-[10px] transition-[background-color,transform] active:scale-[0.96]">
@@ -909,7 +913,7 @@ export function ChatPage() {
                         <button key={permission} onClick={() => selectPermissionMode(permission)}
                             className="flex min-h-11 w-full items-center gap-[11px] border-t border-border px-[18px] py-3 text-left">
                             <span className={`min-w-0 flex-1 truncate font-mono text-[12.5px] ${permission === activePermissionMode ? "text-foreground" : "text-muted-foreground"}`}>
-                                {permission}
+                                {formatPermissionMode(permission)}
                             </span>
                             <span className={`size-1.5 shrink-0 rounded-full ${permission === activePermissionMode ? "bg-accent" : "bg-muted-foreground/25"}`} />
                         </button>

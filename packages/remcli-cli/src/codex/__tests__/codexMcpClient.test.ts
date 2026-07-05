@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    createCodexReplyArguments,
     isRemcliChangeTitleElicitation,
     permissionResultToElicitResult,
 } from '../codexMcpClient';
@@ -58,5 +59,18 @@ describe('permissionResultToElicitResult', () => {
         expect(permissionResultToElicitResult({ decision: 'abort' })).toEqual({
             action: 'cancel',
         });
+    });
+});
+
+describe('createCodexReplyArguments', () => {
+    it('uses threadId for Codex MCP resume/continue calls without deprecated identifiers', () => {
+        const args = createCodexReplyArguments('thread-123', 'continue');
+
+        expect(args).toEqual({
+            threadId: 'thread-123',
+            prompt: 'continue',
+        });
+        expect(args).not.toHaveProperty('sessionId');
+        expect(args).not.toHaveProperty('conversationId');
     });
 });

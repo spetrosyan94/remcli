@@ -3,25 +3,17 @@
 # dependencies
 node_modules/
 
-# Expo
-.expo/
+# build output
 dist/
 web-build/
-expo-env.d.ts
-/ios
-/android
 
-# Native
-.kotlin/
+# local credentials / generated merge artifacts
 *.orig.*
 *.jks
 *.p8
 *.p12
 *.key
 *.mobileprovision
-
-# Metro
-.metro-health-check*
 
 # debug
 npm-debug.*

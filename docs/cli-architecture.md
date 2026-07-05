@@ -249,11 +249,12 @@ flowchart TD
 
 ### Раздача веб-приложения
 
-Демон раздаёт предсобранное веб-приложение (`packages/remcli-app/dist/`) как статические файлы через `@fastify/static` на том же порту P2P-сервера. Это позволяет закодировать в QR-код URL, открывающий веб-приложение прямо с демона — отдельный dev-сервер не нужен. Демон ищет веб-сборку в:
+Демон раздаёт предсобранное веб-приложение (`packages/remcli-web/dist/` или bundled `web-dist/`) как статические файлы через `@fastify/static` на том же порту P2P-сервера. Это позволяет закодировать в QR-код URL, открывающий веб-приложение прямо с демона — отдельный dev-сервер не нужен. Демон ищет веб-сборку в:
 
 1. Переменной окружения `REMCLI_WEB_DIR`
-2. `../../../remcli-app/dist` относительно скомпилированного `dist/`
-3. `packages/remcli-app/dist` относительно cwd
+2. `../remcli-web/dist` относительно пакета `packages/remcli-cli`
+3. `web-dist/` внутри опубликованного CLI-пакета
+4. `packages/remcli-web/dist` относительно cwd
 
 SPA-fallback роут отдаёт `index.html` на любой несматченный GET-запрос (кроме API-роутов `/v1/*` и `/v2/*`). Статические файлы раздаются без аутентификации; `bearer token` требуется только для API-роутов.
 
@@ -339,7 +340,7 @@ flowchart LR
 | Claude Code | Полный | `--resume <id>`; история исходной сессии реплеится в P2P-хранилище (`src/claude/utils/replaySessionHistory.ts`) |
 | Cursor | Полный | `agent --resume <id>` на каждый headless-запрос (`src/cursor/cursorQuery.ts`) |
 | Gemini | Полный | ACP `session/load`, если агент декларирует capability `loadSession`; иначе откат к новой сессии (`src/agent/acp/AcpBackend.ts`) |
-| Codex | Не поддерживается | `experimental_resume` удалён из Codex CLI; стартует свежая сессия с явным уведомлением, что контекст не переносится. Планируется миграция на Codex app-server (`src/codex/runCodex.ts`) |
+| Codex | Поддерживается | CLI поддерживает `codex resume <id>`; текущий MCP-путь Remcli продолжает сохранённый thread через `codex-reply` по `threadId`. Удалённый ключ `experimental_resume` не использовать. App-server остаётся целевой интеграцией для richer status/approval протокола (`src/codex/runCodex.ts`) |
 
 Примечания по агентам:
 - **Cursor**: бинарник CLI определяется как `agent` (fallback: `cursor-agent` для старых сборок); headless-запросы выполняются с `--trust`, чтобы пропустить промпты workspace-trust.

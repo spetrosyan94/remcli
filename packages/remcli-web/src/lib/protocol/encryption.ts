@@ -1,5 +1,5 @@
 /**
- * End-to-end encryption — 1:1 port of remcli-app sources/encryption/ + sources/sync/encryption/.
+ * End-to-end encryption for the daemon wire format.
  *
  * Two wire schemes (must match packages/remcli-cli/src/api/encryption.ts exactly):
  * - Legacy:  XSalsa20-Poly1305 secretbox (tweetnacl). Bundle: nonce(24) + box(JSON).

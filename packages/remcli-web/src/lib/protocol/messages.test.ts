@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeRawMessage } from '@/lib/protocol/messages';
+import { MessageMetaSchema, normalizeRawMessage } from '@/lib/protocol/messages';
 import { mergeMessages } from '@/lib/protocol/store';
 import type { NormalizedMessage } from '@/lib/protocol/messages';
 
 describe('normalizeRawMessage', () => {
+    it('accepts current Codex sandbox permission modes in message meta', () => {
+        expect(MessageMetaSchema.parse({ permissionMode: 'workspace-write' }).permissionMode).toBe('workspace-write');
+        expect(MessageMetaSchema.parse({ permissionMode: 'danger-full-access' }).permissionMode).toBe('danger-full-access');
+    });
+
     it('normalizes a plain user message with meta', () => {
         const result = normalizeRawMessage('m1', 'local-1', 5, 1000, {
             role: 'user',

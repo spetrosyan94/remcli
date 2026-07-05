@@ -21,39 +21,39 @@ function createSessionMock(): { session: ApiSessionClient; getState: () => Agent
 }
 
 describe('GeminiPermissionHandler permission modes', () => {
-    it('auto-approves explicit read-only tools in safe-yolo mode', async () => {
+    it('auto-approves edit tools in auto_edit mode', async () => {
         const { session, getState } = createSessionMock();
         const handler = new GeminiPermissionHandler(session);
-        handler.setPermissionMode('safe-yolo');
+        handler.setPermissionMode('auto_edit');
 
-        const result = await handler.handleToolCall('read-1', 'ReadFile', { path: 'README.md' });
+        const result = await handler.handleToolCall('write-1', 'WriteFile', { path: 'src/index.ts' });
 
         expect(result).toEqual({ decision: 'approved' });
-        expect(getState().completedRequests?.['read-1']).toMatchObject({
-            tool: 'ReadFile',
+        expect(getState().completedRequests?.['write-1']).toMatchObject({
+            tool: 'WriteFile',
             status: 'approved',
             decision: 'approved',
         });
     });
 
-    it('asks before write tools in safe-yolo mode', () => {
+    it('asks before delete tools in auto_edit mode', () => {
         const { session, getState } = createSessionMock();
         const handler = new GeminiPermissionHandler(session);
-        handler.setPermissionMode('safe-yolo');
+        handler.setPermissionMode('auto_edit');
 
-        void handler.handleToolCall('write-1', 'WriteFile', { path: 'src/index.ts' });
+        void handler.handleToolCall('delete-1', 'DeleteFile', { path: 'src/index.ts' });
 
-        expect(getState().requests?.['write-1']).toMatchObject({
-            tool: 'WriteFile',
+        expect(getState().requests?.['delete-1']).toMatchObject({
+            tool: 'DeleteFile',
             arguments: { path: 'src/index.ts' },
         });
-        expect(getState().completedRequests?.['write-1']).toBeUndefined();
+        expect(getState().completedRequests?.['delete-1']).toBeUndefined();
     });
 
-    it('denies write tools in read-only mode', async () => {
+    it('denies write tools in plan mode', async () => {
         const { session, getState } = createSessionMock();
         const handler = new GeminiPermissionHandler(session);
-        handler.setPermissionMode('read-only');
+        handler.setPermissionMode('plan');
 
         const result = await handler.handleToolCall('write-1', 'WriteFile', { path: 'src/index.ts' });
 
@@ -66,10 +66,10 @@ describe('GeminiPermissionHandler permission modes', () => {
         });
     });
 
-    it('does not auto-approve shell commands in read-only mode', async () => {
+    it('does not auto-approve shell commands in plan mode', async () => {
         const { session, getState } = createSessionMock();
         const handler = new GeminiPermissionHandler(session);
-        handler.setPermissionMode('read-only');
+        handler.setPermissionMode('plan');
 
         const result = await handler.handleToolCall('shell-1', 'Shell', { command: 'git status --short' });
 
@@ -81,10 +81,10 @@ describe('GeminiPermissionHandler permission modes', () => {
         });
     });
 
-    it('denies unknown tools in read-only mode', async () => {
+    it('denies unknown tools in plan mode', async () => {
         const { session, getState } = createSessionMock();
         const handler = new GeminiPermissionHandler(session);
-        handler.setPermissionMode('read-only');
+        handler.setPermissionMode('plan');
 
         const result = await handler.handleToolCall('unknown-1', 'Shell', { command: 'python script.py' });
 
@@ -97,10 +97,10 @@ describe('GeminiPermissionHandler permission modes', () => {
         });
     });
 
-    it('does not auto-approve memory writes in read-only mode', async () => {
+    it('does not auto-approve memory writes in plan mode', async () => {
         const { session, getState } = createSessionMock();
         const handler = new GeminiPermissionHandler(session);
-        handler.setPermissionMode('read-only');
+        handler.setPermissionMode('plan');
 
         const result = await handler.handleToolCall('save-memory-1', 'save_memory', { memory: 'remember this' });
 
@@ -113,10 +113,10 @@ describe('GeminiPermissionHandler permission modes', () => {
         });
     });
 
-    it('asks before memory writes in safe-yolo mode', () => {
+    it('asks before memory writes in auto_edit mode', () => {
         const { session, getState } = createSessionMock();
         const handler = new GeminiPermissionHandler(session);
-        handler.setPermissionMode('safe-yolo');
+        handler.setPermissionMode('auto_edit');
 
         void handler.handleToolCall('save-memory-1', 'save_memory', { memory: 'remember this' });
 
@@ -127,10 +127,10 @@ describe('GeminiPermissionHandler permission modes', () => {
         expect(getState().completedRequests?.['save-memory-1']).toBeUndefined();
     });
 
-    it('does not auto-approve write shell commands in safe-yolo mode', () => {
+    it('does not auto-approve write shell commands in auto_edit mode', () => {
         const { session, getState } = createSessionMock();
         const handler = new GeminiPermissionHandler(session);
-        handler.setPermissionMode('safe-yolo');
+        handler.setPermissionMode('auto_edit');
 
         void handler.handleToolCall('shell-1', 'Shell', { command: 'rm -rf dist' });
 
@@ -146,10 +146,10 @@ describe('GeminiPermissionHandler permission modes', () => {
         'find . -exec rm {} \\;',
         'git branch -D feature',
         'cat $(rm -rf dist)',
-    ])('does not auto-approve destructive-looking shell command in safe-yolo mode: %s', (command) => {
+    ])('does not auto-approve destructive-looking shell command in auto_edit mode: %s', (command) => {
         const { session, getState } = createSessionMock();
         const handler = new GeminiPermissionHandler(session);
-        handler.setPermissionMode('safe-yolo');
+        handler.setPermissionMode('auto_edit');
 
         void handler.handleToolCall(command, 'Shell', { command });
 
@@ -160,7 +160,7 @@ describe('GeminiPermissionHandler permission modes', () => {
         expect(getState().completedRequests?.[command]).toBeUndefined();
     });
 
-    it.each(['default', 'read-only', 'safe-yolo', 'yolo'] as const)('auto-approves change_title in %s mode', async (mode) => {
+    it.each(['default', 'auto_edit', 'plan', 'yolo'] as const)('auto-approves change_title in %s mode', async (mode) => {
         const { session, getState } = createSessionMock();
         const handler = new GeminiPermissionHandler(session);
         handler.setPermissionMode(mode);

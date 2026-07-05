@@ -1,6 +1,5 @@
 // remcli-web — маппинг сущностей P2P-протокола (Session/Machine) в пропсы UI-кита:
 // агент, путь (~/…), статус (DESIGN.md §Карта статусов), строка состояния, метки времени.
-// Референс: remcli-app sources/utils/sessionUtils.ts.
 import type { AgentId, Status } from "@/components/kit";
 import { getIntlLocale, t } from "@/lib/i18n";
 import type { Machine, Session } from "@/lib/protocol";

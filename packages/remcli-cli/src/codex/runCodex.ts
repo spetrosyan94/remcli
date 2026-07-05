@@ -15,7 +15,7 @@ import { hashObject } from '@/utils/deterministicJson';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { MessageBuffer } from "@/ui/ink/messageBuffer";
 import { CodexDisplay } from "@/ui/ink/CodexDisplay";
-import type { CodexSessionConfig } from './types';
+import type { CodexSandbox, CodexSessionConfig, CodexToolResponse } from './types';
 import { notifyDaemonSessionStarted } from "@/daemon/controlClient";
 import { registerKillSessionHandler } from "@/claude/registerKillSessionHandler";
 import { delay } from "@/utils/time";
@@ -24,6 +24,7 @@ import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
 import type { ApiSessionClient } from '@/api/apiSession';
+import type { PermissionMode } from '@/api/types';
 
 type ReadyEventOptions = {
     pending: unknown;
@@ -33,10 +34,13 @@ type ReadyEventOptions = {
     notify?: () => void;
 };
 
+export const CODEX_DEFAULT_PERMISSION_MODE: CodexSandbox = 'workspace-write';
+
 interface CodexStartConfigOptions {
     prompt: string;
     sandbox: CodexSessionConfig['sandbox'];
     approvalPolicy: CodexSessionConfig['approval-policy'];
+    config?: CodexSessionConfig['config'];
     model?: string;
 }
 
@@ -44,6 +48,7 @@ export function createCodexStartConfig({
     prompt,
     sandbox,
     approvalPolicy,
+    config: configOverrides,
     model,
 }: CodexStartConfigOptions): CodexSessionConfig {
     const config: CodexSessionConfig = {
@@ -56,7 +61,63 @@ export function createCodexStartConfig({
         config.model = model;
     }
 
+    if (configOverrides) {
+        config.config = configOverrides;
+    }
+
     return config;
+}
+
+interface CodexPermissionConfig {
+    approvalPolicy: NonNullable<CodexSessionConfig['approval-policy']>;
+    sandbox: CodexSandbox;
+    config?: CodexSessionConfig['config'];
+}
+
+function isCodexPermissionMode(permissionMode: PermissionMode): permissionMode is CodexSandbox {
+    return permissionMode === 'read-only'
+        || permissionMode === 'workspace-write'
+        || permissionMode === 'danger-full-access';
+}
+
+export function resolveCodexPermissionConfig(permissionMode: CodexSandbox): CodexPermissionConfig {
+    switch (permissionMode) {
+        case 'read-only':
+            return {
+                approvalPolicy: 'on-request',
+                sandbox: 'read-only',
+            };
+        case 'workspace-write':
+            return {
+                approvalPolicy: 'on-request',
+                sandbox: 'workspace-write',
+            };
+        case 'danger-full-access':
+            return {
+                approvalPolicy: 'never',
+                sandbox: 'danger-full-access',
+            };
+    }
+}
+
+function formatUnsupportedCodexPermissionMessage(permissionMode: PermissionMode): string {
+    return `Unsupported Codex permission mode "${permissionMode}". Use read-only, workspace-write, or danger-full-access.`;
+}
+
+function getCodexErrorText(response: CodexToolResponse): string {
+    if (Array.isArray(response.content)) {
+        const text = response.content
+            .map((content) => content.text)
+            .filter((text): text is string => typeof text === 'string' && text.length > 0)
+            .join(' ')
+            .trim();
+
+        if (text.length > 0) {
+            return text;
+        }
+    }
+
+    return 'Codex returned an error.';
 }
 
 /**
@@ -87,10 +148,8 @@ export async function runCodex(opts: {
     startedBy?: 'daemon' | 'terminal';
     resumeSessionId?: string;
 }): Promise<void> {
-    // Use shared PermissionMode type for cross-agent compatibility
-    type PermissionMode = import('@/api/types').PermissionMode;
     interface EnhancedMode {
-        permissionMode: PermissionMode;
+        permissionMode: CodexSandbox;
         model?: string;
     }
 
@@ -174,18 +233,28 @@ export async function runCodex(opts: {
 
     // Track current overrides to apply per message
     // Use shared PermissionMode type from api/types for cross-agent compatibility
-    let currentPermissionMode: import('@/api/types').PermissionMode | undefined = undefined;
+    let currentPermissionMode: CodexSandbox | undefined = undefined;
     let currentModel: string | undefined = undefined;
 
     session.onUserMessage((message) => {
         // Resolve permission mode (accept all modes, will be mapped in switch statement)
         let messagePermissionMode = currentPermissionMode;
         if (message.meta?.permissionMode) {
-            messagePermissionMode = message.meta.permissionMode as import('@/api/types').PermissionMode;
-            currentPermissionMode = messagePermissionMode;
-            logger.debug(`[Codex] Permission mode updated from user message to: ${currentPermissionMode}`);
+            const requestedPermissionMode = message.meta.permissionMode as PermissionMode;
+            if (isCodexPermissionMode(requestedPermissionMode)) {
+                messagePermissionMode = requestedPermissionMode;
+                currentPermissionMode = messagePermissionMode;
+                logger.debug(`[Codex] Permission mode updated from user message to: ${currentPermissionMode}`);
+            } else {
+                const errorText = formatUnsupportedCodexPermissionMessage(requestedPermissionMode);
+                logger.warn(`[Codex] ${errorText}`);
+                session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
+                messagePermissionMode = CODEX_DEFAULT_PERMISSION_MODE;
+                currentPermissionMode = CODEX_DEFAULT_PERMISSION_MODE;
+            }
         } else {
-            logger.debug(`[Codex] User message received with no permission mode override, using current: ${currentPermissionMode ?? 'default (effective)'}`);
+            const effectivePermissionMode = currentPermissionMode ?? `${CODEX_DEFAULT_PERMISSION_MODE} (effective)`;
+            logger.debug(`[Codex] User message received with no permission mode override, using current: ${effectivePermissionMode}`);
         }
 
         // Resolve model; explicit null or 'default' resets to undefined (let Codex choose)
@@ -200,7 +269,7 @@ export async function runCodex(opts: {
         }
 
         const enhancedMode: EnhancedMode = {
-            permissionMode: messagePermissionMode || 'default',
+            permissionMode: messagePermissionMode || CODEX_DEFAULT_PERMISSION_MODE,
             model: messageModel,
         };
         messageQueue.push(message.content.text, enhancedMode);
@@ -352,21 +421,9 @@ export async function runCodex(opts: {
 
     const client = new CodexMcpClient();
 
-    // NOTE: Codex context restoration is intentionally NOT implemented here.
-    // The `experimental_resume` config key was removed from the Codex CLI in late 2025
-    // (openai/codex #4393, #4435), so there is no supported way to rehydrate a previous
-    // transcript through the MCP interface. A restart therefore always begins a fresh
-    // Codex session. Migration to the Codex app-server (which supports resume) is tracked
-    // separately.
-    //
-    // If the daemon spawned us with `--resume <id>` (user tapped "Resume" on a Codex
-    // session in the app), be honest about the fact that a fresh session is starting and
-    // no previous context is carried over — otherwise the resume silently degrades.
     if (opts.resumeSessionId) {
-        const resumeNotice = 'Started a new Codex session. Codex does not carry over previous context (resume is not supported by the Codex CLI yet).';
-        logger.debug(`[codex] Resume requested for ${opts.resumeSessionId}, but context restoration is unsupported — starting fresh`);
-        messageBuffer.addMessage(resumeNotice, 'status');
-        session.sendSessionEvent({ type: 'message', message: resumeNotice });
+        client.setThreadId(opts.resumeSessionId);
+        logger.debug(`[codex] Resume requested for Codex thread ${opts.resumeSessionId}`);
     }
 
     permissionHandler = new CodexPermissionHandler(session);
@@ -495,7 +552,7 @@ export async function runCodex(opts: {
         logger.debug('[codex]: client.connect begin');
         await client.connect();
         logger.debug('[codex]: client.connect done');
-        let wasCreated = false;
+        let wasCreated = client.hasActiveSession();
         let currentModeHash: string | null = null;
         let pending: { message: string; mode: EnhancedMode; isolate: boolean; hash: string } | null = null;
 
@@ -549,46 +606,16 @@ export async function runCodex(opts: {
             currentModeHash = message.hash;
 
             try {
-                // Map permission mode to approval policy and sandbox for startSession
-                const approvalPolicy = (() => {
-                    switch (message.mode.permissionMode) {
-                        // Codex native modes
-                        case 'default': return 'untrusted' as const;                    // Ask for non-trusted commands
-                        case 'read-only': return 'never' as const;                      // Never ask, read-only enforced by sandbox
-                        case 'safe-yolo': return 'on-failure' as const;                 // Auto-run, ask only on failure
-                        case 'yolo': return 'on-failure' as const;                      // Auto-run, ask only on failure
-                        // Defensive fallback for Claude-specific modes (backward compatibility)
-                        case 'bypassPermissions': return 'on-failure' as const;         // Full access: map to yolo behavior
-                        case 'acceptEdits': return 'on-request' as const;               // Let model decide (closest to auto-approve edits)
-                        case 'plan': return 'untrusted' as const;                       // Conservative: ask for non-trusted
-                        default: return 'untrusted' as const;                           // Safe fallback
-                    }
-                })();
-                const sandbox = (() => {
-                    switch (message.mode.permissionMode) {
-                        // Codex native modes
-                        case 'default': return 'workspace-write' as const;              // Can write in workspace
-                        case 'read-only': return 'read-only' as const;                  // Read-only filesystem
-                        case 'safe-yolo': return 'workspace-write' as const;            // Can write in workspace
-                        case 'yolo': return 'danger-full-access' as const;              // Full system access
-                        // Defensive fallback for Claude-specific modes
-                        case 'bypassPermissions': return 'danger-full-access' as const; // Full access: map to yolo
-                        case 'acceptEdits': return 'workspace-write' as const;          // Can edit files in workspace
-                        case 'plan': return 'workspace-write' as const;                 // Can write for planning
-                        default: return 'workspace-write' as const;                     // Safe default
-                    }
-                })();
+                const permissionConfig = resolveCodexPermissionConfig(message.mode.permissionMode);
 
                 if (!wasCreated) {
                     const startConfig = createCodexStartConfig({
                         prompt: message.message,
-                        sandbox,
-                        approvalPolicy,
+                        sandbox: permissionConfig.sandbox,
+                        approvalPolicy: permissionConfig.approvalPolicy,
+                        config: permissionConfig.config,
                         model: message.mode.model,
                     });
-
-                    // NOTE: No `experimental_resume` here — the key was removed from the Codex
-                    // CLI in late 2025 (openai/codex #4393, #4435). Each start is a fresh session.
 
                     autoSetTitle(message.message);
                     const startResponse = await client.startSession(
@@ -598,9 +625,7 @@ export async function runCodex(opts: {
 
                     // Check for MCP-level errors (e.g. unsupported model for ChatGPT account)
                     if (startResponse.isError) {
-                        const errorText = Array.isArray(startResponse.content)
-                            ? startResponse.content.map((c: any) => c.text || '').join(' ')
-                            : String(startResponse.content);
+                        const errorText = getCodexErrorText(startResponse);
                         logger.warn('[Codex] startSession returned error:', errorText);
                         messageBuffer.addMessage(`Error: ${errorText}`, 'status');
                         session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
@@ -615,6 +640,13 @@ export async function runCodex(opts: {
                         { signal: abortController.signal }
                     );
                     logger.debug('[Codex] continueSession response:', response);
+
+                    if (response.isError) {
+                        const errorText = getCodexErrorText(response);
+                        logger.warn('[Codex] continueSession returned error:', errorText);
+                        messageBuffer.addMessage(`Error: ${errorText}`, 'status');
+                        session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
+                    }
                 }
             } catch (error) {
                 logger.warn('Error in codex session:', error);
@@ -627,8 +659,9 @@ export async function runCodex(opts: {
                     // Do not clear session state here; the next user message should continue on the
                     // existing session if possible.
                 } else {
-                    messageBuffer.addMessage('Process exited unexpectedly', 'status');
-                    session.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
+                    const errorMessage = error instanceof Error ? error.message : 'Process exited unexpectedly';
+                    messageBuffer.addMessage(`Error: ${errorMessage}`, 'status');
+                    session.sendSessionEvent({ type: 'message', message: errorMessage, isError: true });
                 }
             } finally {
                 // Reset permission handler, reasoning processor, and diff processor

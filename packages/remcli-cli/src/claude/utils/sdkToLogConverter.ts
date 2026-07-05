@@ -48,12 +48,12 @@ function getGitBranch(cwd: string): string | undefined {
 export class SDKToLogConverter {
     private lastUuid: string | null = null
     private context: ConversionContext
-    private responses?: Map<string, { approved: boolean, mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan', reason?: string }>
+    private responses?: Map<string, { approved: boolean, mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk', reason?: string }>
     private sidechainLastUUID = new Map<string, string>();
 
     constructor(
         context: Omit<ConversionContext, 'parentUuid'>,
-        responses?: Map<string, { approved: boolean, mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan', reason?: string }>
+        responses?: Map<string, { approved: boolean, mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk', reason?: string }>
     ) {
         this.context = {
             ...context,
@@ -321,7 +321,7 @@ export class SDKToLogConverter {
 export function convertSDKToLog(
     sdkMessage: SDKMessage,
     context: Omit<ConversionContext, 'parentUuid'>,
-    responses?: Map<string, { approved: boolean, mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan', reason?: string }>
+    responses?: Map<string, { approved: boolean, mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk', reason?: string }>
 ): RawJSONLines | null {
     const converter = new SDKToLogConverter(context, responses)
     return converter.convert(sdkMessage)

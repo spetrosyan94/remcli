@@ -15,7 +15,7 @@ import { createAutoTitleSetter } from "@/utils/autoSessionTitle";
 interface PermissionsField {
     date: number;
     result: 'approved' | 'denied';
-    mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+    mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk';
     allowedTools?: string[];
 }
 

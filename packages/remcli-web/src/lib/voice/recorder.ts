@@ -1,6 +1,5 @@
 /**
- * Voice recorder (Whisper STT) — web port of remcli-app
- * sources/voice/whisperRecorder.web.ts + sources/hooks/useWhisperVoice.ts.
+ * Voice recorder (Whisper STT) for the web client.
  *
  * MediaRecorder records webm/opus (daemon converts for Whisper), the blob is
  * sent to POST /v1/voice/transcribe. Microphone requires a secure context

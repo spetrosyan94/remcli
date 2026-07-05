@@ -85,10 +85,12 @@ export const AIBackendProfileSchema = z.object({
     // Default session type for this profile
     defaultSessionType: z.enum(['simple', 'worktree']).optional(),
 
-    // Default permission mode for this profile (supports both Claude and Codex modes)
+    // Default permission mode for this profile (shared across supported agent backends)
     defaultPermissionMode: z.enum([
-        'default', 'acceptEdits', 'bypassPermissions', 'plan',  // Claude modes
-        'read-only', 'safe-yolo', 'yolo'  // Codex modes
+        'manual', 'default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk',
+        'read-only', 'workspace-write', 'danger-full-access',
+        'auto_edit', 'yolo',
+        'agent', 'ask', 'force', 'auto-review'
     ]).optional(),
 
     // Default model mode for this profile
@@ -764,4 +766,3 @@ export function writeSetupConfig(config: SetupConfig): void {
     }
     writeFileSync(getSetupConfigPath(), JSON.stringify(config, null, 2), 'utf-8');
 }
-

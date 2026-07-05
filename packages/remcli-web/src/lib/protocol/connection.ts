@@ -2,8 +2,6 @@
  * P2P daemon connection: connect-URL / QR payload parsing, bearer token
  * derivation and localStorage persistence.
  *
- * Port of remcli-app sources/sync/p2pConnect.ts + serverConfig.ts.
- *
  * IMPORTANT: the daemon derives the bearer token with HMAC-SHA512 (not SHA-256) —
  * see packages/remcli-cli/src/daemon/p2p/p2pAuth.ts. SHA-512 is used because the
  * web client must work on plain-HTTP LAN origins where WebCrypto is unavailable.

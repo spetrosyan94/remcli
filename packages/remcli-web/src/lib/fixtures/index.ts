@@ -75,7 +75,7 @@ const FIXTURE_DIRECTORY_CHILDREN: Record<string, string[]> = {
     '/Users/dev': ['projects', 'Downloads', '.config'],
     '/Users/dev/projects': ['remcli', 'webapp', 'api-server', 'docs', 'mobile'],
     '/Users/dev/projects/remcli': ['packages', 'src', 'design', 'restricted', '.claude'],
-    '/Users/dev/projects/remcli/packages': ['remcli-web', 'remcli-cli', 'remcli-app'],
+    '/Users/dev/projects/remcli/packages': ['remcli-web', 'remcli-cli'],
     '/Users/dev/projects/remcli/packages/remcli-web': ['src', 'public'],
     '/Users/dev/projects/remcli/packages/remcli-web/src': ['components', 'lib', 'pages', 'styles'],
     '/Users/dev/projects/remcli/src': ['daemon', 'protocol'],

@@ -129,8 +129,7 @@ export async function deleteMachine(config: RestConfig, machineId: string): Prom
 }
 
 // ─── KV store ────────────────────────────────────────────────────
-// Wire format mirrors remcli-app sources/sync/apiKv.ts (the daemon implements
-// the same /v1/kv* contract): values are opaque strings, OCC via version
+// Wire format mirrors the daemon /v1/kv* contract: values are opaque strings, OCC via version
 // numbers (-1 creates a key, mismatch → 409 with the current value).
 
 export interface KvItem {

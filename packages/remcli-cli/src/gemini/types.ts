@@ -4,13 +4,13 @@
  * Centralized type definitions for Gemini integration.
  */
 
-import type { PermissionMode } from '@/api/types';
+import type { GeminiPermissionMode } from '@/api/types';
 
 /**
  * Mode configuration for Gemini messages
  */
 export interface GeminiMode {
-  permissionMode: PermissionMode;
+  permissionMode: GeminiPermissionMode;
   model?: string;
   originalUserMessage?: string; // Original user message without system prompt
 }

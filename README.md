@@ -80,7 +80,7 @@ npm run gemini              # Gemini CLI
 | Claude Code | Полный — `--resume` с восстановлением истории |
 | Cursor | Полный — `agent --resume` |
 | Gemini | Полный — через ACP `session/load` (с фолбэком на новую сессию) |
-| Codex | Не поддерживается CLI (ключ `experimental_resume` удалён) — стартует новая сессия с честным уведомлением; миграция на Codex app-server запланирована |
+| Codex | Поддерживается — `codex resume <id>` в CLI; Remcli в текущем MCP-пути продолжает сохранённый thread через `codex-reply` по `threadId`. Миграция на Codex app-server запланирована для более богатых статусов и approval events |
 
 ---
 
@@ -145,33 +145,30 @@ cd packages/remcli-cli && npm link
 ```
 packages/
   remcli-cli/     CLI + демон (публикуется как remcli в npm)
-  remcli-app/     React Native + Expo — мобильное/веб приложение
-  remcli-web/     Web-клиент — Vite + React + shadcn/ui, PWA (в разработке)
+  remcli-web/     Web-клиент — Vite + React + shadcn/ui, PWA
 docs/             Документация (протокол, шифрование, архитектура)
 ```
 
-> **Направление:** клиент мигрирует на web-only пакет `remcli-web`. Пакет `remcli-app` (React Native) в maintenance-режиме до достижения паритета функций.
+> **Направление:** клиентская часть теперь web-only: активный UI живёт в `packages/remcli-web`.
 
 ---
 
 ## Разработка
 
-Все команды для разработки имеют префикс `dev:`:
-
 | Команда | Описание |
 |---------|----------|
-| `npm run dev:app` | Expo dev server (мобильное приложение, hot reload) |
-| `npm run dev:web` | Expo dev server (веб-версия, hot reload) |
-| `npm run dev:cli` | Сборка CLI |
-| `npm run dev:typecheck` | Проверка типов приложения |
+| `npm run dev:web` | Vite dev server для web-клиента |
+| `npm run build` | Сборка web-клиента и CLI |
+| `npm run typecheck` | Проверка типов web-клиента и CLI |
+| `npm run test` | Тесты web-клиента и CLI |
 
 ### Пакетные команды
 
 ```bash
 npm run dev --workspace=remcli             # CLI dev-режим (TSX, без сборки)
 npm run test --workspace=remcli            # CLI тесты
-npm run ios --workspace=remcli-app         # iOS симулятор
-npm run android --workspace=remcli-app     # Android эмулятор
+npm -w remcli-web run dev                  # Web UI
+npm -w remcli-web run test                 # Web тесты
 ```
 
 ### Структура CLI-тестов
@@ -179,16 +176,6 @@ npm run android --workspace=remcli-app     # Android эмулятор
 - Unit-тесты остаются рядом с исходным кодом: `packages/remcli-cli/src/**/*.test.ts`
 - Integration-тесты находятся отдельно: `packages/remcli-cli/tests/integration/**/*.test.ts`
 - E2E-тесты добавляются в `packages/remcli-cli/tests/e2e/**/*.test.ts`
-
-### macOS десктоп (Tauri)
-
-```bash
-cd packages/remcli-app
-npm run tauri:dev                          # Dev с hot reload
-npm run tauri:build:production             # Продакшн сборка
-```
-
----
 
 ## Голосовой ввод (Whisper STT)
 

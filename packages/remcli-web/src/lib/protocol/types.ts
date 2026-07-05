@@ -1,6 +1,5 @@
 /**
- * Protocol types — port of remcli-app sources/sync/apiTypes.ts + storageTypes.ts
- * (only the parts needed by the web client). Wire shapes must match
+ * Protocol types for the web client. Wire shapes must match
  * packages/remcli-cli/src/daemon/p2p/ (docs/protocol.md).
  */
 
@@ -89,7 +88,7 @@ export const ApiDeleteMachineSchema = z.object({
     machineId: z.string(),
 });
 
-// KV live updates (mirror of remcli-app apiTypes.ts ApiKvBatchUpdateSchema)
+// KV live updates
 export const ApiKvBatchUpdateSchema = z.object({
     t: z.literal('kv-batch-update'),
     changes: z.array(z.object({
@@ -221,7 +220,7 @@ export const MachineMetadataSchema = z.object({
     daemonLastKnownStatus: z.enum(['running', 'shutting-down']).optional(),
     daemonLastKnownPid: z.number().optional(),
     shutdownRequestedAt: z.number().optional(),
-    shutdownSource: z.enum(['remcli-app', 'remcli-cli', 'os-signal', 'unknown']).optional()
+    shutdownSource: z.enum(['remcli-web', 'remcli-cli', 'os-signal', 'unknown']).optional()
 });
 
 export type MachineMetadata = z.infer<typeof MachineMetadataSchema>;
@@ -264,7 +263,23 @@ export type ApiMachine = z.infer<typeof ApiMachineSchema>;
 
 // ─── Decrypted client-side entities ──────────────────────────────
 
-export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'read-only' | 'safe-yolo' | 'yolo';
+export type PermissionMode =
+    | 'manual'
+    | 'default'
+    | 'acceptEdits'
+    | 'bypassPermissions'
+    | 'plan'
+    | 'auto'
+    | 'dontAsk'
+    | 'read-only'
+    | 'workspace-write'
+    | 'danger-full-access'
+    | 'auto_edit'
+    | 'yolo'
+    | 'agent'
+    | 'ask'
+    | 'force'
+    | 'auto-review';
 
 export interface Session {
     id: string;

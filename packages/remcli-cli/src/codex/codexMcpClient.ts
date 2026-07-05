@@ -55,6 +55,15 @@ export function permissionResultToElicitResult(result: PermissionResult): Elicit
     return { action: 'cancel' };
 }
 
+export interface CodexReplyArguments extends Record<string, unknown> {
+    threadId: string;
+    prompt: string;
+}
+
+export function createCodexReplyArguments(threadId: string, prompt: string): CodexReplyArguments {
+    return { threadId, prompt };
+}
+
 /**
  * Get the correct MCP subcommand based on installed codex version
  * Versions >= 0.43.0-alpha.5 use 'mcp-server', older versions use 'mcp'
@@ -93,6 +102,7 @@ export class CodexMcpClient {
     private client: Client;
     private transport: StdioClientTransport | null = null;
     private connected: boolean = false;
+    private threadId: string | null = null;
     private sessionId: string | null = null;
     private conversationId: string | null = null;
     private handler: ((event: any) => void) | null = null;
@@ -125,6 +135,13 @@ export class CodexMcpClient {
      */
     setPermissionHandler(handler: CodexPermissionHandler): void {
         this.permissionHandler = handler;
+    }
+
+    setThreadId(threadId: string): void {
+        this.threadId = threadId;
+        this.sessionId = threadId;
+        this.conversationId = threadId;
+        logger.debug('[CodexMCP] Thread ID set for resume:', threadId);
     }
 
     async connect(): Promise<void> {
@@ -241,17 +258,12 @@ export class CodexMcpClient {
     async continueSession(prompt: string, options?: { signal?: AbortSignal }): Promise<CodexToolResponse> {
         if (!this.connected) await this.connect();
 
-        if (!this.sessionId) {
+        const threadId = this.getActiveThreadId();
+        if (!threadId) {
             throw new Error('No active session. Call startSession first.');
         }
 
-        if (!this.conversationId) {
-            // Some Codex deployments reuse the session ID as the conversation identifier
-            this.conversationId = this.sessionId;
-            logger.debug('[CodexMCP] conversationId missing, defaulting to sessionId:', this.conversationId);
-        }
-
-        const args = { sessionId: this.sessionId, conversationId: this.conversationId, prompt };
+        const args = createCodexReplyArguments(threadId, prompt);
         logger.debug('[CodexMCP] Continuing Codex session:', args);
 
         const response = await this.client.callTool({
@@ -278,64 +290,128 @@ export class CodexMcpClient {
         if (event.data && typeof event.data === 'object') {
             candidates.push(event.data);
         }
+        if (event.structuredContent && typeof event.structuredContent === 'object') {
+            candidates.push(event.structuredContent);
+        }
 
         for (const candidate of candidates) {
+            const threadId = candidate.thread_id ?? candidate.threadId;
+            if (typeof threadId === 'string') {
+                this.rememberThreadId(threadId, 'event');
+            }
+
             const sessionId = candidate.session_id ?? candidate.sessionId;
-            if (sessionId) {
+            if (typeof sessionId === 'string') {
                 this.sessionId = sessionId;
                 logger.debug('[CodexMCP] Session ID extracted from event:', this.sessionId);
+                if (!this.threadId) {
+                    this.rememberThreadId(sessionId, 'event session ID');
+                }
             }
 
             const conversationId = candidate.conversation_id ?? candidate.conversationId;
-            if (conversationId) {
+            if (typeof conversationId === 'string') {
                 this.conversationId = conversationId;
                 logger.debug('[CodexMCP] Conversation ID extracted from event:', this.conversationId);
+                if (!this.threadId) {
+                    this.rememberThreadId(conversationId, 'event conversation ID');
+                }
             }
         }
     }
     private extractIdentifiers(response: any): void {
         const meta = response?.meta || {};
-        if (meta.sessionId) {
-            this.sessionId = meta.sessionId;
-            logger.debug('[CodexMCP] Session ID extracted:', this.sessionId);
-        } else if (response?.sessionId) {
-            this.sessionId = response.sessionId;
-            logger.debug('[CodexMCP] Session ID extracted:', this.sessionId);
+        if (typeof response?.structuredContent?.threadId === 'string') {
+            this.rememberThreadId(response.structuredContent.threadId, 'structuredContent');
         }
 
-        if (meta.conversationId) {
+        if (typeof meta.threadId === 'string') {
+            this.rememberThreadId(meta.threadId, 'metadata');
+        } else if (typeof response?.threadId === 'string') {
+            this.rememberThreadId(response.threadId, 'response');
+        }
+
+        if (typeof meta.sessionId === 'string') {
+            this.sessionId = meta.sessionId;
+            logger.debug('[CodexMCP] Session ID extracted:', this.sessionId);
+            if (!this.threadId) {
+                this.rememberThreadId(meta.sessionId, 'metadata session ID');
+            }
+        } else if (typeof response?.sessionId === 'string') {
+            this.sessionId = response.sessionId;
+            logger.debug('[CodexMCP] Session ID extracted:', this.sessionId);
+            if (!this.threadId) {
+                this.rememberThreadId(response.sessionId, 'response session ID');
+            }
+        }
+
+        if (typeof meta.conversationId === 'string') {
             this.conversationId = meta.conversationId;
             logger.debug('[CodexMCP] Conversation ID extracted:', this.conversationId);
-        } else if (response?.conversationId) {
+            if (!this.threadId) {
+                this.rememberThreadId(meta.conversationId, 'metadata conversation ID');
+            }
+        } else if (typeof response?.conversationId === 'string') {
             this.conversationId = response.conversationId;
             logger.debug('[CodexMCP] Conversation ID extracted:', this.conversationId);
+            if (!this.threadId) {
+                this.rememberThreadId(response.conversationId, 'response conversation ID');
+            }
         }
 
         const content = response?.content;
         if (Array.isArray(content)) {
             for (const item of content) {
-                if (!this.sessionId && item?.sessionId) {
+                if (typeof item?.structuredContent?.threadId === 'string') {
+                    this.rememberThreadId(item.structuredContent.threadId, 'content structuredContent');
+                }
+                if (typeof item?.threadId === 'string') {
+                    this.rememberThreadId(item.threadId, 'content');
+                }
+                if (!this.sessionId && typeof item?.sessionId === 'string') {
                     this.sessionId = item.sessionId;
                     logger.debug('[CodexMCP] Session ID extracted from content:', this.sessionId);
+                    if (!this.threadId) {
+                        this.rememberThreadId(item.sessionId, 'content session ID');
+                    }
                 }
-                if (!this.conversationId && item && typeof item === 'object' && 'conversationId' in item && item.conversationId) {
+                if (!this.conversationId && item && typeof item === 'object' && 'conversationId' in item && typeof item.conversationId === 'string') {
                     this.conversationId = item.conversationId;
                     logger.debug('[CodexMCP] Conversation ID extracted from content:', this.conversationId);
+                    if (!this.threadId) {
+                        this.rememberThreadId(item.conversationId, 'content conversation ID');
+                    }
                 }
             }
         }
     }
 
+    private getActiveThreadId(): string | null {
+        return this.threadId ?? this.conversationId ?? this.sessionId;
+    }
+
+    private rememberThreadId(threadId: string, source: string): void {
+        this.threadId = threadId;
+        if (!this.sessionId) {
+            this.sessionId = threadId;
+        }
+        if (!this.conversationId) {
+            this.conversationId = threadId;
+        }
+        logger.debug(`[CodexMCP] Thread ID extracted from ${source}:`, threadId);
+    }
+
     hasActiveSession(): boolean {
-        return this.sessionId !== null;
+        return this.getActiveThreadId() !== null;
     }
 
     clearSession(): void {
-        // Store the previous session ID before clearing for potential resume
-        const previousSessionId = this.sessionId;
+        // Store the previous thread ID before clearing for diagnostics.
+        const previousThreadId = this.getActiveThreadId();
+        this.threadId = null;
         this.sessionId = null;
         this.conversationId = null;
-        logger.debug('[CodexMCP] Session cleared, previous sessionId:', previousSessionId);
+        logger.debug('[CodexMCP] Session cleared, previous threadId:', previousThreadId);
     }
 
     /**
@@ -386,6 +462,6 @@ export class CodexMcpClient {
         this.transport = null;
         this.connected = false;
         // Preserve session/conversation identifiers for potential reconnection / recovery flows.
-        logger.debug(`[CodexMCP] Disconnected; session ${this.sessionId ?? 'none'} preserved`);
+        logger.debug(`[CodexMCP] Disconnected; thread ${this.getActiveThreadId() ?? 'none'} preserved`);
     }
 }

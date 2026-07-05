@@ -1,6 +1,5 @@
 /**
- * Protocol client orchestration — the web-only counterpart of remcli-app
- * sources/sync/sync.ts (minimal port).
+ * Protocol client orchestration for the web-only client.
  *
  * Owns credentials, the encryption root, per-entity ciphers and the socket;
  * fetches initial data over REST, decrypts it into the zustand store and keeps
@@ -154,8 +153,7 @@ function ensureMachineCipher(ctx: ClientContext, machineId: string, dataEncrypti
 /**
  * P2P mode (dataEncryptionKey === null): the daemon stores machine metadata
  * and daemonState as plain JSON (daemon/run.ts getOrCreateMachine), unlike
- * sessions which are legacy-encrypted — mirror of remcli-app sync.ts
- * "P2P mode: metadata and daemonState are stored as plain JSON".
+ * sessions which are legacy-encrypted.
  */
 const plainJsonCipher: Cipher = {
     async encryptRaw(data: unknown): Promise<string> {
@@ -322,13 +320,13 @@ export async function sendSessionMessage(
     }
 ): Promise<void> {
     const localId = randomUUID();
-    const permissionMode = options?.permissionMode ?? 'default';
+    const permissionMode = options?.permissionMode;
     const record: RawRecord = {
         role: 'user',
         content: { type: 'text', text },
         meta: {
             sentFrom: 'web',
-            permissionMode,
+            ...(permissionMode ? { permissionMode } : {}),
             model: options?.model ?? null,
             fallbackModel: null,
             ...(options?.displayText ? { displayText: options.displayText } : {})
@@ -369,7 +367,7 @@ export async function sendSessionMessage(
 export async function sessionAllow(
     sessionId: string,
     id: string,
-    mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan',
+    mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk',
     allowedTools?: string[],
     decision?: 'approved' | 'approved_for_session'
 ): Promise<void> {
@@ -384,7 +382,7 @@ export async function sessionAllow(
 export async function sessionDeny(
     sessionId: string,
     id: string,
-    mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan',
+    mode?: 'manual' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk',
     allowedTools?: string[],
     decision?: 'denied' | 'abort'
 ): Promise<void> {
@@ -397,9 +395,8 @@ export async function sessionDeny(
 
 /**
  * Set a custom machine display name via `machine-update-metadata` with
- * optimistic concurrency control and retry on version conflicts — port of
- * remcli-app sources/sync/ops.ts machineUpdateMetadata. Empty name clears
- * the custom display name.
+ * optimistic concurrency control and retry on version conflicts. Empty name
+ * clears the custom display name.
  */
 export async function machineSetDisplayName(machineId: string, displayName: string, maxRetries = 3): Promise<void> {
     if (isFixturesActive) return;

@@ -2,16 +2,24 @@
  * Type definitions for Codex MCP integration
  */
 
+export type CodexApprovalPolicy = 'untrusted' | 'on-request' | 'never';
+export type CodexApprovalsReviewer = 'user' | 'auto_review';
+export type CodexSandbox = 'read-only' | 'workspace-write' | 'danger-full-access';
+
+export interface CodexSessionConfigOverrides {
+    approvals_reviewer?: CodexApprovalsReviewer;
+}
+
 export interface CodexSessionConfig {
     prompt: string;
-    'approval-policy'?: 'untrusted' | 'on-failure' | 'on-request' | 'never';
+    'approval-policy'?: CodexApprovalPolicy;
     'base-instructions'?: string;
-    config?: Record<string, any>;
+    config?: CodexSessionConfigOverrides & Record<string, unknown>;
     cwd?: string;
     'include-plan-tool'?: boolean;
     model?: string;
     profile?: string;
-    sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+    sandbox?: CodexSandbox;
 }
 
 export interface CodexToolResponse {

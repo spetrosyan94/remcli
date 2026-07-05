@@ -1,8 +1,8 @@
 /**
  * Machine-scoped Socket.IO client for the daemon.
  *
- * In P2P mode the daemon IS the server. To handle RPC calls from the mobile
- * app (e.g. spawn-remcli-session), the daemon connects to its own P2P server
+ * In P2P mode the daemon IS the server. To handle RPC calls from the web
+ * client (e.g. spawn-remcli-session), the daemon connects to its own P2P server
  * as a machine-scoped Socket.IO client and registers RPC handlers via the
  * existing forwarding mechanism.
  */

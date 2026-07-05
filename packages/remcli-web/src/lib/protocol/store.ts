@@ -1,6 +1,5 @@
 /**
- * Client-side protocol state (zustand) — minimal port of remcli-app
- * sources/sync/storage.ts + reducer/ message handling:
+ * Client-side protocol state (zustand):
  * decrypted machines/sessions, per-session normalized messages
  * (createdAt-ordered, deduplicated, local echo replaced by server copy),
  * and socket connection status.
@@ -15,7 +14,7 @@ import type { Machine, Session } from '@/lib/protocol/types';
 // ─── Message merge (createdAt order + dedup) ─────────────────────
 
 function sortMessages(messages: NormalizedMessage[]): NormalizedMessage[] {
-    // Chronological order (matches remcli-app storage.ts). The daemon skips the
+    // Chronological order. The daemon skips the
     // sender socket when broadcasting new-message, so a local echo keeps seq=null
     // forever — only createdAt interleaves it correctly with seq-numbered messages.
     // seq breaks ties between server messages created in the same millisecond.

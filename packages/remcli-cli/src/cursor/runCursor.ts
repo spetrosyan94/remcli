@@ -27,12 +27,19 @@ import { stopCaffeinate } from '@/utils/caffeinate';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import type { ApiSessionClient } from '@/api/apiSession';
-import type { PermissionMode } from '@/api/types';
+import type { CursorPermissionMode, PermissionMode } from '@/api/types';
 
 import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
 import { cursorQuery } from './cursorQuery';
 import type { CursorMode, CursorStreamEvent } from './types';
 
+function isCursorPermissionMode(mode: PermissionMode): mode is CursorPermissionMode {
+    return mode === 'agent'
+        || mode === 'plan'
+        || mode === 'ask'
+        || mode === 'force'
+        || mode === 'auto-review';
+}
 
 /**
  * Main entry point for the cursor command with ink UI
@@ -110,15 +117,20 @@ export async function runCursor(opts: {
     }));
 
     // Track current overrides
-    let currentPermissionMode: PermissionMode | undefined = undefined;
+    let currentPermissionMode: CursorPermissionMode | undefined = undefined;
     let currentModel: string | undefined = undefined;
 
     session.onUserMessage((message) => {
         let messagePermissionMode = currentPermissionMode;
         if (message.meta?.permissionMode) {
-            messagePermissionMode = message.meta.permissionMode as PermissionMode;
-            currentPermissionMode = messagePermissionMode;
-            logger.debug(`[Cursor] Permission mode updated: ${currentPermissionMode}`);
+            const requestedMode = message.meta.permissionMode as PermissionMode;
+            if (isCursorPermissionMode(requestedMode)) {
+                messagePermissionMode = requestedMode;
+                currentPermissionMode = messagePermissionMode;
+                logger.debug(`[Cursor] Permission mode updated: ${currentPermissionMode}`);
+            } else {
+                logger.debug(`[Cursor] Ignoring unsupported permission mode: ${requestedMode}`);
+            }
         }
 
         let messageModel = currentModel;
@@ -129,7 +141,7 @@ export async function runCursor(opts: {
         }
 
         const mode: CursorMode = {
-            permissionMode: messagePermissionMode || 'default',
+            permissionMode: messagePermissionMode || 'agent',
             model: messageModel,
         };
         messageQueue.push(message.content.text, mode);
@@ -282,25 +294,29 @@ export async function runCursor(opts: {
                 // Build prompt (no CHANGE_TITLE_INSTRUCTION — Cursor doesn't have access to remcli MCP server)
                 const prompt = message.message;
 
-                // Map permission mode → Cursor CLI flags
-                // default → agent mode (no extra flags)
-                // plan → --mode plan (read-only planning)
-                // read-only → --mode ask (Q&A, no file changes)
-                // yolo / bypassPermissions → --force (auto-approve all)
+                // Map permission mode → Cursor CLI flags.
                 const cursorMode = (() => {
                     switch (message.mode.permissionMode) {
                         case 'plan': return 'plan' as const;
-                        case 'read-only': return 'ask' as const;
+                        case 'ask': return 'ask' as const;
                         default: return 'agent' as const;
                     }
                 })();
-                const cursorForce = message.mode.permissionMode === 'yolo'
-                    || message.mode.permissionMode === 'bypassPermissions';
+                const cursorForce = message.mode.permissionMode === 'force';
+                const cursorAutoReview = message.mode.permissionMode === 'auto-review';
 
                 // Show active mode in terminal
-                const modeLabel = cursorMode === 'plan' ? 'Plan' : cursorMode === 'ask' ? 'Ask' : cursorForce ? 'Agent + Force' : 'Agent';
+                const modeLabel = cursorMode === 'plan'
+                    ? 'Plan'
+                    : cursorMode === 'ask'
+                        ? 'Ask'
+                        : cursorForce
+                            ? 'Agent + Force'
+                            : cursorAutoReview
+                                ? 'Agent + Auto-review'
+                                : 'Agent';
                 messageBuffer.addMessage(`Mode: ${modeLabel}`, 'system');
-                logger.debug(`[Cursor] Spawning with mode=${cursorMode} force=${cursorForce} permissionMode=${message.mode.permissionMode}`);
+                logger.debug(`[Cursor] Spawning with mode=${cursorMode} force=${cursorForce} autoReview=${cursorAutoReview} permissionMode=${message.mode.permissionMode}`);
 
                 const extraEnv: Record<string, string> = {};
 
@@ -325,6 +341,7 @@ export async function runCursor(opts: {
                     env: extraEnv,
                     mode: cursorMode,
                     force: cursorForce,
+                    autoReview: cursorAutoReview,
                 })) {
                     // Debug: log every event type for diagnosis
                     logger.debug(`[Cursor] Event: type=${event.type} subtype=${event.subtype ?? '-'} hasContent=${!!event.message?.content} hasTextDelta=${!!event.text_delta} hasText=${!!event.text}`);
