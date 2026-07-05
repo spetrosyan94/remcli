@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
-import { expectTurnSucceeded, responseText, withCodexModelFallback } from './codexRealTestUtils';
+import { expectTurnSucceeded, getRealCodexModel, responseText } from './codexRealTestUtils';
 
 const runRealAi = process.env.REMCLI_REAL_AI === '1';
 const realCodexDescribe = runRealAi ? describe : describe.skip;
@@ -23,9 +23,7 @@ afterEach(() => {
 
 realCodexDescribe('Codex real lifecycle smoke', { timeout: 180_000 }, () => {
     it('creates a real Codex thread, resumes it, and preserves context', async () => {
-        await withCodexModelFallback(async (model) => {
-            await runLifecycleSmoke(model);
-        });
+        await runLifecycleSmoke(getRealCodexModel());
     });
 });
 

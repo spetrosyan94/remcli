@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentState, Metadata, UserMessage } from '@/api/types';
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
-import { expectTurnSucceeded, withCodexModelFallback } from './codexRealTestUtils';
+import { expectTurnSucceeded, getRealCodexModel } from './codexRealTestUtils';
 
 const runRealAi = process.env.REMCLI_REAL_AI === '1';
 const realCodexDescribe = runRealAi ? describe : describe.skip;
@@ -224,9 +224,7 @@ afterEach(() => {
 
 realCodexDescribe('runCodex real Codex resume smoke', { timeout: 180_000 }, () => {
     it('resumes a real Codex thread through the Remcli runCodex message path', async () => {
-        await withCodexModelFallback(async (model) => {
-            await runRunCodexResumeSmoke(model);
-        });
+        await runRunCodexResumeSmoke(getRealCodexModel());
     });
 });
 
