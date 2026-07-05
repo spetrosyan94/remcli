@@ -70,8 +70,17 @@ Continue:
 existing threadId -> turn/start(prompt)
 ```
 
+Steer active turn:
+
+```text
+in-flight turnId + same mode/model hash -> turn/steer(expectedTurnId, prompt)
+```
+
 Mode/model changes не создают новый Codex thread. Sandbox/model передаются как
-per-turn параметры app-server.
+per-turn параметры app-server. Если новый prompt пришёл во время активного turn,
+но пользователь сменил model или sandbox mode, Remcli ждёт завершения текущего
+turn и отправляет prompt следующим `turn/start`, чтобы не смешивать per-turn
+настройки.
 
 ## Transport Contract
 
@@ -81,6 +90,7 @@ Remcli uses official app-server JSON-RPC methods:
 - `thread/start`
 - `thread/resume`
 - `turn/start`
+- `turn/steer`
 - `turn/interrupt`
 
 Notifications mapped into Remcli session events:
@@ -142,7 +152,6 @@ independent Codex process.
 
 ## Not Implemented Yet
 
-- `turn/steer` for adding user input to an active in-flight turn.
 - Full terminal/TUI mirroring inside web.
 - Cross-process locking around two simultaneous writers to the same Codex
   thread beyond current Remcli duplicate guard.
@@ -152,6 +161,8 @@ independent Codex process.
 Required gates for this architecture:
 
 - Unit: app-server WebSocket client sends JSON-RPC over shared endpoint.
+- Unit: `turn/steer` sends `threadId`, `expectedTurnId` and text input to the
+  active turn.
 - Unit: daemon host starts `codex app-server --listen ws://127.0.0.1:<port>` and
   waits for `/readyz`.
 - CLI: `npm -w remcli run typecheck`, `npm -w remcli run build`,

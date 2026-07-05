@@ -340,7 +340,7 @@ flowchart LR
 | Claude Code | Полный | `--resume <id>`; история исходной сессии реплеится в P2P-хранилище (`src/claude/utils/replaySessionHistory.ts`) |
 | Cursor | Полный | `agent --resume <id>` на каждый headless-запрос (`src/cursor/cursorQuery.ts`) |
 | Gemini | Полный | ACP `session/load`, если агент декларирует capability `loadSession`; иначе откат к новой сессии (`src/agent/acp/AcpBackend.ts`) |
-| Codex | Поддерживается | Remcli использует официальный Codex app-server: daemon поднимает `codex app-server --listen ws://127.0.0.1:<port>`, `runCodex.ts` делает `thread/start` или `thread/resume`, затем `turn/start` в тот же thread id. MCP `codex-reply` не используется для chat/resume transport. Детали: [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) |
+| Codex | Поддерживается | Remcli использует официальный Codex app-server: daemon поднимает `codex app-server --listen ws://127.0.0.1:<port>`, `runCodex.ts` делает `thread/start` или `thread/resume`, затем `turn/start` и `turn/steer` в тот же thread id. MCP `codex-reply` не используется для chat/resume transport. Детали: [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) |
 
 Примечания по агентам:
 - **Cursor**: бинарник CLI определяется как `agent` (fallback: `cursor-agent` для старых сборок); headless-запросы выполняются с `--trust`, чтобы пропустить промпты workspace-trust.

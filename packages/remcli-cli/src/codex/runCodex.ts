@@ -142,6 +142,13 @@ export async function runCodex(opts: {
         permissionMode: CodexSandbox;
         model?: string;
     }
+    type QueuedCodexMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
+    type TurnCompletionResult =
+        | { type: 'completed'; response: CodexToolResponse }
+        | { type: 'failed'; error: unknown };
+    type TurnQueueResult =
+        | TurnCompletionResult
+        | { type: 'queued'; message: QueuedCodexMessage | null };
 
     //
     // Define session
@@ -599,12 +606,107 @@ export async function runCodex(opts: {
         }
         logger.debug('[codex]: client.connect done');
         let wasCreated = false;
-        let pending: { message: string; mode: EnhancedMode; isolate: boolean; hash: string } | null = null;
+        let pending: QueuedCodexMessage | null = null;
+
+        const handleTurnResponse = (response: CodexToolResponse) => {
+            if (!response.isError) {
+                return;
+            }
+
+            const errorText = getCodexErrorText(response);
+            logger.warn('[Codex] app-server turn returned error:', errorText);
+            messageBuffer.addMessage(`Error: ${errorText}`, 'status');
+            session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
+        };
+
+        const waitForCompletion = async (completionPromise: Promise<TurnCompletionResult>): Promise<void> => {
+            const completion = await completionPromise;
+            if (completion.type === 'failed') {
+                throw completion.error;
+            }
+            handleTurnResponse(completion.response);
+        };
+
+        const waitForTurnWithSteering = async (
+            startedTurn: Awaited<ReturnType<CodexAppServerClient['beginTurn']>>,
+            threadId: string,
+            originalMessageHash: string,
+            turnSignal: AbortSignal,
+        ): Promise<QueuedCodexMessage | null> => {
+            const completionPromise: Promise<TurnCompletionResult> = startedTurn.completion.then(
+                (response) => ({ type: 'completed', response }),
+                (error) => ({ type: 'failed', error }),
+            );
+            let activeTurnId = startedTurn.turnId;
+
+            if (!activeTurnId) {
+                await waitForCompletion(completionPromise);
+                return null;
+            }
+
+            while (!shouldExit) {
+                const queueController = new AbortController();
+                const relayAbort = () => queueController.abort();
+                turnSignal.addEventListener('abort', relayAbort, { once: true });
+
+                const queuedMessagePromise: Promise<TurnQueueResult> = messageQueue
+                    .waitForMessagesAndGetAsString(queueController.signal)
+                    .then((queuedMessage) => ({ type: 'queued', message: queuedMessage }));
+
+                const result = await Promise.race<TurnQueueResult>([
+                    completionPromise,
+                    queuedMessagePromise,
+                ]);
+
+                queueController.abort();
+                turnSignal.removeEventListener('abort', relayAbort);
+
+                if (result.type === 'completed') {
+                    handleTurnResponse(result.response);
+                    return null;
+                }
+
+                if (result.type === 'failed') {
+                    throw result.error;
+                }
+
+                if (!result.message) {
+                    if (turnSignal.aborted || shouldExit) {
+                        await waitForCompletion(completionPromise);
+                        return null;
+                    }
+                    continue;
+                }
+
+                if (result.message.hash !== originalMessageHash) {
+                    logger.debug('[Codex] Message mode/model changed during active turn; deferring to next turn');
+                    await waitForCompletion(completionPromise);
+                    return result.message;
+                }
+
+                try {
+                    activeTurnId = await appServerClient.steerTurn({
+                        threadId,
+                        expectedTurnId: activeTurnId,
+                        prompt: result.message.message,
+                    });
+                    messageBuffer.addMessage(result.message.message, 'user');
+                    autoSetTitle(result.message.message);
+                } catch (error) {
+                    logger.warn('[Codex] turn/steer failed; deferring message to next turn:', error);
+                    await waitForCompletion(completionPromise);
+                    return result.message;
+                }
+            }
+
+            await waitForCompletion(completionPromise);
+            return null;
+        };
 
         while (!shouldExit) {
             logActiveHandles('loop-top');
             // Get next batch; respect mode boundaries like Claude
-            let message: { message: string; mode: EnhancedMode; isolate: boolean; hash: string } | null = pending;
+            let message: QueuedCodexMessage | null = pending;
             pending = null;
             if (!message) {
                 // Capture the current signal to distinguish idle-abort from queue close
@@ -658,21 +760,16 @@ export async function runCodex(opts: {
                 }
 
                 autoSetTitle(message.message);
-                const response = await appServerClient.startTurn({
+                const turnSignal = abortController.signal;
+                const startedTurn = await appServerClient.beginTurn({
                     threadId: activeCodexThreadId,
                     prompt: message.message,
                     sandbox: permissionConfig.sandbox,
                     approvalPolicy: permissionConfig.approvalPolicy,
                     model: message.mode.model,
-                    signal: abortController.signal,
+                    signal: turnSignal,
                 });
-
-                if (response.isError) {
-                    const errorText = getCodexErrorText(response);
-                    logger.warn('[Codex] app-server turn returned error:', errorText);
-                    messageBuffer.addMessage(`Error: ${errorText}`, 'status');
-                    session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
-                }
+                pending = await waitForTurnWithSteering(startedTurn, activeCodexThreadId, message.hash, turnSignal);
             } catch (error) {
                 logger.warn('Error in codex session:', error);
                 const isAbortError = error instanceof Error && error.name === 'AbortError';

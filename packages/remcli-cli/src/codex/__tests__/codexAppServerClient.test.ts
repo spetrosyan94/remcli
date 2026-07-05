@@ -132,6 +132,9 @@ describe('CodexAppServerClient websocket transport', () => {
         expect(startTurn.params.model).toBe('gpt-5.3-codex-spark');
 
         ws.message(JSON.stringify({ id: startTurn.id, result: { turn: { id: 'turn-1' } } }));
+        await vi.waitFor(() => {
+            expect(client.getActiveTurnId()).toBe('turn-1');
+        });
         ws.message(JSON.stringify({
             method: 'item/completed',
             params: { item: { type: 'agentMessage', text: 'Ответ' } },
@@ -142,8 +145,53 @@ describe('CodexAppServerClient websocket transport', () => {
         }));
 
         await expect(turn).resolves.toEqual({ content: [], isError: false });
+        expect(client.getActiveTurnId()).toBeNull();
         expect(handler).toHaveBeenCalledWith({ type: 'agent_message', message: 'Ответ' });
         expect(handler).toHaveBeenCalledWith({ type: 'task_complete' });
+
+        await client.disconnect();
+    });
+
+    it('steers additional user input into an active turn', async () => {
+        const { client, ws } = await connectFakeClient();
+
+        const turnId = client.steerTurn({
+            threadId: 'thread-1',
+            expectedTurnId: 'turn-1',
+            prompt: 'Добавь это в текущую задачу',
+        });
+
+        await waitForSent(ws, 3);
+        const steerTurn = JSON.parse(ws.sent[2]) as { id: number; method: string; params: any };
+        expect(steerTurn.method).toBe('turn/steer');
+        expect(steerTurn.params.threadId).toBe('thread-1');
+        expect(steerTurn.params.expectedTurnId).toBe('turn-1');
+        expect(steerTurn.params.input).toEqual([
+            { type: 'text', text: 'Добавь это в текущую задачу', text_elements: [] },
+        ]);
+
+        ws.message(JSON.stringify({ id: steerTurn.id, result: { turnId: 'turn-1' } }));
+
+        await expect(turnId).resolves.toBe('turn-1');
+        expect(client.getActiveTurnId()).toBe('turn-1');
+
+        await client.disconnect();
+    });
+
+    it('fails turn steering when app-server response has no turn id', async () => {
+        const { client, ws } = await connectFakeClient();
+
+        const turnId = client.steerTurn({
+            threadId: 'thread-1',
+            expectedTurnId: 'turn-1',
+            prompt: 'Текст',
+        });
+
+        await waitForSent(ws, 3);
+        const steerTurn = JSON.parse(ws.sent[2]) as { id: number };
+        ws.message(JSON.stringify({ id: steerTurn.id, result: {} }));
+
+        await expect(turnId).rejects.toThrow('Codex app-server did not return a turn id for turn/steer.');
 
         await client.disconnect();
     });

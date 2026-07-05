@@ -80,7 +80,7 @@ npm run gemini              # Gemini CLI
 | Claude Code | Полный — `--resume` с восстановлением истории |
 | Cursor | Полный — `agent --resume` |
 | Gemini | Полный — через ACP `session/load` (с фолбэком на новую сессию) |
-| Codex | Поддерживается — Remcli использует официальный Codex app-server: `thread/start`/`thread/resume` и `turn/start` в тот же `threadId`; MCP `codex-reply` не используется для chat/resume transport |
+| Codex | Поддерживается — Remcli использует официальный Codex app-server: `thread/start`/`thread/resume`, `turn/start` и `turn/steer` в тот же `threadId`; MCP `codex-reply` не используется для chat/resume transport |
 
 ---
 

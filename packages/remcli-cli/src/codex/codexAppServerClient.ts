@@ -38,6 +38,11 @@ interface TurnWaiter {
     cleanup?: () => void;
 }
 
+interface StartedTurn {
+    turnId: string;
+    completion: Promise<CodexToolResponse>;
+}
+
 interface WebSocketLike {
     readonly readyState: number;
     send(data: string): void;
@@ -74,6 +79,12 @@ interface CodexAppServerTurnOptions {
     approvalPolicy: CodexApprovalPolicy;
     model?: string;
     signal?: AbortSignal;
+}
+
+interface CodexAppServerSteerOptions {
+    threadId: string;
+    expectedTurnId: string;
+    prompt: string;
 }
 
 export function codexSandboxToAppServerPolicy(sandbox: CodexSandbox): Record<string, unknown> {
@@ -152,6 +163,7 @@ export class CodexAppServerClient {
     private threadIdChangeHandler: ((threadId: string) => void) | null = null;
     private permissionHandler: CodexPermissionHandler | null = null;
     private activeThreadId: string | null = null;
+    private activeTurnId: string | null = null;
 
     constructor(options: CodexAppServerClientOptions = {}) {
         this.endpoint = options.endpoint;
@@ -333,6 +345,11 @@ export class CodexAppServerClient {
     }
 
     async startTurn(options: CodexAppServerTurnOptions): Promise<CodexToolResponse> {
+        const startedTurn = await this.beginTurn(options);
+        return await startedTurn.completion;
+    }
+
+    async beginTurn(options: CodexAppServerTurnOptions): Promise<StartedTurn> {
         await this.connect();
         const result = await this.request('turn/start', {
             threadId: options.threadId,
@@ -344,19 +361,27 @@ export class CodexAppServerClient {
 
         const turnId = result?.turn?.id;
         if (typeof turnId !== 'string') {
-            return { content: [], isError: false };
+            const response = { content: [], isError: false };
+            return { turnId: '', completion: Promise.resolve(response) };
         }
+        this.activeTurnId = turnId;
 
         const completedTurn = this.completedTurns.get(turnId);
         if (completedTurn) {
             this.completedTurns.delete(turnId);
-            return completedTurn;
+            if (this.activeTurnId === turnId) {
+                this.activeTurnId = null;
+            }
+            return { turnId, completion: Promise.resolve(completedTurn) };
         }
 
-        return new Promise<CodexToolResponse>((resolve, reject) => {
+        const completion = new Promise<CodexToolResponse>((resolve, reject) => {
             const timeout = setTimeout(() => {
                 this.turnWaiters.delete(turnId);
                 waiter.cleanup?.();
+                if (this.activeTurnId === turnId) {
+                    this.activeTurnId = null;
+                }
                 reject(new Error('Timed out waiting for Codex turn to complete.'));
             }, DEFAULT_TIMEOUT);
             const waiter: TurnWaiter = { turnId, resolve, reject, timeout };
@@ -368,6 +393,9 @@ export class CodexAppServerClient {
                         .catch((error) => logger.debug('[CodexAppServer] turn interrupt failed:', error));
                     this.turnWaiters.delete(turnId);
                     clearTimeout(timeout);
+                    if (this.activeTurnId === turnId) {
+                        this.activeTurnId = null;
+                    }
                     const abortError = new Error('Aborted');
                     abortError.name = 'AbortError';
                     reject(abortError);
@@ -380,6 +408,22 @@ export class CodexAppServerClient {
                 options.signal.addEventListener('abort', onAbort, { once: true });
             }
         });
+        return { turnId, completion };
+    }
+
+    async steerTurn(options: CodexAppServerSteerOptions): Promise<string> {
+        await this.connect();
+        const result = await this.request('turn/steer', {
+            threadId: options.threadId,
+            expectedTurnId: options.expectedTurnId,
+            input: [{ type: 'text', text: options.prompt, text_elements: [] }],
+        });
+        const turnId = result?.turnId;
+        if (typeof turnId !== 'string') {
+            throw new Error('Codex app-server did not return a turn id for turn/steer.');
+        }
+        this.activeTurnId = turnId;
+        return turnId;
     }
 
     async disconnect(): Promise<void> {
@@ -418,8 +462,13 @@ export class CodexAppServerClient {
         return this.activeThreadId;
     }
 
+    getActiveTurnId(): string | null {
+        return this.activeTurnId;
+    }
+
     clearSession(): void {
         this.activeThreadId = null;
+        this.activeTurnId = null;
     }
 
     private request(method: string, params: unknown, signal?: AbortSignal): Promise<any> {
@@ -673,11 +722,17 @@ export class CodexAppServerClient {
             : { content: [], isError: false };
         if (!waiter) {
             this.completedTurns.set(turnId, response);
+            if (this.activeTurnId === turnId) {
+                this.activeTurnId = null;
+            }
             return;
         }
         this.turnWaiters.delete(turnId);
         clearTimeout(waiter.timeout);
         waiter.cleanup?.();
+        if (this.activeTurnId === turnId) {
+            this.activeTurnId = null;
+        }
         if (errorText) {
             waiter.resolve(response);
         } else {
@@ -687,6 +742,7 @@ export class CodexAppServerClient {
 
     private rejectAll(error: Error): void {
         this.completedTurns.clear();
+        this.activeTurnId = null;
         for (const [id, pending] of this.pendingRequests.entries()) {
             this.pendingRequests.delete(id);
             clearTimeout(pending.timeout);
