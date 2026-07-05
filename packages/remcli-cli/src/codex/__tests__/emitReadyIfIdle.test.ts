@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
     CODEX_DEFAULT_PERMISSION_MODE,
-    createCodexStartConfig,
     emitReadyIfIdle,
     resolveCodexPermissionConfig,
 } from '../runCodex';
@@ -64,56 +63,6 @@ describe('emitReadyIfIdle', () => {
 
         expect(emitted).toBe(false);
         expect(sendReady).not.toHaveBeenCalled();
-    });
-});
-
-describe('createCodexStartConfig', () => {
-    it('uses the user prompt without injecting title instructions or remcli MCP config', () => {
-        const config = createCodexStartConfig({
-            prompt: 'Тест',
-            sandbox: 'workspace-write',
-            approvalPolicy: 'on-request',
-            model: 'gpt-5.5',
-        });
-
-        expect(config).toEqual({
-            prompt: 'Тест',
-            sandbox: 'workspace-write',
-            'approval-policy': 'on-request',
-            model: 'gpt-5.5',
-        });
-        expect(config.prompt).not.toContain('change_title');
-        expect(config.config).toBeUndefined();
-    });
-
-    it('omits model when Codex should use its default', () => {
-        const config = createCodexStartConfig({
-            prompt: 'Hello',
-            sandbox: 'read-only',
-            approvalPolicy: 'never',
-        });
-
-        expect(config).toEqual({
-            prompt: 'Hello',
-            sandbox: 'read-only',
-            'approval-policy': 'never',
-        });
-    });
-
-    it('passes Codex config overrides when needed', () => {
-        const config = createCodexStartConfig({
-            prompt: 'Hello',
-            sandbox: 'workspace-write',
-            approvalPolicy: 'on-request',
-            config: { approvals_reviewer: 'user' },
-        });
-
-        expect(config).toEqual({
-            prompt: 'Hello',
-            sandbox: 'workspace-write',
-            'approval-policy': 'on-request',
-            config: { approvals_reviewer: 'user' },
-        });
     });
 });
 

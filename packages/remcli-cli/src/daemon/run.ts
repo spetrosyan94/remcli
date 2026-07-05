@@ -29,6 +29,7 @@ import { createSessionManager } from './sessionSpawner';
 import { ConciergeDeps } from './concierge/types';
 import { bootstrapMachineSocket } from './machineSocket';
 import { startHeartbeatLoop } from './heartbeat';
+import { startCodexAppServerHost, type CodexAppServerHostHandle } from '@/codex/codexAppServerHost';
 
 // Prepare initial metadata
 export const initialMachineMetadata: MachineMetadata = {
@@ -238,6 +239,18 @@ export async function startDaemon(): Promise<void> {
     writeDaemonState(fileState);
     logger.debug('[DAEMON RUN] Daemon state written');
 
+    let codexAppServerHost: CodexAppServerHostHandle | null = null;
+    try {
+        codexAppServerHost = await startCodexAppServerHost();
+        fileState.codexAppServerEndpoint = codexAppServerHost.endpoint;
+        fileState.codexAppServerPid = codexAppServerHost.processId;
+        writeDaemonState(fileState);
+        logger.debug(`[DAEMON RUN] Shared Codex app-server ready at ${codexAppServerHost.endpoint}`);
+    } catch (error) {
+        logger.debug('[DAEMON RUN] Shared Codex app-server unavailable; Codex sessions will report a transport error if used:', error);
+        console.log('  Warning: Codex app-server could not start. Codex sessions require the codex CLI app-server.');
+    }
+
     // ─── P2P Server ──────────────────────────────────────────────
     // Load P2P store from disk
     const p2pStore = new P2PStore();
@@ -434,6 +447,16 @@ export async function startDaemon(): Promise<void> {
 
       // Kill all tracked child sessions and tmux sessions created by this daemon
       sessionManager.killAllSessions();
+
+      // Stop shared Codex app-server if it was started by this daemon
+      if (codexAppServerHost) {
+        try {
+          await codexAppServerHost.stop();
+          logger.debug('[DAEMON RUN] Shared Codex app-server stopped');
+        } catch (error) {
+          logger.debug('[DAEMON RUN] Failed to stop shared Codex app-server:', error);
+        }
+      }
 
       // Stop cloudflared tunnel if running
       if (tunnelStop) {

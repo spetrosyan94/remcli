@@ -1,14 +1,13 @@
 import { render } from "ink";
 import React from "react";
 import { ApiClient } from '@/api/api';
-import { CodexMcpClient } from './codexMcpClient';
 import { CodexAppServerClient } from './codexAppServerClient';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
 import { DiffProcessor } from './utils/diffProcessor';
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
-import { Credentials, readSettings } from '@/persistence';
+import { Credentials, readDaemonState, readSettings } from '@/persistence';
 import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
@@ -16,7 +15,6 @@ import { hashObject } from '@/utils/deterministicJson';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { MessageBuffer } from "@/ui/ink/messageBuffer";
 import { CodexDisplay } from "@/ui/ink/CodexDisplay";
-import type { CodexSandbox, CodexSessionConfig, CodexToolResponse } from './types';
 import { notifyDaemonSessionStarted } from "@/daemon/controlClient";
 import { registerKillSessionHandler } from "@/claude/registerKillSessionHandler";
 import { delay } from "@/utils/time";
@@ -27,6 +25,8 @@ import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { PermissionMode } from '@/api/types';
 import { replayCodexSessionHistory } from './utils/replayCodexSessionHistory';
+import type { CodexApprovalPolicy, CodexSandbox, CodexToolResponse } from './types';
+import { isCodexAppServerStateUsable } from './codexAppServerHost';
 
 type ReadyEventOptions = {
     pending: unknown;
@@ -38,42 +38,9 @@ type ReadyEventOptions = {
 
 export const CODEX_DEFAULT_PERMISSION_MODE: CodexSandbox = 'workspace-write';
 
-interface CodexStartConfigOptions {
-    prompt: string;
-    sandbox: CodexSessionConfig['sandbox'];
-    approvalPolicy: CodexSessionConfig['approval-policy'];
-    config?: CodexSessionConfig['config'];
-    model?: string;
-}
-
-export function createCodexStartConfig({
-    prompt,
-    sandbox,
-    approvalPolicy,
-    config: configOverrides,
-    model,
-}: CodexStartConfigOptions): CodexSessionConfig {
-    const config: CodexSessionConfig = {
-        prompt,
-        sandbox,
-        'approval-policy': approvalPolicy,
-    };
-
-    if (model) {
-        config.model = model;
-    }
-
-    if (configOverrides) {
-        config.config = configOverrides;
-    }
-
-    return config;
-}
-
 interface CodexPermissionConfig {
-    approvalPolicy: NonNullable<CodexSessionConfig['approval-policy']>;
+    approvalPolicy: CodexApprovalPolicy;
     sandbox: CodexSandbox;
-    config?: CodexSessionConfig['config'];
 }
 
 function isCodexPermissionMode(permissionMode: PermissionMode): permissionMode is CodexSandbox {
@@ -122,20 +89,6 @@ function getCodexErrorText(response: CodexToolResponse): string {
     return 'Codex returned an error.';
 }
 
-type CodexRuntimeClient = CodexMcpClient | CodexAppServerClient;
-
-function getErrorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-}
-
-function isCodexAppServerCompatibilityError(error: unknown): boolean {
-    const message = getErrorMessage(error);
-    if (/session not found|thread[_ -]?id.*not found|thread.*not found/i.test(message)) {
-        return false;
-    }
-    return /app-server|method not found|not running|exited|timed out|enoent|epipe|econnreset|initialize/i.test(message);
-}
-
 /**
  * Notify connected clients when Codex finishes processing and the queue is idle.
  * Returns true when a ready event was emitted.
@@ -154,6 +107,27 @@ export function emitReadyIfIdle({ pending, queueSize, shouldExit, sendReady, not
     sendReady();
     notify?.();
     return true;
+}
+
+interface CodexAppServerClientSelection {
+    client: CodexAppServerClient;
+    usesSharedEndpoint: boolean;
+}
+
+async function createCodexAppServerClient(): Promise<CodexAppServerClientSelection> {
+    const daemonState = await readDaemonState();
+    const sharedEndpoint = daemonState?.codexAppServerEndpoint;
+    if (sharedEndpoint && await isCodexAppServerStateUsable(daemonState)) {
+        logger.debug(`[Codex] Using shared daemon Codex app-server ${sharedEndpoint}`);
+        return { client: new CodexAppServerClient({ endpoint: sharedEndpoint }), usesSharedEndpoint: true };
+    }
+
+    if (sharedEndpoint) {
+        logger.warn('[Codex] Shared daemon Codex app-server endpoint is stale; starting private app-server over stdio');
+    } else {
+        logger.debug('[Codex] No shared daemon Codex app-server endpoint found; starting private app-server over stdio');
+    }
+    return { client: new CodexAppServerClient(), usesSharedEndpoint: false };
 }
 
 /**
@@ -177,7 +151,6 @@ export async function runCodex(opts: {
 
     // Set backend for offline warnings (before any API calls)
     connectionState.setBackend('Codex');
-    const shouldResumeWithAppServer = Boolean(opts.resumeSessionId);
 
     const api = await ApiClient.create(opts.credentials);
 
@@ -337,7 +310,7 @@ export async function runCodex(opts: {
 
     let abortController = new AbortController();
     let shouldExit = false;
-    let activeClient: CodexRuntimeClient | null = null;
+    let activeClient: CodexAppServerClient | null = null;
 
     /**
      * Handles aborting the current task/inference without exiting the process.
@@ -445,20 +418,21 @@ export async function runCodex(opts: {
     // Start Context 
     //
 
-    const appServerClient = shouldResumeWithAppServer ? new CodexAppServerClient() : null;
-    const mcpClient = new CodexMcpClient();
-    let useAppServerResume = Boolean(appServerClient);
-    activeClient = appServerClient ?? mcpClient;
+    const appServerSelection = await createCodexAppServerClient();
+    let appServerClient = appServerSelection.client;
+    let usesSharedAppServer = appServerSelection.usesSharedEndpoint;
+    activeClient = appServerClient;
+    let activeCodexThreadId = opts.resumeSessionId ?? appServerClient.getActiveThreadId();
 
     const handleThreadIdChange = (threadId: string) => {
+        activeCodexThreadId = threadId;
         session.updateMetadata((currentMetadata) => ({
             ...currentMetadata,
             agentSessionId: threadId,
             codexSessionId: threadId,
         }));
     };
-    appServerClient?.setThreadIdChangeHandler(handleThreadIdChange);
-    mcpClient.setThreadIdChangeHandler(handleThreadIdChange);
+    appServerClient.setThreadIdChangeHandler(handleThreadIdChange);
 
     if (opts.resumeSessionId) {
         logger.debug(`[codex] Resume requested for Codex thread ${opts.resumeSessionId} via app-server`);
@@ -486,10 +460,9 @@ export async function runCodex(opts: {
         if (message.type === 'tool-call' || message.type === 'tool-call-result') return;
         session.sendCodexMessage(message);
     });
-    appServerClient?.setPermissionHandler(permissionHandler);
-    mcpClient.setPermissionHandler(permissionHandler);
+    appServerClient.setPermissionHandler(permissionHandler);
     const handleCodexClientMessage = (msg: any) => {
-        logger.debug(`[Codex] MCP message: ${JSON.stringify(msg)}`);
+        logger.debug(`[Codex] app-server message: ${JSON.stringify(msg)}`);
 
         // Add messages to the ink UI buffer based on message type
         if (msg.type === 'agent_message') {
@@ -599,47 +572,33 @@ export async function runCodex(opts: {
             }
         }
     };
-    appServerClient?.setHandler(handleCodexClientMessage);
-    mcpClient.setHandler(handleCodexClientMessage);
+    appServerClient.setHandler(handleCodexClientMessage);
 
     const autoSetTitle = createAutoTitleSetter(session);
-
-    const fallbackToMcpResume = async (error: unknown) => {
-        if (!opts.resumeSessionId) {
-            throw error;
-        }
-        const errorMessage = getErrorMessage(error);
-        logger.warn('[Codex] app-server resume unavailable; falling back to MCP resume:', errorMessage);
-        messageBuffer.addMessage('Codex app-server resume unavailable; falling back to MCP resume.', 'status');
-        session.sendSessionEvent({
-            type: 'message',
-            message: 'Codex app-server resume unavailable; falling back to MCP resume.',
-        });
-        try {
-            await appServerClient?.forceCloseSession();
-        } catch (closeError) {
-            logger.debug('[Codex] Error while closing failed app-server client:', closeError);
-        }
-        mcpClient.setThreadId(opts.resumeSessionId);
-        activeClient = mcpClient;
-        useAppServerResume = false;
-        await mcpClient.connect();
-    };
 
     try {
         logger.debug('[codex]: client.connect begin');
         try {
             await activeClient.connect();
         } catch (error) {
-            if (useAppServerResume && isCodexAppServerCompatibilityError(error)) {
-                await fallbackToMcpResume(error);
-            } else {
-                throw error;
+            if (!usesSharedAppServer) throw error;
+            logger.warn('[Codex] Shared daemon Codex app-server connect failed; retrying with private stdio app-server:', error);
+            try {
+                await activeClient.disconnect();
+            } catch (disconnectError) {
+                logger.debug('[Codex] Failed to disconnect stale shared app-server client:', disconnectError);
             }
+            appServerClient = new CodexAppServerClient();
+            usesSharedAppServer = false;
+            activeClient = appServerClient;
+            activeCodexThreadId = opts.resumeSessionId ?? appServerClient.getActiveThreadId();
+            appServerClient.setThreadIdChangeHandler(handleThreadIdChange);
+            appServerClient.setPermissionHandler(permissionHandler);
+            appServerClient.setHandler(handleCodexClientMessage);
+            await activeClient.connect();
         }
         logger.debug('[codex]: client.connect done');
-        let wasCreated = activeClient.hasActiveSession();
-        let currentModeHash: string | null = null;
+        let wasCreated = false;
         let pending: { message: string; mode: EnhancedMode; isolate: boolean; hash: string } | null = null;
 
         while (!shouldExit) {
@@ -668,123 +627,51 @@ export async function runCodex(opts: {
                 break;
             }
 
-            // MCP sessions cannot change mode mid-thread without starting a new Codex tool session.
-            // App-server resume accepts per-turn overrides, so preserve the resumed thread instead.
-            if (!useAppServerResume && wasCreated && currentModeHash && message.hash !== currentModeHash) {
-                logger.debug('[Codex] Mode changed – restarting Codex session');
-                messageBuffer.addMessage('═'.repeat(40), 'status');
-                messageBuffer.addMessage('Starting new Codex session (mode changed). Note: Codex does not carry over previous context.', 'status');
-                session.sendSessionEvent({ type: 'message', message: 'Started a new Codex session (mode changed). Codex does not carry over previous context.' });
-                activeClient.clearSession();
-                wasCreated = false;
-                currentModeHash = null;
-                pending = message;
-                // Reset processors/permissions like end-of-turn cleanup
-                permissionHandler.reset();
-                reasoningProcessor.abort();
-                diffProcessor.reset();
-                thinking = false;
-                session.keepAlive(thinking, 'remote');
-                continue;
-            }
-
             // Display user messages in the UI
             messageBuffer.addMessage(message.message, 'user');
-            currentModeHash = message.hash;
 
             try {
                 const permissionConfig = resolveCodexPermissionConfig(message.mode.permissionMode);
 
-                if (useAppServerResume) {
-                    if (!opts.resumeSessionId || !appServerClient) {
-                        throw new Error('Codex resume requested without a session id.');
+                if (!wasCreated) {
+                    if (opts.resumeSessionId) {
+                        activeCodexThreadId = await appServerClient.resumeThread({
+                            threadId: opts.resumeSessionId,
+                            cwd: process.cwd(),
+                            sandbox: permissionConfig.sandbox,
+                            approvalPolicy: permissionConfig.approvalPolicy,
+                            model: message.mode.model,
+                        });
+                    } else {
+                        activeCodexThreadId = await appServerClient.startThread({
+                            cwd: process.cwd(),
+                            sandbox: permissionConfig.sandbox,
+                            approvalPolicy: permissionConfig.approvalPolicy,
+                            model: message.mode.model,
+                        });
                     }
-                    if (!wasCreated) {
-                        try {
-                            await appServerClient.resumeThread({
-                                threadId: opts.resumeSessionId,
-                                cwd: process.cwd(),
-                                sandbox: permissionConfig.sandbox,
-                                approvalPolicy: permissionConfig.approvalPolicy,
-                                model: message.mode.model,
-                            });
-                        } catch (error) {
-                            if (!isCodexAppServerCompatibilityError(error)) {
-                                throw error;
-                            }
-                            await fallbackToMcpResume(error);
-                            wasCreated = activeClient.hasActiveSession();
-                            const response = await mcpClient.continueSession(
-                                message.message,
-                                { signal: abortController.signal }
-                            );
-                            logger.debug('[Codex] MCP fallback continueSession response:', response);
-                            if (response.isError) {
-                                const errorText = getCodexErrorText(response);
-                                logger.warn('[Codex] MCP fallback continueSession returned error:', errorText);
-                                messageBuffer.addMessage(`Error: ${errorText}`, 'status');
-                                session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
-                            }
-                            continue;
-                        }
-                        wasCreated = true;
-                    }
-
-                    autoSetTitle(message.message);
-                    const response = await appServerClient.startTurn({
-                        threadId: opts.resumeSessionId,
-                        prompt: message.message,
-                        sandbox: permissionConfig.sandbox,
-                        approvalPolicy: permissionConfig.approvalPolicy,
-                        model: message.mode.model,
-                        signal: abortController.signal,
-                    });
-
-                    if (response.isError) {
-                        const errorText = getCodexErrorText(response);
-                        logger.warn('[Codex] app-server turn returned error:', errorText);
-                        messageBuffer.addMessage(`Error: ${errorText}`, 'status');
-                        session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
-                    }
-                } else if (!wasCreated) {
-                    const startConfig = createCodexStartConfig({
-                        prompt: message.message,
-                        sandbox: permissionConfig.sandbox,
-                        approvalPolicy: permissionConfig.approvalPolicy,
-                        config: permissionConfig.config,
-                        model: message.mode.model,
-                    });
-
-                    autoSetTitle(message.message);
-                    const startResponse = await mcpClient.startSession(
-                        startConfig,
-                        { signal: abortController.signal }
-                    );
-
-                    // Check for MCP-level errors (e.g. unsupported model for ChatGPT account)
-                    if (startResponse.isError) {
-                        const errorText = getCodexErrorText(startResponse);
-                        logger.warn('[Codex] startSession returned error:', errorText);
-                        messageBuffer.addMessage(`Error: ${errorText}`, 'status');
-                        session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
-                        // Don't mark as created — allow retry with different model
-                        continue;
-                    }
-
                     wasCreated = true;
-                } else {
-                    const response = await mcpClient.continueSession(
-                        message.message,
-                        { signal: abortController.signal }
-                    );
-                    logger.debug('[Codex] continueSession response:', response);
+                }
 
-                    if (response.isError) {
-                        const errorText = getCodexErrorText(response);
-                        logger.warn('[Codex] continueSession returned error:', errorText);
-                        messageBuffer.addMessage(`Error: ${errorText}`, 'status');
-                        session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
-                    }
+                if (!activeCodexThreadId) {
+                    throw new Error('Codex app-server did not provide a thread id.');
+                }
+
+                autoSetTitle(message.message);
+                const response = await appServerClient.startTurn({
+                    threadId: activeCodexThreadId,
+                    prompt: message.message,
+                    sandbox: permissionConfig.sandbox,
+                    approvalPolicy: permissionConfig.approvalPolicy,
+                    model: message.mode.model,
+                    signal: abortController.signal,
+                });
+
+                if (response.isError) {
+                    const errorText = getCodexErrorText(response);
+                    logger.warn('[Codex] app-server turn returned error:', errorText);
+                    messageBuffer.addMessage(`Error: ${errorText}`, 'status');
+                    session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
                 }
             } catch (error) {
                 logger.warn('Error in codex session:', error);

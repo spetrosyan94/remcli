@@ -48,6 +48,8 @@ describe('daemon state persistence', () => {
             startedWithCliVersion: '0.0.1',
             lastHeartbeat: '2026-07-04T00:00:01.000Z',
             daemonLogPath: join(homeDir, 'logs', 'daemon.log'),
+            codexAppServerEndpoint: 'ws://127.0.0.1:45123',
+            codexAppServerPid: 12345,
         };
 
         persistence.writeDaemonState(state);

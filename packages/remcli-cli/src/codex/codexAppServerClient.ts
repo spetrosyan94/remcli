@@ -6,6 +6,8 @@ import type { CodexApprovalPolicy, CodexSandbox, CodexToolResponse } from './typ
 import { CodexPermissionHandler, type PermissionResult } from './utils/permissionHandler';
 
 const DEFAULT_TIMEOUT = 14 * 24 * 60 * 60 * 1000;
+const CONNECT_TIMEOUT = 10_000;
+const WEBSOCKET_OPEN_STATE = 1;
 
 type JsonRpcId = number;
 
@@ -34,6 +36,19 @@ interface TurnWaiter {
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
     cleanup?: () => void;
+}
+
+interface WebSocketLike {
+    readonly readyState: number;
+    send(data: string): void;
+    close(): void;
+    addEventListener(type: string, listener: (event: unknown) => void): void;
+    removeEventListener?(type: string, listener: (event: unknown) => void): void;
+}
+
+export interface CodexAppServerClientOptions {
+    endpoint?: string;
+    webSocketFactory?: (endpoint: string) => WebSocketLike;
 }
 
 interface CodexAppServerResumeOptions {
@@ -104,9 +119,30 @@ function getTurnErrorText(turn: any): string | null {
     return JSON.stringify(error);
 }
 
+function createGlobalWebSocket(endpoint: string): WebSocketLike {
+    const WebSocketCtor = (globalThis as unknown as { WebSocket?: new (url: string) => WebSocketLike }).WebSocket;
+    if (!WebSocketCtor) {
+        throw new Error('WebSocket runtime is not available for Codex app-server remote transport.');
+    }
+    return new WebSocketCtor(endpoint);
+}
+
+function webSocketDataToString(data: unknown): string | null {
+    if (typeof data === 'string') return data;
+    if (Buffer.isBuffer(data)) return data.toString('utf8');
+    if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8');
+    if (ArrayBuffer.isView(data)) {
+        return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf8');
+    }
+    return null;
+}
+
 export class CodexAppServerClient {
+    private readonly endpoint?: string;
+    private readonly webSocketFactory: (endpoint: string) => WebSocketLike;
     private proc: ChildProcessWithoutNullStreams | null = null;
     private rl: readline.Interface | null = null;
+    private ws: WebSocketLike | null = null;
     private connected = false;
     private nextRequestId = 1;
     private pendingRequests = new Map<JsonRpcId, PendingRequest>();
@@ -116,6 +152,11 @@ export class CodexAppServerClient {
     private threadIdChangeHandler: ((threadId: string) => void) | null = null;
     private permissionHandler: CodexPermissionHandler | null = null;
     private activeThreadId: string | null = null;
+
+    constructor(options: CodexAppServerClientOptions = {}) {
+        this.endpoint = options.endpoint;
+        this.webSocketFactory = options.webSocketFactory ?? createGlobalWebSocket;
+    }
 
     setHandler(handler: ((event: any) => void) | null): void {
         this.handler = handler;
@@ -132,7 +173,29 @@ export class CodexAppServerClient {
     async connect(): Promise<void> {
         if (this.connected) return;
 
-        logger.debug('[CodexAppServer] Starting codex app-server');
+        if (this.endpoint) {
+            await this.connectWebSocket();
+        } else {
+            this.connectStdio();
+        }
+
+        await this.request('initialize', {
+            clientInfo: {
+                name: 'remcli',
+                title: 'Remcli',
+                version: '1.0.0',
+            },
+            capabilities: {
+                experimentalApi: true,
+            },
+        });
+        this.notify('initialized', {});
+        this.connected = true;
+        logger.debug(`[CodexAppServer] Connected via ${this.endpoint ? 'websocket' : 'stdio'}`);
+    }
+
+    private connectStdio(): void {
+        logger.debug('[CodexAppServer] Starting codex app-server over stdio');
         this.proc = spawn('codex', ['app-server'], {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: Object.fromEntries(
@@ -156,23 +219,75 @@ export class CodexAppServerClient {
             this.connected = false;
             this.rejectAll(error);
         });
-
-        await this.request('initialize', {
-            clientInfo: {
-                name: 'remcli',
-                title: 'Remcli',
-                version: '1.0.0',
-            },
-            capabilities: {
-                experimentalApi: true,
-            },
-        });
-        this.notify('initialized', {});
-        this.connected = true;
-        logger.debug('[CodexAppServer] Connected');
     }
 
-    async resumeThread(options: CodexAppServerResumeOptions): Promise<void> {
+    private async connectWebSocket(): Promise<void> {
+        if (!this.endpoint) return;
+        logger.debug(`[CodexAppServer] Connecting to shared app-server ${this.endpoint}`);
+        const ws = this.webSocketFactory(this.endpoint);
+        this.ws = ws;
+
+        await new Promise<void>((resolve, reject) => {
+            let settled = false;
+            const cleanup = () => {
+                clearTimeout(timeout);
+                ws.removeEventListener?.('open', onOpen);
+                ws.removeEventListener?.('error', onError);
+                ws.removeEventListener?.('close', onCloseBeforeOpen);
+            };
+            const fail = (error: Error) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                this.ws = null;
+                reject(error);
+            };
+            const onOpen = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve();
+            };
+            const onError = (event: unknown) => {
+                fail(new Error(`Codex app-server websocket error: ${String(event)}`));
+            };
+            const onCloseBeforeOpen = () => {
+                fail(new Error('Codex app-server websocket closed before connection opened.'));
+            };
+            const timeout = setTimeout(() => {
+                fail(new Error(`Timed out connecting to Codex app-server ${this.endpoint}.`));
+            }, CONNECT_TIMEOUT);
+
+            ws.addEventListener('open', onOpen);
+            ws.addEventListener('error', onError);
+            ws.addEventListener('close', onCloseBeforeOpen);
+
+            if (ws.readyState === WEBSOCKET_OPEN_STATE) {
+                onOpen();
+            }
+        });
+
+        ws.addEventListener('message', (event: unknown) => {
+            const data = (event as { data?: unknown }).data;
+            const text = webSocketDataToString(data);
+            if (!text) {
+                logger.debug('[CodexAppServer] Ignoring websocket message with unsupported data type');
+                return;
+            }
+            this.handleTransportText(text);
+        });
+        ws.addEventListener('close', () => {
+            logger.debug('[CodexAppServer] websocket closed');
+            this.connected = false;
+            this.ws = null;
+            this.rejectAll(new Error('Codex app-server websocket disconnected.'));
+        });
+        ws.addEventListener('error', (event: unknown) => {
+            logger.debug('[CodexAppServer] websocket error:', event);
+        });
+    }
+
+    async resumeThread(options: CodexAppServerResumeOptions): Promise<string> {
         await this.connect();
         logger.debug('[CodexAppServer] Resuming thread:', {
             threadId: options.threadId,
@@ -192,7 +307,11 @@ export class CodexAppServerClient {
         if (typeof threadId === 'string') {
             this.activeThreadId = threadId;
             this.threadIdChangeHandler?.(threadId);
+            return threadId;
         }
+        this.activeThreadId = options.threadId;
+        this.threadIdChangeHandler?.(options.threadId);
+        return options.threadId;
     }
 
     async startThread(options: CodexAppServerStartThreadOptions): Promise<string> {
@@ -274,6 +393,14 @@ export class CodexAppServerClient {
             }
         }
         this.proc = null;
+        if (this.ws) {
+            try {
+                this.ws.close();
+            } catch {
+                // best effort
+            }
+        }
+        this.ws = null;
         this.connected = false;
         this.rejectAll(new Error('Codex app-server disconnected.'));
     }
@@ -287,12 +414,16 @@ export class CodexAppServerClient {
         return this.activeThreadId !== null;
     }
 
+    getActiveThreadId(): string | null {
+        return this.activeThreadId;
+    }
+
     clearSession(): void {
         this.activeThreadId = null;
     }
 
     private request(method: string, params: unknown, signal?: AbortSignal): Promise<any> {
-        if (!this.proc) {
+        if (!this.proc && !this.ws) {
             return Promise.reject(new Error('Codex app-server is not running.'));
         }
         const id = this.nextRequestId++;
@@ -320,20 +451,50 @@ export class CodexAppServerClient {
                 }
                 signal.addEventListener('abort', onAbort, { once: true });
             }
-            this.proc?.stdin.write(`${JSON.stringify(payload)}\n`);
+            try {
+                this.sendPayload(payload);
+            } catch (error) {
+                this.pendingRequests.delete(id);
+                clearTimeout(timeout);
+                pending.cleanup?.();
+                reject(error instanceof Error ? error : new Error(String(error)));
+            }
         });
     }
 
     private notify(method: string, params: unknown): void {
-        this.proc?.stdin.write(`${JSON.stringify({ method, params })}\n`);
+        this.sendPayload({ method, params });
     }
 
     private respond(id: JsonRpcId, result: unknown): void {
-        this.proc?.stdin.write(`${JSON.stringify({ id, result })}\n`);
+        this.sendPayload({ id, result });
     }
 
     private respondError(id: JsonRpcId, code: number, message: string): void {
-        this.proc?.stdin.write(`${JSON.stringify({ id, error: { code, message } })}\n`);
+        this.sendPayload({ id, error: { code, message } });
+    }
+
+    private sendPayload(payload: unknown): void {
+        const serialized = JSON.stringify(payload);
+        if (this.ws) {
+            if (this.ws.readyState !== WEBSOCKET_OPEN_STATE) {
+                throw new Error('Codex app-server websocket is not open.');
+            }
+            this.ws.send(serialized);
+            return;
+        }
+        if (this.proc) {
+            this.proc.stdin.write(`${serialized}\n`);
+            return;
+        }
+        throw new Error('Codex app-server is not running.');
+    }
+
+    private handleTransportText(text: string): void {
+        const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        for (const line of lines) {
+            this.handleLine(line);
+        }
     }
 
     private handleLine(line: string): void {

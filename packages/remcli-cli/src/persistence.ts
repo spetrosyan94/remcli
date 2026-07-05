@@ -265,6 +265,8 @@ export interface DaemonLocallyPersistedState {
   p2pHost?: string;
   p2pSharedSecret?: string;
   tunnelUrl?: string;
+  codexAppServerEndpoint?: string;
+  codexAppServerPid?: number;
 }
 
 export async function readSettings(): Promise<Settings> {

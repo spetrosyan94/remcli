@@ -17,6 +17,7 @@ import { configuration } from '@/configuration';
 import { projectPath } from '@/projectPath';
 import { spawnRemcliCLI } from '@/utils/spawnRemcliCLI';
 import { writeDaemonState, readDaemonState, DaemonLocallyPersistedState } from '@/persistence';
+import { isCodexAppServerStateUsable } from '@/codex/codexAppServerHost';
 import packageJson from '../../package.json';
 
 import { encodeSharedSecret } from './p2p/p2pAuth';
@@ -112,6 +113,10 @@ export function startHeartbeatLoop(deps: HeartbeatDeps): NodeJS.Timeout {
 
         // Heartbeat
         try {
+            const codexAppServerIsUsable = await isCodexAppServerStateUsable(daemonState);
+            if (daemonState?.codexAppServerEndpoint && !codexAppServerIsUsable) {
+                logger.debug('[DAEMON RUN] Shared Codex app-server endpoint is stale; removing it from daemon state');
+            }
             const updatedState: DaemonLocallyPersistedState = {
                 pid: process.pid,
                 httpPort: controlPort,
@@ -122,7 +127,9 @@ export function startHeartbeatLoop(deps: HeartbeatDeps): NodeJS.Timeout {
                 p2pPort,
                 p2pHost: lanIP,
                 p2pSharedSecret: encodeSharedSecret(sharedSecret),
-                tunnelUrl
+                tunnelUrl,
+                codexAppServerEndpoint: codexAppServerIsUsable ? daemonState?.codexAppServerEndpoint : undefined,
+                codexAppServerPid: codexAppServerIsUsable ? daemonState?.codexAppServerPid : undefined
             };
             writeDaemonState(updatedState);
             if (process.env.DEBUG) {
