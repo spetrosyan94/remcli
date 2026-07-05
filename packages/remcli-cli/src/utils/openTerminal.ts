@@ -1,10 +1,8 @@
 /**
  * Open a Terminal.app tab/window with a given command on macOS via AppleScript.
  *
- * Three cases:
- * - Terminal NOT running: `activate` creates a default window, `do script in front window` reuses it.
- * - Terminal running WITH windows: Cmd+T creates a new tab, `do script in front window` runs in it.
- * - Terminal running WITHOUT windows: `do script` creates a new window.
+ * Uses `in front window` by default to keep context in the current tab/window.
+ * Falls back to plain `do script` when the front window does not exist.
  */
 
 import { execFile } from 'child_process';
@@ -18,13 +16,14 @@ export async function openTerminalWithCommand(command: string): Promise<void> {
 
     const escaped = escapeAppleScript(command);
 
-    // Activate Terminal FIRST, then run the script. Without this order,
-    // `do script` can be sent to the wrong app (e.g. TextEdit) when Terminal
-    // isn't focused yet, causing "[Pasted text #1 +4 lines]" in other apps.
     const script = `tell application "Terminal"
 activate
 delay 0.1
-do script "${escaped}"
+try
+    do script "${escaped}" in front window
+on error
+    do script "${escaped}"
+end try
 end tell`;
 
     return new Promise<void>((resolve) => {

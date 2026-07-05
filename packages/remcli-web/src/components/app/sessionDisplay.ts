@@ -11,6 +11,53 @@ export function sessionAgent(session: Session): AgentId {
     return "claude";
 }
 
+export function nativeAgentSessionKey(session: Session): string | null {
+    const agent = sessionAgent(session);
+    const meta = session.metadata;
+    if (!meta) return null;
+    const nativeId = agent === "codex" ? meta.codexSessionId ?? meta.agentSessionId
+        : agent === "gemini" ? meta.geminiSessionId ?? meta.agentSessionId
+            : agent === "cursor" ? meta.cursorSessionId ?? meta.agentSessionId
+                : meta.claudeSessionId ?? meta.agentSessionId;
+    return nativeId ? `${agent}:${nativeId}` : null;
+}
+
+function sessionDisplayScore(session: Session): number {
+    let score = 0;
+    if (session.presence === "online") score += 1_000_000_000_000;
+    if (hasPendingPermission(session)) score += 100_000_000;
+    if (session.thinking) score += 10_000_000;
+    score += session.activeAt ?? 0;
+    return score;
+}
+
+export function dedupeSessionsByNativeAgent(sessions: Session[]): Session[] {
+    const result: Session[] = [];
+    const indexByNativeKey = new Map<string, number>();
+
+    for (const session of sessions) {
+        const key = nativeAgentSessionKey(session);
+        if (!key) {
+            result.push(session);
+            continue;
+        }
+
+        const existingIndex = indexByNativeKey.get(key);
+        if (existingIndex === undefined) {
+            indexByNativeKey.set(key, result.length);
+            result.push(session);
+            continue;
+        }
+
+        const existing = result[existingIndex];
+        if (sessionDisplayScore(session) > sessionDisplayScore(existing)) {
+            result[existingIndex] = session;
+        }
+    }
+
+    return result;
+}
+
 /** Путь относительно домашней директории: /Users/x/dev/remcli → ~/dev/remcli. */
 export function formatPathRelativeToHome(path: string, homeDir?: string): string {
     if (!homeDir) return path;

@@ -8,7 +8,7 @@ import { NavLink, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { AgentIcon, ConnectionBanner, Logo, statusLabel, StatusDot } from "@/components/kit";
 import type { Status } from "@/components/kit";
-import { formatTimeLabel, machineName, sessionAgent, sessionPath, sessionStatus } from "@/components/app/sessionDisplay";
+import { dedupeSessionsByNativeAgent, formatTimeLabel, machineName, sessionAgent, sessionPath, sessionStatus } from "@/components/app/sessionDisplay";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { t } from "@/lib/i18n";
 import {
@@ -112,7 +112,7 @@ export function useMachineGroups(): MachineGroup[] {
         }
         const all = [...groups, ...orphans.values()];
         for (const group of all) {
-            group.sessions = sortPermissionFirst(group.sessions);
+            group.sessions = sortPermissionFirst(dedupeSessionsByNativeAgent(group.sessions));
         }
         return all;
     }, [machines, sessions]);
