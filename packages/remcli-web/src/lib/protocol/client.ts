@@ -13,6 +13,7 @@ import {
     fixtureLoadSessionMessages,
     fixtureRestConfig,
     fixtureSpawnNewSession,
+    fixtureStopSession,
     initFixturesIfEnabled
 } from '@/lib/fixtures';
 import {
@@ -37,6 +38,7 @@ import {
     machineListAgentSessions as socketMachineListAgentSessions,
     machineListDirectory as socketMachineListDirectory,
     machineSpawnNewSession as socketMachineSpawnNewSession,
+    machineStopSession as socketMachineStopSession,
     onSocketMessage,
     onSocketReconnected,
     onSocketStatusChange,
@@ -145,6 +147,14 @@ export async function machineListAgentSessions(
         return fixtureListAgentSessions(machineId, agent, directory, limit);
     }
     return socketMachineListAgentSessions(machineId, agent, directory, limit);
+}
+
+/** Stop a daemon-tracked session; fixture mode updates the local seeded store. */
+export async function machineStopSession(machineId: string, sessionId: string): Promise<{ message: string }> {
+    if (isFixturesActive) {
+        return fixtureStopSession(machineId, sessionId);
+    }
+    return socketMachineStopSession(machineId, sessionId);
 }
 
 function requireContext(): ClientContext {

@@ -43,6 +43,7 @@ export {
     machineSpawnNewSession,
     machineListAgentSessions,
     machineListDirectory,
+    machineStopSession,
     sessionAllow,
     sessionDeny,
     machineSetDisplayName,
@@ -64,7 +65,6 @@ export {
 } from '@/lib/protocol/store';
 
 export {
-    machineStopSession,
     machineStopDaemon,
     sessionAbort,
     sessionSwitch,

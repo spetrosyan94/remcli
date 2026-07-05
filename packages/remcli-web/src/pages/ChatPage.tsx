@@ -4,7 +4,7 @@
 // session.agentState.requests + sessionAllow/Deny, TTS/диктовка — хуки @/lib/voice,
 // resume завершённой сессии — machineSpawnNewSession({resumeSessionId}).
 import * as React from "react";
-import { ArrowLeft, ChevronDown, Loader2, Mic, MoreHorizontal, Send } from "lucide-react";
+import { ArrowLeft, ChevronDown, Loader2, Mic, MoreHorizontal, Send, Square, Terminal } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import {
@@ -12,8 +12,9 @@ import {
     Segmented, statusLabel, StatusDot, ThinkingRow, ToolCallCard, UserMessage, VoiceRecordBar,
     type AgentId, type DiffLine, type Status,
 } from "@/components/kit";
-import { SessionsSidebar } from "@/components/app/SessionsSidebar";
+import { SessionsSidebar, StopSessionDialog, type StopTarget } from "@/components/app/SessionsSidebar";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { getAgentPermissionLabel, getAgentPermissionModes, normalizeAgentPermissionMode } from "@/lib/agentPermissions";
 import { copyText } from "@/lib/clipboard";
 import { t } from "@/lib/i18n";
@@ -384,6 +385,7 @@ export function ChatPage() {
     const [isResuming, setIsResuming] = React.useState(false);
     const [hasDetachedAutoscroll, setHasDetachedAutoscroll] = React.useState(false);
     const [isPermissionSheetOpen, setIsPermissionSheetOpen] = React.useState(false);
+    const [stopTarget, setStopTarget] = React.useState<StopTarget | null>(null);
     const feedRef = React.useRef<HTMLElement>(null);
     const hadConnectedRef = React.useRef(false);
     const hasDetachedAutoscrollRef = React.useRef(false);
@@ -587,6 +589,7 @@ export function ChatPage() {
     const resumeAgentSessionId = agentSessionIdOf(session, agent);
     const isEnded = session ? session.presence !== "online" : false;
     const canResume = isEnded && !!resumeAgentSessionId && !!session?.metadata?.path && !!rpcMachineId;
+    const canStop = !isEnded && !!rpcMachineId;
 
     const resumeSession = async () => {
         const meta = session?.metadata;
@@ -728,9 +731,28 @@ export function ChatPage() {
                     <span className="truncate">{formatPermissionMode(activePermissionMode)}</span>
                     <ChevronDown className="size-2.5 shrink-0 text-muted-foreground" />
                 </button>
-                <button aria-label={t("chat.aria.menu")} className="flex size-11 items-center justify-center rounded-[10px] transition-[background-color,transform] active:scale-[0.96]">
-                    <MoreHorizontal className="size-[17px] text-muted-foreground" />
-                </button>
+                <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                        <button aria-label={t("chat.aria.menu")} className="flex size-11 items-center justify-center rounded-[10px] transition-[background-color,transform] active:scale-[0.96]">
+                            <MoreHorizontal className="size-[17px] text-muted-foreground" />
+                        </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="min-w-44">
+                        <DropdownMenuItem className="min-h-11 font-mono text-xs" onSelect={() => navigate(`/session/${session.id}/terminal`)}>
+                            <Terminal className="size-4" />
+                            {t("chat.terminal")}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                            variant="destructive"
+                            disabled={!canStop}
+                            className="min-h-11 font-mono text-xs"
+                            onSelect={() => setStopTarget({ session, machineId: rpcMachineId })}
+                        >
+                            <Square className="size-3 fill-current" />
+                            {t("home.stop.confirm")}
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
             </header>
 
             {banner !== "ok" && (
@@ -941,6 +963,7 @@ export function ChatPage() {
                     ))}
                 </DrawerContent>
             </Drawer>
+            <StopSessionDialog target={stopTarget} onClose={() => setStopTarget(null)} />
             </div>
         </div>
     );

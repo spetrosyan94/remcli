@@ -383,6 +383,28 @@ export function fixtureSpawnNewSession(options: SpawnSessionOptions): SpawnSessi
     return { type: 'success', sessionId };
 }
 
+/** Локальная остановка сессии в fixture-mode: имитирует daemon RPC `stop-session`. */
+export function fixtureStopSession(machineId: string, sessionId: string): { message: string } {
+    const store = useProtocolStore.getState();
+    const machine = store.machines[machineId];
+    const session = store.sessions[sessionId];
+    if (!machine) {
+        throw new Error(`Fixture machine not found: ${machineId}`);
+    }
+    if (!session) {
+        throw new Error(`Fixture session not found: ${sessionId}`);
+    }
+    const now = Math.max(session.updatedAt + 1_000, Date.now());
+    store.applySessions([{
+        ...session,
+        updatedAt: now,
+        active: false,
+        thinking: false,
+        presence: now
+    }]);
+    return { message: 'session stopped' };
+}
+
 /**
  * Локальный ответ на permission-запрос: карточка убирается из
  * agentState.requests (переезжает в completedRequests) без RPC.

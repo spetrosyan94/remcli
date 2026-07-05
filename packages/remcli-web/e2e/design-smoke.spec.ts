@@ -270,3 +270,34 @@ test("triggered toast stays out of bottom chrome", async ({ page }, testInfo) =>
 
     expect(pageIssues).toEqual([]);
 });
+
+test("chat action menu exposes terminal and stop session actions", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await openFixtureRoute(page, "/session/fx-chat?fixtures=1");
+    await page.getByRole("button", { name: "Menu" }).click();
+
+    await expect(page.getByRole("menuitem", { name: /terminal/i })).toBeVisible();
+    const stopMenuItem = page.getByRole("menuitem", { name: /^stop$/i });
+    await expect(stopMenuItem).toBeVisible();
+    await stopMenuItem.click();
+
+    await expect(page.getByRole("dialog", { name: "Stop this session?" })).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByRole("dialog", { name: "Stop this session?" })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Menu" }).click();
+    await page.getByRole("menuitem", { name: /^stop$/i }).click();
+    await page.getByRole("button", { name: /^stop$/i }).click();
+    await expect(page.getByText("session stopped")).toBeVisible();
+    await expect(page.getByText("— session ended —")).toBeVisible();
+    await expect(page.getByRole("button", { name: /resume/i })).toBeVisible();
+
+    await assertNoHorizontalOverflow(page);
+    await assertNoBottomToastOverlap(page);
+    if (isMobileProject(testInfo)) {
+        await assertMobileTouchTargets(page);
+    }
+
+    expect(pageIssues).toEqual([]);
+});
