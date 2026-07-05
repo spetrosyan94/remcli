@@ -4,6 +4,10 @@ const tmuxMocks = vi.hoisted(() => ({
     spawnInTmux: vi.fn(),
 }));
 
+const openTerminalMocks = vi.hoisted(() => ({
+    openTerminalWithCommand: vi.fn(async () => true),
+}));
+
 vi.mock('@/ui/logger', () => ({
     logger: {
         debug: () => {},
@@ -27,7 +31,7 @@ vi.mock('@/utils/tmux', () => ({
 }));
 
 vi.mock('@/utils/openTerminal', () => ({
-    openTerminalWithCommand: vi.fn(),
+    openTerminalWithCommand: openTerminalMocks.openTerminalWithCommand,
 }));
 
 import {
@@ -38,6 +42,7 @@ import { buildSafeSpawnSessionLogPayload } from './spawnSessionLog';
 
 beforeEach(() => {
     vi.clearAllMocks();
+    openTerminalMocks.openTerminalWithCommand.mockResolvedValue(true);
 });
 
 describe('resolveSpawnAuthEnvironment', () => {
@@ -112,6 +117,7 @@ describe('createSessionManager resume deduplication', () => {
         await vi.waitFor(() => {
             expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(1);
         });
+        expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledWith(expect.stringMatching(/^env -u TMUX tmux attach -t remcli-\d+-codex$/));
 
         manager.onRemcliSessionWebhook('remcli-session-1', {
             path: process.cwd(),
@@ -149,6 +155,7 @@ describe('createSessionManager resume deduplication', () => {
         await vi.waitFor(() => {
             expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(1);
         });
+        expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledWith(expect.stringMatching(/^env -u TMUX tmux attach -t remcli-\d+-codex$/));
         manager.onRemcliSessionWebhook('remcli-session-2', {
             path: process.cwd(),
             host: 'test-host',

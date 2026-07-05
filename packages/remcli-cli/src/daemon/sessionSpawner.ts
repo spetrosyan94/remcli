@@ -388,10 +388,16 @@ export function createSessionManager(): SessionManager {
 
                 pidToTrackedSession.set(tmuxResult.pid, trackedSession);
 
-                // Always open a new Terminal.app tab for this session
+                // Always open a new Terminal.app context for this session.
+                // Unset TMUX so the attach command works even when the daemon
+                // process was started from inside an existing tmux client.
                 try {
-                    openTerminalWithCommand(`tmux attach -t ${tmuxSessionName}`);
-                    logger.debug(`[DAEMON RUN] Opened terminal tab for tmux session ${tmuxSessionName}`);
+                    const didOpenTerminal = await openTerminalWithCommand(`env -u TMUX tmux attach -t ${tmuxSessionName}`);
+                    if (didOpenTerminal) {
+                        logger.debug(`[DAEMON RUN] Opened terminal context for tmux session ${tmuxSessionName}`);
+                    } else {
+                        logger.debug(`[DAEMON RUN] Terminal context was not opened for tmux session ${tmuxSessionName}`);
+                    }
                 } catch (error) {
                     logger.debug(`[DAEMON RUN] Failed to open terminal for tmux:`, error);
                 }
