@@ -11,7 +11,6 @@
 import fs from 'fs/promises';
 import { execSync } from 'child_process';
 import { join } from 'path';
-import * as tmp from 'tmp';
 
 import { StopSessionResult, TrackedSession } from './types';
 import { Metadata } from '@/api/types';
@@ -19,6 +18,7 @@ import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/regist
 import { logger } from '@/ui/logger';
 import { readSettings, validateProfileForAgent, getProfileEnvironmentVariables } from '@/persistence';
 import { projectPath } from '@/projectPath';
+import { buildSafeSpawnSessionLogPayload } from './spawnSessionLog';
 import { getTmuxUtilities, isTmuxAvailable } from '@/utils/tmux';
 import { expandEnvironmentVariables } from '@/utils/expandEnvVars';
 import { openTerminalWithCommand } from '@/utils/openTerminal';
@@ -67,6 +67,22 @@ async function getProfileEnvironmentVariablesForAgent(
         logger.debug('[DAEMON RUN] Failed to get profile environment variables:', error);
         return {};
     }
+}
+
+export function resolveSpawnAuthEnvironment(options: Pick<SpawnSessionOptions, 'agent' | 'token'>): Record<string, string> {
+    if (!options.token) {
+        return {};
+    }
+
+    if (options.agent === 'codex') {
+        // Codex must behave like `codex` launched from the user's terminal:
+        // same CODEX_HOME, config.toml, plugins, MCP auth state and sessions.
+        // Do not replace CODEX_HOME with a temporary auth-only directory here.
+        logger.debug('[DAEMON RUN] Ignoring Codex token override to preserve local Codex CLI environment');
+        return {};
+    }
+
+    return { CLAUDE_CODE_OAUTH_TOKEN: options.token };
 }
 
 export function createSessionManager(): SessionManager {
@@ -125,7 +141,7 @@ export function createSessionManager(): SessionManager {
 
     // Spawn a new session (sessionId reserved for future --resume functionality)
     const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
-        logger.debugLargeJson('[DAEMON RUN] Spawning session', options);
+        logger.debugLargeJson('[DAEMON RUN] Spawning session', buildSafeSpawnSessionLogPayload(options));
 
         const { directory, approvedNewDirectoryCreation = true } = options;
         let directoryCreated = false;
@@ -181,22 +197,7 @@ export function createSessionManager(): SessionManager {
             // Layer 3 (top): Auth tokens again to ensure they're never overridden
 
             // Layer 1: Resolve authentication token if provided
-            const authEnv: Record<string, string> = {};
-            if (options.token) {
-                if (options.agent === 'codex') {
-
-                    // Create a temporary directory for Codex
-                    const codexHomeDir = tmp.dirSync();
-
-                    // Write the token to the temporary directory
-                    fs.writeFile(join(codexHomeDir.name, 'auth.json'), options.token);
-
-                    // Set the environment variable for Codex
-                    authEnv.CODEX_HOME = codexHomeDir.name;
-                } else { // Assuming claude
-                    authEnv.CLAUDE_CODE_OAUTH_TOKEN = options.token;
-                }
-            }
+            const authEnv = resolveSpawnAuthEnvironment(options);
 
             // Layer 2: Profile environment variables
             // Priority: GUI-provided profile > CLI local active profile > none

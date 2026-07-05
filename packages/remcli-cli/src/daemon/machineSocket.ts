@@ -13,6 +13,7 @@ import { logger } from '@/ui/logger';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import { registerCommonHandlers, SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 import { listDirectoryForBrowser } from '@/daemon/directoryBrowser/directoryBrowserService';
+import { buildSafeSpawnSessionLogPayload } from '@/daemon/spawnSessionLog';
 import type {
     ListDirectoryParams,
     ListDirectoryResponse,
@@ -65,7 +66,7 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
     // Register daemon-specific RPC handlers
     machineRpcManager.registerHandler('spawn-remcli-session', async (params: Partial<SpawnSessionOptions> & { directory: string }) => {
         const { directory, sessionId: sid, machineId: targetMachineId, approvedNewDirectoryCreation, agent, token, environmentVariables, resumeSessionId, resumeSessionName } = params || {};
-        logger.debugLargeJson('[DAEMON RUN] RPC spawn-remcli-session', params);
+        logger.debugLargeJson('[DAEMON RUN] RPC spawn-remcli-session', buildSafeSpawnSessionLogPayload(params));
 
         if (!directory) {
             throw new Error('Directory is required');
