@@ -180,5 +180,7 @@ Required gates for this architecture:
   waits for `/readyz`.
 - CLI: `npm -w remcli run typecheck`, `npm -w remcli run build`,
   `npm -w remcli run test`.
-- Real AI opt-in: create -> prompt -> stop -> reopen/resume -> context check
-  with `gpt-5.3-codex-spark` where credentials are available.
+- Real AI opt-in: create -> prompt -> stop -> reopen/resume -> context check.
+  The default candidate is `gpt-5.3-codex-spark`; if Codex returns a
+  usage-limit error, the test retries with `gpt-5.4-mini`. Override with
+  `REMCLI_REAL_CODEX_MODEL` and `REMCLI_REAL_CODEX_FALLBACK_MODEL`.

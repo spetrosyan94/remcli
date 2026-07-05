@@ -858,7 +858,8 @@ export async function runGemini(opts: {
         const batch = await messageQueue.waitForMessagesAndGetAsString(waitSignal);
         if (!batch) {
           if (waitSignal.aborted && !shouldExit) {
-            logger.debug('[gemini] Main loop: wait aborted, continuing...');
+            logger.debug('[gemini] Main loop: wait aborted, resetting abort controller and continuing...');
+            abortController = new AbortController();
             continue;
           }
           logger.debug('[gemini] Main loop: no batch received, breaking...');

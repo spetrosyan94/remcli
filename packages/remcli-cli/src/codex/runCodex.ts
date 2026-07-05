@@ -731,7 +731,8 @@ export async function runCodex(opts: {
                 if (!batch) {
                     // If wait was aborted (e.g., remote abort with no active inference), ignore and continue
                     if (waitSignal.aborted && !shouldExit) {
-                        logger.debug('[codex]: Wait aborted while idle; ignoring and continuing');
+                        logger.debug('[codex]: Wait aborted while idle; resetting abort controller and continuing');
+                        abortController = new AbortController();
                         continue;
                     }
                     logger.debug(`[codex]: batch=${!!batch}, shouldExit=${shouldExit}`);

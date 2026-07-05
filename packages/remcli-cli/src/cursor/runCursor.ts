@@ -280,7 +280,8 @@ export async function runCursor(opts: {
                 const batch = await messageQueue.waitForMessagesAndGetAsString(waitSignal);
                 if (!batch) {
                     if (waitSignal.aborted && !shouldExit) {
-                        logger.debug('[cursor] Wait aborted while idle, continuing');
+                        logger.debug('[cursor] Wait aborted while idle, resetting abort controller and continuing');
+                        abortController = new AbortController();
                         continue;
                     }
                     break;

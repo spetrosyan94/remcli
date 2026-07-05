@@ -2,13 +2,12 @@ import { execFileSync } from 'node:child_process';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Metadata, UserMessage } from '@/api/types';
+import type { AgentState, Metadata, UserMessage } from '@/api/types';
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
-import type { CodexToolResponse } from '@/codex/types';
+import { expectTurnSucceeded, withCodexModelFallback } from './codexRealTestUtils';
 
 const runRealAi = process.env.REMCLI_REAL_AI === '1';
 const realCodexDescribe = runRealAi ? describe : describe.skip;
-const realCodexModel = process.env.REMCLI_REAL_CODEX_MODEL ?? 'gpt-5.3-codex-spark';
 
 interface CapturedSessionEvent {
     type: string;
@@ -23,8 +22,16 @@ interface CapturedCodexMessage {
 
 const fakeSessionState = vi.hoisted(() => ({
     prompt: '',
+    model: '',
+    shouldClose: false,
+    hasCollectedLivePrompt: false,
     sentCodexMessages: [] as string[],
     sentSessionEvents: [] as CapturedSessionEvent[],
+    agentState: {
+        requests: {},
+        completedRequests: {},
+    } as AgentState,
+    permissionHandler: undefined as ((response: { id: string; approved: boolean; decision: string }) => unknown) | undefined,
     metadata: {
         path: process.cwd(),
         host: 'test-host',
@@ -35,10 +42,18 @@ const fakeSessionState = vi.hoisted(() => ({
         startedBy: 'daemon',
         flavor: 'codex',
     } as Metadata,
-    reset(prompt: string) {
+    reset(prompt: string, model: string) {
         this.prompt = prompt;
+        this.model = model;
+        this.shouldClose = false;
+        this.hasCollectedLivePrompt = false;
         this.sentCodexMessages = [];
         this.sentSessionEvents = [];
+        this.agentState = {
+            requests: {},
+            completedRequests: {},
+        };
+        this.permissionHandler = undefined;
     },
 }));
 
@@ -62,13 +77,19 @@ vi.mock('@/api/api', () => ({
                         callback({
                             role: 'user',
                             content: { type: 'text', text: fakeSessionState.prompt },
-                            meta: { permissionMode: 'read-only' },
+                            meta: {
+                                permissionMode: 'read-only',
+                                ...(fakeSessionState.model ? { model: fakeSessionState.model } : {}),
+                            },
                         });
                     });
                 },
                 sendCodexMessage(message: CapturedCodexMessage) {
                     if (message.type === 'message' && typeof message.message === 'string') {
-                        fakeSessionState.sentCodexMessages.push(message.message);
+                        if (fakeSessionState.hasCollectedLivePrompt) {
+                            fakeSessionState.sentCodexMessages.push(message.message);
+                            fakeSessionState.shouldClose = true;
+                        }
                     }
                 },
                 sendUserTextMessage: vi.fn(),
@@ -76,6 +97,9 @@ vi.mock('@/api/api', () => ({
                 sendClaudeSessionMessage: vi.fn(),
                 sendSessionEvent(event: CapturedSessionEvent) {
                     fakeSessionState.sentSessionEvents.push(event);
+                    if (event.isError) {
+                        fakeSessionState.shouldClose = true;
+                    }
                 },
                 sendSessionDeath: vi.fn(),
                 updateLifecycleState: vi.fn(),
@@ -86,9 +110,27 @@ vi.mock('@/api/api', () => ({
                 updateMetadata(updater: (metadata: Metadata) => Metadata) {
                     fakeSessionState.metadata = updater(fakeSessionState.metadata);
                 },
-                updateAgentState: vi.fn(),
+                updateAgentState(updater: (state: AgentState) => AgentState) {
+                    const previousRequestIds = new Set(Object.keys(fakeSessionState.agentState.requests ?? {}));
+                    fakeSessionState.agentState = updater(fakeSessionState.agentState);
+
+                    for (const id of Object.keys(fakeSessionState.agentState.requests ?? {})) {
+                        if (previousRequestIds.has(id)) continue;
+                        queueMicrotask(() => {
+                            fakeSessionState.permissionHandler?.({
+                                id,
+                                approved: true,
+                                decision: 'approved_for_session',
+                            });
+                        });
+                    }
+                },
                 rpcHandlerManager: {
-                    registerHandler: vi.fn(),
+                    registerHandler: vi.fn((method: string, handler: (response: { id: string; approved: boolean; decision: string }) => unknown) => {
+                        if (method === 'permission') {
+                            fakeSessionState.permissionHandler = handler;
+                        }
+                    }),
                 },
             })),
         })),
@@ -133,7 +175,7 @@ vi.mock('@/utils/MessageQueue2', () => {
             if (this.queue.length > 0) {
                 return this.collect();
             }
-            if (this.didCollect || signal?.aborted) {
+            if ((this.didCollect && fakeSessionState.shouldClose) || signal?.aborted) {
                 return null;
             }
             return new Promise((resolve) => {
@@ -158,6 +200,7 @@ vi.mock('@/utils/MessageQueue2', () => {
             const item = this.queue.shift();
             if (!item) throw new Error('Expected queued message.');
             this.didCollect = true;
+            fakeSessionState.hasCollectedLivePrompt = true;
             return { message: item.message, mode: item.mode, isolate: false, hash: item.hash };
         }
     }
@@ -165,53 +208,50 @@ vi.mock('@/utils/MessageQueue2', () => {
     return { MessageQueue2: SingleTurnMessageQueue };
 });
 
-let threadIdToDelete: string | null = null;
-
-function responseText(response: CodexToolResponse): string {
-    return response.content
-        .map((part) => ('text' in part && typeof part.text === 'string' ? part.text : ''))
-        .filter(Boolean)
-        .join('\n');
-}
-
-function expectTurnSucceeded(response: CodexToolResponse, phase: string): void {
-    if (!response.isError) return;
-    throw new Error(`Codex ${phase} failed: ${responseText(response) || 'unknown app-server error'}`);
-}
+const threadIdsToDelete: string[] = [];
 
 afterEach(() => {
-    if (!threadIdToDelete) return;
-    try {
-        execFileSync('codex', ['delete', threadIdToDelete, '--force'], { stdio: 'ignore' });
-    } catch {
-        // Best effort cleanup: lifecycle assertions are more important than cleanup noise.
-    } finally {
-        threadIdToDelete = null;
+    while (threadIdsToDelete.length > 0) {
+        const threadId = threadIdsToDelete.pop();
+        if (!threadId) continue;
+        try {
+            execFileSync('codex', ['delete', threadId, '--force'], { stdio: 'ignore' });
+        } catch {
+            // Best effort cleanup: lifecycle assertions are more important than cleanup noise.
+        }
     }
 });
 
 realCodexDescribe('runCodex real Codex resume smoke', { timeout: 180_000 }, () => {
     it('resumes a real Codex thread through the Remcli runCodex message path', async () => {
-        const token = `REMCLI_RUNCODEX_${Date.now()}`;
-        const seedClient = new CodexAppServerClient();
+        await withCodexModelFallback(async (model) => {
+            await runRunCodexResumeSmoke(model);
+        });
+    });
+});
+
+async function runRunCodexResumeSmoke(model: string): Promise<void> {
+    const token = `REMCLI_RUNCODEX_${Date.now()}`;
+    const seedClient = new CodexAppServerClient();
+    try {
         const threadId = await seedClient.startThread({
             cwd: process.cwd(),
             sandbox: 'read-only',
             approvalPolicy: 'never',
-            model: realCodexModel,
+            model,
         });
-        threadIdToDelete = threadId;
+        threadIdsToDelete.push(threadId);
         const seedTurn = await seedClient.startTurn({
             threadId,
-            prompt: `Запомни токен ${token}. Ответь только OK.`,
+            prompt: `Контекст для проверки: session_token=${token}. Не используй инструменты. Ответь ровно OK.`,
             sandbox: 'read-only',
-            approvalPolicy: 'never',
-            model: realCodexModel,
+            approvalPolicy: 'on-request',
+            model,
         });
-        expectTurnSucceeded(seedTurn, 'seed turn');
+        expectTurnSucceeded(seedTurn, 'seed turn', model);
         await seedClient.disconnect();
 
-        fakeSessionState.reset('Какой токен я просил запомнить? Ответь только токеном.');
+        fakeSessionState.reset('Какое значение session_token было в предыдущем сообщении? Не используй инструменты. Ответь только значением.', model);
 
         const { runCodex } = await import('@/codex/runCodex');
         await runCodex({
@@ -232,5 +272,7 @@ realCodexDescribe('runCodex real Codex resume smoke', { timeout: 180_000 }, () =
         expect(`${answer}\n${errors}`).not.toContain('Session not found');
         expect(errors).toBe('');
         expect(answer).toContain(token);
-    });
-});
+    } finally {
+        await seedClient.disconnect().catch(() => undefined);
+    }
+}
