@@ -224,6 +224,25 @@ async function assertMobileTouchTargets(page: Page): Promise<void> {
     expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
 }
 
+async function assertPrimaryActionIsFullyVisible(page: Page): Promise<void> {
+    const primaryAction = page.getByRole("button", { name: /^start claude in /i });
+    await expect(primaryAction).toBeVisible();
+
+    const report = await primaryAction.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+            top: rect.top,
+            bottom: rect.bottom,
+            height: rect.height,
+            viewportHeight: window.innerHeight,
+        };
+    });
+
+    expect(report.height).toBeGreaterThanOrEqual(MOBILE_TOUCH_TARGET_MIN_PX);
+    expect(report.top, JSON.stringify(report)).toBeGreaterThanOrEqual(0);
+    expect(report.bottom, JSON.stringify(report)).toBeLessThanOrEqual(report.viewportHeight);
+}
+
 function isMobileProject(testInfo: TestInfo): boolean {
     return testInfo.project.name.includes("mobile");
 }
@@ -249,6 +268,16 @@ for (const route of FIXTURE_ROUTES) {
         expect(pageIssues).toEqual([]);
     });
 }
+
+test("new session keeps its primary action fully visible", async ({ page }) => {
+    const pageIssues = collectPageIssues(page);
+
+    await openFixtureRoute(page, "/new?fixtures=1");
+    await assertPrimaryActionIsFullyVisible(page);
+    await assertNoHorizontalOverflow(page);
+
+    expect(pageIssues).toEqual([]);
+});
 
 test("triggered toast stays out of bottom chrome", async ({ page }, testInfo) => {
     const pageIssues = collectPageIssues(page);

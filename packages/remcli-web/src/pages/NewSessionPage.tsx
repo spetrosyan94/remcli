@@ -319,7 +319,7 @@ export function NewSessionPage() {
     };
 
     return (
-        <div className="flex min-h-dvh flex-col bg-background pt-[env(safe-area-inset-top)] text-foreground">
+        <div className="flex h-dvh flex-col bg-background pt-[env(safe-area-inset-top)] text-foreground">
             <header className="flex items-center px-5 pb-3 pt-1.5">
                 <h1 className="text-xl font-semibold">{t("new.title")}</h1>
                 <button aria-label={t("new.close")} onClick={() => navigate(-1)}
@@ -328,7 +328,7 @@ export function NewSessionPage() {
                 </button>
             </header>
 
-            <main className="flex flex-1 flex-col gap-4.5 overflow-y-auto px-5 [&>*]:shrink-0">
+            <main className="flex min-h-0 flex-1 flex-col gap-4.5 overflow-y-auto px-5 [&>*]:shrink-0">
                 {/* машина */}
                 <button onClick={() => setSheet("machine")} disabled={machines.length === 0}
                     className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-3.5 py-3">
