@@ -15,7 +15,7 @@ state или UX-контракт, обновлять соответствующ�
 
 | Документ | Что описывает |
 |----------|---------------|
-| [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) | Codex/ChatGPT remote control through official Codex app-server |
+| [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) | Удалённое управление Codex/ChatGPT через официальный Codex app-server |
 | [agent-architecture/agent-remote-control-template.md](agent-architecture/agent-remote-control-template.md) | Шаблон для следующих provider-specific архитектур |
 
 ## Local Rules

@@ -27,8 +27,7 @@ export interface MachineSocketDeps {
     bearerToken: string;
     sharedSecret: Uint8Array;
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
-    stopSession: (sessionId: string) => StopSessionResult;
-    onSessionStopped?: (sessionId: string) => void;
+    stopSession: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
     requestShutdown: () => void;
 }
 
@@ -38,7 +37,7 @@ export interface MachineSocketHandle {
 }
 
 export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHandle {
-    const { p2pPort, machineId, bearerToken, sharedSecret, spawnSession, stopSession, onSessionStopped, requestShutdown } = deps;
+    const { p2pPort, machineId, bearerToken, sharedSecret, spawnSession, stopSession, requestShutdown } = deps;
 
     const machineSocket: ClientSocket = ioClient(`http://127.0.0.1:${p2pPort}`, {
         transports: ['websocket'],
@@ -96,19 +95,18 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         }
     });
 
-    machineRpcManager.registerHandler('stop-session', (params: { sessionId?: string }) => {
+    machineRpcManager.registerHandler('stop-session', async (params: { sessionId?: string }) => {
         const { sessionId: targetSessionId } = params || {};
         if (!targetSessionId) {
             throw new Error('Session ID is required');
         }
 
-        const result = stopSession(targetSessionId);
+        const result = await stopSession(targetSessionId);
         if (!result.success) {
             throw new Error('Session not found or failed to stop');
         }
 
         logger.debug(`[DAEMON RUN] RPC stopped session ${result.stoppedSessionId}`);
-        onSessionStopped?.(result.stoppedSessionId);
         return { message: 'Session stopped', sessionId: result.stoppedSessionId };
     });
 

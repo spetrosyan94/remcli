@@ -1,10 +1,32 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NormalizedMessage } from '@/lib/protocol/messages';
+import { mergeMessages } from '@/lib/protocol/store';
 import type { Session } from '@/lib/protocol/types';
 
 let buildFeed: typeof import('@/pages/ChatPage').buildFeed;
 let agentSessionIdOf: typeof import('@/pages/ChatPage').agentSessionIdOf;
+let createMessageLoadQueue: typeof import('@/pages/ChatPage').createMessageLoadQueue;
+let getMessageLoadScope: typeof import('@/pages/ChatPage').getMessageLoadScope;
+let mergeMessagePagination: typeof import('@/pages/ChatPage').mergeMessagePagination;
 let parseNavState: typeof import('@/pages/ChatPage').parseNavState;
+
+interface Deferred<T> {
+    promise: Promise<T>;
+    resolve(value: T): void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+    let resolve: (value: T) => void = () => undefined;
+    const promise = new Promise<T>((resolvePromise) => {
+        resolve = resolvePromise;
+    });
+    return { promise, resolve };
+}
+
+async function flushPromises(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
+}
 
 beforeAll(async () => {
     vi.stubGlobal('localStorage', {
@@ -21,6 +43,9 @@ beforeAll(async () => {
     const pageModule = await import('@/pages/ChatPage');
     buildFeed = pageModule.buildFeed;
     agentSessionIdOf = pageModule.agentSessionIdOf;
+    createMessageLoadQueue = pageModule.createMessageLoadQueue;
+    getMessageLoadScope = pageModule.getMessageLoadScope;
+    mergeMessagePagination = pageModule.mergeMessagePagination;
     parseNavState = pageModule.parseNavState;
 });
 
@@ -29,6 +54,203 @@ afterAll(() => {
 });
 
 describe('ChatPage feed mapping', () => {
+    it('keeps reconnect merge identity-stable at the pagination boundary', () => {
+        const existing: NormalizedMessage[] = [
+            {
+                id: 'server-1',
+                localId: null,
+                seq: 1,
+                createdAt: 1000,
+                isSidechain: false,
+                role: 'user',
+                content: { type: 'text', text: 'Initial prompt' }
+            },
+            {
+                id: 'local-2',
+                localId: 'local-2',
+                seq: null,
+                createdAt: 2000,
+                isSidechain: false,
+                role: 'user',
+                content: { type: 'text', text: 'Optimistic prompt' }
+            }
+        ];
+        const refreshed: NormalizedMessage[] = [
+            {
+                id: 'server-1',
+                localId: null,
+                seq: 1,
+                createdAt: 1000,
+                isSidechain: false,
+                role: 'user',
+                content: { type: 'text', text: 'Initial prompt' }
+            },
+            {
+                id: 'server-2',
+                localId: 'local-2',
+                seq: 2,
+                createdAt: 2000,
+                isSidechain: false,
+                role: 'user',
+                content: { type: 'text', text: 'Optimistic prompt' }
+            }
+        ];
+
+        const merged = mergeMessages(existing, refreshed);
+
+        expect(merged.map((message) => message.id)).toEqual(['server-1', 'server-2']);
+        const initialPagination = mergeMessagePagination(
+            { offset: 0, total: 0, hasMore: false },
+            { total: 3, nextOffset: 2 },
+            'initial'
+        );
+        expect(initialPagination).toEqual({ offset: 2, total: 3, hasMore: true });
+        expect(mergeMessagePagination(
+            { offset: 0, total: 0, hasMore: false },
+            { total: 3, nextOffset: 2 },
+            'refresh'
+        )).toEqual({ offset: 2, total: 3, hasMore: true });
+
+        const withOlderHistory = mergeMessages(merged, [{
+            id: 'server-0',
+            localId: null,
+            seq: 0,
+            createdAt: 500,
+            isSidechain: false,
+            role: 'user',
+            content: { type: 'text', text: 'Earlier prompt' }
+        }]);
+
+        expect(withOlderHistory.map((message) => message.id)).toEqual(['server-0', 'server-1', 'server-2']);
+        expect(mergeMessagePagination(initialPagination, { total: 3, nextOffset: 3 }, 'older'))
+            .toEqual({ offset: 3, total: 3, hasMore: false });
+    });
+
+    it('keeps the pending raw cursor at the reconnect page boundary when more than one page arrived offline', () => {
+        const initialTotal = 20;
+        const reconnectedTotal = initialTotal + 151;
+        const rawRecords = Array.from(
+            { length: reconnectedTotal },
+            (_, index) => `raw-${reconnectedTotal - index}`,
+        );
+        const loadedRecords = new Set(rawRecords.slice(-initialTotal));
+        const requestedOffsets: number[] = [];
+        const fetchPage = (offset: number) => {
+            requestedOffsets.push(offset);
+            const records = rawRecords.slice(offset, offset + 150);
+            for (const record of records) loadedRecords.add(record);
+            return {
+                total: reconnectedTotal,
+                nextOffset: offset + records.length,
+            };
+        };
+
+        const reconnectPage = fetchPage(0);
+        const afterReconnect = mergeMessagePagination(
+            { offset: initialTotal, total: initialTotal, hasMore: false },
+            reconnectPage,
+            'refresh',
+        );
+
+        expect(afterReconnect).toEqual({ offset: 150, total: reconnectedTotal, hasMore: true });
+
+        const olderPage = fetchPage(afterReconnect.offset);
+        const afterOlderPage = mergeMessagePagination(afterReconnect, olderPage, 'older');
+
+        expect(requestedOffsets).toEqual([0, 150]);
+        expect(afterOlderPage).toEqual({
+            offset: reconnectedTotal,
+            total: reconnectedTotal,
+            hasMore: false,
+        });
+        expect([...loadedRecords].sort()).toEqual([...rawRecords].sort());
+    });
+
+    it('waits for older-history scroll restoration before a reconnect refresh starts', async () => {
+        const queue = createMessageLoadQueue();
+        const olderPageLoaded = createDeferred<void>();
+        const scrollRestored = createDeferred<void>();
+        const events: string[] = [];
+        const refresh = vi.fn(async () => {
+            events.push('refresh:start');
+        });
+
+        const olderRequest = queue.enqueue(async () => {
+            events.push('older:start');
+            await olderPageLoaded.promise;
+            events.push('older:page-loaded');
+            await scrollRestored.promise;
+            events.push('older:scroll-restored');
+        });
+        const reconnectRefresh = queue.enqueueReconnect(refresh);
+
+        await flushPromises();
+        expect(events).toEqual(['older:start']);
+        expect(refresh).not.toHaveBeenCalled();
+
+        olderPageLoaded.resolve();
+        await flushPromises();
+        expect(events).toEqual(['older:start', 'older:page-loaded']);
+        expect(refresh).not.toHaveBeenCalled();
+
+        scrollRestored.resolve();
+        await Promise.all([olderRequest, reconnectRefresh]);
+        expect(events).toEqual(['older:start', 'older:page-loaded', 'older:scroll-restored', 'refresh:start']);
+        expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('coalesces a reconnect burst while the current refresh is in flight', async () => {
+        const queue = createMessageLoadQueue();
+        const refreshCompleted = createDeferred<void>();
+        const refresh = vi.fn(async () => {
+            await refreshCompleted.promise;
+        });
+
+        const firstRefresh = queue.enqueueReconnect(refresh);
+        await flushPromises();
+        const secondRefresh = queue.enqueueReconnect(refresh);
+
+        expect(secondRefresh).toBe(firstRefresh);
+        expect(refresh).toHaveBeenCalledTimes(1);
+
+        refreshCompleted.resolve();
+        await Promise.all([firstRefresh, secondRefresh]);
+        expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('starts session B loads without waiting for a hanging older-history request from session A', async () => {
+        const olderRequestCompleted = createDeferred<void>();
+        const initialBCompleted = createDeferred<void>();
+        const olderA = vi.fn(async () => {
+            await olderRequestCompleted.promise;
+        });
+        const initialB = vi.fn(async () => {
+            await initialBCompleted.promise;
+        });
+        const reconnectB = vi.fn(async () => undefined);
+
+        const scopeA = getMessageLoadScope(null, 'session-a');
+        const olderARequest = scopeA.queue.enqueue(olderA);
+        await flushPromises();
+        expect(olderA).toHaveBeenCalledTimes(1);
+
+        const scopeB = getMessageLoadScope(scopeA, 'session-b');
+        const initialBRequest = scopeB.queue.enqueue(initialB);
+        const reconnectBRequest = scopeB.queue.enqueueReconnect(reconnectB);
+        await flushPromises();
+
+        expect(scopeB.generation).toBe(scopeA.generation + 1);
+        expect(initialB).toHaveBeenCalledTimes(1);
+        expect(reconnectB).not.toHaveBeenCalled();
+
+        initialBCompleted.resolve();
+        await Promise.all([initialBRequest, reconnectBRequest]);
+        expect(reconnectB).toHaveBeenCalledTimes(1);
+
+        olderRequestCompleted.resolve();
+        await olderARequest;
+    });
+
     it('keeps absent model override distinct from explicit model reset', () => {
         expect(parseNavState({ permissionMode: 'workspace-write' })).toEqual({
             permissionMode: 'workspace-write',
@@ -39,6 +261,12 @@ describe('ChatPage feed mapping', () => {
         expect(parseNavState({ permissionMode: 'workspace-write', model: null })).toEqual({
             permissionMode: 'workspace-write',
             model: null,
+            hasModelOverride: true,
+        });
+
+        expect(parseNavState({ permissionMode: 'workspace-write', model: 'gpt-5.6-luna' })).toEqual({
+            permissionMode: 'workspace-write',
+            model: 'gpt-5.6-luna',
             hasModelOverride: true,
         });
     });

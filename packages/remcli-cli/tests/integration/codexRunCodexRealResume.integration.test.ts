@@ -4,10 +4,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentState, Metadata, UserMessage } from '@/api/types';
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
-import { expectTurnSucceeded, getRealCodexModel } from './codexRealTestUtils';
+import {
+    forgetSessionRunnerCredential,
+    getSessionRunnerCredential,
+    rememberSessionRunnerCredential,
+} from '@/daemon/p2p/p2pRunnerCredentials';
+import {
+    expectTurnSucceeded,
+    getRealCodexModel,
+    getRealCodexReasoningEffort,
+} from './codexRealTestUtils';
 
 const runRealAi = process.env.REMCLI_REAL_AI === '1';
 const realCodexDescribe = runRealAi ? describe : describe.skip;
+const REMCLI_SESSION_ID = 'remcli-real-codex-test-session';
+const TEST_RUNNER_CREDENTIAL = 'real-resume-runner-credential';
 
 interface CapturedSessionEvent {
     type: string;
@@ -61,7 +72,7 @@ vi.mock('@/api/api', () => ({
     ApiClient: {
         create: vi.fn(async () => ({
             getOrCreateSession: vi.fn(async (opts: { metadata: Metadata }) => ({
-                id: 'remcli-real-codex-test-session',
+                id: REMCLI_SESSION_ID,
                 seq: 1,
                 metadata: opts.metadata,
                 metadataVersion: 1,
@@ -71,7 +82,7 @@ vi.mock('@/api/api', () => ({
                 encryptionVariant: 'legacy',
             })),
             sessionSyncClient: vi.fn(() => ({
-                sessionId: 'remcli-real-codex-test-session',
+                sessionId: REMCLI_SESSION_ID,
                 onUserMessage(callback: (message: UserMessage) => void) {
                     queueMicrotask(() => {
                         callback({
@@ -138,13 +149,28 @@ vi.mock('@/api/api', () => ({
 }));
 
 vi.mock('@/daemon/controlClient', () => ({
-    notifyDaemonSessionStarted: vi.fn(async () => ({})),
+    notifyDaemonSessionStarted: vi.fn(async (sessionId: string) => {
+        rememberSessionRunnerCredential(sessionId, TEST_RUNNER_CREDENTIAL);
+        return {};
+    }),
+    bindDaemonCodexThread: vi.fn(async (binding: {
+        agent: 'codex';
+        nativeThreadId: string;
+        remcliSessionId: string;
+    }) => ({
+        ok: true as const,
+        data: {
+            type: 'already-bound' as const,
+            wrapper: binding,
+        },
+    })),
 }));
 
 vi.mock('@/persistence', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/persistence')>();
     return {
         ...actual,
+        readDaemonState: vi.fn(async () => undefined),
         readSettings: vi.fn(async () => ({
             onboardingCompleted: true,
             profiles: [],
@@ -211,6 +237,7 @@ vi.mock('@/utils/MessageQueue2', () => {
 const threadIdsToDelete: string[] = [];
 
 afterEach(() => {
+    forgetSessionRunnerCredential(REMCLI_SESSION_ID);
     while (threadIdsToDelete.length > 0) {
         const threadId = threadIdsToDelete.pop();
         if (!threadId) continue;
@@ -224,13 +251,15 @@ afterEach(() => {
 
 realCodexDescribe('runCodex real Codex resume smoke', { timeout: 180_000 }, () => {
     it('resumes a real Codex thread through the Remcli runCodex message path', async () => {
-        await runRunCodexResumeSmoke(getRealCodexModel());
+        await runRunCodexResumeSmoke(getRealCodexModel(), getRealCodexReasoningEffort());
     });
 });
 
-async function runRunCodexResumeSmoke(model: string): Promise<void> {
-    const token = `REMCLI_RUNCODEX_${Date.now()}`;
+async function runRunCodexResumeSmoke(model: string, effort: string): Promise<void> {
+    const contextMarker = `REMCLI_CONTEXT_MARKER_${Date.now()}`;
+    const realTurnSettings = { model, effort };
     const seedClient = new CodexAppServerClient();
+    const beginTurnSpy = vi.spyOn(CodexAppServerClient.prototype, 'beginTurn');
     try {
         const threadId = await seedClient.startThread({
             cwd: process.cwd(),
@@ -241,15 +270,15 @@ async function runRunCodexResumeSmoke(model: string): Promise<void> {
         threadIdsToDelete.push(threadId);
         const seedTurn = await seedClient.startTurn({
             threadId,
-            prompt: `Контекст для проверки: session_token=${token}. Не используй инструменты. Ответь ровно OK.`,
+            prompt: `Запомни для следующего сообщения кодовую метку: ${contextMarker}. Не используй инструменты. Ответь ровно OK.`,
             sandbox: 'read-only',
             approvalPolicy: 'on-request',
-            model,
+            ...realTurnSettings,
         });
         expectTurnSucceeded(seedTurn, 'seed turn', model);
         await seedClient.disconnect();
 
-        fakeSessionState.reset('Какое значение session_token было в предыдущем сообщении? Не используй инструменты. Ответь только значением.', model);
+        fakeSessionState.reset('Какую кодовую метку нужно вернуть из предыдущего сообщения? Не используй инструменты. Ответь только меткой.', model);
 
         const { runCodex } = await import('@/codex/runCodex');
         await runCodex({
@@ -259,6 +288,7 @@ async function runRunCodexResumeSmoke(model: string): Promise<void> {
             },
             startedBy: 'daemon',
             resumeSessionId: threadId,
+            reasoningEffort: effort,
         });
 
         const answer = fakeSessionState.sentCodexMessages.join('\n');
@@ -269,8 +299,13 @@ async function runRunCodexResumeSmoke(model: string): Promise<void> {
 
         expect(`${answer}\n${errors}`).not.toContain('Session not found');
         expect(errors).toBe('');
-        expect(answer).toContain(token);
+        expect(answer).toContain(contextMarker);
+        expect(getSessionRunnerCredential(REMCLI_SESSION_ID)).toBe(TEST_RUNNER_CREDENTIAL);
+        expect(beginTurnSpy).toHaveBeenCalledTimes(2);
+        expect(beginTurnSpy).toHaveBeenNthCalledWith(1, expect.objectContaining(realTurnSettings));
+        expect(beginTurnSpy).toHaveBeenNthCalledWith(2, expect.objectContaining(realTurnSettings));
     } finally {
+        beginTurnSpy.mockRestore();
         await seedClient.disconnect().catch(() => undefined);
     }
 }

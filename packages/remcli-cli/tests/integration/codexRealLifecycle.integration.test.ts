@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
-import { expectTurnSucceeded, getRealCodexModel, responseText } from './codexRealTestUtils';
+import {
+    expectTurnSucceeded,
+    getRealCodexModel,
+    getRealCodexReasoningEffort,
+    responseText,
+} from './codexRealTestUtils';
 
 const runRealAi = process.env.REMCLI_REAL_AI === '1';
 const realCodexDescribe = runRealAi ? describe : describe.skip;
@@ -23,12 +28,13 @@ afterEach(() => {
 
 realCodexDescribe('Codex real lifecycle smoke', { timeout: 180_000 }, () => {
     it('creates a real Codex thread, resumes it, and preserves context', async () => {
-        await runLifecycleSmoke(getRealCodexModel());
+        await runLifecycleSmoke(getRealCodexModel(), getRealCodexReasoningEffort());
     });
 });
 
-async function runLifecycleSmoke(model: string): Promise<void> {
+async function runLifecycleSmoke(model: string, effort: string): Promise<void> {
     const token = `REMCLI_SMOKE_${Date.now()}_${model.replace(/[^a-z0-9]+/gi, '_')}`;
+    const realTurnSettings = { model, effort };
     const firstClient = new CodexAppServerClient();
     const resumedClient = new CodexAppServerClient();
     const firstMessages: string[] = [];
@@ -52,7 +58,7 @@ async function runLifecycleSmoke(model: string): Promise<void> {
             prompt: `Контекст для проверки: session_token=${token}. Не используй инструменты. Ответь ровно OK.`,
             sandbox: 'read-only',
             approvalPolicy: 'on-request',
-            model,
+            ...realTurnSettings,
         });
         expectTurnSucceeded(firstTurn, 'seed turn', model);
         await firstClient.disconnect();
@@ -78,7 +84,7 @@ async function runLifecycleSmoke(model: string): Promise<void> {
             prompt: 'Какое значение session_token было в предыдущем сообщении? Не используй инструменты. Ответь только значением.',
             sandbox: 'read-only',
             approvalPolicy: 'on-request',
-            model,
+            ...realTurnSettings,
         });
         expectTurnSucceeded(resumedTurn, 'resume turn', model);
         await resumedClient.disconnect();

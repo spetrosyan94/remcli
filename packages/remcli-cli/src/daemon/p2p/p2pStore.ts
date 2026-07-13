@@ -37,6 +37,7 @@ export interface P2PMessage {
     seq: number;
     content: { t: 'encrypted'; c: string };
     localId: string | null;
+    isSessionDelivery: boolean;
     createdAt: number;
     updatedAt: number;
 }
@@ -303,7 +304,12 @@ export class P2PStore {
 
     // ─── Messages ────────────────────────────────────────────────
 
-    addMessage(sessionId: string, content: string, localId: string | null): P2PMessage | null {
+    addMessage(
+        sessionId: string,
+        content: string,
+        localId: string | null,
+        isSessionDelivery: boolean
+    ): P2PMessage | null {
         const session = this.sessions.get(sessionId);
         if (!session) return null;
 
@@ -314,6 +320,7 @@ export class P2PStore {
             seq: this.allocateSessionSeq(sessionId),
             content: { t: 'encrypted', c: content },
             localId,
+            isSessionDelivery,
             createdAt: now,
             updatedAt: now
         };
@@ -342,6 +349,15 @@ export class P2PStore {
         const start = Math.max(0, end - limit);
         if (end <= 0) return [];
         return messages.slice(start, end).reverse();
+    }
+
+    /**
+     * Returns runner-directed messages after a session-local delivery cursor.
+     * Messages are ordered oldest-first so a reconnect preserves prompt order.
+     */
+    getSessionDeliveryMessagesAfter(sessionId: string, acknowledgedSequence: number): P2PMessage[] {
+        return (this.sessionMessages.get(sessionId) || [])
+            .filter((message) => message.isSessionDelivery && message.seq > acknowledgedSequence);
     }
 
     getMessageCount(sessionId: string): number {

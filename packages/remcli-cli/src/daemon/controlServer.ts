@@ -8,21 +8,156 @@ import { z } from 'zod';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import { logger } from '@/ui/logger';
 import type { Metadata } from '@/api/types';
-import type { StopSessionResult, TrackedSession } from './types';
+import type {
+  CodexRemoteTuiOpenRequest,
+  CodexRemoteTuiOpenResult,
+  DaemonSessionWebhookResult,
+  NativeCodexThreadBinding,
+  NativeCodexThreadBindingResult,
+  StopSessionResult,
+  TrackedSession,
+} from './types';
 import type { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
+
+const nativeCodexThreadBindingSchema = z.object({
+  agent: z.literal('codex'),
+  nativeThreadId: z.string().min(1),
+  remcliSessionId: z.string().min(1),
+});
+
+const runnerCredentialSchema = z.string().optional();
+
+const nativeCodexThreadWrapperSchema = nativeCodexThreadBindingSchema;
+
+const protectedNativeCodexThreadBindingSchema = nativeCodexThreadBindingSchema.extend({
+  runnerCredential: runnerCredentialSchema,
+});
+
+const codexRemoteTuiOpenRequestSchema = nativeCodexThreadBindingSchema.extend({
+  endpoint: z.string().url(),
+});
+
+const protectedCodexRemoteTuiOpenRequestSchema = codexRemoteTuiOpenRequestSchema.extend({
+  runnerCredential: runnerCredentialSchema,
+});
+
+const metadataSchema = z.object({
+  path: z.string(),
+  host: z.string(),
+  version: z.string().optional(),
+  name: z.string().optional(),
+  os: z.string().optional(),
+  summary: z.object({
+    text: z.string(),
+    updatedAt: z.number(),
+  }).optional(),
+  machineId: z.string().optional(),
+  agentSessionId: z.string().optional(),
+  claudeSessionId: z.string().optional(),
+  codexSessionId: z.string().optional(),
+  cursorSessionId: z.string().optional(),
+  geminiSessionId: z.string().optional(),
+  tools: z.array(z.string()).optional(),
+  slashCommands: z.array(z.string()).optional(),
+  homeDir: z.string(),
+  remcliHomeDir: z.string(),
+  remcliLibDir: z.string(),
+  remcliToolsDir: z.string(),
+  startedFromDaemon: z.boolean().optional(),
+  hostPid: z.number().optional(),
+  startedBy: z.union([z.literal('daemon'), z.literal('terminal')]).optional(),
+  lifecycleState: z.string().optional(),
+  lifecycleStateSince: z.number().optional(),
+  archivedBy: z.string().optional(),
+  archiveReason: z.string().optional(),
+  flavor: z.string().optional(),
+}).passthrough();
+
+const sessionStartedRequestSchema = z.object({
+  sessionId: z.string(),
+  metadata: metadataSchema,
+  runnerToken: z.string().min(1).optional(),
+});
+
+const sessionStartedResponseSchema = z.object({
+  status: z.literal('ok'),
+  runnerCredential: z.string().min(1).optional(),
+});
+
+const INVALID_SESSION_RUNNER_CREDENTIAL_ERROR = 'invalid-runner-credential';
+
+const runnerCredentialDeniedResponseSchema = z.object({
+  error: z.literal(INVALID_SESSION_RUNNER_CREDENTIAL_ERROR),
+});
+
+const SESSION_WEBHOOK_REJECTED_ERROR = 'session-webhook-rejected';
+
+const sessionWebhookRejectedResponseSchema = z.object({
+  error: z.literal(SESSION_WEBHOOK_REJECTED_ERROR),
+});
+
+const nativeCodexThreadBindingResultSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('bound'), wrapper: nativeCodexThreadWrapperSchema }),
+  z.object({ type: z.literal('already-bound'), wrapper: nativeCodexThreadWrapperSchema }),
+  z.object({ type: z.literal('reuse-active-wrapper'), wrapper: nativeCodexThreadWrapperSchema }),
+  z.object({ type: z.literal('wrapper-not-tracked'), binding: nativeCodexThreadBindingSchema }),
+  z.object({
+    type: z.literal('agent-mismatch'),
+    binding: nativeCodexThreadBindingSchema,
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini']),
+  }),
+]);
+
+const codexRemoteTuiOpenResultSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('opened'),
+    wrapper: nativeCodexThreadWrapperSchema,
+    tmuxWindowId: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal('already-open'),
+    wrapper: nativeCodexThreadWrapperSchema,
+    tmuxWindowId: z.string().min(1),
+  }),
+  z.object({ type: z.literal('wrapper-not-tracked'), request: codexRemoteTuiOpenRequestSchema }),
+  z.object({
+    type: z.literal('agent-mismatch'),
+    request: codexRemoteTuiOpenRequestSchema,
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini']),
+  }),
+  z.object({
+    type: z.literal('native-thread-mismatch'),
+    request: codexRemoteTuiOpenRequestSchema,
+    trackedNativeThreadId: z.string().min(1).optional(),
+  }),
+  z.object({ type: z.literal('wrapper-not-daemon-owned'), request: codexRemoteTuiOpenRequestSchema }),
+  z.object({
+    type: z.literal('host-unavailable'),
+    request: codexRemoteTuiOpenRequestSchema,
+    error: z.string().min(1),
+  }),
+]);
 
 export function startDaemonControlServer({
   getChildren,
   stopSession,
   spawnSession,
   requestShutdown,
-  onRemcliSessionWebhook
+  onRemcliSessionWebhook,
+  issueSessionRunnerCredential,
+  verifySessionRunnerCredential,
+  bindNativeCodexThread,
+  openCodexRemoteTui,
 }: {
   getChildren: () => TrackedSession[];
-  stopSession: (sessionId: string) => StopSessionResult;
+  stopSession: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   requestShutdown: () => void;
-  onRemcliSessionWebhook: (sessionId: string, metadata: Metadata) => void;
+  onRemcliSessionWebhook: (sessionId: string, metadata: Metadata, runnerToken?: string) => DaemonSessionWebhookResult;
+  issueSessionRunnerCredential: (sessionId: string, owner: string) => string | undefined;
+  verifySessionRunnerCredential: (sessionId: string, credential: string) => boolean;
+  bindNativeCodexThread: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
+  openCodexRemoteTui: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
   return new Promise((resolve) => {
     const app = fastify({
@@ -37,23 +172,83 @@ export function startDaemonControlServer({
     // Session reports itself after creation
     typed.post('/session-started', {
       schema: {
-        body: z.object({
-          sessionId: z.string(),
-          metadata: z.any() // Metadata type from API
-        }),
+        body: sessionStartedRequestSchema,
         response: {
-          200: z.object({
-            status: z.literal('ok')
-          })
+          200: sessionStartedResponseSchema,
+          403: sessionWebhookRejectedResponseSchema,
         }
       }
-    }, async (request) => {
-      const { sessionId, metadata } = request.body;
+    }, async (request, reply) => {
+      const { sessionId, metadata, runnerToken } = request.body;
 
       logger.debug(`[CONTROL SERVER] Session started: ${sessionId}`);
-      onRemcliSessionWebhook(sessionId, metadata);
+      const sessionWebhookResult = onRemcliSessionWebhook(sessionId, metadata, runnerToken);
+      if (!sessionWebhookResult.accepted) {
+        reply.code(403);
+        return { error: SESSION_WEBHOOK_REJECTED_ERROR } as const;
+      }
 
-      return { status: 'ok' as const };
+      if (!sessionWebhookResult.daemonOwned) {
+        return { status: 'ok' as const };
+      }
+
+      if (!sessionWebhookResult.runnerCredentialOwner) {
+        logger.warn('[CONTROL SERVER] Daemon runner webhook did not provide a credential owner proof');
+        reply.code(403);
+        return { error: SESSION_WEBHOOK_REJECTED_ERROR } as const;
+      }
+
+      const runnerCredential = issueSessionRunnerCredential(sessionId, sessionWebhookResult.runnerCredentialOwner);
+
+      if (!runnerCredential) {
+        logger.warn('[CONTROL SERVER] Rejected runner credential issuance because the session is owned by another runner');
+        reply.code(403);
+        return { error: SESSION_WEBHOOK_REJECTED_ERROR } as const;
+      }
+
+      return { status: 'ok' as const, runnerCredential };
+    });
+
+    typed.post('/codex-thread-bound', {
+      schema: {
+        body: protectedNativeCodexThreadBindingSchema,
+        response: {
+          200: nativeCodexThreadBindingResultSchema,
+          403: runnerCredentialDeniedResponseSchema,
+        },
+      },
+    }, async (request, reply) => {
+      const { agent, nativeThreadId, remcliSessionId, runnerCredential } = request.body;
+      if (!runnerCredential || !verifySessionRunnerCredential(remcliSessionId, runnerCredential)) {
+        reply.code(403);
+        return { error: INVALID_SESSION_RUNNER_CREDENTIAL_ERROR } as const;
+      }
+
+      const binding: NativeCodexThreadBinding = { agent, nativeThreadId, remcliSessionId };
+      const result = await bindNativeCodexThread(binding);
+      logger.debug(`[CONTROL SERVER] Codex thread ${nativeThreadId} binding result: ${result.type}`);
+      return result;
+    });
+
+    typed.post('/codex-remote-tui-open', {
+      schema: {
+        body: protectedCodexRemoteTuiOpenRequestSchema,
+        response: {
+          200: codexRemoteTuiOpenResultSchema,
+          403: runnerCredentialDeniedResponseSchema,
+        },
+      },
+    }, async (request, reply) => {
+      const { agent, nativeThreadId, remcliSessionId, endpoint, runnerCredential } = request.body;
+      if (!runnerCredential || !verifySessionRunnerCredential(remcliSessionId, runnerCredential)) {
+        reply.code(403);
+        return { error: INVALID_SESSION_RUNNER_CREDENTIAL_ERROR } as const;
+      }
+
+      const remoteTuiRequest: CodexRemoteTuiOpenRequest = { agent, nativeThreadId, remcliSessionId, endpoint };
+      const result = await openCodexRemoteTui(remoteTuiRequest);
+      logger.debug(`[CONTROL SERVER] Codex remote TUI open for ${remcliSessionId}: ${result.type}`);
+      return result;
     });
 
     // List all tracked sessions
@@ -99,7 +294,7 @@ export function startDaemonControlServer({
       const { sessionId } = request.body;
 
       logger.debug(`[CONTROL SERVER] Stop session request: ${sessionId}`);
-      const result = stopSession(sessionId);
+      const result = await stopSession(sessionId);
       return { success: result.success };
     });
 

@@ -28,6 +28,7 @@ import {
 } from "@/components/app/sessionDisplay";
 import { Skeleton } from "@/components/ui/skeleton";
 import { t, tPlural } from "@/lib/i18n";
+import { canStopSession, type IStopMachineTarget } from "@/lib/sessionCapabilities";
 import {
     fetchConciergeStatus,
     getRestConfig,
@@ -93,7 +94,10 @@ export function HomePage() {
     const isConciergeAvailable = useConciergeAvailable();
     const [stopTarget, setStopTarget] = React.useState<StopTarget | null>(null);
     const controls: StopControls = {
-        requestStop: (session, machineId) => setStopTarget({ session, machineId }),
+        requestStop: (session, machine) => {
+            if (!canStopSession(session, machine)) return;
+            setStopTarget({ session, machine });
+        },
     };
     return (
         <>
@@ -191,6 +195,10 @@ function MobileHome({ groups, controls, isConciergeAvailable }: {
 
 function MachineSection({ group, controls, isFirst }: { group: MachineGroup; controls: StopControls; isFirst: boolean }) {
     const navigate = useNavigate();
+    const stopMachine: IStopMachineTarget = {
+        id: group.rpcMachineId,
+        isActive: group.isOnline,
+    };
     return (
         <>
             {group.isOnline ? (
@@ -206,6 +214,7 @@ function MachineSection({ group, controls, isFirst }: { group: MachineGroup; con
             )}
             {group.sessions.map((session) => {
                 const status = sessionStatus(session);
+                const canStop = canStopSession(session, stopMachine);
                 return (
                     <div key={session.id} className="group relative">
                         <SessionCard
@@ -214,11 +223,11 @@ function MachineSection({ group, controls, isFirst }: { group: MachineGroup; con
                             message={sessionMessage(session)}
                             status={status}
                             time={formatTimeLabel(session.activeAt)}
-                            hasTrailingAction={status !== "offline"}
+                            hasTrailingAction={canStop}
                             onClick={() => navigate(`/session/${session.id}`)}
                         />
-                        {status !== "offline" && (
-                            <StopOverlayButton onClick={() => controls.requestStop(session, group.rpcMachineId)} />
+                        {canStop && (
+                            <StopOverlayButton onClick={() => controls.requestStop(session, stopMachine)} />
                         )}
                     </div>
                 );

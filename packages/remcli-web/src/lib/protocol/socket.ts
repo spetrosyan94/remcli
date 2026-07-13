@@ -37,6 +37,7 @@ const messageHandlers = new Map<string, MessageHandler>();
 const reconnectedListeners = new Set<() => void>();
 const statusListeners = new Set<(status: ConnectionStatus) => void>();
 let currentStatus: ConnectionStatus = 'disconnected';
+let hasCompletedInitialConnection = false;
 
 function updateStatus(status: ConnectionStatus): void {
     if (currentStatus !== status) {
@@ -50,6 +51,7 @@ function updateStatus(status: ConnectionStatus): void {
 export function socketConnect(newConfig: SocketConfig, cipherResolver: CipherResolver): void {
     socketDisconnect();
     ciphers = cipherResolver;
+    hasCompletedInitialConnection = false;
 
     updateStatus('connecting');
 
@@ -67,8 +69,10 @@ export function socketConnect(newConfig: SocketConfig, cipherResolver: CipherRes
     });
 
     socket.on('connect', () => {
+        const isReconnect = hasCompletedInitialConnection;
+        hasCompletedInitialConnection = true;
         updateStatus('connected');
-        if (!socket?.recovered) {
+        if (isReconnect) {
             reconnectedListeners.forEach((listener) => listener());
         }
     });

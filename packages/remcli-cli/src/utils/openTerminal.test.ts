@@ -37,10 +37,25 @@ describe('openTerminalWithCommand', () => {
         });
     };
 
+    const mockAppleScriptError = (): void => {
+        execFileMock.mockImplementation((_: string, __: string[], ___: ExecFileOptions, callback: (error: Error | null) => void) => {
+            callback(new Error('osascript failed for a sensitive command'));
+        });
+    };
+
+    const getAppleScript = (): string => {
+        const call = execFileMock.mock.calls[0];
+        if (!call) {
+            throw new Error('Expected osascript to be called');
+        }
+
+        return call[1][1]!;
+    };
+
     beforeEach(() => {
         vi.clearAllMocks();
-        setPlatform('linux');
         execFileMock.mockReset();
+        setPlatform('linux');
     });
 
     afterAll(() => {
@@ -54,50 +69,35 @@ describe('openTerminalWithCommand', () => {
         expect(logger.debug).toHaveBeenCalledWith('[OPEN_TERMINAL] Not on macOS, skipping terminal open');
     });
 
-    it('opens a new Terminal context on macOS', async () => {
-        const command = 'echo "hello" && printf "path\\\\file"';
+    it('opens a new Terminal context without injecting into the busy front window', async () => {
+        const command = 'echo "hello" && printf "path\\\\file"\nnext-command';
+        const expectedEscapedCommand = command
+            .replace(/\\/g, '\\\\')
+            .replace(/"/g, '\\"')
+            .replace(/\r/g, '\\r')
+            .replace(/\n/g, '\\n');
         setPlatform('darwin');
-        const expectedEscaped = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-
         runScript();
 
         await expect(openTerminalWithCommand(command)).resolves.toBe(true);
 
-        expect(execFileMock).toHaveBeenCalledTimes(1);
         expect(execFileMock).toHaveBeenCalledWith(
             'osascript',
-            ['-e', expect.stringContaining(`do script "${expectedEscaped}"`)],
+            ['-e', expect.stringContaining(`do script "${expectedEscapedCommand}"`)],
             { timeout: 5_000 },
             expect.any(Function),
         );
+        expect(getAppleScript()).not.toContain('front window');
     });
 
-    it('does not inject commands into the busy front window', async () => {
-        const command = 'echo "new context"';
+    it('logs a generic message and returns null when osascript fails to open a tab', async () => {
         setPlatform('darwin');
-        const expectedEscaped = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        mockAppleScriptError();
 
-        runScript();
+        await expect(openTerminalWithCommand('echo sensitive-command')).resolves.toBe(false);
 
-        await expect(openTerminalWithCommand(command)).resolves.toBe(true);
-
-        expect(execFileMock).toHaveBeenCalledTimes(1);
-        const [, args] = execFileMock.mock.calls[0] as [string, string[], ExecFileOptions, (error: Error | null) => void];
-        expect(args[1]).not.toContain('in front window');
-        expect(args[1]).toContain(`do script "${expectedEscaped}"`);
+        expect(logger.debug).toHaveBeenCalledWith('[OPEN_TERMINAL] Terminal AppleScript execution failed');
+        expect(logger.debug).not.toHaveBeenCalledWith(expect.stringContaining('sensitive-command'));
     });
 
-    it('logs and swallows exec errors', async () => {
-        const command = 'echo "error"';
-        setPlatform('darwin');
-
-        execFileMock.mockImplementation((_: string, __: string[], ___: ExecFileOptions, callback: (error: Error | null) => void) => {
-            callback(new Error('apple event failed'));
-        });
-
-        await expect(openTerminalWithCommand(command)).resolves.toBe(false);
-
-        expect(execFileMock).toHaveBeenCalledTimes(1);
-        expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('[OPEN_TERMINAL] Failed to open terminal: apple event failed'));
-    });
 });

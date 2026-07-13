@@ -50,7 +50,7 @@ const DEFAULT_MODEL_ID = "default";
 
 export const AGENT_OPTIONS: AgentOption[] = [
     { id: "claude", name: "Claude", kind: "code", models: ["default", "sonnet", "opus", "haiku"] },
-    { id: "codex", name: "Codex", kind: "cli", models: [DEFAULT_MODEL_ID, "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"] },
+    { id: "codex", name: "Codex", kind: "cli", models: [DEFAULT_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"] },
     { id: "gemini", name: "Gemini", kind: "cli", models: ["gemini-2.5-pro", "gemini-3-pro", "gemini-3-flash"] },
     { id: "cursor", name: "Cursor", kind: "agent", models: ["default", "opus-4.6", "composer-1.5", "gemini-3-pro"] },
 ];

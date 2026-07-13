@@ -18,6 +18,7 @@ import { P2PEventRouter, P2PClientConnection, ConnectionType } from './p2pEventR
 import { registerSocketHandlers } from './p2pSocketHandlers';
 import { registerP2PRestRoutes } from './p2pRestRoutes';
 import { verifyBearerToken } from './p2pAuth';
+import { P2PRunnerCredentialStore, SESSION_MESSAGE_ACK_VERSION } from './p2pRunnerCredentials';
 import { ConciergeDeps } from '../concierge/types';
 import { logger } from '@/ui/logger';
 
@@ -30,6 +31,7 @@ export interface P2PServerConfig {
     store: P2PStore;
     webAppDir?: string;        // Path to web app build (static files)
     conciergeDeps?: ConciergeDeps; // Optional local concierge capabilities
+    runnerCredentialStore?: P2PRunnerCredentialStore;
 }
 
 export interface P2PServer {
@@ -40,10 +42,76 @@ export interface P2PServer {
     stop: () => Promise<void>;
 }
 
+interface MessageAcknowledgement {
+    sid: string;
+    seq: number;
+}
+
+interface AcknowledgedRunnerConnection {
+    deliveredMessageSequences: Set<number>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+}
+
+function readString(value: unknown, key: string): string | undefined {
+    if (!isRecord(value) || typeof value[key] !== 'string') {
+        return undefined;
+    }
+    return value[key];
+}
+
+function getConnectionType(auth: unknown): ConnectionType {
+    const connectionType = readString(auth, 'clientType');
+    switch (connectionType) {
+        case 'session-scoped':
+        case 'machine-scoped':
+        case 'user-scoped':
+            return connectionType;
+        default:
+            return 'user-scoped';
+    }
+}
+
+function getMessageAckVersion(auth: unknown): number | undefined {
+    if (
+        !isRecord(auth) ||
+        typeof auth.messageAckVersion !== 'number' ||
+        !Number.isSafeInteger(auth.messageAckVersion)
+    ) {
+        return undefined;
+    }
+    return auth.messageAckVersion;
+}
+
+function parseMessageAcknowledgement(value: unknown): MessageAcknowledgement | null {
+    if (
+        !isRecord(value) ||
+        typeof value.sid !== 'string' ||
+        typeof value.seq !== 'number' ||
+        !Number.isSafeInteger(value.seq) ||
+        value.seq < 0
+    ) {
+        return null;
+    }
+    return { sid: value.sid, seq: value.seq };
+}
+
+function getNewMessageSequence(payload: Record<string, unknown>, sessionId: string): number | null {
+    if (payload.t !== 'new-message' || payload.sid !== sessionId || !isRecord(payload.message)) {
+        return null;
+    }
+
+    const sequence = payload.message.seq;
+    return typeof sequence === 'number' && Number.isSafeInteger(sequence) && sequence > 0 ? sequence : null;
+}
+
 // ─── Server ──────────────────────────────────────────────────────
 
 export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer> {
     const { port, host, sharedSecret, store } = config;
+    const runnerCredentialStore = config.runnerCredentialStore ?? new P2PRunnerCredentialStore();
 
     const router = new P2PEventRouter();
 
@@ -128,24 +196,98 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
 
     // Socket.IO authentication middleware
     io.use((socket, next) => {
-        const token = socket.handshake.auth?.token;
+        const auth = socket.handshake.auth as unknown;
+        const token = readString(auth, 'token');
         if (!token || !verifyBearerToken(token, sharedSecret)) {
             logger.debug('[P2P SERVER] Socket.IO auth failed');
             next(new Error('Authentication failed'));
             return;
         }
+
+        const connectionType = getConnectionType(auth);
+        if (connectionType === 'session-scoped') {
+            const sessionId = readString(auth, 'sessionId');
+            const runnerCredential = readString(auth, 'runnerCredential');
+            const messageAckVersion = getMessageAckVersion(auth);
+            const hasActiveRunnerLease = sessionId !== undefined && runnerCredentialStore.hasActiveLease(sessionId);
+            const requestsRunnerAcknowledgements = messageAckVersion !== undefined || runnerCredential !== undefined;
+            if (
+                !sessionId ||
+                (hasActiveRunnerLease || requestsRunnerAcknowledgements) && (
+                    messageAckVersion !== SESSION_MESSAGE_ACK_VERSION ||
+                    !runnerCredentialStore.verify(sessionId, runnerCredential)
+                )
+            ) {
+                logger.debug('[P2P SERVER] Session runner authentication failed');
+                next(new Error('Session runner authentication failed'));
+                return;
+            }
+        }
+
         next();
     });
 
-    // Track sessions that have already received message replay to avoid duplicates on reconnect.
-    // Cleared when a session is deleted from the store so the set does not leak memory.
-    const replayedSessions = new Set<string>();
-    store.onSessionDeleted((sessionId) => replayedSessions.delete(sessionId));
+    // Cursor and credentials are daemon-local by design: messages and sessions are
+    // in-memory too, so a daemon restart starts a fresh P2P delivery epoch.
+    const acknowledgedMessageSequences = new Map<string, number>();
+    const legacyDeliveredMessageSequences = new Map<string, Set<number>>();
+    const legacySessionConnections = new Map<string, Set<P2PClientConnection>>();
+    const activeAcknowledgedRunnerConnections = new Map<string, P2PClientConnection>();
+    const disconnectConnection = (connection: P2PClientConnection): void => {
+        router.removeConnection(connection);
+        connection.socket.disconnect(true);
+    };
+    const clearAcknowledgedRunnerState = (sessionId: string, disconnectRunner: boolean): void => {
+        acknowledgedMessageSequences.delete(sessionId);
+        const runnerConnection = activeAcknowledgedRunnerConnections.get(sessionId);
+        activeAcknowledgedRunnerConnections.delete(sessionId);
+        if (disconnectRunner && runnerConnection) {
+            disconnectConnection(runnerConnection);
+        }
+    };
+    const unsubscribeRunnerLeaseActivation = runnerCredentialStore.onLeaseActivated((sessionId) => {
+        const legacyConnections = legacySessionConnections.get(sessionId);
+        legacySessionConnections.delete(sessionId);
+        for (const connection of legacyConnections ?? []) {
+            disconnectConnection(connection);
+        }
+    });
+    const unsubscribeRunnerCredentialRevocation = runnerCredentialStore.onRevoked((sessionId) => {
+        clearAcknowledgedRunnerState(sessionId, true);
+    });
+    store.onSessionDeleted((sessionId) => {
+        clearAcknowledgedRunnerState(sessionId, true);
+        legacyDeliveredMessageSequences.delete(sessionId);
+        runnerCredentialStore.revoke(sessionId);
+    });
 
     // Socket.IO connection handler
     io.on('connection', (socket) => {
-        const { clientType, sessionId, machineId } = socket.handshake.auth || {};
-        const connectionType: ConnectionType = clientType || 'user-scoped';
+        const auth = socket.handshake.auth as unknown;
+        const sessionId = readString(auth, 'sessionId');
+        const machineId = readString(auth, 'machineId');
+        const connectionType = getConnectionType(auth);
+        const runnerCredential = readString(auth, 'runnerCredential');
+        const isAcknowledgedRunner = (
+            connectionType === 'session-scoped' &&
+            sessionId !== undefined &&
+            getMessageAckVersion(auth) === SESSION_MESSAGE_ACK_VERSION &&
+            runnerCredentialStore.verify(sessionId, runnerCredential)
+        );
+        const runnerConnection: AcknowledgedRunnerConnection | null = isAcknowledgedRunner
+            ? { deliveredMessageSequences: new Set<number>() }
+            : null;
+
+        if (
+            connectionType === 'session-scoped'
+            && sessionId
+            && !isAcknowledgedRunner
+            && runnerCredentialStore.hasActiveLease(sessionId)
+        ) {
+            logger.debug('[P2P SERVER] Rejected legacy session connection after runner lease activation');
+            socket.disconnect(true);
+            return;
+        }
 
         logger.debug(`[P2P SERVER] New connection: type=${connectionType}, sessionId=${sessionId}, machineId=${machineId}`);
 
@@ -160,22 +302,93 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
             socket,
             connectionType,
             sessionId,
-            machineId
+            machineId,
+            onUpdateDelivered: (payload) => {
+                if (!sessionId) {
+                    return;
+                }
+
+                const messageSequence = getNewMessageSequence(payload.body, sessionId);
+                if (messageSequence === null) {
+                    return;
+                }
+
+                if (runnerConnection) {
+                    runnerConnection.deliveredMessageSequences.add(messageSequence);
+                    return;
+                }
+
+                if (connectionType === 'session-scoped') {
+                    const deliveredSequences = legacyDeliveredMessageSequences.get(sessionId) ?? new Set<number>();
+                    deliveredSequences.add(messageSequence);
+                    legacyDeliveredMessageSequences.set(sessionId, deliveredSequences);
+                }
+            }
         };
 
         router.addConnection(connection);
         registerSocketHandlers(socket, connection, store, router);
 
-        // Replay pending messages for session-scoped connections (first connect only).
-        // Fixes race condition: app sends message before session process connects to Socket.IO,
-        // so the broadcast is missed. On connect, replay all stored messages for this session.
-        if (connectionType === 'session-scoped' && sessionId && !replayedSessions.has(sessionId)) {
-            replayedSessions.add(sessionId);
-            const messages = store.getMessages(sessionId);
+        if (isAcknowledgedRunner && sessionId && runnerConnection) {
+            const previousRunnerConnection = activeAcknowledgedRunnerConnections.get(sessionId);
+            activeAcknowledgedRunnerConnections.set(sessionId, connection);
+            if (previousRunnerConnection && previousRunnerConnection.socket !== socket) {
+                logger.debug(`[P2P SERVER] Replacing active ACK-capable runner for session ${sessionId}`);
+                disconnectConnection(previousRunnerConnection);
+            }
+
+            socket.on('disconnect', () => {
+                if (activeAcknowledgedRunnerConnections.get(sessionId) === connection) {
+                    activeAcknowledgedRunnerConnections.delete(sessionId);
+                }
+            });
+
+            socket.on('message-ack', (data: unknown) => {
+                const acknowledgement = parseMessageAcknowledgement(data);
+                if (!acknowledgement || acknowledgement.sid !== sessionId) {
+                    logger.debug('[P2P SERVER] Ignoring invalid session message acknowledgement');
+                    return;
+                }
+
+                if (activeAcknowledgedRunnerConnections.get(sessionId) !== connection) {
+                    logger.debug('[P2P SERVER] Ignoring acknowledgement from inactive runner socket');
+                    return;
+                }
+                if (!runnerCredentialStore.verify(sessionId, runnerCredential)) {
+                    logger.debug('[P2P SERVER] Ignoring acknowledgement after runner credential revocation');
+                    socket.disconnect(true);
+                    return;
+                }
+
+                const acknowledgedSequence = acknowledgedMessageSequences.get(sessionId) || 0;
+                if (acknowledgement.seq <= acknowledgedSequence) {
+                    return;
+                }
+
+                const deliveredRange = store
+                    .getSessionDeliveryMessagesAfter(sessionId, acknowledgedSequence)
+                    .filter((message) => message.seq <= acknowledgement.seq);
+                const lastDeliveredMessage = deliveredRange.at(-1);
+                if (
+                    lastDeliveredMessage?.seq !== acknowledgement.seq ||
+                    !runnerConnection.deliveredMessageSequences.has(acknowledgement.seq) ||
+                    !deliveredRange.every((message) => runnerConnection.deliveredMessageSequences.has(message.seq))
+                ) {
+                    logger.debug(`[P2P SERVER] Ignoring unknown session message acknowledgement for session ${sessionId}`);
+                    return;
+                }
+
+                acknowledgedMessageSequences.set(sessionId, acknowledgement.seq);
+            });
+
+            // A runner may reconnect after a phone message was stored while its
+            // socket was unavailable. Replay only messages above the explicit
+            // acknowledged high-water mark, in their original order.
+            const acknowledgedSequence = acknowledgedMessageSequences.get(sessionId) || 0;
+            const messages = store.getSessionDeliveryMessagesAfter(sessionId, acknowledgedSequence);
             if (messages.length > 0) {
-                logger.debug(`[P2P SERVER] Replaying ${messages.length} pending message(s) for session ${sessionId}`);
-                // getMessages returns newest first — reverse for chronological order
-                for (const msg of [...messages].reverse()) {
+                logger.debug(`[P2P SERVER] Replaying ${messages.length} session message(s) for session ${sessionId}`);
+                for (const msg of messages) {
                     socket.emit('update', {
                         id: randomUUID(),
                         seq: store.allocateUserSeq(),
@@ -193,7 +406,52 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
                         },
                         createdAt: Date.now()
                     });
+                    runnerConnection.deliveredMessageSequences.add(msg.seq);
                 }
+            }
+            return;
+        }
+
+        if (connectionType === 'session-scoped' && sessionId) {
+            const sessionConnections = legacySessionConnections.get(sessionId) ?? new Set<P2PClientConnection>();
+            sessionConnections.add(connection);
+            legacySessionConnections.set(sessionId, sessionConnections);
+            socket.on('disconnect', () => {
+                sessionConnections.delete(connection);
+                if (sessionConnections.size === 0 && legacySessionConnections.get(sessionId) === sessionConnections) {
+                    legacySessionConnections.delete(sessionId);
+                }
+            });
+
+            const acknowledgedSequence = acknowledgedMessageSequences.get(sessionId) || 0;
+            const deliveredSequences = legacyDeliveredMessageSequences.get(sessionId) ?? new Set<number>();
+            const messages = store
+                .getSessionDeliveryMessagesAfter(sessionId, acknowledgedSequence)
+                .filter((message) => !deliveredSequences.has(message.seq));
+
+            if (messages.length > 0) {
+                logger.debug(`[P2P SERVER] Replaying ${messages.length} legacy session message(s) for session ${sessionId}`);
+                for (const msg of messages) {
+                    socket.emit('update', {
+                        id: randomUUID(),
+                        seq: store.allocateUserSeq(),
+                        body: {
+                            t: 'new-message',
+                            sid: sessionId,
+                            message: {
+                                id: msg.id,
+                                seq: msg.seq,
+                                content: msg.content,
+                                localId: msg.localId,
+                                createdAt: msg.createdAt,
+                                updatedAt: msg.updatedAt
+                            }
+                        },
+                        createdAt: Date.now()
+                    });
+                    deliveredSequences.add(msg.seq);
+                }
+                legacyDeliveredMessageSequences.set(sessionId, deliveredSequences);
             }
         }
     });
@@ -217,6 +475,8 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
                 router,
                 stop: async () => {
                     logger.debug('[P2P SERVER] Stopping...');
+                    unsubscribeRunnerLeaseActivation();
+                    unsubscribeRunnerCredentialRevocation();
                     io.close();
                     await app.close();
                     logger.debug('[P2P SERVER] Stopped');

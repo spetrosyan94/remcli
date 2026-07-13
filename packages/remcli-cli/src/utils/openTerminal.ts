@@ -18,31 +18,28 @@ export async function openTerminalWithCommand(command: string): Promise<boolean>
     }
 
     const escaped = escapeAppleScript(command);
-
     const script = `tell application "Terminal"
 activate
-try
-    do script "${escaped}"
-on error errorMessage
-    error errorMessage
-end try
+do script "${escaped}"
 end tell`;
 
     return new Promise<boolean>((resolve) => {
         execFile('osascript', ['-e', script], { timeout: OPEN_TERMINAL_TIMEOUT_MS }, (error) => {
             if (error) {
-                logger.debug(`[OPEN_TERMINAL] Failed to open terminal: ${error.message}`);
+                logger.debug('[OPEN_TERMINAL] Terminal AppleScript execution failed');
                 resolve(false);
                 return;
-            } else {
-                logger.debug(`[OPEN_TERMINAL] Terminal opened with command: ${command}`);
             }
-
+            logger.debug('[OPEN_TERMINAL] Terminal context opened');
             resolve(true);
         });
     });
 }
 
-function escapeAppleScript(str: string): string {
-    return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+function escapeAppleScript(value: string): string {
+    return value
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/\r/g, '\\r')
+        .replace(/\n/g, '\\n');
 }

@@ -17,7 +17,9 @@ import { projectPath } from '@/projectPath';
 import { isTmuxAvailable } from '@/utils/tmux';
 import { P2PStore } from './p2p/p2pStore';
 import { startP2PServer, P2PServer } from './p2p/p2pServer';
+import { P2PRunnerCredentialStore } from './p2p/p2pRunnerCredentials';
 import { publishSessionActivity } from './p2p/p2pSessionLifecycle';
+import { createStoppedSessionLifecycleHandler } from './sessionLifecycle';
 import { encodeSharedSecret, deriveBearerToken } from './p2p/p2pAuth';
 import { loadOrCreatePairing, updatePairingPort } from './p2p/p2pPairing';
 import { getLanIPAddress } from './p2p/networkUtils';
@@ -79,20 +81,24 @@ export async function startDaemon(): Promise<void> {
   //
   // In case the setup malfunctions - our signal handlers will not properly
   // shut down. We will force exit the process with code 1.
+  let startupFailureExitTimer: NodeJS.Timeout | null = null;
+  let isCleanupInProgress = false;
   let requestShutdown: (source: 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception', errorMessage?: string) => void;
   let resolvesWhenShutdownRequested = new Promise<({ source: 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception', errorMessage?: string })>((resolve) => {
     requestShutdown = (source, errorMessage) => {
       logger.debug(`[DAEMON RUN] Requesting shutdown (source: ${source}, errorMessage: ${errorMessage})`);
 
       // Fallback - in case startup malfunctions - we will force exit the process with code 1
-      setTimeout(async () => {
-        logger.debug('[DAEMON RUN] Startup malfunctioned, forcing exit with code 1');
+      if (!isCleanupInProgress && !startupFailureExitTimer) {
+        startupFailureExitTimer = setTimeout(async () => {
+          logger.debug('[DAEMON RUN] Startup malfunctioned, forcing exit with code 1');
 
-        // Give time for logs to be flushed
-        await new Promise(resolve => setTimeout(resolve, 100))
+          // Give time for logs to be flushed
+          await new Promise(resolve => setTimeout(resolve, 100))
 
-        process.exit(1);
-      }, 1_000);
+          process.exit(1);
+        }, 1_000);
+      }
 
       // Start graceful shutdown
       resolve({ source, errorMessage });
@@ -204,28 +210,35 @@ export async function startDaemon(): Promise<void> {
     const bearerToken = deriveBearerToken(sharedSecret);
     logger.debug('[DAEMON RUN] P2P pairing loaded (persistent shared secret)');
 
-    // Session manager owns tracked child sessions and tmux session cleanup
-    const sessionManager = createSessionManager();
+    const p2pStore = new P2PStore();
+    logger.debug('[DAEMON RUN] P2P store initialized (in-memory, persistent pairing secret)');
+
+    const runnerCredentialStore = new P2PRunnerCredentialStore();
     let publishStoppedSessionInactive: ((sessionId: string) => void) | null = null;
-    const stopSessionAndPublish = (sessionId: string) => {
-        const result = sessionManager.stopSession(sessionId);
-        if (result.success) {
-            if (publishStoppedSessionInactive) {
-                publishStoppedSessionInactive(result.stoppedSessionId);
-            } else {
-                logger.debug(`[DAEMON RUN] Stopped session ${result.stoppedSessionId} before P2P lifecycle publisher was ready`);
-            }
-        }
-        return result;
-    };
+    const handleSessionStopped = createStoppedSessionLifecycleHandler({
+        p2pStore,
+        runnerCredentialStore,
+        getInactivePublisher: () => publishStoppedSessionInactive ?? undefined,
+        onInactivePublisherUnavailable: (sessionId) => {
+            logger.debug(`[DAEMON RUN] Stopped session ${sessionId} before P2P lifecycle publisher was ready`);
+        },
+    });
+    // Session manager owns tracked child sessions and emits every confirmed stop path.
+    const sessionManager = createSessionManager({
+        onSessionStopped: handleSessionStopped,
+    });
 
     // Start control server
     const { port: controlPort, stop: stopControlServer } = await startDaemonControlServer({
       getChildren: sessionManager.getChildren,
-      stopSession: stopSessionAndPublish,
+      stopSession: sessionManager.stopSession,
       spawnSession: sessionManager.spawnSession,
       requestShutdown: () => requestShutdown('remcli-cli'),
-      onRemcliSessionWebhook: sessionManager.onRemcliSessionWebhook
+      onRemcliSessionWebhook: sessionManager.onRemcliSessionWebhook,
+      issueSessionRunnerCredential: (sessionId, owner) => runnerCredentialStore.issue(sessionId, owner),
+      verifySessionRunnerCredential: (sessionId, credential) => runnerCredentialStore.verify(sessionId, credential),
+      bindNativeCodexThread: sessionManager.bindNativeCodexThread,
+      openCodexRemoteTui: sessionManager.openCodexRemoteTui,
     });
 
     // Write initial daemon state (no lock needed for state file)
@@ -252,12 +265,6 @@ export async function startDaemon(): Promise<void> {
     }
 
     // ─── P2P Server ──────────────────────────────────────────────
-    // Load P2P store from disk
-    const p2pStore = new P2PStore();
-    // Sessions/messages live in memory only, but the pairing shared secret persists
-    // across restarts (see p2pPairing) — paired phones reconnect without a rescan.
-    logger.debug('[DAEMON RUN] P2P store initialized (in-memory, persistent pairing secret)');
-
     // Determine LAN IP address
     const lanIP = getLanIPAddress() || '0.0.0.0';
     logger.debug(`[DAEMON RUN] LAN IP: ${lanIP}`);
@@ -299,6 +306,7 @@ export async function startDaemon(): Promise<void> {
             host: '0.0.0.0',
             sharedSecret,
             store: p2pStore,
+            runnerCredentialStore,
             webAppDir,
             conciergeDeps
         });
@@ -315,6 +323,7 @@ export async function startDaemon(): Promise<void> {
             host: '0.0.0.0',
             sharedSecret,
             store: p2pStore,
+            runnerCredentialStore,
             webAppDir,
             conciergeDeps
         });
@@ -367,7 +376,6 @@ export async function startDaemon(): Promise<void> {
         sharedSecret,
         spawnSession: sessionManager.spawnSession,
         stopSession: sessionManager.stopSession,
-        onSessionStopped: (sessionId) => publishStoppedSessionInactive?.(sessionId),
         requestShutdown: () => requestShutdown('remcli-web')
     });
 
@@ -430,6 +438,12 @@ export async function startDaemon(): Promise<void> {
     // Setup signal handlers
     const cleanupAndShutdown = async (source: 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception', errorMessage?: string) => {
       logger.debug(`[DAEMON RUN] Starting proper cleanup (source: ${source}, errorMessage: ${errorMessage})...`);
+      isCleanupInProgress = true;
+
+      if (startupFailureExitTimer) {
+        clearTimeout(startupFailureExitTimer);
+        startupFailureExitTimer = null;
+      }
 
       // Clear health check interval
       if (restartOnStaleVersionAndHeartbeat) {
@@ -446,7 +460,12 @@ export async function startDaemon(): Promise<void> {
       }
 
       // Kill all tracked child sessions and tmux sessions created by this daemon
-      sessionManager.killAllSessions();
+      try {
+        await sessionManager.killAllSessions();
+      } catch (error) {
+        logger.warn('[DAEMON RUN] Session cleanup was not confirmed; refusing clean daemon exit', error);
+        throw error;
+      }
 
       // Stop shared Codex app-server if it was started by this daemon
       if (codexAppServerHost) {

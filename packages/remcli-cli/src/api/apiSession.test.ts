@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ApiSessionClient } from './apiSession';
 import type { Session } from './types';
+import {
+    forgetSessionRunnerCredential,
+    rememberSessionRunnerCredential,
+    SESSION_MESSAGE_ACK_VERSION,
+} from '@/daemon/p2p/p2pRunnerCredentials';
 
 // Use vi.hoisted to ensure mock function is available when vi.mock factory runs
 const { mockIo, mockGetEffectiveServerUrl } = vi.hoisted(() => ({
@@ -21,6 +26,10 @@ interface MockSocket {
     on: ReturnType<typeof vi.fn>;
     off: ReturnType<typeof vi.fn>;
     disconnect: ReturnType<typeof vi.fn>;
+}
+
+interface SocketIoOptions {
+    auth: (callback: (auth: Record<string, unknown>) => void) => void;
 }
 
 describe('ApiSessionClient connection handling', () => {
@@ -78,7 +87,32 @@ describe('ApiSessionClient connection handling', () => {
         expect(mockSocket.on).toHaveBeenCalledWith('error', expect.any(Function));
     });
 
+    it('uses a daemon runner credential during the initial socket handshake', () => {
+        const runnerCredential = 'runner-credential';
+        rememberSessionRunnerCredential(mockSession.id, runnerCredential);
+
+        const client = new ApiSessionClient('fake-token', mockSession);
+
+        const socketOptions = mockIo.mock.calls[0][1] as SocketIoOptions;
+        client.onUserMessage(vi.fn());
+
+        expect(mockSocket.connect).toHaveBeenCalledOnce();
+        expect(mockSocket.disconnect).not.toHaveBeenCalled();
+
+        const callback = vi.fn();
+        socketOptions.auth(callback);
+
+        expect(callback).toHaveBeenCalledWith({
+            token: 'fake-token',
+            clientType: 'session-scoped',
+            sessionId: mockSession.id,
+            messageAckVersion: SESSION_MESSAGE_ACK_VERSION,
+            runnerCredential,
+        });
+    });
+
     afterEach(() => {
+        forgetSessionRunnerCredential(mockSession.id);
         consoleSpy.mockRestore();
         vi.restoreAllMocks();
     });

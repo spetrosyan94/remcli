@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 
 import { logger } from '@/ui/logger';
@@ -8,6 +9,8 @@ import { CodexPermissionHandler, type PermissionResult } from './utils/permissio
 const DEFAULT_TIMEOUT = 14 * 24 * 60 * 60 * 1000;
 const CONNECT_TIMEOUT = 10_000;
 const WEBSOCKET_OPEN_STATE = 1;
+const MAX_ACTIVE_USER_MESSAGE_ITEMS = 256;
+const MAX_RECENT_USER_MESSAGE_IDS = 512;
 
 type JsonRpcId = number;
 
@@ -51,10 +54,79 @@ interface WebSocketLike {
     removeEventListener?(type: string, listener: (event: unknown) => void): void;
 }
 
+class BoundedIdSet {
+    private readonly ids = new Map<string, undefined>();
+
+    constructor(private readonly maxSize: number) {}
+
+    get size(): number {
+        return this.ids.size;
+    }
+
+    has(id: string): boolean {
+        return this.ids.has(id);
+    }
+
+    add(id: string): void {
+        this.ids.delete(id);
+        this.ids.set(id, undefined);
+        while (this.ids.size > this.maxSize) {
+            const oldestId = this.ids.keys().next().value;
+            if (typeof oldestId !== 'string') return;
+            this.ids.delete(oldestId);
+        }
+    }
+
+    delete(id: string): void {
+        this.ids.delete(id);
+    }
+
+    clear(): void {
+        this.ids.clear();
+    }
+}
+
 export interface CodexAppServerClientOptions {
     endpoint?: string;
     webSocketFactory?: (endpoint: string) => WebSocketLike;
 }
+
+export type CodexUserMessageSource = 'own' | 'external';
+
+export interface CodexTextUserMessageContent {
+    type: 'text';
+    text: string;
+}
+
+export interface CodexOpaqueUserMessageContent {
+    type: 'other';
+    originalType: string;
+    value: Readonly<Record<string, unknown>>;
+}
+
+export type CodexUserMessageContent = CodexTextUserMessageContent | CodexOpaqueUserMessageContent;
+
+export interface CodexUserMessageEvent {
+    type: 'user_message';
+    itemId: string;
+    text: string;
+    content: CodexUserMessageContent[];
+    clientId: string | null;
+    source: CodexUserMessageSource;
+}
+
+export type CodexAppServerEvent =
+    | CodexUserMessageEvent
+    | { type: 'task_started' }
+    | { type: 'task_complete' }
+    | { type: 'turn_diff'; unified_diff: string }
+    | { type: 'agent_error'; message: string }
+    | { type: 'agent_message'; message: string }
+    | { type: 'agent_reasoning'; text: string }
+    | { type: 'exec_command_begin'; command: string }
+    | { type: 'exec_command_end'; output: string; error?: string }
+    | { type: 'patch_apply_begin'; changes: Record<string, unknown> }
+    | { type: 'patch_apply_end'; success: boolean; stdout: string; stderr: string };
 
 interface CodexAppServerResumeOptions {
     threadId: string;
@@ -78,6 +150,7 @@ interface CodexAppServerTurnOptions {
     sandbox: CodexSandbox;
     approvalPolicy: CodexApprovalPolicy;
     model?: string;
+    effort?: string;
     signal?: AbortSignal;
 }
 
@@ -148,6 +221,22 @@ function webSocketDataToString(data: unknown): string | null {
     return null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeUserMessageContent(content: unknown): CodexUserMessageContent | null {
+    if (!isRecord(content) || typeof content.type !== 'string') return null;
+    if (content.type === 'text' && typeof content.text === 'string') {
+        return { type: 'text', text: content.text };
+    }
+    return {
+        type: 'other',
+        originalType: content.type,
+        value: { ...content },
+    };
+}
+
 export class CodexAppServerClient {
     private readonly endpoint?: string;
     private readonly webSocketFactory: (endpoint: string) => WebSocketLike;
@@ -159,7 +248,11 @@ export class CodexAppServerClient {
     private pendingRequests = new Map<JsonRpcId, PendingRequest>();
     private turnWaiters = new Map<string, TurnWaiter>();
     private completedTurns = new Map<string, CodexToolResponse>();
-    private handler: ((event: any) => void) | null = null;
+    private readonly ownUserMessageIds = new Map<string, string | null>();
+    private readonly recentOwnUserMessageIds = new BoundedIdSet(MAX_RECENT_USER_MESSAGE_IDS);
+    private readonly activeUserMessageItemIds = new Map<string, string | null>();
+    private readonly recentUserMessageItemIds = new BoundedIdSet(MAX_RECENT_USER_MESSAGE_IDS);
+    private handler: ((event: CodexAppServerEvent) => void) | null = null;
     private threadIdChangeHandler: ((threadId: string) => void) | null = null;
     private permissionHandler: CodexPermissionHandler | null = null;
     private activeThreadId: string | null = null;
@@ -170,7 +263,7 @@ export class CodexAppServerClient {
         this.webSocketFactory = options.webSocketFactory ?? createGlobalWebSocket;
     }
 
-    setHandler(handler: ((event: any) => void) | null): void {
+    setHandler(handler: ((event: CodexAppServerEvent) => void) | null): void {
         this.handler = handler;
     }
 
@@ -301,6 +394,7 @@ export class CodexAppServerClient {
 
     async resumeThread(options: CodexAppServerResumeOptions): Promise<string> {
         await this.connect();
+        this.clearUserMessageTracking();
         logger.debug('[CodexAppServer] Resuming thread:', {
             threadId: options.threadId,
             cwd: options.cwd,
@@ -328,6 +422,7 @@ export class CodexAppServerClient {
 
     async startThread(options: CodexAppServerStartThreadOptions): Promise<string> {
         await this.connect();
+        this.clearUserMessageTracking();
         const result = await this.request('thread/start', {
             cwd: options.cwd,
             sandbox: options.sandbox,
@@ -351,23 +446,36 @@ export class CodexAppServerClient {
 
     async beginTurn(options: CodexAppServerTurnOptions): Promise<StartedTurn> {
         await this.connect();
-        const result = await this.request('turn/start', {
-            threadId: options.threadId,
-            input: [{ type: 'text', text: options.prompt, text_elements: [] }],
-            approvalPolicy: options.approvalPolicy,
-            sandboxPolicy: codexSandboxToAppServerPolicy(options.sandbox),
-            ...(options.model ? { model: options.model } : {}),
-        }, options.signal);
+        const clientUserMessageId = this.trackOwnUserMessage();
+        const result = await this.request(
+            'turn/start',
+            {
+                threadId: options.threadId,
+                input: [{ type: 'text', text: options.prompt, text_elements: [] }],
+                clientUserMessageId,
+                approvalPolicy: options.approvalPolicy,
+                sandboxPolicy: codexSandboxToAppServerPolicy(options.sandbox),
+                ...(options.model ? { model: options.model } : {}),
+                ...(options.effort ? { effort: options.effort } : {}),
+            },
+            options.signal,
+        ).catch((error: unknown): never => {
+            this.forgetOwnUserMessage(clientUserMessageId);
+            throw error;
+        });
 
         const turnId = result?.turn?.id;
         if (typeof turnId !== 'string') {
+            this.forgetOwnUserMessage(clientUserMessageId);
             const response = { content: [], isError: false };
             return { turnId: '', completion: Promise.resolve(response) };
         }
+        this.associateOwnUserMessageWithTurn(clientUserMessageId, turnId);
         this.activeTurnId = turnId;
 
         const completedTurn = this.completedTurns.get(turnId);
         if (completedTurn) {
+            this.completeUserMessageTrackingForTurn(turnId);
             this.completedTurns.delete(turnId);
             if (this.activeTurnId === turnId) {
                 this.activeTurnId = null;
@@ -379,6 +487,7 @@ export class CodexAppServerClient {
             const timeout = setTimeout(() => {
                 this.turnWaiters.delete(turnId);
                 waiter.cleanup?.();
+                this.completeUserMessageTrackingForTurn(turnId);
                 if (this.activeTurnId === turnId) {
                     this.activeTurnId = null;
                 }
@@ -393,6 +502,7 @@ export class CodexAppServerClient {
                         .catch((error) => logger.debug('[CodexAppServer] turn interrupt failed:', error));
                     this.turnWaiters.delete(turnId);
                     clearTimeout(timeout);
+                    this.completeUserMessageTrackingForTurn(turnId);
                     if (this.activeTurnId === turnId) {
                         this.activeTurnId = null;
                     }
@@ -413,20 +523,31 @@ export class CodexAppServerClient {
 
     async steerTurn(options: CodexAppServerSteerOptions): Promise<string> {
         await this.connect();
-        const result = await this.request('turn/steer', {
-            threadId: options.threadId,
-            expectedTurnId: options.expectedTurnId,
-            input: [{ type: 'text', text: options.prompt, text_elements: [] }],
+        const clientUserMessageId = this.trackOwnUserMessage();
+        const result = await this.request(
+            'turn/steer',
+            {
+                threadId: options.threadId,
+                expectedTurnId: options.expectedTurnId,
+                input: [{ type: 'text', text: options.prompt, text_elements: [] }],
+                clientUserMessageId,
+            },
+        ).catch((error: unknown): never => {
+            this.forgetOwnUserMessage(clientUserMessageId);
+            throw error;
         });
         const turnId = result?.turnId;
         if (typeof turnId !== 'string') {
+            this.forgetOwnUserMessage(clientUserMessageId);
             throw new Error('Codex app-server did not return a turn id for turn/steer.');
         }
+        this.associateOwnUserMessageWithTurn(clientUserMessageId, turnId);
         this.activeTurnId = turnId;
         return turnId;
     }
 
     async disconnect(): Promise<void> {
+        this.clearUserMessageTracking();
         this.rl?.close();
         this.rl = null;
         if (this.proc) {
@@ -469,6 +590,60 @@ export class CodexAppServerClient {
     clearSession(): void {
         this.activeThreadId = null;
         this.activeTurnId = null;
+        this.clearUserMessageTracking();
+    }
+
+    private trackOwnUserMessage(): string {
+        const clientUserMessageId = randomUUID();
+        this.ownUserMessageIds.set(clientUserMessageId, null);
+        this.boundOwnUserMessageIds();
+        return clientUserMessageId;
+    }
+
+    private clearUserMessageTracking(): void {
+        this.ownUserMessageIds.clear();
+        this.recentOwnUserMessageIds.clear();
+        this.activeUserMessageItemIds.clear();
+        this.recentUserMessageItemIds.clear();
+    }
+
+    private boundOwnUserMessageIds(): void {
+        while (this.ownUserMessageIds.size > MAX_ACTIVE_USER_MESSAGE_ITEMS) {
+            const oldestId = this.ownUserMessageIds.keys().next().value;
+            if (typeof oldestId !== 'string') return;
+            this.ownUserMessageIds.delete(oldestId);
+            this.recentOwnUserMessageIds.add(oldestId);
+        }
+    }
+
+    private associateOwnUserMessageWithTurn(clientUserMessageId: string, turnId: string): void {
+        if (this.ownUserMessageIds.has(clientUserMessageId)) {
+            this.ownUserMessageIds.set(clientUserMessageId, turnId);
+        }
+    }
+
+    private forgetOwnUserMessage(clientUserMessageId: string): void {
+        this.ownUserMessageIds.delete(clientUserMessageId);
+        this.recentOwnUserMessageIds.delete(clientUserMessageId);
+    }
+
+    private completeOwnUserMessage(clientUserMessageId: string): void {
+        this.ownUserMessageIds.delete(clientUserMessageId);
+        this.recentOwnUserMessageIds.add(clientUserMessageId);
+    }
+
+    private completeUserMessageTrackingForTurn(turnId: string): void {
+        for (const [clientUserMessageId, trackedTurnId] of this.ownUserMessageIds) {
+            if (trackedTurnId === turnId) {
+                this.completeOwnUserMessage(clientUserMessageId);
+            }
+        }
+        for (const [itemId, trackedTurnId] of this.activeUserMessageItemIds) {
+            if (trackedTurnId === turnId) {
+                this.activeUserMessageItemIds.delete(itemId);
+                this.recentUserMessageItemIds.add(itemId);
+            }
+        }
     }
 
     private request(method: string, params: unknown, signal?: AbortSignal): Promise<any> {
@@ -655,10 +830,10 @@ export class CodexAppServerClient {
                 this.handler?.({ type: 'task_complete' });
                 return;
             case 'item/started':
-                this.handleItemStarted(params?.item);
+                this.handleItemStarted(params?.item, params?.turnId);
                 return;
             case 'item/completed':
-                this.handleItemCompleted(params?.item);
+                this.handleItemCompleted(params?.item, params?.turnId);
                 return;
             case 'turn/diff/updated':
                 if (typeof params?.diff === 'string') {
@@ -673,8 +848,12 @@ export class CodexAppServerClient {
         }
     }
 
-    private handleItemStarted(item: any): void {
+    private handleItemStarted(item: any, notificationTurnId: unknown): void {
         if (!item || typeof item !== 'object') return;
+        if (item.type === 'userMessage') {
+            this.emitUserMessage(item, notificationTurnId, 'started');
+            return;
+        }
         if (item.type === 'commandExecution') {
             this.handler?.({ type: 'exec_command_begin', command: item.command });
         }
@@ -683,8 +862,12 @@ export class CodexAppServerClient {
         }
     }
 
-    private handleItemCompleted(item: any): void {
+    private handleItemCompleted(item: any, notificationTurnId: unknown): void {
         if (!item || typeof item !== 'object') return;
+        if (item.type === 'userMessage') {
+            this.emitUserMessage(item, notificationTurnId, 'completed');
+            return;
+        }
         if (item.type === 'agentMessage' && typeof item.text === 'string' && item.text.length > 0) {
             this.handler?.({ type: 'agent_message', message: item.text });
         }
@@ -712,9 +895,65 @@ export class CodexAppServerClient {
         }
     }
 
+    private emitUserMessage(item: unknown, notificationTurnId: unknown, lifecycle: 'started' | 'completed'): void {
+        if (!isRecord(item) || item.type !== 'userMessage' || typeof item.id !== 'string') return;
+
+        if (this.recentUserMessageItemIds.has(item.id)) return;
+        if (this.activeUserMessageItemIds.has(item.id)) {
+            if (lifecycle === 'completed') {
+                this.activeUserMessageItemIds.delete(item.id);
+                this.recentUserMessageItemIds.add(item.id);
+            }
+            return;
+        }
+
+        const content = Array.isArray(item.content)
+            ? item.content.map(normalizeUserMessageContent).filter((part): part is CodexUserMessageContent => part !== null)
+            : [];
+        const text = content
+            .filter((part): part is CodexTextUserMessageContent => part.type === 'text')
+            .map((part) => part.text)
+            .join('\n');
+        const clientId = typeof item.clientId === 'string' ? item.clientId : null;
+        const source: CodexUserMessageSource = clientId !== null && (
+            this.ownUserMessageIds.has(clientId) || this.recentOwnUserMessageIds.has(clientId)
+        )
+            ? 'own'
+            : 'external';
+
+        if (lifecycle === 'started') {
+            const turnId = typeof notificationTurnId === 'string' ? notificationTurnId : this.activeTurnId;
+            this.activeUserMessageItemIds.set(item.id, turnId);
+            this.boundActiveUserMessageItemIds();
+        } else {
+            this.recentUserMessageItemIds.add(item.id);
+        }
+        if (clientId !== null && source === 'own') {
+            this.completeOwnUserMessage(clientId);
+        }
+        this.handler?.({
+            type: 'user_message',
+            itemId: item.id,
+            text,
+            content,
+            clientId,
+            source,
+        });
+    }
+
+    private boundActiveUserMessageItemIds(): void {
+        while (this.activeUserMessageItemIds.size > MAX_ACTIVE_USER_MESSAGE_ITEMS) {
+            const oldestItemId = this.activeUserMessageItemIds.keys().next().value;
+            if (typeof oldestItemId !== 'string') return;
+            this.activeUserMessageItemIds.delete(oldestItemId);
+            this.recentUserMessageItemIds.add(oldestItemId);
+        }
+    }
+
     private completeTurn(params: any): void {
         const turnId = params?.turn?.id;
         if (typeof turnId !== 'string') return;
+        this.completeUserMessageTrackingForTurn(turnId);
         const waiter = this.turnWaiters.get(turnId);
         const errorText = getTurnErrorText(params.turn);
         const response: CodexToolResponse = errorText
@@ -741,6 +980,7 @@ export class CodexAppServerClient {
     }
 
     private rejectAll(error: Error): void {
+        this.clearUserMessageTracking();
         this.completedTurns.clear();
         this.activeTurnId = null;
         for (const [id, pending] of this.pendingRequests.entries()) {

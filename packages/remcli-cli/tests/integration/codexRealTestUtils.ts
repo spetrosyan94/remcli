@@ -1,9 +1,14 @@
 import type { CodexToolResponse } from '@/codex/types';
 
-const DEFAULT_REAL_CODEX_MODEL = 'gpt-5.4-mini';
+const DEFAULT_REAL_CODEX_MODEL = 'gpt-5.6-luna';
+const DEFAULT_REAL_CODEX_REASONING_EFFORT = 'xhigh';
 
 export function getRealCodexModel(): string {
     return process.env.REMCLI_REAL_CODEX_MODEL || DEFAULT_REAL_CODEX_MODEL;
+}
+
+export function getRealCodexReasoningEffort(): string {
+    return process.env.REMCLI_REAL_CODEX_REASONING_EFFORT || DEFAULT_REAL_CODEX_REASONING_EFFORT;
 }
 
 export function responseText(response: CodexToolResponse): string {

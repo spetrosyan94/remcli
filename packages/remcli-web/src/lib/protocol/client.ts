@@ -100,6 +100,16 @@ interface ClientContext {
 }
 
 let context: ClientContext | null = null;
+const protocolReconnectedListeners = new Set<() => void>();
+
+export interface SessionMessagesPage {
+    total: number;
+    hasMore: boolean;
+    /** Number of raw server records consumed by this request, including records skipped by the normalizer. */
+    consumed: number;
+    /** Raw server cursor for the next older-history request. */
+    nextOffset: number;
+}
 
 /**
  * Fixture-режим (?fixtures=1 / localStorage remcli-fixtures=1) — единственная
@@ -111,6 +121,14 @@ const isFixturesActive = initFixturesIfEnabled();
 
 export function isClientStarted(): boolean {
     return isFixturesActive || context !== null;
+}
+
+/** Subscribe to a completed Socket.IO reconnect without coupling screens to the socket singleton. */
+export function onProtocolReconnected(listener: () => void): () => void {
+    protocolReconnectedListeners.add(listener);
+    return () => {
+        protocolReconnectedListeners.delete(listener);
+    };
 }
 
 /** REST config for direct API calls (TTS, Whisper, concierge). Null when not connected. */
@@ -319,8 +337,16 @@ export async function refreshMachines(): Promise<void> {
 export async function loadSessionMessages(
     sessionId: string,
     options?: { limit?: number; offset?: number }
-): Promise<{ total: number; hasMore: boolean }> {
-    if (isFixturesActive) return fixtureLoadSessionMessages(sessionId);
+): Promise<SessionMessagesPage> {
+    const offset = options?.offset ?? 0;
+    if (isFixturesActive) {
+        const page = fixtureLoadSessionMessages(sessionId);
+        return {
+            ...page,
+            consumed: Math.max(0, page.total - offset),
+            nextOffset: page.total
+        };
+    }
     const ctx = requireContext();
     const cipher = ctx.sessionCiphers.get(sessionId);
     if (!cipher) {
@@ -341,7 +367,12 @@ export async function loadSessionMessages(
         }
     }
     useProtocolStore.getState().applyMessages(sessionId, normalized, { markLoaded: true });
-    return { total: page.total, hasMore: page.hasMore };
+    return {
+        total: page.total,
+        hasMore: page.hasMore,
+        consumed: page.messages.length,
+        nextOffset: offset + page.messages.length
+    };
 }
 
 /**
@@ -678,8 +709,11 @@ async function startWithCredentials(credentials: P2PCredentials): Promise<void> 
         handleEphemeral(data);
     }));
     ctx.unsubscribers.push(onSocketReconnected(() => {
-        void refreshSessions().catch(() => undefined);
-        void refreshMachines().catch(() => undefined);
+        void Promise.all([
+            refreshSessions(),
+            refreshMachines()
+        ]).catch(() => undefined);
+        protocolReconnectedListeners.forEach((listener) => listener());
     }));
 
     socketConnect(

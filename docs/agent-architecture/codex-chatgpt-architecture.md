@@ -1,6 +1,6 @@
-# Codex / ChatGPT Architecture
+# Архитектура Codex / ChatGPT
 
-## Official Sources
+## Источники
 
 - Codex app-server: https://developers.openai.com/codex/app-server
 - Codex CLI features: https://developers.openai.com/codex/cli/features
@@ -9,15 +9,13 @@
 - Codex remote connections: https://developers.openai.com/codex/remote-connections
 - Codex MCP: https://developers.openai.com/codex/mcp
 
-Проверено: 2026-07-06 через `openai-docs`, official OpenAI docs и локальный
-`codex --help`.
+Проверено 2026-07-13 через official OpenAI docs, локальный `codex --help` и `codex app-server` 0.144.1 `model/list`.
 
-## Goal
+## Цель
 
-Remcli должен работать как remote control для настоящего Codex thread, а не как
-отдельный MCP-wrapper с потерей контекста. Телефон отправляет сообщения в тот же
-Codex thread id, который можно продолжать официальным Codex app-server/CLI
-механизмом.
+Remcli управляет настоящим Codex thread, а не отдельной MCP-сессией. Телефон,
+Codex TUI и daemon используют один native `threadId`, который продолжается через
+официальный app-server.
 
 ## Runtime
 
@@ -29,30 +27,26 @@ Web/PWA phone
                 -> Codex thread / turns / approvals
 ```
 
-Daemon стартует shared host:
+Daemon запускает:
 
 ```text
 codex app-server --listen ws://127.0.0.1:<port>
 ```
 
-Endpoint хранится в `daemon.state.json` как:
+В `daemon.state.json` сохраняются `codexAppServerEndpoint` и
+`codexAppServerPid`. Endpoint доступен только через loopback: телефон не
+подключается к app-server напрямую, а использует Remcli P2P и daemon.
 
-- `codexAppServerEndpoint`
-- `codexAppServerPid`
+## Идентичность сессии
 
-Endpoint loopback-only. Телефон не подключается к Codex app-server напрямую; он
-всегда ходит через Remcli P2P и daemon/session process.
+- Remcli session id — wrapper-сессия в Remcli/P2P.
+- Native Codex id — официальный `threadId`.
+- Metadata keys — `agentSessionId` и `codexSessionId`.
+- Дубликаты wrapper-сессий нужно определять по native Codex `threadId`.
 
-## Session Identity
+## Поток сообщений
 
-- Remcli session id: wrapper-сессия в Remcli/P2P.
-- Native Codex id: official Codex `threadId`.
-- Metadata keys: `agentSessionId` и `codexSessionId`.
-- Duplicate guard должен дедуплицировать wrapper-сессии по native Codex thread id.
-
-## Message Flow
-
-Create:
+Создание:
 
 ```text
 runCodex -> app-server initialize -> thread/start -> turn/start(prompt)
@@ -64,122 +58,167 @@ Resume:
 runCodex --resume <threadId> -> app-server initialize -> thread/resume -> turn/start(prompt)
 ```
 
-Continue:
+Продолжение:
 
 ```text
 existing threadId -> turn/start(prompt)
 ```
 
-Steer active turn:
+Ввод из native terminal не превращается в дополнительный `turn/start`. Shared
+app-server публикует его как `userMessage`; `CodexAppServerClient` связывает
+сообщения Remcli по `clientUserMessageId` и один раз публикует внешние сообщения
+в зашифрованную P2P-историю. Поэтому телефон, `codex --remote` TUI и тот же
+native thread видят одну последовательность сообщений.
+
+Для активного turn:
 
 ```text
 in-flight turnId + same mode/model hash -> turn/steer(expectedTurnId, prompt)
 ```
 
-Mode/model changes не создают новый Codex thread. Sandbox/model передаются как
-per-turn параметры app-server. Если новый prompt пришёл во время активного turn,
-но пользователь сменил model или sandbox mode, Remcli ждёт завершения текущего
-turn и отправляет prompt следующим `turn/start`, чтобы не смешивать per-turn
-настройки.
+Изменение mode/model не создаёт новый Codex thread. Sandbox и model передаются
+как параметры конкретного turn. Если настройки изменились во время активного
+turn, новый prompt ждёт следующего `turn/start`.
 
-## Transport Contract
+## Transport contract
 
-Remcli uses official app-server JSON-RPC methods:
+Используются официальные JSON-RPC методы app-server:
 
-- `initialize`, then `initialized`
-- `thread/start`
-- `thread/resume`
-- `turn/start`
-- `turn/steer`
-- `turn/interrupt`
+- `initialize`, затем `initialized`;
+- `thread/start`;
+- `thread/resume`;
+- `turn/start`;
+- `turn/steer`;
+- `turn/interrupt`.
 
-Notifications mapped into Remcli session events:
+Уведомления преобразуются в события Remcli:
 
-- `turn/started` -> task started
-- `item/completed` with `agentMessage` -> chat message
-- `item/completed` with `reasoning` -> reasoning summary
-- `item/completed` with `commandExecution` -> command result
-- `turn/diff/updated` -> diff event
-- `turn/completed` -> task complete
-- `error` -> visible chat error
+- `turn/started` -> task started;
+- `item/completed` с `agentMessage` -> chat message;
+- `item/completed` с `reasoning` -> reasoning summary;
+- `item/completed` с `commandExecution` -> command result;
+- `turn/diff/updated` -> diff event;
+- `turn/completed` -> task complete;
+- `error` -> видимая ошибка чата.
 
-Codex MCP `codex-reply` is not used for chat/resume transport.
+`codex-reply` для chat/resume transport не используется. `remcli-mcp` остаётся
+отдельным bridge для инструментов Remcli.
 
-## Runtime Resilience
+## Устойчивость runtime
 
-Remcli must not trust a stale `daemon.state.json` endpoint blindly.
+Нельзя без проверки доверять endpoint из `daemon.state.json`.
 
-- `runCodex.ts` uses shared WebSocket app-server only when the saved PID is live
-  and `/readyz` succeeds.
-- If the shared endpoint is stale, `runCodex.ts` starts a private local
-  `codex app-server` over stdio. This is still app-server transport, not MCP.
-- The daemon heartbeat removes stale `codexAppServerEndpoint` and
-  `codexAppServerPid` from `daemon.state.json`.
+- Shared WebSocket app-server используется только если сохранённый PID жив и
+  `/readyz` отвечает успешно.
+- При stale shared endpoint `runCodex.ts` запускает private local app-server по
+  stdio. Это всё ещё app-server transport, не MCP.
+- Heartbeat удаляет stale `codexAppServerEndpoint` и `codexAppServerPid` из
+  `daemon.state.json`.
 
 ## Permissions
 
-Codex exposes native sandbox values:
+Native Codex sandbox values:
 
-- `read-only`
-- `workspace-write`
-- `danger-full-access`
-
-Remcli maps these to app-server sandbox policies:
-
-- `read-only` -> `readOnly`, no network
-- `workspace-write` -> `workspaceWrite`, no network
-- `danger-full-access` -> `dangerFullAccess`
+- `read-only` -> `readOnly`, без network;
+- `workspace-write` -> `workspaceWrite`, без network;
+- `danger-full-access` -> `dangerFullAccess`.
 
 Approval policy:
 
-- `read-only`, `workspace-write` -> `on-request`
-- `danger-full-access` -> `never`
+- `read-only`, `workspace-write` -> `on-request`;
+- `danger-full-access` -> `never`.
 
-## Terminal / TUI Parity
+## Terminal / TUI parity
 
-Official CLI supports remote TUI connection:
+Официальный CLI поддерживает remote TUI:
 
 ```text
 codex --remote ws://127.0.0.1:<port>
 codex resume <threadId> --remote ws://127.0.0.1:<port>
 ```
 
-This makes the target architecture possible: phone and desktop terminal can use
-one app-server-owned Codex thread model.
+### Daemon-owned tmux lifecycle
 
-For daemon-started Codex sessions, Remcli runs its P2P wrapper process headless
-inside tmux and opens a real Codex TUI separately through the shared app-server:
+Daemon-spawned Codex runner остаётся headless в tmux. После успешной привязки
+native `threadId` Remcli открывает TUI через
+`codex resume <threadId> --remote <endpoint>`.
 
-- saved/resumed thread: opens immediately with
-  `codex resume <threadId> --remote <endpoint>`;
-- new thread: opens after the first phone prompt creates a native Codex
-  `threadId`, then uses the same `codex resume <threadId> --remote <endpoint>`;
-- terminal-started `remcli codex` does not open another Terminal.app window.
+- Одна native Codex thread имеет одну активную Remcli wrapper-сессию: повторный
+  resume возвращает существующую wrapper-сессию.
+- Host создаётся в уникальной tmux session с постоянным для lifecycle UUID
+  owner marker. Terminal открывает только attach к этому owned pane.
+- Runner и child TUI получают полный immutable ownership tuple:
+  `sessionName`, `@window`, `%pane`, `panePid`, `ownerMarker`.
+- Display name окна не является идентификатором: tmux допускает дубли. Новое
+  окно резервирует collision-resistant numeric index и использует
+  `=sessionName:<index>` для create, marker и tuple output.
+- Child TUI создаётся только в server-side `if-shell -F` ветке, которая
+  одновременно проверяет полный tuple и marker host pane. Ложная ветка не
+  создаёт окно.
+- Marker ставится в той же tmux command chain, что и создание pane. При потере
+  или порче ответа daemon ищет ровно один pane по `sessionName + ownerMarker`;
+  ноль, несколько или foreign match приводят к fail-closed ошибке без cleanup.
+- Stop, prune и shutdown освобождают pane только server-side проверкой marker и
+  полного tuple вместе с `kill-pane`. `mismatch` и `unknown` сохраняют tracking
+  для повторной попытки и не считаются успешным cleanup.
+- Stop ожидает in-flight открытие child TUI; поздно созданный pane либо
+  подтверждённо освобождается, либо сохраняется для retry.
+- Terminal-started `remcli codex` не получает managed tmux target. При private
+  stdio app-server remote TUI не открывается, потому что нет WebSocket endpoint.
 
-If the shared daemon endpoint is stale and `runCodex.ts` falls back to a private
-stdio app-server, remote TUI attach is skipped because there is no WebSocket
-endpoint for `codex --remote`.
+Terminal.app tab не является управляемым lease: AppleScript умеет создать tab,
+но не предоставляет подтверждённого точечного закрытия tab. Поэтому нельзя
+закрывать `front window` или целое пользовательское окно.
 
-## Not Implemented Yet
+### Runner capability
 
-- Full terminal/TUI mirroring inside web.
-- Cross-process locking around two simultaneous writers to the same Codex
-  thread beyond current Remcli duplicate guard.
+Daemon-spawned runner получает случайный per-process control token через
+`REMCLI_DAEMON_RUNNER_TOKEN` и передаёт его в `/session-started`. После успешной
+проверки daemon выдаёт per-runner credential; native thread binding и managed TUI
+route требуют этот credential. Manual terminal session не получает capability и
+не должна перепривязывать daemon-owned wrapper.
 
-## Verification
+Credential привязан к daemon-spawned runner и отзывается до публикации terminal
+inactive state. Повторный или чужой exchange не выдаёт capability и не может
+привязать native thread или открыть managed TUI.
 
-Required gates for this architecture:
+Общий bootstrap для daemon-runner'ов Claude, Codex, Gemini и Cursor сначала
+получает этот credential через `/session-started`, а только затем создаёт
+P2P session consumer. Повторный authenticated handoff того же owner возвращает
+тот же lease после потери HTTP-ответа; другой owner его не получает. После
+активации lease daemon отключает legacy consumer и отклоняет credential-less
+подключение к этой session, поэтому первый mobile prompt нельзя подтвердить
+или потерять через downgrade.
 
-- Unit: app-server WebSocket client sends JSON-RPC over shared endpoint.
-- Unit: `turn/steer` sends `threadId`, `expectedTurnId` and text input to the
-  active turn.
-- Unit: daemon-spawned Codex no longer opens a tmux attach terminal; `runCodex`
-  opens a real Codex TUI through `codex resume <threadId> --remote <endpoint>`
-  only for daemon-started shared app-server sessions.
-- Unit: daemon host starts `codex app-server --listen ws://127.0.0.1:<port>` and
-  waits for `/readyz`.
+## Не реализовано
+
+- Полное отображение терминала/TUI внутри web.
+- Межпроцессная блокировка двух одновременных writers одного Codex thread сверх
+  текущего duplicate guard.
+- Полная матрица tmux версий: real ownership regression сейчас выполняется на
+  локальном tmux 3.6a.
+
+## Обязательные gates
+
+- Unit: app-server client отправляет JSON-RPC через shared endpoint.
+- Unit: `turn/steer` отправляет `threadId`, `expectedTurnId` и текст активному
+  turn.
+- Unit: daemon-spawned runner не открывает attach-terminal; TUI использует
+  `codex resume <threadId> --remote <endpoint>` только для shared endpoint.
+- Security: неизвестный runner token, повторный token exchange, отсутствующий
+  или чужой runner credential не могут менять tracking, bind native thread или
+  создавать TUI.
+- Integration: daemon-owned Codex resume получает credential через тот же
+  `/session-started` contract до создания session consumer и сохраняет native
+  thread context; failed handoff не превращается в legacy consumer.
+- Unit/integration: native thread dedupe, runner capability, stale/response-loss
+  recovery, duplicate display names, occupied numeric index, exact cleanup при
+  stop, prune и shutdown. Real tmux regression использует isolated socket.
+- Unit: daemon запускает `codex app-server --listen ws://127.0.0.1:<port>` и ждёт
+  `/readyz`.
 - CLI: `npm -w remcli run typecheck`, `npm -w remcli run build`,
   `npm -w remcli run test`.
 - Real AI opt-in: create -> prompt -> stop -> reopen/resume -> context check.
-  The default Remcli-created Codex model is `gpt-5.4-mini`. Override with
-  `REMCLI_REAL_CODEX_MODEL` when a specific Remcli session model must be tested.
+  Default Remcli-created Codex gate — `GPT-5.6-Luna` (`gpt-5.6-luna`) с
+  reasoning `xhigh`; override только через `REMCLI_REAL_CODEX_MODEL` и
+  `REMCLI_REAL_CODEX_REASONING_EFFORT`.

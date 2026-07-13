@@ -114,6 +114,7 @@ export interface ServerToClientEvents {
  */
 export interface ClientToServerEvents {
   message: (data: { sid: string, message: any }) => void
+  'message-ack': (data: { sid: string, seq: number }) => void
   'session-alive': (data: {
     sid: string;
     time: number;

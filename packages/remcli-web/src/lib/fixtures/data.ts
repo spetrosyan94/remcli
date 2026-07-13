@@ -126,6 +126,7 @@ interface SessionSeed {
     seq: number;
     path: string;
     flavor?: string;
+    startedBy: 'daemon' | 'terminal';
     machineId: string;
     host: string;
     homeDir: string;
@@ -149,6 +150,7 @@ function makeSession(seed: SessionSeed): Session {
             host: seed.host,
             homeDir: seed.homeDir,
             machineId: seed.machineId,
+            startedBy: seed.startedBy,
             flavor: seed.flavor ?? null,
             name: seed.path.split('/').pop(),
             claudeSessionId: `${seed.id}-agent`,
@@ -173,6 +175,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         id: FIXTURE_CHAT_SESSION_ID,
         seq: 10,
         path: '/Users/dev/projects/remcli',
+        startedBy: 'daemon',
         machineId: 'fx-machine-online',
         host: 'macbook-pro.local',
         homeDir: '/Users/dev',
@@ -199,6 +202,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         seq: 11,
         path: '/Users/dev/projects/webapp',
         flavor: 'codex',
+        startedBy: 'terminal',
         machineId: 'fx-machine-online',
         host: 'macbook-pro.local',
         homeDir: '/Users/dev',
@@ -212,6 +216,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         seq: 12,
         path: '/Users/dev/projects/api-server',
         flavor: 'gemini',
+        startedBy: 'daemon',
         machineId: 'fx-machine-online',
         host: 'macbook-pro.local',
         homeDir: '/Users/dev',
@@ -224,6 +229,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         id: 'fx-idle',
         seq: 13,
         path: '/Users/dev/projects/docs',
+        startedBy: 'daemon',
         machineId: 'fx-machine-online',
         host: 'macbook-pro.local',
         homeDir: '/Users/dev',
@@ -237,6 +243,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         seq: 14,
         path: '/Users/dev/projects/mobile',
         flavor: 'cursor',
+        startedBy: 'daemon',
         machineId: 'fx-machine-online',
         host: 'macbook-pro.local',
         homeDir: '/Users/dev',
@@ -249,6 +256,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         id: 'fx-offline',
         seq: 15,
         path: '/home/ci/releases/pipeline',
+        startedBy: 'daemon',
         machineId: 'fx-machine-offline',
         host: 'build-server',
         homeDir: '/home/ci',
@@ -364,7 +372,7 @@ export const FIXTURE_CHAT_MESSAGES: NormalizedMessage[] = [
         role: 'event',
         content: {
             type: 'message',
-            message: 'The gpt-5.3-codex model is not supported when using Codex with a ChatGPT account.',
+            message: 'Выбранная модель недоступна для текущего аккаунта. Выберите другую модель и повторите попытку.',
             isError: true
         }
     },

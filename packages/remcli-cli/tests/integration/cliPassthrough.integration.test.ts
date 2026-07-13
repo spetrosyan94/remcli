@@ -1,18 +1,35 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const packageRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-const binPath = join(packageRoot, 'bin', 'remcli.mjs');
 const pathSeparator = process.platform === 'win32' ? ';' : ':';
+const cliArtifactSnapshotAttempts = 30;
+const cliArtifactSnapshotRetryMs = 250;
+const remcliPassthroughCases: Array<[string, string[], string, string]> = [
+    ['--version', ['--version'], 'remcli version:', 'fake-claude 1.2.3'],
+    ['--help', ['--help'], 'remcli', 'claude fake help']
+];
+const agentPassthroughCases: Array<[string, string[], string]> = [
+    ['codex --version', ['codex', '--version'], 'codex-cli 9.9.9'],
+    ['codex --help', ['codex', '--help'], 'codex fake help'],
+    ['gemini --version', ['gemini', '--version'], '9.9.9'],
+    ['gemini --help', ['gemini', '--help'], 'gemini fake help'],
+    ['cursor --version', ['cursor', '--version'], 'fake-cursor-agent 9.9.9'],
+    ['cursor --help', ['cursor', '--help'], 'agent fake help']
+];
 
-let homeDir: string;
-let binDir: string;
+interface CliPassthroughTestEnvironment {
+    homeDir: string;
+    binDir: string;
+}
 
-function writeFakeBinary(name: string, output: string): string {
+let cliArtifactRoot: string | undefined;
+
+function writeFakeBinary(binDir: string, name: string, output: string): string {
     const filePath = join(binDir, name);
     const script = `#!/usr/bin/env node\nif (process.argv.includes('--help') || process.argv.includes('-h')) {\n  console.log(${JSON.stringify(`${name} fake help`)});\n  process.exit(0);\n}\nif (process.argv.includes('--version') || process.argv.includes('-v')) {\n  console.log(${JSON.stringify(output)});\n  process.exit(0);\n}\nconsole.error(${JSON.stringify(`${name} should not be started by passthrough smoke`)});\nprocess.exit(42);\n`;
     writeFileSync(filePath, script, 'utf-8');
@@ -20,14 +37,71 @@ function writeFakeBinary(name: string, output: string): string {
     return filePath;
 }
 
-function runRemcli(args: string[]): ReturnType<typeof spawnSync> {
+function createCliPassthroughTestEnvironment(): CliPassthroughTestEnvironment {
+    const homeDir = mkdtempSync(join(tmpdir(), 'remcli-cli-passthrough-home-'));
+    const binDir = mkdtempSync(join(tmpdir(), 'remcli-cli-passthrough-bin-'));
+    writeFakeBinary(binDir, 'claude', 'fake-claude 1.2.3');
+    writeFakeBinary(binDir, 'codex', 'codex-cli 9.9.9');
+    writeFakeBinary(binDir, 'gemini', '9.9.9');
+    writeFakeBinary(binDir, 'agent', 'fake-cursor-agent 9.9.9');
+    return { homeDir, binDir };
+}
+
+async function createCliArtifactSnapshot(): Promise<string> {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < cliArtifactSnapshotAttempts; attempt += 1) {
+        const artifactRoot = mkdtempSync(join(packageRoot, '.remcli-cli-passthrough-artifact-'));
+
+        try {
+            cpSync(join(packageRoot, 'bin'), join(artifactRoot, 'bin'), { recursive: true });
+            cpSync(join(packageRoot, 'dist'), join(artifactRoot, 'dist'), { recursive: true });
+            copyFileSync(join(packageRoot, 'package.json'), join(artifactRoot, 'package.json'));
+
+            if (!existsSync(join(artifactRoot, 'dist', 'index.mjs'))) {
+                throw new Error('CLI artifact snapshot is missing dist/index.mjs.');
+            }
+
+            return artifactRoot;
+        } catch (error) {
+            lastError = error;
+            rmSync(artifactRoot, { recursive: true, force: true });
+        }
+
+        await new Promise<void>((resolve) => setTimeout(resolve, cliArtifactSnapshotRetryMs));
+    }
+
+    throw lastError instanceof Error
+        ? lastError
+        : new Error('Unable to create an isolated CLI artifact snapshot.');
+}
+
+function getCliArtifactRoot(): string {
+    if (!cliArtifactRoot) {
+        throw new Error('CLI artifact snapshot was not created.');
+    }
+
+    return cliArtifactRoot;
+}
+
+function withCliPassthroughTestEnvironment(callback: (environment: CliPassthroughTestEnvironment) => void): void {
+    const environment = createCliPassthroughTestEnvironment();
+    try {
+        callback(environment);
+    } finally {
+        rmSync(environment.homeDir, { recursive: true, force: true });
+        rmSync(environment.binDir, { recursive: true, force: true });
+    }
+}
+
+function runRemcli(args: string[], environment: CliPassthroughTestEnvironment): ReturnType<typeof spawnSync> {
     const env = {
         ...process.env,
-        REMCLI_HOME_DIR: homeDir,
-        REMCLI_CLAUDE_PATH: join(binDir, 'claude'),
-        PATH: `${binDir}${pathSeparator}${process.env.PATH ?? ''}`
+        REMCLI_HOME_DIR: environment.homeDir,
+        REMCLI_CLAUDE_PATH: join(environment.binDir, 'claude'),
+        PATH: `${environment.binDir}${pathSeparator}${process.env.PATH ?? ''}`
     };
-    return spawnSync(process.execPath, [binPath, ...args], {
+    return spawnSync(process.execPath, [join(getCliArtifactRoot(), 'bin', 'remcli.mjs'), ...args], {
         cwd: packageRoot,
         env,
         encoding: 'utf-8',
@@ -35,55 +109,47 @@ function runRemcli(args: string[]): ReturnType<typeof spawnSync> {
     });
 }
 
-function expectNoDaemonState(): void {
-    expect(existsSync(join(homeDir, 'daemon.state.json'))).toBe(false);
-    expect(existsSync(join(homeDir, 'daemon.lock'))).toBe(false);
+function expectSuccessfulPassthrough(result: ReturnType<typeof spawnSync>): void {
+    const diagnostics = [
+        result.error?.message,
+        result.signal ? `signal=${result.signal}` : undefined,
+        result.stderr?.trim()
+    ].filter((detail): detail is string => Boolean(detail)).join('\n');
+    expect(result.status, diagnostics).toBe(0);
 }
 
-beforeEach(() => {
-    homeDir = mkdtempSync(join(tmpdir(), 'remcli-cli-passthrough-home-'));
-    binDir = mkdtempSync(join(tmpdir(), 'remcli-cli-passthrough-bin-'));
-    writeFakeBinary('claude', 'fake-claude 1.2.3');
-    writeFakeBinary('codex', 'codex-cli 9.9.9');
-    writeFakeBinary('gemini', '9.9.9');
-    writeFakeBinary('agent', 'fake-cursor-agent 9.9.9');
+function expectNoDaemonState(environment: CliPassthroughTestEnvironment): void {
+    expect(existsSync(join(environment.homeDir, 'daemon.state.json'))).toBe(false);
+    expect(existsSync(join(environment.homeDir, 'daemon.lock'))).toBe(false);
+}
+
+beforeAll(async () => {
+    cliArtifactRoot = await createCliArtifactSnapshot();
 });
 
-afterEach(() => {
-    rmSync(homeDir, { recursive: true, force: true });
-    rmSync(binDir, { recursive: true, force: true });
+afterAll(() => {
+    if (cliArtifactRoot) {
+        rmSync(cliArtifactRoot, { recursive: true, force: true });
+    }
 });
 
 describe('CLI help/version passthrough', () => {
-    it('prints remcli help/version without starting a daemon session', () => {
-        const version = runRemcli(['--version']);
-        expect(version.status).toBe(0);
-        expect(version.stdout).toContain('remcli version:');
-        expect(version.stdout).toContain('fake-claude 1.2.3');
-        expectNoDaemonState();
-
-        const help = runRemcli(['--help']);
-        expect(help.status).toBe(0);
-        expect(help.stdout).toContain('remcli');
-        expect(help.stdout).toContain('claude fake help');
-        expectNoDaemonState();
+    it.each(remcliPassthroughCases)('prints remcli %s without starting a daemon session', (_name, args, cliOutput, vendorOutput) => {
+        withCliPassthroughTestEnvironment((environment) => {
+            const result = runRemcli(args, environment);
+            expectSuccessfulPassthrough(result);
+            expect(result.stdout).toContain(cliOutput);
+            expect(result.stdout).toContain(vendorOutput);
+            expectNoDaemonState(environment);
+        });
     });
 
-    it('passes agent help/version directly to vendor CLIs without daemon startup', () => {
-        const cases: Array<{ args: string[]; expected: string }> = [
-            { args: ['codex', '--version'], expected: 'codex-cli 9.9.9' },
-            { args: ['codex', '--help'], expected: 'codex fake help' },
-            { args: ['gemini', '--version'], expected: '9.9.9' },
-            { args: ['gemini', '--help'], expected: 'gemini fake help' },
-            { args: ['cursor', '--version'], expected: 'fake-cursor-agent 9.9.9' },
-            { args: ['cursor', '--help'], expected: 'agent fake help' }
-        ];
-
-        for (const testCase of cases) {
-            const result = runRemcli(testCase.args);
-            expect(result.status).toBe(0);
-            expect(result.stdout).toContain(testCase.expected);
-            expectNoDaemonState();
-        }
+    it.each(agentPassthroughCases)('passes %s directly to vendor CLI without daemon startup', (_name, args, expected) => {
+        withCliPassthroughTestEnvironment((environment) => {
+            const result = runRemcli(args, environment);
+            expectSuccessfulPassthrough(result);
+            expect(result.stdout).toContain(expected);
+            expectNoDaemonState(environment);
+        });
     });
 });

@@ -21,11 +21,14 @@ import { hashObject } from '@/utils/deterministicJson';
 import { startRemcliServer } from '@/claude/utils/startRemcliServer';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { CodexDisplay } from '@/ui/ink/CodexDisplay';
-import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { stopCaffeinate } from '@/utils/caffeinate';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
+import {
+    acquireDaemonRunnerCredential,
+    reportTerminalSessionStarted,
+} from '@/utils/daemonRunnerCredentialBootstrap';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { CursorPermissionMode, PermissionMode } from '@/api/types';
 
@@ -91,6 +94,18 @@ export async function runCursor(opts: {
     }
     const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
 
+    if (opts.startedBy === 'daemon') {
+        if (!response) {
+            logger.warn('[Cursor] Daemon-owned runner cannot start without a P2P session for credential handoff.');
+            return;
+        }
+        if (!await acquireDaemonRunnerCredential({ agentName: 'Cursor', sessionId: response.id, metadata })) {
+            return;
+        }
+    } else if (response) {
+        await reportTerminalSessionStarted({ agentName: 'Cursor', sessionId: response.id, metadata });
+    }
+
     // Handle server unreachable — create offline stub with hot reconnection
     let session: ApiSessionClient;
 
@@ -100,24 +115,18 @@ export async function runCursor(opts: {
         metadata,
         state,
         response,
+        canCreateReconnectedSessionConsumer: opts.startedBy === 'daemon'
+            ? async (reconnectedSession) => acquireDaemonRunnerCredential({
+                agentName: 'Cursor',
+                sessionId: reconnectedSession.id,
+                metadata,
+            })
+            : undefined,
         onSessionSwap: (newSession) => {
             session = newSession;
         },
     });
     session = initialSession;
-
-    // Report to daemon
-    if (response) {
-        try {
-            logger.debug(`[START] Reporting session ${response.id} to daemon`);
-            const result = await notifyDaemonSessionStarted(response.id, metadata);
-            if (result.error) {
-                logger.debug(`[START] Failed to report to daemon:`, result.error);
-            }
-        } catch (error) {
-            logger.debug('[START] Failed to report to daemon:', error);
-        }
-    }
 
     const messageQueue = new MessageQueue2<CursorMode>((mode) => hashObject({
         permissionMode: mode.permissionMode,

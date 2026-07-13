@@ -11,6 +11,7 @@ import type { Status } from "@/components/kit";
 import { dedupeSessionsByNativeAgent, formatTimeLabel, machineName, sessionAgent, sessionPath, sessionStatus } from "@/components/app/sessionDisplay";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { t } from "@/lib/i18n";
+import { canStopSession, type IStopMachineTarget } from "@/lib/sessionCapabilities";
 import {
     machineStopSession,
     useConnectionStatus,
@@ -150,28 +151,48 @@ export interface StopTarget {
     session: Session;
     /** id машины из стора демона: RPC-хендлер stop-session зарегистрирован под ним,
      * а не под персистентным session.metadata.machineId. */
-    machineId: string | null;
+    machine: IStopMachineTarget | null;
 }
 
 export interface StopControls {
-    requestStop: (session: Session, machineId: string | null) => void;
+    requestStop: (session: Session, machine: IStopMachineTarget | null) => void;
+}
+
+type StopSessionRequest = (machineId: string, sessionId: string) => Promise<{ message: string }>;
+
+/** The dialog repeats the capability check so accidental callers cannot reach the stop RPC. */
+export async function requestStopSession(
+    target: StopTarget | null,
+    stopSession: StopSessionRequest = machineStopSession,
+): Promise<boolean> {
+    if (!target || !canStopSession(target.session, target.machine) || !target.machine?.id) return false;
+
+    await stopSession(target.machine.id, target.session.id);
+    return true;
 }
 
 export function StopSessionDialog({ target, onClose }: { target: StopTarget | null; onClose: () => void }) {
+    const canStop = target !== null && canStopSession(target.session, target.machine);
     const confirmStop = async () => {
-        if (!target) return;
-        onClose();
-        if (!target.machineId) {
+        if (!target || !canStop) {
+            onClose();
             toast.error(t("home.stop.failed"));
             return;
         }
+        onClose();
         try {
-            await machineStopSession(target.machineId, target.session.id);
+            const didRequestStop = await requestStopSession(target);
+            if (!didRequestStop) {
+                toast.error(t("home.stop.failed"));
+                return;
+            }
             toast.success(t("home.stop.done"));
         } catch {
             toast.error(t("home.stop.failed"));
         }
     };
+    if (!canStop) return null;
+
     return (
         <Dialog open={target !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
             <DialogContent showCloseButton={false} className="max-w-[calc(100%-2rem)] rounded-2xl border-border bg-card sm:max-w-sm">
@@ -244,6 +265,10 @@ function SidebarMachineSection({ group, controls, isFirst, activeSessionId }: {
     activeSessionId?: string;
 }) {
     const navigate = useNavigate();
+    const stopMachine: IStopMachineTarget = {
+        id: group.rpcMachineId,
+        isActive: group.isOnline,
+    };
     return (
         <>
             <div className={`px-2.5 pb-0.5 font-mono text-[9.5px] ${group.isOnline ? "text-muted-foreground/70" : "text-muted-foreground/50"} ${isFirst ? "pt-1" : "pt-2.5"}`}>
@@ -265,8 +290,8 @@ function SidebarMachineSection({ group, controls, isFirst, activeSessionId }: {
                             </span>
                             <StatusDot status={status} className="size-[7px]" />
                         </button>
-                        {status !== "offline" && (
-                            <StopOverlayButton onClick={() => controls.requestStop(session, group.rpcMachineId)} />
+                        {canStopSession(session, stopMachine) && (
+                            <StopOverlayButton onClick={() => controls.requestStop(session, stopMachine)} />
                         )}
                     </div>
                 );
@@ -288,7 +313,10 @@ export function SessionsSidebar({ activeSessionId, className = "flex" }: {
     const banner = useConnectionBanner();
     const [stopTarget, setStopTarget] = React.useState<StopTarget | null>(null);
     const controls: StopControls = {
-        requestStop: (session, machineId) => setStopTarget({ session, machineId }),
+        requestStop: (session, machine) => {
+            if (!canStopSession(session, machine)) return;
+            setStopTarget({ session, machine });
+        },
     };
     const isConnected = connectionStatus === "connected";
     return (

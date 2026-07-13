@@ -5,12 +5,19 @@
 
 import { logger } from '@/ui/logger';
 import { clearDaemonState, readDaemonState } from '@/persistence';
-import { Metadata } from '@/api/types';
+import type { Metadata } from '@/api/types';
 import { projectPath } from '@/projectPath';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { configuration } from '@/configuration';
-import { TrackedSession } from './types';
+import {
+  type CodexRemoteTuiOpenRequest,
+  type CodexRemoteTuiOpenResult,
+  type NativeCodexThreadBinding,
+  type NativeCodexThreadBindingResult,
+  type TrackedSession,
+} from './types';
+import { getSessionRunnerCredential, rememberSessionRunnerCredential } from './p2p/p2pRunnerCredentials';
 
 /**
  * Consistent envelope for all daemon HTTP responses.
@@ -27,6 +34,13 @@ interface SpawnDaemonSessionBody {
   type?: string;
   directory?: string;
 }
+
+interface SessionStartedResponse {
+  status: 'ok';
+  runnerCredential?: string;
+}
+
+const MISSING_SESSION_RUNNER_CREDENTIAL_ERROR = 'Missing session runner credential';
 
 async function daemonPost<T = unknown>(path: string, body?: unknown): Promise<DaemonResponse<T>> {
   const state = await readDaemonState();
@@ -72,8 +86,44 @@ export async function notifyDaemonSessionStarted(
   sessionId: string,
   metadata: Metadata
 ): Promise<{ error?: string }> {
-  const result = await daemonPost('/session-started', { sessionId, metadata });
+  const runnerToken = process.env.REMCLI_DAEMON_RUNNER_TOKEN;
+  const result = await daemonPost<SessionStartedResponse>('/session-started', {
+    sessionId,
+    metadata,
+    ...(runnerToken ? { runnerToken } : {}),
+  });
+  if (result.ok && typeof result.data.runnerCredential === 'string') {
+    rememberSessionRunnerCredential(sessionId, result.data.runnerCredential);
+  }
   return result.ok ? {} : { error: result.error };
+}
+
+export async function bindDaemonCodexThread(
+  binding: NativeCodexThreadBinding
+): Promise<DaemonResponse<NativeCodexThreadBindingResult>> {
+  const runnerCredential = getSessionRunnerCredential(binding.remcliSessionId);
+  if (!runnerCredential) {
+    return { ok: false, error: MISSING_SESSION_RUNNER_CREDENTIAL_ERROR };
+  }
+
+  return daemonPost<NativeCodexThreadBindingResult>('/codex-thread-bound', {
+    ...binding,
+    runnerCredential,
+  });
+}
+
+export async function openDaemonCodexRemoteTui(
+  request: CodexRemoteTuiOpenRequest
+): Promise<DaemonResponse<CodexRemoteTuiOpenResult>> {
+  const runnerCredential = getSessionRunnerCredential(request.remcliSessionId);
+  if (!runnerCredential) {
+    return { ok: false, error: MISSING_SESSION_RUNNER_CREDENTIAL_ERROR };
+  }
+
+  return daemonPost<CodexRemoteTuiOpenResult>('/codex-remote-tui-open', {
+    ...request,
+    runnerCredential,
+  });
 }
 
 export async function listDaemonSessions(): Promise<TrackedSession[]> {

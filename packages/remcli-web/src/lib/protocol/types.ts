@@ -183,6 +183,7 @@ export const MetadataSchema = z.object({
     homeDir: z.string().optional(),
     remcliHomeDir: z.string().optional(),
     hostPid: z.number().optional(),
+    startedBy: z.enum(['daemon', 'terminal']).optional(),
     flavor: z.string().nullish() // Session flavor / agent identifier
 });
 

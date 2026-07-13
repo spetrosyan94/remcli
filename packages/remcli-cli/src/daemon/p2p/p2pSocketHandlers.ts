@@ -44,7 +44,12 @@ export function registerSocketHandlers(
         const { sid, message: msgContent, localId } = data;
         logger.debug(`[P2P SOCKET] message for session ${sid}`);
 
-        const msg = store.addMessage(sid, msgContent, localId || null);
+        const msg = store.addMessage(
+            sid,
+            msgContent,
+            localId || null,
+            connection.connectionType !== 'session-scoped'
+        );
         if (!msg) {
             logger.debug(`[P2P SOCKET] message: session ${sid} not found`);
             return;

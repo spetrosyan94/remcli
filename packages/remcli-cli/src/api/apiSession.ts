@@ -5,6 +5,7 @@ import { AgentState, ClientToServerEvents, MessageContent, Metadata, ServerToCli
 import { decodeBase64, decrypt, encodeBase64, encrypt } from './encryption';
 import { backoff } from '@/utils/time';
 import { getEffectiveServerUrl } from '@/daemon/p2p/p2pSession';
+import { getSessionRunnerCredential, SESSION_MESSAGE_ACK_VERSION } from '@/daemon/p2p/p2pRunnerCredentials';
 import { RawJSONLines } from '@/claude/types';
 import { randomUUID } from 'node:crypto';
 import { AsyncLock } from '@/utils/lock';
@@ -47,8 +48,13 @@ export class ApiSessionClient extends EventEmitter {
     private agentState: AgentState | null;
     private agentStateVersion: number;
     private socket: Socket<ServerToClientEvents, ClientToServerEvents>;
-    private pendingMessages: UserMessage[] = [];
+    private pendingMessages: Array<{ message: UserMessage; sequence: number }> = [];
+    private pendingMessageSequences = new Set<number>();
+    private processedMessageSequences = new Set<number>();
+    private acknowledgedMessageSequence = 0;
     private pendingMessageCallback: ((message: UserMessage) => void) | null = null;
+    private isRunnerMessageConsumer = false;
+    private doesSocketAuthIncludeRunnerCredential = false;
     readonly rpcHandlerManager: RpcHandlerManager;
     private agentStateLock = new AsyncLock();
     private metadataLock = new AsyncLock();
@@ -65,6 +71,7 @@ export class ApiSessionClient extends EventEmitter {
         this.agentStateVersion = session.agentStateVersion;
         this.encryptionKey = session.encryptionKey;
         this.encryptionVariant = session.encryptionVariant;
+        this.doesSocketAuthIncludeRunnerCredential = Boolean(getSessionRunnerCredential(this.sessionId));
 
         // Initialize RPC handler manager
         this.rpcHandlerManager = new RpcHandlerManager({
@@ -80,10 +87,18 @@ export class ApiSessionClient extends EventEmitter {
         //
 
         this.socket = io(getEffectiveServerUrl(), {
-            auth: {
-                token: this.token,
-                clientType: 'session-scoped' as const,
-                sessionId: this.sessionId
+            auth: (callback) => {
+                const runnerCredential = getSessionRunnerCredential(this.sessionId);
+                this.doesSocketAuthIncludeRunnerCredential = Boolean(runnerCredential);
+                callback({
+                    token: this.token,
+                    clientType: 'session-scoped' as const,
+                    sessionId: this.sessionId,
+                    ...(runnerCredential ? {
+                        messageAckVersion: SESSION_MESSAGE_ACK_VERSION,
+                        runnerCredential
+                    } : {})
+                });
             },
             path: '/v1/updates',
             reconnection: true,
@@ -130,6 +145,12 @@ export class ApiSessionClient extends EventEmitter {
                 }
 
                 if (data.body.t === 'new-message' && data.body.message.content.t === 'encrypted') {
+                    const messageSequence = data.body.message.seq;
+                    if (messageSequence <= this.acknowledgedMessageSequence) {
+                        this.acknowledgeMessageDelivery();
+                        return;
+                    }
+
                     const body = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(data.body.message.content.c));
 
                     logger.debugLargeJson('[SOCKET] [UPDATE] Received update:', body)
@@ -139,13 +160,25 @@ export class ApiSessionClient extends EventEmitter {
                     if (userResult.success) {
                         // Server already filtered to only our session
                         if (this.pendingMessageCallback) {
+                            this.pendingMessageSequences.add(messageSequence);
                             this.pendingMessageCallback(userResult.data);
+                            this.pendingMessageSequences.delete(messageSequence);
+                            this.markMessageProcessed(messageSequence);
+                        } else if (!this.pendingMessageSequences.has(messageSequence)) {
+                            this.pendingMessages.push({
+                                message: userResult.data,
+                                sequence: messageSequence
+                            });
+                            this.pendingMessageSequences.add(messageSequence);
                         } else {
-                            this.pendingMessages.push(userResult.data);
+                            logger.debug(`[SOCKET] Ignoring duplicate pending message sequence ${messageSequence}`);
                         }
                     } else {
                         // If not a user message, it might be a permission response or other message type
+                        this.pendingMessageSequences.add(messageSequence);
                         this.emit('message', body);
+                        this.pendingMessageSequences.delete(messageSequence);
+                        this.markMessageProcessed(messageSequence);
                     }
                 } else if (data.body.t === 'update-session') {
                     if (data.body.metadata && data.body.metadata.version > this.metadataVersion) {
@@ -180,11 +213,70 @@ export class ApiSessionClient extends EventEmitter {
         this.socket.connect();
     }
 
-    onUserMessage(callback: (data: UserMessage) => void) {
+    onUserMessage(callback: (data: UserMessage) => void): void {
+        if (!this.isRunnerMessageConsumer) {
+            this.isRunnerMessageConsumer = true;
+            if (
+                getSessionRunnerCredential(this.sessionId)
+                && !this.doesSocketAuthIncludeRunnerCredential
+            ) {
+                this.socket.disconnect();
+                this.socket.connect();
+            }
+        }
+
         this.pendingMessageCallback = callback;
         while (this.pendingMessages.length > 0) {
-            callback(this.pendingMessages.shift()!);
+            const pendingMessage = this.pendingMessages[0];
+            callback(pendingMessage.message);
+            this.pendingMessages.shift();
+            this.pendingMessageSequences.delete(pendingMessage.sequence);
+            this.markMessageProcessed(pendingMessage.sequence);
         }
+    }
+
+    private markMessageProcessed(messageSequence: number): void {
+        this.processedMessageSequences.add(messageSequence);
+        this.acknowledgeMessageDelivery();
+    }
+
+    private acknowledgeMessageDelivery(): void {
+        if (!this.isRunnerMessageConsumer || !getSessionRunnerCredential(this.sessionId)) {
+            return;
+        }
+
+        const unprocessedSequences = Array.from(this.processedMessageSequences)
+            .filter((messageSequence) => messageSequence > this.acknowledgedMessageSequence)
+            .sort((left, right) => left - right);
+        const pendingSequences = Array.from(this.pendingMessageSequences)
+            .filter((messageSequence) => messageSequence > this.acknowledgedMessageSequence);
+
+        if (pendingSequences.length > 0) {
+            const earliestPendingSequence = Math.min(...pendingSequences);
+            const lastProcessedSequence = unprocessedSequences
+                .filter((messageSequence) => messageSequence < earliestPendingSequence)
+                .at(-1);
+            if (lastProcessedSequence !== undefined) {
+                this.acknowledgedMessageSequence = lastProcessedSequence;
+            }
+        } else if (unprocessedSequences.length > 0) {
+            this.acknowledgedMessageSequence = unprocessedSequences.at(-1)!;
+        }
+
+        if (this.acknowledgedMessageSequence === 0) {
+            return;
+        }
+
+        for (const messageSequence of this.processedMessageSequences) {
+            if (messageSequence <= this.acknowledgedMessageSequence) {
+                this.processedMessageSequences.delete(messageSequence);
+            }
+        }
+
+        this.socket.emit('message-ack', {
+            sid: this.sessionId,
+            seq: this.acknowledgedMessageSequence
+        });
     }
 
     /**

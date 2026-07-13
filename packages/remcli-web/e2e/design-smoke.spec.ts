@@ -271,7 +271,7 @@ test("triggered toast stays out of bottom chrome", async ({ page }, testInfo) =>
     expect(pageIssues).toEqual([]);
 });
 
-test("chat action menu exposes terminal and stop session actions", async ({ page }, testInfo) => {
+test("daemon fixture chat stop and resume keeps seeded history visible", async ({ page }, testInfo) => {
     const pageIssues = collectPageIssues(page);
 
     await openFixtureRoute(page, "/session/fx-chat?fixtures=1");
@@ -292,6 +292,37 @@ test("chat action menu exposes terminal and stop session actions", async ({ page
     await expect(page.getByText("session stopped")).toBeVisible();
     await expect(page.getByText("— session ended —")).toBeVisible();
     await expect(page.getByRole("button", { name: /resume/i })).toBeVisible();
+
+    await Promise.all([
+        page.waitForURL(/\/session\/fx-resume-claude-\d+$/),
+        page.getByRole("button", { name: /resume/i }).click(),
+    ]);
+    await expect(page.getByText("Проверь тесты и почини баг с балансом скобок в parser.ts", { exact: true })).toBeVisible();
+    await expect(page.getByText("Смотрю parser.ts и прогоняю линтер, чтобы найти место с дисбалансом скобок.", { exact: true })).toBeVisible();
+
+    await assertNoHorizontalOverflow(page);
+    await assertNoBottomToastOverlap(page);
+    if (isMobileProject(testInfo)) {
+        await assertMobileTouchTargets(page);
+    }
+
+    expect(pageIssues).toEqual([]);
+});
+
+test("terminal fixture hides Stop across chat, Home, and sidebar", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await openFixtureRoute(page, "/session/fx-running?fixtures=1");
+    await page.getByRole("button", { name: "Menu" }).click();
+
+    await expect(page.getByRole("menuitem", { name: /terminal/i })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: /^stop$/i })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    await openFixtureRoute(page, "/?fixtures=1");
+    const terminalSessionRow = page.locator("button:visible").filter({ hasText: /webapp/i }).first().locator("..");
+    await expect(terminalSessionRow).toBeVisible();
+    await expect(terminalSessionRow.getByRole("button", { name: /stop session/i })).toHaveCount(0);
 
     await assertNoHorizontalOverflow(page);
     await assertNoBottomToastOverlap(page);

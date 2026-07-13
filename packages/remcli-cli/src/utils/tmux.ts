@@ -20,6 +20,7 @@
  */
 
 import { spawn, SpawnOptions } from 'child_process';
+import { randomInt } from 'node:crypto';
 import { promisify } from 'util';
 import { logger } from '@/ui/logger';
 
@@ -88,6 +89,132 @@ export interface TmuxCommandResult {
     stdout: string;
     stderr: string;
     command: string[];
+}
+
+export type TmuxSessionStatus = 'exists' | 'missing' | 'unknown';
+
+export interface TmuxWindowInfo {
+    windowId: string;
+    sessionName: string;
+    paneId: string;
+    panePid: number;
+}
+
+/** Immutable identity of one tmux pane and the process that occupied it at creation. */
+export interface TmuxPaneInfo {
+    windowId: string;
+    sessionName: string;
+    paneId: string;
+    panePid: number;
+    ownerMarker: string;
+}
+
+export type TmuxWindowLookupResult =
+    | { status: 'exists'; window: TmuxWindowInfo }
+    | { status: 'missing' }
+    | { status: 'unknown' };
+
+export type TmuxPaneLookupResult =
+    | { status: 'exists'; pane: TmuxPaneInfo }
+    | { status: 'missing' }
+    | { status: 'unknown' };
+
+export type TmuxSpawnResult =
+    | { success: true; sessionId: string; ownership: TmuxPaneInfo }
+    | { success: false; error: string };
+
+export type TmuxSessionCreateResult =
+    | { success: true; sessionId: string; ownership: TmuxPaneInfo }
+    | { success: false; error: string };
+
+export type TmuxOwnedPaneReleaseResult = 'released' | 'missing' | 'mismatch' | 'unknown';
+
+const TMUX_WINDOW_ID_PATTERN = /^@\d+$/;
+const TMUX_PANE_ID_PATTERN = /^%\d+$/;
+const TMUX_OWNER_MARKER_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TMUX_OWNER_OPTION = '@remcli_owner';
+const TMUX_OWNERSHIP_MISMATCH_OUTPUT = '__remcli_ownership_mismatch__';
+const TMUX_OWNED_PANE_FORMAT = '#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{@remcli_owner}';
+const TMUX_MAX_WINDOW_INDEX = 2_147_483_647;
+const TMUX_WINDOW_INDEX_MIN = 1_000_000;
+const TMUX_WINDOW_INDEX_MAX_EXCLUSIVE = 2_000_000_000;
+const TMUX_WINDOW_INDEX_CREATE_ATTEMPTS = 4;
+
+type TmuxWindowIndexGenerator = () => number;
+
+function isTmuxWindowId(value: string): boolean {
+    return TMUX_WINDOW_ID_PATTERN.test(value);
+}
+
+function isTmuxPaneId(value: string): boolean {
+    return TMUX_PANE_ID_PATTERN.test(value);
+}
+
+function isTmuxOwnerMarker(value: string): boolean {
+    return TMUX_OWNER_MARKER_PATTERN.test(value);
+}
+
+function isTmuxWindowIndex(value: number): boolean {
+    return Number.isSafeInteger(value) && value >= 0 && value <= TMUX_MAX_WINDOW_INDEX;
+}
+
+function generateTmuxWindowIndex(): number {
+    return randomInt(TMUX_WINDOW_INDEX_MIN, TMUX_WINDOW_INDEX_MAX_EXCLUSIVE);
+}
+
+function hasValidTmuxPaneOwnership(ownership: TmuxPaneInfo): boolean {
+    return isTmuxPaneId(ownership.paneId)
+        && isTmuxWindowId(ownership.windowId)
+        && /^[a-zA-Z0-9._-]+$/.test(ownership.sessionName)
+        && Number.isSafeInteger(ownership.panePid)
+        && ownership.panePid > 0
+        && isTmuxOwnerMarker(ownership.ownerMarker);
+}
+
+function buildTmuxPaneCondition(ownership: TmuxPaneInfo, expectedOwnerMarker: string): string {
+    const conditions = [
+        `#{==:#{${TMUX_OWNER_OPTION}},${expectedOwnerMarker}}`,
+        `#{==:#{session_name},${ownership.sessionName}}`,
+        `#{==:#{window_id},${ownership.windowId}}`,
+        `#{==:#{pane_id},${ownership.paneId}}`,
+        `#{==:#{pane_pid},${ownership.panePid}}`,
+    ];
+
+    return conditions.reduce((combinedCondition, condition) => `#{&&:${combinedCondition},${condition}}`);
+}
+
+function buildTmuxSessionOwnerCondition(sessionName: string, ownerMarker: string): string {
+    return '#{&&:#{==:#{session_name},' + sessionName + '},#{==:#{@remcli_owner},' + ownerMarker + '}}';
+}
+
+function buildExactTmuxWindowIndexTarget(sessionName: string, windowIndex: number): string {
+    return `=${sessionName}:${windowIndex}`;
+}
+
+function isTmuxWindowIndexInUse(result: TmuxCommandResult | null, windowIndex: number): boolean {
+    if (!result || result.returncode === 0) {
+        return false;
+    }
+
+    return `${result.stderr}\n${result.stdout}`.includes(`index ${windowIndex} in use`);
+}
+
+function quoteTmuxCommandArgument(value: string): string {
+    return `"${value.replace(/([\\"])/g, '\\$1')}"`;
+}
+
+function buildOwnedTmuxPaneCreationCommand(
+    createWindowArgs: string[],
+    sessionWindowTarget: string,
+    ownershipMarker: string,
+): string {
+    const quoteCommand = (args: string[]): string => args.map(quoteTmuxCommandArgument).join(' ');
+
+    return [
+        quoteCommand(createWindowArgs),
+        quoteCommand(['set-option', '-p', '-t', sessionWindowTarget, TMUX_OWNER_OPTION, ownershipMarker]),
+        quoteCommand(['display-message', '-p', '-t', sessionWindowTarget, TMUX_OWNED_PANE_FORMAT]),
+    ].join(' ; ');
 }
 
 export interface TmuxSessionInfo {
@@ -200,6 +327,8 @@ export function extractSessionAndWindow(tmuxOutput: string): { session: string; 
 export interface TmuxSpawnOptions extends Omit<SpawnOptions, 'env'> {
     /** Target tmux session name */
     sessionName?: string;
+    /** UUID capability written to the pane before it is returned to a caller. */
+    ownershipMarker: string;
     /** Custom tmux socket path */
     socketPath?: string;
     /** Create new window in existing session */
@@ -210,6 +339,14 @@ export interface TmuxSpawnOptions extends Omit<SpawnOptions, 'env'> {
     // It's passed as a separate parameter to spawnInTmux() for clarity
     // and efficiency - only variables that differ from the tmux server
     // environment need to be passed via -e flags.
+}
+
+/**
+ * Options for creating a child window only when one daemon-owned host pane
+ * still has its original immutable ownership tuple.
+ */
+export interface TmuxOwnedWindowSpawnOptions extends Omit<TmuxSpawnOptions, 'sessionName'> {
+    hostOwnership: TmuxPaneInfo;
 }
 
 /**
@@ -353,15 +490,25 @@ const CONTROL_SEQUENCES: Set<TmuxControlSequence> = new Set([
     'C-s', 'C-t', 'C-v', 'C-x', 'C-y', 'C-z', 'C-\\', 'C-]', 'C-[', 'C-]'
 ]);
 
+const TMUX_COMMAND_TIMEOUT_MS = 5_000;
+
 export class TmuxUtilities {
     /** Default session name to prevent interference */
     public static readonly DEFAULT_SESSION_NAME = "remcli";
 
     private controlState: TmuxControlState = TmuxControlState.NORMAL;
     public readonly sessionName: string;
+    private readonly socketPath?: string;
+    private readonly windowIndexGenerator: TmuxWindowIndexGenerator;
 
-    constructor(sessionName?: string) {
+    constructor(
+        sessionName?: string,
+        socketPath?: string,
+        windowIndexGenerator: TmuxWindowIndexGenerator = generateTmuxWindowIndex,
+    ) {
         this.sessionName = sessionName || TmuxUtilities.DEFAULT_SESSION_NAME;
+        this.socketPath = socketPath;
+        this.windowIndexGenerator = windowIndexGenerator;
     }
 
     /**
@@ -425,8 +572,9 @@ export class TmuxUtilities {
         let baseCmd = ['tmux'];
 
         // Add socket specification if provided
-        if (socketPath) {
-            baseCmd = ['tmux', '-S', socketPath];
+        const targetSocketPath = socketPath ?? this.socketPath;
+        if (targetSocketPath) {
+            baseCmd = ['tmux', '-S', targetSocketPath];
         }
 
         // Handle send-keys with proper target specification
@@ -464,12 +612,15 @@ export class TmuxUtilities {
      */
     private async executeCommand(cmd: string[]): Promise<TmuxCommandResult | null> {
         try {
-            const result = await this.runCommand(cmd);
+            const command = this.socketPath && cmd[0] === 'tmux' && !cmd.slice(1).includes('-S')
+                ? ['tmux', '-S', this.socketPath, ...cmd.slice(1)]
+                : cmd;
+            const result = await this.runCommand(command);
             return {
                 returncode: result.exitCode,
                 stdout: result.stdout || '',
                 stderr: result.stderr || '',
-                command: cmd
+                command,
             };
         } catch (error) {
             logger.debug('[TMUX] Command execution failed:', error);
@@ -482,15 +633,54 @@ export class TmuxUtilities {
      */
     private runCommand(args: string[], options: SpawnOptions = {}): Promise<{ exitCode: number; stdout: string; stderr: string }> {
         return new Promise((resolve, reject) => {
-            const child = spawn(args[0], args.slice(1), {
-                stdio: ['ignore', 'pipe', 'pipe'],
-                timeout: 5000,
-                shell: false,
-                ...options
-            });
-
             let stdout = '';
             let stderr = '';
+            let hasSettled = false;
+            let timeout: NodeJS.Timeout | undefined;
+
+            const complete = (result: { exitCode: number; stdout: string; stderr: string }) => {
+                if (hasSettled) {
+                    return;
+                }
+                hasSettled = true;
+                if (timeout) {
+                    clearTimeout(timeout);
+                }
+                resolve(result);
+            };
+
+            const fail = (error: Error) => {
+                if (hasSettled) {
+                    return;
+                }
+                hasSettled = true;
+                if (timeout) {
+                    clearTimeout(timeout);
+                }
+                reject(error);
+            };
+
+            let child: ReturnType<typeof spawn>;
+            try {
+                child = spawn(args[0], args.slice(1), {
+                    stdio: ['ignore', 'pipe', 'pipe'],
+                    shell: false,
+                    ...options
+                });
+            } catch (error) {
+                fail(error instanceof Error ? error : new Error(String(error)));
+                return;
+            }
+
+            timeout = setTimeout(() => {
+                try {
+                    child.kill('SIGKILL');
+                } catch (error) {
+                    stderr += `tmux command timeout cleanup failed: ${error instanceof Error ? error.message : String(error)}`;
+                } finally {
+                    fail(new Error(`${stderr}tmux command timed out after ${TMUX_COMMAND_TIMEOUT_MS}ms`));
+                }
+            }, TMUX_COMMAND_TIMEOUT_MS);
 
             child.stdout?.on('data', (data) => {
                 stdout += data.toString();
@@ -500,16 +690,20 @@ export class TmuxUtilities {
                 stderr += data.toString();
             });
 
-            child.on('close', (code) => {
-                resolve({
-                    exitCode: code || 0,
+            child.on('close', (code, signal) => {
+                if (signal) {
+                    fail(new Error(`${stderr}tmux command terminated by ${signal}`));
+                    return;
+                }
+                complete({
+                    exitCode: code ?? 1,
                     stdout,
                     stderr
                 });
             });
 
             child.on('error', (error) => {
-                reject(error);
+                fail(error);
             });
         });
     }
@@ -599,6 +793,212 @@ export class TmuxUtilities {
         // grouped sessions where new-window fails with "index in use".
         const createResult = await this.executeCommand(['tmux', 'new-session', '-d', '-s', targetSession]);
         return createResult !== null && createResult.returncode === 0;
+    }
+
+    /**
+     * Allocate the numeric target before creating a window, so the create,
+     * marker, and ownership response all address the same immutable target.
+     * A target collision fails before the command runs; it is safe to retry
+     * because no name-based target is ever used to mark a foreign window.
+     */
+    private async createMarkedTmuxWindow(
+        sessionName: string,
+        ownershipMarker: string,
+        buildCreateCommand: (sessionWindowTarget: string) => string[],
+        buildFailureMessage: (result: TmuxCommandResult | null) => string,
+    ): Promise<TmuxPaneInfo> {
+        for (let attempt = 0; attempt < TMUX_WINDOW_INDEX_CREATE_ATTEMPTS; attempt++) {
+            const windowIndex = this.windowIndexGenerator();
+            if (!isTmuxWindowIndex(windowIndex)) {
+                throw new TmuxSessionIdentifierError('Tmux window index generator returned an invalid index');
+            }
+
+            const sessionWindowTarget = buildExactTmuxWindowIndexTarget(sessionName, windowIndex);
+            const result = await this.executeCommand(buildCreateCommand(sessionWindowTarget));
+            if (isTmuxWindowIndexInUse(result, windowIndex)) {
+                logger.debug(`[TMUX] Window index ${windowIndex} is already in use; retrying owned window creation.`);
+                continue;
+            }
+
+            const ownership = await this.resolveCreatedPaneOwnership(
+                result,
+                sessionName,
+                ownershipMarker,
+            );
+            if (ownership) {
+                return ownership;
+            }
+
+            throw new Error(buildFailureMessage(result));
+        }
+
+        throw new Error(`Failed to reserve a unique tmux window index after ${TMUX_WINDOW_INDEX_CREATE_ATTEMPTS} attempts.`);
+    }
+
+    private parseCreatedPaneOwnership(
+        output: string,
+        sessionName: string,
+        ownerMarker: string,
+        includesSessionName: boolean,
+        includesOwnerMarker = false,
+    ): TmuxPaneInfo | null {
+        const values = output.trim().split('\t');
+        const expectedValueCount = 3 + Number(includesSessionName) + Number(includesOwnerMarker);
+        if (values.length !== expectedValueCount) {
+            return null;
+        }
+        const receivedSessionName = includesSessionName ? values.shift() : sessionName;
+        const [windowId, paneId, panePidValue, receivedOwnerMarker] = values;
+        const panePid = Number.parseInt(panePidValue ?? '', 10);
+        const ownership: TmuxPaneInfo = {
+            sessionName: receivedSessionName ?? '',
+            windowId: windowId ?? '',
+            paneId: paneId ?? '',
+            panePid,
+            ownerMarker,
+        };
+
+        return ownership.sessionName === sessionName
+            && (!includesOwnerMarker || receivedOwnerMarker === ownerMarker)
+            && hasValidTmuxPaneOwnership(ownership)
+            ? ownership
+            : null;
+    }
+
+    /**
+     * Find the one pane a failed create attempt could have made. The tmux
+     * server filters by both session name and owner marker, while this client
+     * accepts exactly one fully validated tuple. Ambiguity is never cleaned up
+     * or adopted.
+     */
+    async findOwnedPaneBySessionAndMarker(
+        sessionName: string,
+        ownerMarker: string,
+    ): Promise<TmuxPaneInfo | null> {
+        try {
+            const parsedSession = parseTmuxSessionIdentifier(sessionName);
+            if (parsedSession.window || parsedSession.pane || !isTmuxOwnerMarker(ownerMarker)) {
+                return null;
+            }
+
+            const result = await this.executeCommand([
+                'tmux',
+                'list-panes',
+                '-a',
+                '-F',
+                TMUX_OWNED_PANE_FORMAT,
+                '-f',
+                buildTmuxSessionOwnerCondition(parsedSession.session, ownerMarker),
+            ]);
+            if (!result || result.returncode !== 0) {
+                return null;
+            }
+
+            const candidateRows = result.stdout.split('\n').filter(Boolean);
+            if (candidateRows.length !== 1) {
+                return null;
+            }
+
+            return this.parseCreatedPaneOwnership(
+                candidateRows[0],
+                parsedSession.session,
+                ownerMarker,
+                true,
+                true,
+            );
+        } catch (error) {
+            logger.debug('[TMUX] Failed to recover an owned tmux pane:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Use the response only when tmux confirmed the full marked tuple. A lost,
+     * failed, or malformed response is recoverable solely through the UUID
+     * marker that the creation command installed server-side.
+     */
+    private async resolveCreatedPaneOwnership(
+        result: TmuxCommandResult | null,
+        sessionName: string,
+        ownerMarker: string,
+    ): Promise<TmuxPaneInfo | null> {
+        if (result?.returncode === 0) {
+            const createdOwnership = this.parseCreatedPaneOwnership(
+                result.stdout,
+                sessionName,
+                ownerMarker,
+                true,
+                true,
+            );
+            if (createdOwnership) {
+                return createdOwnership;
+            }
+        }
+
+        return this.findOwnedPaneBySessionAndMarker(sessionName, ownerMarker);
+    }
+
+    /**
+     * Create a tmux host session and return the exact pane identity created by
+     * that command. Unlike ensureSessionExists(), this never adopts a
+     * same-named session that another process created.
+     */
+    async createSessionWithPane(
+        sessionName: string,
+        windowName: string,
+        ownershipMarker: string,
+    ): Promise<TmuxSessionCreateResult> {
+        try {
+            const parsedSession = parseTmuxSessionIdentifier(sessionName);
+            if (parsedSession.window || parsedSession.pane) {
+                throw new TmuxSessionIdentifierError('Session name must not include a window or pane target');
+            }
+            if (!/^[a-zA-Z0-9._-]+$/.test(windowName)) {
+                throw new TmuxSessionIdentifierError(`Invalid window name: "${windowName}". Only alphanumeric characters, dots, hyphens, and underscores are allowed.`);
+            }
+            if (!isTmuxOwnerMarker(ownershipMarker)) {
+                throw new TmuxSessionIdentifierError('Invalid tmux ownership marker');
+            }
+
+            const result = await this.executeCommand([
+                'tmux',
+                'new-session',
+                '-d',
+                '-s',
+                parsedSession.session,
+                '-n',
+                windowName,
+                ';',
+                'set-option',
+                '-p',
+                TMUX_OWNER_OPTION,
+                ownershipMarker,
+                ';',
+                'display-message',
+                '-p',
+                TMUX_OWNED_PANE_FORMAT,
+            ]);
+            const ownership = await this.resolveCreatedPaneOwnership(
+                result,
+                parsedSession.session,
+                ownershipMarker,
+            );
+            if (!ownership) {
+                throw new Error(result?.stderr || 'Failed to create or recover the marked tmux session pane.');
+            }
+
+            return {
+                success: true,
+                sessionId: formatTmuxSessionIdentifier({ session: parsedSession.session, window: windowName }),
+                ownership,
+            };
+        } catch (error) {
+            logger.debug('[TMUX] Failed to create an owned tmux session:', error);
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+            };
+        }
     }
 
     /**
@@ -749,9 +1149,9 @@ export class TmuxUtilities {
      */
     async spawnInTmux(
         args: string[],
-        options: TmuxSpawnOptions = {},
+        options: TmuxSpawnOptions,
         env?: Record<string, string>
-    ): Promise<{ success: boolean; sessionId?: string; pid?: number; error?: string }> {
+    ): Promise<TmuxSpawnResult> {
         try {
             // Check if tmux is available
             const tmuxCheck = await this.executeTmuxCommand(['list-sessions']);
@@ -782,7 +1182,14 @@ export class TmuxUtilities {
                 }
             }
 
-            const windowName = options.windowName || `remcli-${Date.now()}`;
+            const windowName = options.windowName;
+            if (!windowName || !/^[a-zA-Z0-9._-]+$/.test(windowName)) {
+                throw new TmuxSessionIdentifierError('A valid collision-resistant tmux window name is required');
+            }
+
+            if (!isTmuxOwnerMarker(options.ownershipMarker)) {
+                throw new TmuxSessionIdentifierError('Invalid tmux ownership marker');
+            }
 
             // Check if session already exists
             const sessionExistsResult = await this.executeCommand(['tmux', 'has-session', '-t', sessionName]);
@@ -808,13 +1215,12 @@ export class TmuxUtilities {
                 logger.debug(`[TMUX] Setting ${Object.keys(env).length} environment variables in tmux window`);
             }
 
-            let createWindowArgs: string[];
-
+            let ownership: TmuxPaneInfo;
             if (!sessionExists) {
                 // Session doesn't exist — create it WITH the command as first window.
                 // This avoids an empty default shell window (window 0).
-                // tmux new-session -d -s <session> -n <window> [-c cwd] [-e K=V]... -P -F '#{pane_pid}' <command>
-                createWindowArgs = ['new-session', '-d', '-s', sessionName, '-n', windowName];
+                // The same tmux command marks and displays the exact new pane.
+                const createWindowArgs = ['new-session', '-d', '-s', sessionName, '-n', windowName];
 
                 if (options.cwd) {
                     const cwdPath = typeof options.cwd === 'string' ? options.cwd : options.cwd.pathname;
@@ -822,46 +1228,69 @@ export class TmuxUtilities {
                 }
 
                 createWindowArgs.push(...envFlags);
-                createWindowArgs.push('-P', '-F', '#{pane_pid}');
                 createWindowArgs.push(fullCommand);
 
                 logger.debug(`[TMUX] Creating new session "${sessionName}" with command window "${windowName}"`);
-            } else {
-                // Session exists — add a new window to it.
-                // IMPORTANT: Use "sessionName:" (with trailing colon) to auto-assign window index.
-                // Without the colon, tmux tries to create at the active window's index → "index N in use".
-                createWindowArgs = ['new-window', '-t', `${sessionName}:`, '-n', windowName];
-
-                if (options.cwd) {
-                    const cwdPath = typeof options.cwd === 'string' ? options.cwd : options.cwd.pathname;
-                    createWindowArgs.push('-c', cwdPath);
+                const fullTmuxCmd = [
+                    'tmux',
+                    ...createWindowArgs,
+                    ';',
+                    'set-option',
+                    '-p',
+                    TMUX_OWNER_OPTION,
+                    options.ownershipMarker,
+                    ';',
+                    'display-message',
+                    '-p',
+                    TMUX_OWNED_PANE_FORMAT,
+                ];
+                logger.debug(`[TMUX] Full tmux command (${fullTmuxCmd.length} args): tmux ${createWindowArgs.slice(0, 6).join(' ')} ... [${env ? Object.keys(env).length : 0} env vars] ... ${createWindowArgs.slice(-3).join(' ')}`);
+                const createResult = await this.executeCommand(fullTmuxCmd);
+                const createdOwnership = await this.resolveCreatedPaneOwnership(
+                    createResult,
+                    sessionName,
+                    options.ownershipMarker,
+                );
+                if (!createdOwnership) {
+                    throw new Error(createResult?.stderr || 'Failed to create or recover the marked tmux session pane.');
                 }
-
-                createWindowArgs.push(...envFlags);
-                createWindowArgs.push('-P', '-F', '#{pane_pid}');
-                createWindowArgs.push(fullCommand);
-
+                ownership = createdOwnership;
+            } else {
                 logger.debug(`[TMUX] Adding window "${windowName}" to existing session "${sessionName}"`);
+                ownership = await this.createMarkedTmuxWindow(
+                    sessionName,
+                    options.ownershipMarker,
+                    (sessionWindowTarget) => {
+                        const createWindowArgs = ['new-window', '-t', sessionWindowTarget, '-n', windowName];
+                        if (options.cwd) {
+                            const cwdPath = typeof options.cwd === 'string' ? options.cwd : options.cwd.pathname;
+                            createWindowArgs.push('-c', cwdPath);
+                        }
+                        createWindowArgs.push(...envFlags, fullCommand);
+
+                        return [
+                            'tmux',
+                            ...createWindowArgs,
+                            ';',
+                            'set-option',
+                            '-p',
+                            '-t',
+                            sessionWindowTarget,
+                            TMUX_OWNER_OPTION,
+                            options.ownershipMarker,
+                            ';',
+                            'display-message',
+                            '-p',
+                            '-t',
+                            sessionWindowTarget,
+                            TMUX_OWNED_PANE_FORMAT,
+                        ];
+                    },
+                    (result) => result?.stderr || 'Failed to create or recover the marked tmux window pane.',
+                );
             }
 
-            // Execute tmux command and get PID immediately
-            // IMPORTANT: Call executeCommand directly, NOT executeTmuxCommand!
-            // executeTmuxCommand auto-appends "-t sessionName" which would corrupt the command.
-            const fullTmuxCmd = ['tmux', ...createWindowArgs];
-            logger.debug(`[TMUX] Full tmux command (${fullTmuxCmd.length} args): tmux ${createWindowArgs.slice(0, 6).join(' ')} ... [${env ? Object.keys(env).length : 0} env vars] ... ${createWindowArgs.slice(-3).join(' ')}`);
-            const createResult = await this.executeCommand(fullTmuxCmd);
-
-            if (!createResult || createResult.returncode !== 0) {
-                throw new Error(`Failed to create tmux window: ${createResult?.stderr}`);
-            }
-
-            // Extract the PID from the output
-            const panePid = parseInt(createResult.stdout.trim());
-            if (isNaN(panePid)) {
-                throw new Error(`Failed to extract PID from tmux output: ${createResult.stdout}`);
-            }
-
-            logger.debug(`[TMUX] Spawned command in tmux session ${sessionName}, window ${windowName}, PID ${panePid}`);
+            logger.debug(`[TMUX] Spawned command in tmux session ${sessionName}, window ${windowName}, target ${ownership.windowId}/${ownership.paneId}, PID ${ownership.panePid}`);
 
             // Return tmux session info and PID
             const sessionIdentifier: TmuxSessionIdentifier = {
@@ -872,13 +1301,93 @@ export class TmuxUtilities {
             return {
                 success: true,
                 sessionId: formatTmuxSessionIdentifier(sessionIdentifier),
-                pid: panePid
+                ownership,
             };
         } catch (error) {
             logger.debug('[TMUX] Failed to spawn in tmux:', error);
             return {
                 success: false,
                 error: error instanceof Error ? error.message : String(error)
+            };
+        }
+    }
+
+    /**
+     * Create one child window only if the supplied host pane still belongs to
+     * this daemon. The host tuple check and new-window command are one tmux
+     * server-side operation, so a pane-id reuse cannot authorize creation.
+     */
+    async spawnInOwnedTmuxSession(
+        args: string[],
+        options: TmuxOwnedWindowSpawnOptions,
+        env?: Record<string, string>
+    ): Promise<TmuxSpawnResult> {
+        try {
+            const hostOwnership = options.hostOwnership;
+            if (!hasValidTmuxPaneOwnership(hostOwnership)) {
+                throw new TmuxSessionIdentifierError('Invalid immutable tmux host ownership');
+            }
+            if (!isTmuxOwnerMarker(options.ownershipMarker)) {
+                throw new TmuxSessionIdentifierError('Invalid tmux ownership marker');
+            }
+
+            const windowName = options.windowName;
+            if (!windowName || !/^[a-zA-Z0-9._-]+$/.test(windowName)) {
+                throw new TmuxSessionIdentifierError('A valid collision-resistant tmux window name is required');
+            }
+            const ownership = await this.createMarkedTmuxWindow(
+                hostOwnership.sessionName,
+                options.ownershipMarker,
+                (sessionWindowTarget) => {
+                    const createWindowArgs = ['new-window', '-t', sessionWindowTarget, '-n', windowName];
+                    if (options.cwd) {
+                        const cwdPath = typeof options.cwd === 'string' ? options.cwd : options.cwd.pathname;
+                        createWindowArgs.push('-c', cwdPath);
+                    }
+                    if (env) {
+                        for (const [key, value] of Object.entries(env)) {
+                            if (value === undefined || value === null || !/^[A-Z_][A-Z0-9_]*$/i.test(key)) {
+                                continue;
+                            }
+                            createWindowArgs.push('-e', `${key}=${value}`);
+                        }
+                    }
+                    createWindowArgs.push(args.join(' '));
+
+                    return [
+                        'tmux',
+                        'if-shell',
+                        '-t',
+                        hostOwnership.paneId,
+                        '-F',
+                        buildTmuxPaneCondition(hostOwnership, hostOwnership.ownerMarker),
+                        buildOwnedTmuxPaneCreationCommand(
+                            createWindowArgs,
+                            sessionWindowTarget,
+                            options.ownershipMarker,
+                        ),
+                        `display-message -p ${TMUX_OWNERSHIP_MISMATCH_OUTPUT}`,
+                    ];
+                },
+                (result) => result?.stdout.trim() === TMUX_OWNERSHIP_MISMATCH_OUTPUT
+                    ? 'Refused to create a tmux window because the host ownership no longer matches.'
+                    : result?.stderr || 'Failed to create or recover the marked guarded tmux window pane.',
+            );
+
+            logger.debug(`[TMUX] Spawned guarded tmux child window ${ownership.windowId}/${ownership.paneId} in ${hostOwnership.sessionName}`);
+            return {
+                success: true,
+                sessionId: formatTmuxSessionIdentifier({
+                    session: hostOwnership.sessionName,
+                    window: windowName,
+                }),
+                ownership,
+            };
+        } catch (error) {
+            logger.debug('[TMUX] Failed to spawn guarded tmux window:', error);
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
             };
         }
     }
@@ -911,7 +1420,7 @@ export class TmuxUtilities {
                 throw new TmuxSessionIdentifierError(`Window identifier required: ${sessionIdentifier}`);
             }
 
-            const result = await this.executeWinOp('kill-window', [parsed.window], parsed.session);
+            const result = await this.executeWinOp('kill-window', [], parsed.session, parsed.window, parsed.pane);
             return result;
         } catch (error) {
             if (error instanceof TmuxSessionIdentifierError) {
@@ -920,6 +1429,218 @@ export class TmuxUtilities {
                 logger.debug('[TMUX] Error killing window:', error);
             }
             return false;
+        }
+    }
+
+    /**
+     * Kill one tmux window by its immutable server-wide id. Callers must verify
+     * ownership before invoking this method because @window_id is global to tmux.
+     */
+    async killWindowById(windowId: string): Promise<boolean> {
+        if (!isTmuxWindowId(windowId)) {
+            logger.debug(`[TMUX] Invalid immutable window id: ${windowId}`);
+            return false;
+        }
+
+        const result = await this.executeCommand(['tmux', 'kill-window', '-t', windowId]);
+        return result?.returncode === 0;
+    }
+
+    /**
+     * Look up an immutable window id and return the host session and pane pid
+     * needed to prove a daemon still owns the target before cleanup.
+     */
+    async getWindowInfo(windowId: string): Promise<TmuxWindowLookupResult> {
+        if (!isTmuxWindowId(windowId)) {
+            return { status: 'unknown' };
+        }
+
+        const result = await this.executeCommand([
+            'tmux',
+            'display-message',
+            '-p',
+            '-t',
+            windowId,
+            '#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}',
+        ]);
+        if (!result) {
+            return { status: 'unknown' };
+        }
+        if (result.returncode === 1) {
+            return { status: 'missing' };
+        }
+        if (result.returncode !== 0) {
+            return { status: 'unknown' };
+        }
+
+        const [sessionName, receivedWindowId, paneId, panePidValue] = result.stdout.trim().split('\t');
+        const panePid = Number.parseInt(panePidValue ?? '', 10);
+        if (
+            !sessionName
+            || !/^[a-zA-Z0-9._-]+$/.test(sessionName)
+            || receivedWindowId !== windowId
+            || !paneId
+            || !isTmuxPaneId(paneId)
+            || !Number.isSafeInteger(panePid)
+            || panePid <= 0
+        ) {
+            return { status: 'unknown' };
+        }
+
+        return {
+            status: 'exists',
+            window: {
+                windowId,
+                sessionName,
+                paneId,
+                panePid,
+            },
+        };
+    }
+
+    /**
+     * Look up exactly one tmux pane by its immutable server-wide id. The
+     * returned process id lets callers prove ownership before a destructive
+     * action without broadening the target to its window or session.
+     */
+    async getPaneInfo(paneId: string): Promise<TmuxPaneLookupResult> {
+        if (!isTmuxPaneId(paneId)) {
+            return { status: 'unknown' };
+        }
+
+        const result = await this.executeCommand([
+            'tmux',
+            'display-message',
+            '-p',
+            '-t',
+            paneId,
+            `#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{${TMUX_OWNER_OPTION}}`,
+        ]);
+        if (!result) {
+            return { status: 'unknown' };
+        }
+        if (result.returncode === 1) {
+            return { status: 'missing' };
+        }
+        if (result.returncode !== 0) {
+            return { status: 'unknown' };
+        }
+
+        const [sessionName, windowId, receivedPaneId, panePidValue, ownerMarker] = result.stdout.trim().split('\t');
+        const panePid = Number.parseInt(panePidValue ?? '', 10);
+        if (
+            !sessionName
+            || !/^[a-zA-Z0-9._-]+$/.test(sessionName)
+            || !windowId
+            || !isTmuxWindowId(windowId)
+            || receivedPaneId !== paneId
+            || !Number.isSafeInteger(panePid)
+            || panePid <= 0
+            || !ownerMarker
+            || !isTmuxOwnerMarker(ownerMarker)
+        ) {
+            return { status: 'unknown' };
+        }
+
+        return {
+            status: 'exists',
+            pane: {
+                sessionName,
+                windowId,
+                paneId,
+                panePid,
+                ownerMarker,
+            },
+        };
+    }
+
+    /**
+     * Atomically prove a pane still has the daemon's full ownership tuple and
+     * destroy it in the same tmux server command. There is deliberately no
+     * client-side read-then-kill sequence here: a restarted tmux server may
+     * reuse a pane id between two client commands.
+     */
+    async releaseOwnedPane(ownership: TmuxPaneInfo): Promise<TmuxOwnedPaneReleaseResult> {
+        if (!hasValidTmuxPaneOwnership(ownership)) {
+            return 'unknown';
+        }
+
+        const condition = buildTmuxPaneCondition(ownership, ownership.ownerMarker);
+
+        try {
+            const result = await this.executeCommand([
+                'tmux',
+                'if-shell',
+                '-t',
+                ownership.paneId,
+                '-F',
+                condition,
+                `kill-pane -t ${ownership.paneId}`,
+                `display-message -p ${TMUX_OWNERSHIP_MISMATCH_OUTPUT}`,
+            ]);
+            if (result?.returncode === 0 && result.stdout.trim() === '') {
+                return 'released';
+            }
+
+            const paneLookup = await this.getPaneInfo(ownership.paneId);
+            if (paneLookup.status === 'missing') {
+                return 'missing';
+            }
+            if (paneLookup.status === 'unknown') {
+                return 'unknown';
+            }
+            return 'mismatch';
+        } catch (error) {
+            logger.debug(`[TMUX] Failed to atomically release owned pane ${ownership.paneId}:`, error);
+            return 'unknown';
+        }
+    }
+
+    /** Kill only one immutable pane. Callers must prove full ownership first. */
+    async killPaneById(paneId: string): Promise<boolean> {
+        if (!isTmuxPaneId(paneId)) {
+            logger.debug(`[TMUX] Invalid immutable pane id: ${paneId}`);
+            return false;
+        }
+
+        const result = await this.executeCommand(['tmux', 'kill-pane', '-t', paneId]);
+        return result?.returncode === 0;
+    }
+
+    /**
+     * Kill a tmux session through the bounded non-shell command runner.
+     */
+    async killSession(sessionIdentifier: string): Promise<boolean> {
+        try {
+            const parsed = parseTmuxSessionIdentifier(sessionIdentifier);
+            return await this.executeWinOp('kill-session', [], parsed.session);
+        } catch (error) {
+            if (error instanceof TmuxSessionIdentifierError) {
+                logger.debug(`[TMUX] Invalid session identifier: ${error.message}`);
+            } else {
+                logger.debug('[TMUX] Error killing session:', error);
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Return whether tmux confirmed a session exists, is missing, or could not be queried.
+     */
+    async getSessionStatus(sessionIdentifier: string): Promise<TmuxSessionStatus> {
+        try {
+            const parsed = parseTmuxSessionIdentifier(sessionIdentifier);
+            const result = await this.executeCommand(['tmux', 'has-session', '-t', parsed.session]);
+            if (!result) {
+                return 'unknown';
+            }
+            if (result.returncode === 0) {
+                return 'exists';
+            }
+            return result.returncode === 1 ? 'missing' : 'unknown';
+        } catch (error) {
+            logger.debug(`[TMUX] Failed to check tmux session ${sessionIdentifier}:`, error);
+            return 'unknown';
         }
     }
 

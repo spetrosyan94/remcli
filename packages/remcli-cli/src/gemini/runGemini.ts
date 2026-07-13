@@ -23,11 +23,14 @@ import { hashObject } from '@/utils/deterministicJson';
 import { projectPath } from '@/projectPath';
 import { startRemcliServer } from '@/claude/utils/startRemcliServer';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
-import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { stopCaffeinate } from '@/utils/caffeinate';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
+import {
+  acquireDaemonRunnerCredential,
+  reportTerminalSessionStarted,
+} from '@/utils/daemonRunnerCredentialBootstrap';
 import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
 import type { ApiSessionClient } from '@/api/apiSession';
 
@@ -133,6 +136,18 @@ export async function runGemini(opts: {
   }
   const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
 
+  if (opts.startedBy === 'daemon') {
+    if (!response) {
+      logger.warn('[Gemini] Daemon-owned runner cannot start without a P2P session for credential handoff.');
+      return;
+    }
+    if (!await acquireDaemonRunnerCredential({ agentName: 'Gemini', sessionId: response.id, metadata })) {
+      return;
+    }
+  } else if (response) {
+    await reportTerminalSessionStarted({ agentName: 'Gemini', sessionId: response.id, metadata });
+  }
+
   // Handle server unreachable case - create offline stub with hot reconnection
   let session: ApiSessionClient;
   // Permission handler declared here so it can be updated in onSessionSwap callback
@@ -165,6 +180,13 @@ export async function runGemini(opts: {
     metadata,
     state,
     response,
+    canCreateReconnectedSessionConsumer: opts.startedBy === 'daemon'
+      ? async (reconnectedSession) => acquireDaemonRunnerCredential({
+        agentName: 'Gemini',
+        sessionId: reconnectedSession.id,
+        metadata,
+      })
+      : undefined,
     onSessionSwap: (newSession) => {
       // If we're processing a message, queue the swap for later
       // This prevents race conditions where session changes mid-processing
@@ -181,21 +203,6 @@ export async function runGemini(opts: {
     }
   });
   session = initialSession;
-
-  // Report to daemon (only if we have a real session)
-  if (response) {
-    try {
-      logger.debug(`[START] Reporting session ${response.id} to daemon`);
-      const result = await notifyDaemonSessionStarted(response.id, metadata);
-      if (result.error) {
-        logger.debug(`[START] Failed to report to daemon (may not be running):`, result.error);
-      } else {
-        logger.debug(`[START] Reported session ${response.id} to daemon`);
-      }
-    } catch (error) {
-      logger.debug('[START] Failed to report to daemon (may not be running):', error);
-    }
-  }
 
   const messageQueue = new MessageQueue2<GeminiMode>((mode) => hashObject({
     permissionMode: mode.permissionMode,

@@ -16,6 +16,7 @@ export interface P2PClientConnection {
     connectionType: ConnectionType;
     sessionId?: string;   // Only for session-scoped
     machineId?: string;   // Only for machine-scoped
+    onUpdateDelivered?: (payload: UpdatePayload) => void;
 }
 
 export interface UpdatePayload {
@@ -61,6 +62,7 @@ export class P2PEventRouter {
             if (skipSender && conn.socket === skipSender) continue;
             if (this.matchesFilter(conn, filter)) {
                 conn.socket.emit('update', payload);
+                conn.onUpdateDelivered?.(payload);
             }
         }
     }

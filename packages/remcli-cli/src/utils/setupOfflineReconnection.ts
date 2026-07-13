@@ -33,6 +33,11 @@ export interface SetupOfflineReconnectionOptions {
      * Use this to update the session reference in the calling code.
      */
     onSessionSwap: (newSession: ApiSessionClient) => void;
+    /**
+     * Verifies that a reconnected session may become a message consumer before
+     * its socket is created. Daemon-owned runners use this to obtain an ACK lease.
+     */
+    canCreateReconnectedSessionConsumer?: (session: Session) => Promise<boolean>;
 }
 
 /**
@@ -75,7 +80,15 @@ export interface SetupOfflineReconnectionResult {
  * ```
  */
 export function setupOfflineReconnection(opts: SetupOfflineReconnectionOptions): SetupOfflineReconnectionResult {
-    const { api, sessionTag, metadata, state, response, onSessionSwap } = opts;
+    const {
+        api,
+        sessionTag,
+        metadata,
+        state,
+        response,
+        onSessionSwap,
+        canCreateReconnectedSessionConsumer,
+    } = opts;
 
     let session: ApiSessionClient;
     let reconnectionHandle: ReturnType<typeof startOfflineReconnection<ApiSessionClient>> | null = null;
@@ -91,6 +104,9 @@ export function setupOfflineReconnection(opts: SetupOfflineReconnectionOptions):
             onReconnected: async () => {
                 const resp = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
                 if (!resp) throw new Error('Server unavailable');
+                if (canCreateReconnectedSessionConsumer && !await canCreateReconnectedSessionConsumer(resp)) {
+                    throw new Error('Daemon runner credential handoff failed');
+                }
                 const realSession = api.sessionSyncClient(resp);
                 // Notify caller to swap the session reference
                 onSessionSwap(realSession);

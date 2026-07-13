@@ -15,19 +15,24 @@ import { hashObject } from '@/utils/deterministicJson';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { MessageBuffer } from "@/ui/ink/messageBuffer";
 import { CodexDisplay } from "@/ui/ink/CodexDisplay";
-import { notifyDaemonSessionStarted } from "@/daemon/controlClient";
+import {
+    bindDaemonCodexThread,
+    openDaemonCodexRemoteTui,
+} from "@/daemon/controlClient";
 import { registerKillSessionHandler } from "@/claude/registerKillSessionHandler";
-import { delay } from "@/utils/time";
 import { stopCaffeinate } from "@/utils/caffeinate";
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { PermissionMode } from '@/api/types';
+import {
+    acquireDaemonRunnerCredential,
+    reportTerminalSessionStarted,
+} from '@/utils/daemonRunnerCredentialBootstrap';
 import { replayCodexSessionHistory } from './utils/replayCodexSessionHistory';
 import type { CodexApprovalPolicy, CodexSandbox, CodexToolResponse } from './types';
 import { isCodexAppServerStateUsable } from './codexAppServerHost';
-import { createCodexRemoteTuiOpener } from './codexRemoteTui';
 
 type ReadyEventOptions = {
     pending: unknown;
@@ -143,10 +148,12 @@ export async function runCodex(opts: {
     credentials: Credentials;
     startedBy?: 'daemon' | 'terminal';
     resumeSessionId?: string;
+    reasoningEffort?: string;
 }): Promise<void> {
     interface EnhancedMode {
         permissionMode: CodexSandbox;
         model?: string;
+        reasoningEffort?: string;
     }
     type QueuedCodexMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
     type TurnCompletionResult =
@@ -197,6 +204,22 @@ export async function runCodex(opts: {
     }
     const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
 
+    // A daemon-owned runner must authenticate as an ACK-capable consumer before
+    // it can create a session socket. Otherwise it could consume a prompt on a
+    // legacy connection and make it unavailable to the next valid runner.
+    if (opts.startedBy === 'daemon') {
+        if (!response) {
+            logger.warn('[Codex] Daemon-owned runner cannot start without a P2P session for credential handoff.');
+            return;
+        }
+
+        if (!await acquireDaemonRunnerCredential({ agentName: 'Codex', sessionId: response.id, metadata })) {
+            return;
+        }
+    } else if (response) {
+        await reportTerminalSessionStarted({ agentName: 'Codex', sessionId: response.id, metadata });
+    }
+
     // Handle server unreachable case - create offline stub with hot reconnection
     let session: ApiSessionClient;
     // Permission handler declared here so it can be updated in onSessionSwap callback
@@ -208,6 +231,13 @@ export async function runCodex(opts: {
         metadata,
         state,
         response,
+        canCreateReconnectedSessionConsumer: opts.startedBy === 'daemon'
+            ? async (reconnectedSession) => acquireDaemonRunnerCredential({
+                agentName: 'Codex',
+                sessionId: reconnectedSession.id,
+                metadata,
+            })
+            : undefined,
         onSessionSwap: (newSession) => {
             session = newSession;
             // Update permission handler with new session to avoid stale reference
@@ -218,34 +248,21 @@ export async function runCodex(opts: {
     });
     session = initialSession;
 
-    // Always report to daemon if it exists (skip if offline)
-    if (response) {
-        try {
-            logger.debug(`[START] Reporting session ${response.id} to daemon`);
-            const result = await notifyDaemonSessionStarted(response.id, metadata);
-            if (result.error) {
-                logger.debug(`[START] Failed to report to daemon (may not be running):`, result.error);
-            } else {
-                logger.debug(`[START] Reported session ${response.id} to daemon`);
-            }
-        } catch (error) {
-            logger.debug('[START] Failed to report to daemon (may not be running):', error);
-        }
-    }
-
     const messageQueue = new MessageQueue2<EnhancedMode>((mode) => hashObject({
         permissionMode: mode.permissionMode,
         model: mode.model,
+        reasoningEffort: mode.reasoningEffort,
     }));
 
     // Track current overrides to apply per message
     // Use shared PermissionMode type from api/types for cross-agent compatibility
     let currentPermissionMode: CodexSandbox | undefined = undefined;
     let currentModel: string | undefined = undefined;
+    let currentReasoningEffort = opts.reasoningEffort;
 
     session.onUserMessage((message) => {
-        if (message.meta?.sentFrom === 'history') {
-            logger.debug('[Codex] Ignoring replayed user message from session history');
+        if (message.meta?.sentFrom === 'history' || message.meta?.sentFrom === 'native-app-server') {
+            logger.debug(`[Codex] Ignoring ${message.meta.sentFrom} user message in turn queue`);
             return;
         }
 
@@ -282,6 +299,7 @@ export async function runCodex(opts: {
         const enhancedMode: EnhancedMode = {
             permissionMode: messagePermissionMode || CODEX_DEFAULT_PERMISSION_MODE,
             model: messageModel,
+            reasoningEffort: currentReasoningEffort,
         };
         messageQueue.push(message.content.text, enhancedMode);
     });
@@ -478,6 +496,13 @@ export async function runCodex(opts: {
     const handleCodexClientMessage = (msg: any) => {
         logger.debug(`[Codex] app-server message: ${JSON.stringify(msg)}`);
 
+        if (msg.type === 'user_message') {
+            if (msg.source === 'external') {
+                session.sendUserTextMessage(msg.text, { sentFrom: 'native-app-server' });
+            }
+            return;
+        }
+
         // Add messages to the ink UI buffer based on message type
         if (msg.type === 'agent_message') {
             messageBuffer.addMessage(msg.message, 'assistant');
@@ -615,13 +640,108 @@ export async function runCodex(opts: {
         logger.debug('[codex]: client.connect done');
         let wasCreated = false;
         let pending: QueuedCodexMessage | null = null;
-        const remoteTuiOpener = createCodexRemoteTuiOpener({
-            startedBy: opts.startedBy,
-            getEndpoint: () => remoteTuiEndpoint,
-        });
+        const nativeThreadBindingResults = new Map<string, Promise<'open-tui' | 'skip-tui' | 'stop-runner'>>();
+        const openedRemoteTuiThreadIds = new Set<string>();
+
+        const publishNativeThreadBindingError = (errorMessage: string): void => {
+            logger.warn(`[Codex] ${errorMessage}`);
+            messageBuffer.addMessage(`Error: ${errorMessage}`, 'status');
+            session.sendSessionEvent({ type: 'message', message: errorMessage, isError: true });
+        };
+
+        const bindNativeThread = (nativeThreadId: string): Promise<'open-tui' | 'skip-tui' | 'stop-runner'> => {
+            const existingResult = nativeThreadBindingResults.get(nativeThreadId);
+            if (existingResult) {
+                return existingResult;
+            }
+
+            if (opts.startedBy !== 'daemon') {
+                const skippedBinding = Promise.resolve('skip-tui' as const);
+                nativeThreadBindingResults.set(nativeThreadId, skippedBinding);
+                return skippedBinding;
+            }
+
+            const bindingResult = bindDaemonCodexThread({
+                agent: 'codex',
+                nativeThreadId,
+                remcliSessionId: session.sessionId,
+            }).then((result) => {
+                if (!result.ok) {
+                    publishNativeThreadBindingError(`Failed to bind Codex thread ${nativeThreadId} to the daemon: ${result.error}`);
+                    return 'stop-runner' as const;
+                }
+
+                switch (result.data.type) {
+                    case 'bound':
+                    case 'already-bound':
+                        return 'open-tui' as const;
+                    case 'reuse-active-wrapper':
+                        logger.debug(`[Codex] Native thread ${nativeThreadId} already belongs to active wrapper ${result.data.wrapper.remcliSessionId}; stopping redundant runner`);
+                        return 'stop-runner' as const;
+                    case 'wrapper-not-tracked':
+                    case 'agent-mismatch': {
+                        const errorMessage = result.data.type === 'wrapper-not-tracked'
+                            ? `Codex thread ${nativeThreadId} is not tracked by the daemon.`
+                            : `Codex thread ${nativeThreadId} cannot bind to ${result.data.trackedAgent} wrapper.`;
+                        publishNativeThreadBindingError(errorMessage);
+                        return 'stop-runner' as const;
+                    }
+                }
+            }).catch((error) => {
+                const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                publishNativeThreadBindingError(`Failed to bind Codex thread ${nativeThreadId} to the daemon: ${errorMessage}`);
+                return 'stop-runner' as const;
+            });
+            nativeThreadBindingResults.set(nativeThreadId, bindingResult);
+            return bindingResult;
+        };
+
+        const ensureNativeThreadBinding = async (nativeThreadId: string): Promise<'open-tui' | 'skip-tui' | 'stop-runner'> => {
+            const bindingResult = await bindNativeThread(nativeThreadId);
+            if (bindingResult === 'stop-runner') {
+                shouldExit = true;
+                await handleAbort();
+            }
+            return bindingResult;
+        };
+
+        const openRemoteTuiAfterThreadBinding = async (nativeThreadId: string): Promise<boolean> => {
+            const bindingResult = await ensureNativeThreadBinding(nativeThreadId);
+            if (bindingResult === 'stop-runner') {
+                return false;
+            }
+            const endpoint = remoteTuiEndpoint;
+            if (bindingResult !== 'open-tui' || !endpoint || openedRemoteTuiThreadIds.has(nativeThreadId)) {
+                return true;
+            }
+
+            openedRemoteTuiThreadIds.add(nativeThreadId);
+            const remoteTuiResult = await openDaemonCodexRemoteTui({
+                agent: 'codex',
+                nativeThreadId,
+                remcliSessionId: session.sessionId,
+                endpoint,
+            });
+            if (
+                remoteTuiResult.ok
+                && (remoteTuiResult.data.type === 'opened' || remoteTuiResult.data.type === 'already-open')
+            ) {
+                return true;
+            }
+
+            const errorMessage = remoteTuiResult.ok
+                ? remoteTuiResult.data.type === 'host-unavailable'
+                    ? remoteTuiResult.data.error
+                    : `Daemon rejected the Codex remote TUI request: ${remoteTuiResult.data.type}`
+                : remoteTuiResult.error;
+            publishNativeThreadBindingError(`Could not open Codex remote TUI for thread ${nativeThreadId}: ${errorMessage}`);
+            return true;
+        };
 
         if (opts.resumeSessionId) {
-            remoteTuiOpener.openOnce(opts.resumeSessionId);
+            if (await ensureNativeThreadBinding(opts.resumeSessionId) === 'stop-runner') {
+                return;
+            }
         }
 
         const handleTurnResponse = (response: CodexToolResponse) => {
@@ -761,7 +881,6 @@ export async function runCodex(opts: {
                             approvalPolicy: permissionConfig.approvalPolicy,
                             model: message.mode.model,
                         });
-                        remoteTuiOpener.openOnce(activeCodexThreadId);
                     } else {
                         activeCodexThreadId = await appServerClient.startThread({
                             cwd: process.cwd(),
@@ -769,7 +888,9 @@ export async function runCodex(opts: {
                             approvalPolicy: permissionConfig.approvalPolicy,
                             model: message.mode.model,
                         });
-                        remoteTuiOpener.openOnce(activeCodexThreadId);
+                    }
+                    if (!await openRemoteTuiAfterThreadBinding(activeCodexThreadId)) {
+                        return;
                     }
                     wasCreated = true;
                 }
@@ -786,6 +907,7 @@ export async function runCodex(opts: {
                     sandbox: permissionConfig.sandbox,
                     approvalPolicy: permissionConfig.approvalPolicy,
                     model: message.mode.model,
+                    effort: message.mode.reasoningEffort,
                     signal: turnSignal,
                 });
                 pending = await waitForTurnWithSteering(startedTurn, activeCodexThreadId, message.hash, turnSignal);

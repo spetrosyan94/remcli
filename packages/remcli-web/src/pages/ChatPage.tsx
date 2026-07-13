@@ -17,6 +17,7 @@ import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { getAgentPermissionLabel, getAgentPermissionModes, normalizeAgentPermissionMode } from "@/lib/agentPermissions";
 import { copyText } from "@/lib/clipboard";
+import { canStopSession, type IStopMachineTarget } from "@/lib/sessionCapabilities";
 import { t } from "@/lib/i18n";
 import {
     fetchWhisperStatus, getRestConfig, isClientStarted, loadSessionMessages,
@@ -25,6 +26,7 @@ import {
     useSession, useSessionMessages, useSessionMessagesLoaded,
     type NormalizedMessage, type PermissionMode, type Session,
 } from "@/lib/protocol";
+import { onProtocolReconnected, type SessionMessagesPage } from "@/lib/protocol/client";
 import { useVoiceRecorder } from "@/lib/voice/recorder";
 import { useTts, useTtsAvailability } from "@/lib/voice/tts";
 
@@ -305,6 +307,93 @@ export function buildFeed(messages: NormalizedMessage[], agent: AgentId): FeedIt
     return feed;
 }
 
+type MessageLoadKind = "initial" | "older" | "refresh";
+
+interface MessagePaginationState {
+    offset: number;
+    total: number;
+    hasMore: boolean;
+}
+
+interface MessageLoadQueue {
+    enqueue(task: () => Promise<void>): Promise<void>;
+    enqueueReconnect(task: () => Promise<void>): Promise<void>;
+}
+
+interface MessageLoadScope {
+    sessionId: string;
+    generation: number;
+    queue: MessageLoadQueue;
+}
+
+interface ScrollRestore {
+    generation: number;
+    height: number;
+    top: number;
+    onRestored?: () => void;
+}
+
+export function mergeMessagePagination(
+    current: MessagePaginationState,
+    page: Pick<SessionMessagesPage, "total" | "nextOffset">,
+    kind: MessageLoadKind
+): MessagePaginationState {
+    const receivedSinceLastPage = Math.max(0, page.total - current.total);
+    const refreshedOffset = current.offset === 0
+        ? page.nextOffset
+        : current.offset + receivedSinceLastPage;
+    const refreshHasUnloadedGap = kind === "refresh"
+        && receivedSinceLastPage > page.nextOffset;
+    const requestedOffset = refreshHasUnloadedGap
+        ? page.nextOffset
+        : kind === "refresh"
+            ? Math.max(page.nextOffset, refreshedOffset)
+        : page.nextOffset;
+    const offset = Math.min(page.total, requestedOffset);
+
+    return {
+        offset,
+        total: page.total,
+        hasMore: offset < page.total
+    };
+}
+
+export function createMessageLoadQueue(): MessageLoadQueue {
+    let pending = Promise.resolve();
+    let pendingReconnect: Promise<void> | null = null;
+
+    const enqueue = (task: () => Promise<void>): Promise<void> => {
+        const next = pending.then(task, task);
+        pending = next.catch(() => undefined);
+        return next;
+    };
+
+    return {
+        enqueue,
+        enqueueReconnect(task) {
+            if (pendingReconnect) return pendingReconnect;
+            const queuedReconnect = enqueue(task).catch(() => undefined);
+            pendingReconnect = queuedReconnect.finally(() => {
+                pendingReconnect = null;
+            });
+            return pendingReconnect;
+        }
+    };
+}
+
+export function getMessageLoadScope(
+    current: MessageLoadScope | null,
+    sessionId: string
+): MessageLoadScope {
+    if (current?.sessionId === sessionId) return current;
+
+    return {
+        sessionId,
+        generation: (current?.generation ?? 0) + 1,
+        queue: createMessageLoadQueue(),
+    };
+}
+
 // ─── Pending permissions из agentState (референс useSessionStatus + PermissionFooter) ───
 
 interface PendingPermission {
@@ -410,17 +499,59 @@ export function ChatPage() {
     const [hasMore, setHasMore] = React.useState(false);
     const [isLoadingOlder, setIsLoadingOlder] = React.useState(false);
     const loadingOlderRef = React.useRef(false);
-    const offsetRef = React.useRef(0);
     /** Снимок скролла перед prepend старых сообщений — восстанавливаем позицию после рендера. */
-    const scrollRestoreRef = React.useRef<{ height: number; top: number } | null>(null);
+    const scrollRestoreRef = React.useRef<ScrollRestore | null>(null);
     /** Автоскролл к низу — только если пользователь у низа ленты (не сбивать чтение истории). */
     const isNearBottomRef = React.useRef(true);
+    const paginationRef = React.useRef<MessagePaginationState>({ offset: 0, total: 0, hasMore: false });
+    const [messageLoadScope, setMessageLoadScope] = React.useState<MessageLoadScope>(() =>
+        getMessageLoadScope(null, sessionId)
+    );
+    const activeMessageLoadScopeRef = React.useRef<MessageLoadScope | null>(null);
+    const [scrollRestoreVersion, setScrollRestoreVersion] = React.useState(0);
+
+    // Очередь относится к поколению маршрута: незавершённый запрос A не блокирует B.
+    if (messageLoadScope.sessionId !== sessionId) {
+        setMessageLoadScope(getMessageLoadScope(messageLoadScope, sessionId));
+    }
+
+    const updatePagination = React.useCallback((page: SessionMessagesPage, kind: MessageLoadKind) => {
+        const pagination = mergeMessagePagination(paginationRef.current, page, kind);
+        paginationRef.current = pagination;
+        setHasMore(pagination.hasMore);
+    }, []);
+
+    const clearScrollRestore = React.useCallback((generation?: number) => {
+        const restore = scrollRestoreRef.current;
+        if (!restore || (generation !== undefined && restore.generation !== generation)) return;
+        scrollRestoreRef.current = null;
+        restore.onRestored?.();
+    }, []);
+
+    const waitForScrollRestore = React.useCallback((generation: number): Promise<void> => {
+        const restore = scrollRestoreRef.current;
+        if (!restore || restore.generation !== generation) return Promise.resolve();
+        return new Promise((resolve) => {
+            restore.onRestored = resolve;
+            setScrollRestoreVersion((version) => version + 1);
+        });
+    }, []);
+
+    React.useLayoutEffect(() => {
+        activeMessageLoadScopeRef.current = messageLoadScope;
+        return () => {
+            if (activeMessageLoadScopeRef.current === messageLoadScope) {
+                activeMessageLoadScopeRef.current = null;
+            }
+        };
+    }, [messageLoadScope]);
 
     // ── Boot: восстановить клиент при deep-link и подгрузить первую страницу истории ──
     React.useEffect(() => {
-        offsetRef.current = 0;
+        const { generation, queue } = messageLoadScope;
         loadingOlderRef.current = false;
-        scrollRestoreRef.current = null;
+        clearScrollRestore();
+        paginationRef.current = { offset: 0, total: 0, hasMore: false };
         isNearBottomRef.current = true;
         hasDetachedAutoscrollRef.current = false;
         setHasDetachedAutoscroll(false);
@@ -437,8 +568,13 @@ export function ChatPage() {
                     const restored = await restoreProtocolClient();
                     if (!restored) return;
                 }
-                const page = await loadSessionMessages(sessionId);
-                if (!cancelled) setHasMore(page.hasMore);
+                await queue.enqueue(async () => {
+                    if (cancelled || activeMessageLoadScopeRef.current !== messageLoadScope) return;
+                    const page = await loadSessionMessages(sessionId);
+                    if (!cancelled && activeMessageLoadScopeRef.current === messageLoadScope) {
+                        updatePagination(page, "initial");
+                    }
+                });
             } catch {
                 // неизвестная сессия или сеть — ниже покажем notFound/баннер
             } finally {
@@ -447,30 +583,67 @@ export function ChatPage() {
         })();
         return () => {
             cancelled = true;
+            clearScrollRestore(generation);
         };
-    }, [sessionId]);
+    }, [clearScrollRestore, messageLoadScope, sessionId, updatePagination]);
 
-    // offset следует за числом загруженных сообщений (live-поток тоже добавляет их в стор)
+    // Сообщения текущего чата запрашиваются после reconnect через общую очередь с пагинацией.
+    // Burst reconnect даёт ровно один REST refresh до завершения уже поставленной задачи.
     React.useEffect(() => {
-        if (messages.length > offsetRef.current) offsetRef.current = messages.length;
-    }, [messages.length]);
+        let isActive = true;
+        const { queue } = messageLoadScope;
 
-    const loadOlder = React.useCallback(async () => {
+        const refreshVisibleMessages = () => {
+            void queue.enqueueReconnect(async () => {
+                if (!isActive || activeMessageLoadScopeRef.current !== messageLoadScope) return;
+                try {
+                    const page = await loadSessionMessages(sessionId);
+                    if (isActive && activeMessageLoadScopeRef.current === messageLoadScope) {
+                        updatePagination(page, "refresh");
+                    }
+                } catch {
+                    // ConnectionBanner already communicates the transport state; keep existing history visible.
+                }
+            });
+        };
+
+        const unsubscribe = onProtocolReconnected(refreshVisibleMessages);
+        return () => {
+            isActive = false;
+            unsubscribe();
+        };
+    }, [messageLoadScope, sessionId, updatePagination]);
+
+    const loadOlder = React.useCallback(() => {
         if (loadingOlderRef.current || !hasMore) return;
+        if (activeMessageLoadScopeRef.current !== messageLoadScope) return;
+        const { generation, queue } = messageLoadScope;
         loadingOlderRef.current = true;
         setIsLoadingOlder(true);
-        const node = feedRef.current;
-        scrollRestoreRef.current = node ? { height: node.scrollHeight, top: node.scrollTop } : null;
-        try {
-            const page = await loadSessionMessages(sessionId, { offset: offsetRef.current });
-            setHasMore(page.hasMore);
-        } catch {
-            scrollRestoreRef.current = null; // тихий фейл — не блокируем UI
-        } finally {
-            loadingOlderRef.current = false;
-            setIsLoadingOlder(false);
-        }
-    }, [sessionId, hasMore]);
+        void queue.enqueue(async () => {
+            try {
+                if (activeMessageLoadScopeRef.current !== messageLoadScope || !paginationRef.current.hasMore) return;
+                const node = feedRef.current;
+                scrollRestoreRef.current = node
+                    ? { generation, height: node.scrollHeight, top: node.scrollTop }
+                    : null;
+                const page = await loadSessionMessages(sessionId, { offset: paginationRef.current.offset });
+                if (activeMessageLoadScopeRef.current !== messageLoadScope) {
+                    clearScrollRestore(generation);
+                    return;
+                }
+                updatePagination(page, "older");
+                await waitForScrollRestore(generation);
+            } catch {
+                clearScrollRestore(generation); // тихий фейл — не блокируем UI
+            } finally {
+                if (activeMessageLoadScopeRef.current === messageLoadScope) {
+                    loadingOlderRef.current = false;
+                    setIsLoadingOlder(false);
+                }
+            }
+        });
+    }, [clearScrollRestore, hasMore, messageLoadScope, sessionId, updatePagination, waitForScrollRestore]);
 
     // Восстановление позиции скролла после prepend старых сообщений (до отрисовки кадра,
     // мгновенно — обходим css scroll-behavior:smooth ленты)
@@ -478,6 +651,10 @@ export function ChatPage() {
         const restore = scrollRestoreRef.current;
         if (!restore) return;
         scrollRestoreRef.current = null;
+        if (restore.generation !== messageLoadScope.generation) {
+            restore.onRestored?.();
+            return;
+        }
         const node = feedRef.current;
         if (node && node.scrollHeight !== restore.height) {
             const previousBehavior = node.style.scrollBehavior;
@@ -485,7 +662,8 @@ export function ChatPage() {
             node.scrollTop = node.scrollHeight - restore.height + restore.top;
             node.style.scrollBehavior = previousBehavior;
         }
-    }, [feed]);
+        restore.onRestored?.();
+    }, [messageLoadScope.generation, scrollRestoreVersion]);
 
     const handleFeedScroll = () => {
         const node = feedRef.current;
@@ -586,10 +764,21 @@ export function ChatPage() {
         return active.length === 1 ? active[0].id : null;
     }, [machines, session]);
 
+    const stopMachine = React.useMemo<IStopMachineTarget | null>(() => {
+        if (!rpcMachineId) return null;
+        const machine = machines.find((item) => item.id === rpcMachineId);
+        return machine ? { id: machine.id, isActive: machine.active } : null;
+    }, [machines, rpcMachineId]);
+
     const resumeAgentSessionId = agentSessionIdOf(session, agent);
     const isEnded = session ? session.presence !== "online" : false;
     const canResume = isEnded && !!resumeAgentSessionId && !!session?.metadata?.path && !!rpcMachineId;
-    const canStop = !isEnded && !!rpcMachineId;
+    const canStop = canStopSession(session, stopMachine);
+
+    const requestStop = () => {
+        if (!session || !canStopSession(session, stopMachine)) return;
+        setStopTarget({ session, machine: stopMachine });
+    };
 
     const resumeSession = async () => {
         const meta = session?.metadata;
@@ -742,15 +931,16 @@ export function ChatPage() {
                             <Terminal className="size-4" />
                             {t("chat.terminal")}
                         </DropdownMenuItem>
-                        <DropdownMenuItem
-                            variant="destructive"
-                            disabled={!canStop}
-                            className="min-h-11 font-mono text-xs"
-                            onSelect={() => setStopTarget({ session, machineId: rpcMachineId })}
-                        >
-                            <Square className="size-3 fill-current" />
-                            {t("home.stop.confirm")}
-                        </DropdownMenuItem>
+                        {canStop && (
+                            <DropdownMenuItem
+                                variant="destructive"
+                                className="min-h-11 font-mono text-xs"
+                                onSelect={requestStop}
+                            >
+                                <Square className="size-3 fill-current" />
+                                {t("home.stop.confirm")}
+                            </DropdownMenuItem>
+                        )}
                     </DropdownMenuContent>
                 </DropdownMenu>
             </header>

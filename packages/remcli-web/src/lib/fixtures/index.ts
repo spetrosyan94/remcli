@@ -27,6 +27,7 @@ import {
     FIXTURE_ZEN_TASKS,
     type FixtureConciergeFeedEntry
 } from '@/lib/fixtures/data';
+import type { NormalizedMessage } from '@/lib/protocol/messages';
 import type { DirectoryListing, SpawnSessionOptions, SpawnSessionResult } from '@/lib/protocol/socket';
 import { useProtocolStore } from '@/lib/protocol/store';
 import type { AgentKind, AgentSessionInfo, Session, SessionMetadata } from '@/lib/protocol/types';
@@ -74,6 +75,21 @@ function jsonResponse(body: unknown, status = 200): Response {
 let zenTasksValue = JSON.stringify(FIXTURE_ZEN_TASKS);
 let zenTasksVersion = 1;
 let spawnedSessionCounter = 0;
+
+const FIXTURE_UNKNOWN_RESUME_HISTORY: readonly NormalizedMessage[] = [{
+    id: 'fixture-unknown-resume-history',
+    localId: null,
+    seq: 1,
+    createdAt: FIXTURE_BASE_TIME,
+    isSidechain: false,
+    role: 'agent',
+    content: [{
+        type: 'text',
+        text: 'Контекст fixture-сессии недоступен. Продолжаю с чистого шага.',
+        uuid: 'fixture-unknown-resume-history',
+        parentUUID: null
+    }]
+}];
 
 const FIXTURE_DIRECTORY_CHILDREN: Record<string, string[]> = {
     '/Users/dev': ['projects', 'Downloads', '.config'],
@@ -141,6 +157,44 @@ function providerSessionMetadata(agent: AgentKind, nativeSessionId: string): Par
     if (agent === 'cursor') return { cursorSessionId: nativeSessionId };
     if (agent === 'gemini') return { geminiSessionId: nativeSessionId };
     return { claudeSessionId: nativeSessionId };
+}
+
+function fixtureSessionResumeIds(session: Session): string[] {
+    const metadata = session.metadata;
+    if (!metadata) return [];
+
+    const agent = fixtureSessionAgent(session);
+    const providerSessionId = agent === 'codex'
+        ? metadata.codexSessionId
+        : agent === 'cursor'
+            ? metadata.cursorSessionId
+            : agent === 'gemini'
+                ? metadata.geminiSessionId
+                : metadata.claudeSessionId;
+
+    return [
+        providerSessionId,
+        metadata.agentSessionId,
+        fixtureNativeSessionId(agent, session.id)
+    ].filter((sessionId): sessionId is string => Boolean(sessionId));
+}
+
+function fixtureResumeSourceSession(resumeSessionId: string): Session | undefined {
+    return Object.values(useProtocolStore.getState().sessions)
+        .filter((session) => fixtureSessionResumeIds(session).includes(resumeSessionId))
+        .sort((left, right) => right.updatedAt - left.updatedAt || right.createdAt - left.createdAt)[0];
+}
+
+function cloneFixtureHistory(messages: readonly NormalizedMessage[], sessionId: string): NormalizedMessage[] {
+    return messages.map((message, index) => {
+        const copiedMessage = structuredClone(message);
+        const messageNumber = index + 1;
+        return {
+            ...copiedMessage,
+            id: `${sessionId}-message-${messageNumber}`,
+            localId: copiedMessage.localId ? `${sessionId}-local-${messageNumber}` : null
+        };
+    });
 }
 
 async function handleFixtureRequest(path: string, init?: RequestInit): Promise<Response> {
@@ -378,8 +432,14 @@ export function fixtureSpawnNewSession(options: SpawnSessionOptions): SpawnSessi
     };
 
     const store = useProtocolStore.getState();
+    const resumeSource = options.resumeSessionId
+        ? fixtureResumeSourceSession(options.resumeSessionId)
+        : undefined;
+    const resumeHistory = options.resumeSessionId
+        ? store.sessionMessages[resumeSource?.id ?? '']?.messages ?? FIXTURE_UNKNOWN_RESUME_HISTORY
+        : [];
     store.applySessions([session]);
-    store.applyMessages(sessionId, [], { markLoaded: true });
+    store.applyMessages(sessionId, cloneFixtureHistory(resumeHistory, sessionId), { markLoaded: true });
     return { type: 'success', sessionId };
 }
 

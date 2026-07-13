@@ -15,7 +15,11 @@ import { extractSDKMetadataAsync } from '@/claude/sdk/metadataExtractor';
 import { parseSpecialCommand } from '@/parsers/specialCommands';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { configuration } from '@/configuration';
-import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
+import type { ApiSessionClient } from '@/api/apiSession';
+import {
+    createDaemonRunnerSessionConsumer,
+    reportTerminalSessionStarted,
+} from '@/utils/daemonRunnerCredentialBootstrap';
 import { initialMachineMetadata } from '@/daemon/run';
 import { startRemcliServer } from '@/claude/utils/startRemcliServer';
 import { startHookServer } from '@/claude/utils/startHookServer';
@@ -111,17 +115,25 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
 
     logger.debug(`Session created: ${response.id}`);
 
-    // Always report to daemon if it exists
-    try {
-        logger.debug(`[START] Reporting session ${response.id} to daemon`);
-        const result = await notifyDaemonSessionStarted(response.id, metadata);
-        if (result.error) {
-            logger.debug(`[START] Failed to report to daemon (may not be running):`, result.error);
-        } else {
-            logger.debug(`[START] Reported session ${response.id} to daemon`);
-        }
-    } catch (error) {
-        logger.debug('[START] Failed to report to daemon (may not be running):', error);
+    let session: ApiSessionClient | null;
+    if (options.startedBy === 'daemon') {
+        session = await createDaemonRunnerSessionConsumer({
+            agentName: 'Claude',
+            sessionId: response.id,
+            metadata,
+            createSessionConsumer: () => api.sessionSyncClient(response),
+        });
+    } else {
+        await reportTerminalSessionStarted({
+            agentName: 'Claude',
+            sessionId: response.id,
+            metadata,
+        });
+        session = api.sessionSyncClient(response);
+    }
+
+    if (!session) {
+        return;
     }
 
     // Extract SDK metadata in background and update session when ready
@@ -129,7 +141,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         logger.debug('[start] SDK metadata extracted, updating session:', sdkMetadata);
         try {
             // Update session metadata with tools and slash commands
-            api.sessionSyncClient(response).updateMetadata((currentMetadata) => ({
+            session.updateMetadata((currentMetadata) => ({
                 ...currentMetadata,
                 tools: sdkMetadata.tools,
                 slashCommands: sdkMetadata.slashCommands
@@ -139,9 +151,6 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             logger.debug('[start] Failed to update session metadata:', error);
         }
     });
-
-    // Create realtime session
-    const session = api.sessionSyncClient(response);
 
     // Start Remcli MCP server
     const remcliServer = await startRemcliServer(session);
