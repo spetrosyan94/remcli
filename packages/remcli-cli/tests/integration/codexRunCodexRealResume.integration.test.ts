@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { AgentState, Metadata, UserMessage } from '@/api/types';
+import type { AgentState, DeliveredUserMessage, Metadata } from '@/api/types';
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
 import {
     forgetSessionRunnerCredential,
@@ -19,6 +19,8 @@ const runRealAi = process.env.REMCLI_REAL_AI === '1';
 const realCodexDescribe = runRealAi ? describe : describe.skip;
 const REMCLI_SESSION_ID = 'remcli-real-codex-test-session';
 const TEST_RUNNER_CREDENTIAL = 'real-resume-runner-credential';
+const REAL_DELIVERY_ID = `p2p:${REMCLI_SESSION_ID}:1`;
+const DELIVERY_GATE_TIMEOUT_MS = 8_000;
 
 interface CapturedSessionEvent {
     type: string;
@@ -36,8 +38,15 @@ const fakeSessionState = vi.hoisted(() => ({
     model: '',
     shouldClose: false,
     hasCollectedLivePrompt: false,
+    deliveryPromise: null as Promise<void> | null,
+    deliveryStatus: 'not-started' as 'not-started' | 'pending' | 'accepted' | 'rejected',
+    deliveryRejection: null as unknown,
+    agentOutputPromise: Promise.resolve(),
+    resolveAgentOutput: () => {},
+    hasObservedAgentOutput: false,
     sentCodexMessages: [] as string[],
     sentSessionEvents: [] as CapturedSessionEvent[],
+    recordSuccessfulAgentOutput: vi.fn(),
     agentState: {
         requests: {},
         completedRequests: {},
@@ -58,13 +67,72 @@ const fakeSessionState = vi.hoisted(() => ({
         this.model = model;
         this.shouldClose = false;
         this.hasCollectedLivePrompt = false;
+        this.deliveryPromise = null;
+        this.deliveryStatus = 'not-started';
+        this.deliveryRejection = null;
+        this.hasObservedAgentOutput = false;
+        this.agentOutputPromise = new Promise<void>((resolve) => {
+            this.resolveAgentOutput = resolve;
+        });
         this.sentCodexMessages = [];
         this.sentSessionEvents = [];
+        this.recordSuccessfulAgentOutput.mockReset();
+        this.recordSuccessfulAgentOutput.mockImplementation(() => {
+            this.hasObservedAgentOutput = true;
+            this.resolveAgentOutput();
+        });
         this.agentState = {
             requests: {},
             completedRequests: {},
         };
         this.permissionHandler = undefined;
+    },
+    trackDelivery(callback: (message: DeliveredUserMessage) => void | Promise<void>): void {
+        this.deliveryStatus = 'pending';
+        const delivery = Promise.resolve().then(() => callback({
+            role: 'user',
+            content: { type: 'text', text: this.prompt },
+            meta: {
+                permissionMode: 'read-only',
+                ...(this.model ? { model: this.model } : {}),
+            },
+            deliveryId: REAL_DELIVERY_ID,
+        }));
+        this.deliveryPromise = delivery;
+        delivery.then(
+            () => {
+                this.deliveryStatus = 'accepted';
+            },
+            (error) => {
+                this.deliveryStatus = 'rejected';
+                this.deliveryRejection = error;
+            },
+        );
+    },
+    async waitForDeliveryAndAgentOutput(): Promise<void> {
+        const delivery = this.deliveryPromise;
+        if (!delivery) {
+            throw new Error('The real-resume fake session did not start a tracked delivery callback.');
+        }
+
+        const waitFor = async (promise: Promise<void>, description: string): Promise<void> => {
+            let timeout: NodeJS.Timeout | undefined;
+            try {
+                await Promise.race([
+                    promise,
+                    new Promise<never>((_, reject) => {
+                        timeout = setTimeout(() => {
+                            reject(new Error(`Timed out waiting for ${description}.`));
+                        }, DELIVERY_GATE_TIMEOUT_MS);
+                    }),
+                ]);
+            } finally {
+                if (timeout) clearTimeout(timeout);
+            }
+        };
+
+        await waitFor(delivery, 'the onUserMessage callback to resolve after delivery acceptance');
+        await waitFor(this.agentOutputPromise, 'observed successful agent output before queue closure');
     },
 }));
 
@@ -83,17 +151,8 @@ vi.mock('@/api/api', () => ({
             })),
             sessionSyncClient: vi.fn(() => ({
                 sessionId: REMCLI_SESSION_ID,
-                onUserMessage(callback: (message: UserMessage) => void) {
-                    queueMicrotask(() => {
-                        callback({
-                            role: 'user',
-                            content: { type: 'text', text: fakeSessionState.prompt },
-                            meta: {
-                                permissionMode: 'read-only',
-                                ...(fakeSessionState.model ? { model: fakeSessionState.model } : {}),
-                            },
-                        });
-                    });
+                onUserMessage(callback: (message: DeliveredUserMessage) => void | Promise<void>) {
+                    fakeSessionState.trackDelivery(callback);
                 },
                 sendCodexMessage(message: CapturedCodexMessage) {
                     if (message.type === 'message' && typeof message.message === 'string') {
@@ -103,6 +162,7 @@ vi.mock('@/api/api', () => ({
                         }
                     }
                 },
+                recordSuccessfulAgentOutput: fakeSessionState.recordSuccessfulAgentOutput,
                 sendUserTextMessage: vi.fn(),
                 sendAgentMessage: vi.fn(),
                 sendClaudeSessionMessage: vi.fn(),
@@ -182,14 +242,42 @@ vi.mock('@/persistence', async (importOriginal) => {
 
 vi.mock('@/utils/MessageQueue2', () => {
     class SingleTurnMessageQueue<T> {
-        private queue: Array<{ message: string; mode: T; hash: string }> = [];
+        private queue: Array<{
+            message: string;
+            mode: T;
+            hash: string;
+            resolveAcceptance?: () => void;
+            rejectAcceptance?: (error: Error) => void;
+        }> = [];
         private waiter: ((hasMessages: boolean) => void) | null = null;
         private didCollect = false;
 
         constructor(private readonly modeHasher: (mode: T) => string) {}
 
         push(message: string, mode: T): void {
-            this.queue.push({ message, mode, hash: this.modeHasher(mode) });
+            this.enqueue({ message, mode, hash: this.modeHasher(mode) });
+        }
+
+        pushWithAcceptance(message: string, mode: T): Promise<void> {
+            return new Promise((resolve, reject) => {
+                this.enqueue({
+                    message,
+                    mode,
+                    hash: this.modeHasher(mode),
+                    resolveAcceptance: resolve,
+                    rejectAcceptance: reject,
+                });
+            });
+        }
+
+        private enqueue(message: {
+            message: string;
+            mode: T;
+            hash: string;
+            resolveAcceptance?: () => void;
+            rejectAcceptance?: (error: Error) => void;
+        }): void {
+            this.queue.push(message);
             if (this.waiter) {
                 const waiter = this.waiter;
                 this.waiter = null;
@@ -197,11 +285,22 @@ vi.mock('@/utils/MessageQueue2', () => {
             }
         }
 
-        async waitForMessagesAndGetAsString(signal?: AbortSignal): Promise<{ message: string; mode: T; isolate: boolean; hash: string } | null> {
+        async waitForMessagesAndGetAsString(signal?: AbortSignal): Promise<{
+            message: string;
+            mode: T;
+            isolate: boolean;
+            hash: string;
+            acknowledge: () => void;
+            reject: (error: unknown) => void;
+        } | null> {
             if (this.queue.length > 0) {
                 return this.collect();
             }
-            if ((this.didCollect && fakeSessionState.shouldClose) || signal?.aborted) {
+            if (this.didCollect && fakeSessionState.shouldClose) {
+                await fakeSessionState.waitForDeliveryAndAgentOutput();
+                return null;
+            }
+            if (signal?.aborted) {
                 return null;
             }
             return new Promise((resolve) => {
@@ -222,12 +321,28 @@ vi.mock('@/utils/MessageQueue2', () => {
             return this.queue.length;
         }
 
-        private collect(): { message: string; mode: T; isolate: boolean; hash: string } {
+        private collect(): {
+            message: string;
+            mode: T;
+            isolate: boolean;
+            hash: string;
+            acknowledge: () => void;
+            reject: (error: unknown) => void;
+        } {
             const item = this.queue.shift();
             if (!item) throw new Error('Expected queued message.');
             this.didCollect = true;
             fakeSessionState.hasCollectedLivePrompt = true;
-            return { message: item.message, mode: item.mode, isolate: false, hash: item.hash };
+            return {
+                message: item.message,
+                mode: item.mode,
+                isolate: false,
+                hash: item.hash,
+                acknowledge: () => item.resolveAcceptance?.(),
+                reject: (error) => item.rejectAcceptance?.(
+                    error instanceof Error ? error : new Error(String(error)),
+                ),
+            };
         }
     }
 
@@ -300,10 +415,18 @@ async function runRunCodexResumeSmoke(model: string, effort: string): Promise<vo
         expect(`${answer}\n${errors}`).not.toContain('Session not found');
         expect(errors).toBe('');
         expect(answer).toContain(contextMarker);
+        await fakeSessionState.waitForDeliveryAndAgentOutput();
+        expect(fakeSessionState.deliveryStatus).toBe('accepted');
+        expect(fakeSessionState.deliveryRejection).toBeNull();
+        expect(fakeSessionState.hasObservedAgentOutput).toBe(true);
+        expect(fakeSessionState.recordSuccessfulAgentOutput).toHaveBeenCalled();
         expect(getSessionRunnerCredential(REMCLI_SESSION_ID)).toBe(TEST_RUNNER_CREDENTIAL);
         expect(beginTurnSpy).toHaveBeenCalledTimes(2);
         expect(beginTurnSpy).toHaveBeenNthCalledWith(1, expect.objectContaining(realTurnSettings));
-        expect(beginTurnSpy).toHaveBeenNthCalledWith(2, expect.objectContaining(realTurnSettings));
+        expect(beginTurnSpy).toHaveBeenNthCalledWith(2, expect.objectContaining({
+            ...realTurnSettings,
+            clientUserMessageId: REAL_DELIVERY_ID,
+        }));
     } finally {
         beginTurnSpy.mockRestore();
         await seedClient.disconnect().catch(() => undefined);

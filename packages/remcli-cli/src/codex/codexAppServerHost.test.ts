@@ -4,6 +4,7 @@ import type { Readable } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { logger } from '@/ui/logger';
 import {
     buildCodexAppServerEndpoint,
     buildCodexAppServerReadyUrl,
@@ -44,9 +45,17 @@ describe('codex app-server host helpers', () => {
         expect(buildCodexAppServerReadyUrl('ws://127.0.0.1:45123')).toBe('http://127.0.0.1:45123/readyz');
         expect(buildCodexAppServerReadyUrl('wss://codex.local/ws')).toBe('https://codex.local/readyz');
         expect(buildCodexAppServerReadyUrl('http://127.0.0.1:45123')).toBeNull();
-        expect(buildCodexRemoteTuiCommand('ws://127.0.0.1:45123')).toBe("codex --remote 'ws://127.0.0.1:45123'");
+        expect(buildCodexRemoteTuiCommand('ws://127.0.0.1:45123')).toBe(
+            "codex -c 'model_reasoning_effort=\"xhigh\"' --remote 'ws://127.0.0.1:45123'"
+        );
         expect(buildCodexRemoteTuiCommand('ws://127.0.0.1:45123', 'thread-1')).toBe(
-            "codex resume 'thread-1' --remote 'ws://127.0.0.1:45123'"
+            "codex -c 'model_reasoning_effort=\"xhigh\"' resume 'thread-1' --remote 'ws://127.0.0.1:45123'"
+        );
+        expect(buildCodexRemoteTuiCommand('ws://127.0.0.1:45123', 'thread-1', 'high')).toBe(
+            "codex -c 'model_reasoning_effort=\"high\"' resume 'thread-1' --remote 'ws://127.0.0.1:45123'"
+        );
+        expect(buildCodexRemoteTuiCommand('ws://127.0.0.1:45123', 'thread-1', 'xhigh', 'gpt-5.6-luna')).toBe(
+            "codex -c 'model_reasoning_effort=\"xhigh\"' --model 'gpt-5.6-luna' resume 'thread-1' --remote 'ws://127.0.0.1:45123'"
         );
     });
 
@@ -112,5 +121,28 @@ describe('codex app-server host helpers', () => {
         queueMicrotask(() => proc.emit('exit', 1, null));
 
         await expect(starting).rejects.toThrow('Codex app-server exited before ready');
+    });
+
+    it('redacts credentials from shared app-server stderr diagnostics', async () => {
+        const proc = createFakeProcess();
+        const debug = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
+        const cookie = 'host-stderr-cookie-value';
+
+        try {
+            const handle = await startCodexAppServerHost({
+                choosePort: async () => 45123,
+                spawnAppServer: () => proc,
+                fetchReady: async () => true,
+            });
+            proc.stderr.emit('data', `Cookie: ${cookie}`);
+
+            const diagnostics = JSON.stringify(debug.mock.calls);
+            expect(diagnostics).toContain('[REDACTED]');
+            expect(diagnostics).not.toContain(cookie);
+
+            await handle.stop();
+        } finally {
+            debug.mockRestore();
+        }
     });
 });

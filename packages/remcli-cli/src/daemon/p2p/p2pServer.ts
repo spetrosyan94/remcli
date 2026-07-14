@@ -5,7 +5,7 @@
  */
 
 import { existsSync } from 'fs';
-import { sep } from 'path';
+import { basename, extname, sep } from 'path';
 import { randomUUID } from 'node:crypto';
 import fastify from 'fastify';
 import fastifyMultipart from '@fastify/multipart';
@@ -107,6 +107,25 @@ function getNewMessageSequence(payload: Record<string, unknown>, sessionId: stri
     return typeof sequence === 'number' && Number.isSafeInteger(sequence) && sequence > 0 ? sequence : null;
 }
 
+const IMMUTABLE_WEB_ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+const REVALIDATED_WEB_ASSET_CACHE_CONTROL = 'no-cache';
+
+export function getWebStaticCacheControl(filePath: string): string {
+    const isViteAsset = filePath.includes(`${sep}assets${sep}`);
+    const isViteEntryChunk = isViteAsset && /^index-[A-Za-z0-9_-]+\.js$/.test(basename(filePath));
+
+    // Rollup can retain an entry filename while a lazy route dependency changes.
+    // Revalidating the entry lets a recovered client resolve the current route chunk.
+    return isViteAsset && !isViteEntryChunk
+        ? IMMUTABLE_WEB_ASSET_CACHE_CONTROL
+        : REVALIDATED_WEB_ASSET_CACHE_CONTROL;
+}
+
+export function isWebStaticAssetRequest(requestUrl: string): boolean {
+    const pathname = requestUrl.split('?', 1)[0] ?? '';
+    return pathname.startsWith('/assets/') || extname(pathname) !== '';
+}
+
 // ─── Server ──────────────────────────────────────────────────────
 
 export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer> {
@@ -154,13 +173,13 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
             root: config.webAppDir,
             prefix: '/',
             decorateReply: true,
-            wildcard: false,
+            // The web build can change its hashed lazy-route chunks while a
+            // developer daemon remains running. Resolve files per request so
+            // a current index never falls through to the SPA document.
+            wildcard: true,
             cacheControl: false,  // Cache-Control set per file below
             setHeaders: (res, filePath) => {
-                // Vite puts content-hashed files under assets/ — safe to cache forever.
-                // Everything else (index.html, favicon, manifest, icons) must revalidate.
-                const isHashedAsset = filePath.includes(`${sep}assets${sep}`);
-                res.setHeader('Cache-Control', isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache');
+                res.setHeader('Cache-Control', getWebStaticCacheControl(filePath));
             },
         });
 
@@ -168,7 +187,7 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
         // so deep links (/terminal/connect, /session/:id) work on direct load.
         app.setNotFoundHandler(async (request, reply) => {
             const isApiRoute = request.url.startsWith('/v1/') || request.url.startsWith('/v2/') || request.url.startsWith('/health');
-            if (request.method === 'GET' && !isApiRoute) {
+            if (request.method === 'GET' && !isApiRoute && !isWebStaticAssetRequest(request.url)) {
                 reply.header('Cache-Control', 'no-cache');
                 return reply.sendFile('index.html');
             }

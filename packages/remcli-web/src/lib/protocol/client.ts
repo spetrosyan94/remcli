@@ -89,6 +89,11 @@ function randomUUID(): string {
 // ─── Client state ────────────────────────────────────────────────
 
 interface ClientContext {
+    generation: number;
+    sessionsEpoch: number;
+    machinesEpoch: number;
+    sessionActivityPatches: Map<string, SessionActivityPatch>;
+    machineActivityPatches: Map<string, MachineActivityPatch>;
     credentials: P2PCredentials;
     encryption: Encryption;
     sessionCiphers: Map<string, Cipher>;
@@ -99,8 +104,161 @@ interface ClientContext {
     unsubscribers: Array<() => void>;
 }
 
+interface SessionActivityPatch {
+    active: boolean;
+    activeAt: number;
+    thinking: boolean;
+}
+
+interface MachineActivityPatch {
+    active: boolean;
+    activeAt: number;
+}
+
+const MAX_PENDING_ACTIVITY_PATCHES = 512;
+
 let context: ClientContext | null = null;
+let lifecycleGeneration = 0;
 const protocolReconnectedListeners = new Set<() => void>();
+
+function isCurrentClientContext(ctx: ClientContext): boolean {
+    return context === ctx && ctx.generation === lifecycleGeneration;
+}
+
+function getCurrentProtocolStore(ctx: ClientContext) {
+    return isCurrentClientContext(ctx) ? useProtocolStore.getState() : null;
+}
+
+function beginSessionsRefresh(ctx: ClientContext): number {
+    ctx.sessionsEpoch += 1;
+    return ctx.sessionsEpoch;
+}
+
+function beginMachinesRefresh(ctx: ClientContext): number {
+    ctx.machinesEpoch += 1;
+    return ctx.machinesEpoch;
+}
+
+function markSessionsMutation(ctx: ClientContext): void {
+    ctx.sessionsEpoch += 1;
+}
+
+function markMachinesMutation(ctx: ClientContext): void {
+    ctx.machinesEpoch += 1;
+}
+
+function canCommitSessionsSnapshot(ctx: ClientContext, epoch: number): boolean {
+    return isCurrentClientContext(ctx) && ctx.sessionsEpoch === epoch;
+}
+
+function canCommitMachinesSnapshot(ctx: ClientContext, epoch: number): boolean {
+    return isCurrentClientContext(ctx) && ctx.machinesEpoch === epoch;
+}
+
+function removeMissingSessionCiphers(ctx: ClientContext, sessions: Session[]): void {
+    const sessionIds = new Set(sessions.map((session) => session.id));
+    for (const sessionId of ctx.sessionCiphers.keys()) {
+        if (!sessionIds.has(sessionId)) {
+            ctx.sessionCiphers.delete(sessionId);
+        }
+    }
+}
+
+function removeMissingMachineCiphers(ctx: ClientContext, machines: Machine[]): void {
+    const machineIds = new Set(machines.map((machine) => machine.id));
+    for (const machineId of ctx.machineCiphers.keys()) {
+        if (!machineIds.has(machineId)) {
+            ctx.machineCiphers.delete(machineId);
+            ctx.machineDataCiphers.delete(machineId);
+        }
+    }
+}
+
+function removeMissingSessionActivityPatches(ctx: ClientContext, sessions: Session[]): void {
+    const sessionIds = new Set(sessions.map((session) => session.id));
+    for (const sessionId of ctx.sessionActivityPatches.keys()) {
+        if (!sessionIds.has(sessionId)) {
+            ctx.sessionActivityPatches.delete(sessionId);
+        }
+    }
+}
+
+function removeMissingMachineActivityPatches(ctx: ClientContext, machines: Machine[]): void {
+    const machineIds = new Set(machines.map((machine) => machine.id));
+    for (const machineId of ctx.machineActivityPatches.keys()) {
+        if (!machineIds.has(machineId)) {
+            ctx.machineActivityPatches.delete(machineId);
+        }
+    }
+}
+
+function setBoundedActivityPatch<T>(patches: Map<string, T>, id: string, patch: T): void {
+    patches.delete(id);
+    patches.set(id, patch);
+    while (patches.size > MAX_PENDING_ACTIVITY_PATCHES) {
+        const oldestId = patches.keys().next().value;
+        if (typeof oldestId !== 'string') {
+            return;
+        }
+        patches.delete(oldestId);
+    }
+}
+
+function applySessionActivityPatch(ctx: ClientContext, session: Session): Session {
+    const patch = ctx.sessionActivityPatches.get(session.id);
+    if (!patch) {
+        return session;
+    }
+    if (patch.activeAt < session.activeAt) {
+        ctx.sessionActivityPatches.delete(session.id);
+        return session;
+    }
+    return {
+        ...session,
+        active: patch.active,
+        activeAt: patch.activeAt,
+        thinking: patch.thinking,
+        thinkingAt: patch.thinking ? patch.activeAt : session.thinkingAt,
+        presence: patch.active ? 'online' : patch.activeAt,
+    };
+}
+
+function mergeSessionSnapshot(snapshot: Session, current: Session | undefined): Session {
+    if (!current) {
+        return snapshot;
+    }
+
+    const shouldKeepCurrentMetadata = current.metadataVersion > snapshot.metadataVersion
+        || (current.metadataVersion === snapshot.metadataVersion && current.updatedAt > snapshot.updatedAt);
+    const shouldKeepCurrentAgentState = current.agentStateVersion > snapshot.agentStateVersion
+        || (current.agentStateVersion === snapshot.agentStateVersion && current.updatedAt > snapshot.updatedAt);
+
+    return {
+        ...snapshot,
+        metadata: shouldKeepCurrentMetadata ? current.metadata : snapshot.metadata,
+        metadataVersion: Math.max(current.metadataVersion, snapshot.metadataVersion),
+        agentState: shouldKeepCurrentAgentState ? current.agentState : snapshot.agentState,
+        agentStateVersion: Math.max(current.agentStateVersion, snapshot.agentStateVersion),
+        updatedAt: Math.max(current.updatedAt, snapshot.updatedAt),
+        seq: Math.max(current.seq, snapshot.seq)
+    };
+}
+
+function applyMachineActivityPatch(ctx: ClientContext, machine: Machine): Machine {
+    const patch = ctx.machineActivityPatches.get(machine.id);
+    if (!patch) {
+        return machine;
+    }
+    if (patch.activeAt < machine.activeAt) {
+        ctx.machineActivityPatches.delete(machine.id);
+        return machine;
+    }
+    return {
+        ...machine,
+        active: patch.active,
+        activeAt: patch.activeAt,
+    };
+}
 
 export interface SessionMessagesPage {
     total: number;
@@ -308,26 +466,56 @@ async function decryptApiMessage(cipher: Cipher, message: ApiMessage): Promise<N
 
 // ─── Sync ────────────────────────────────────────────────────────
 
+async function refreshSessionsForContext(ctx: ClientContext): Promise<void> {
+    const epoch = beginSessionsRefresh(ctx);
+    const apiSessions = await fetchSessions(restConfigOf(ctx));
+    if (!canCommitSessionsSnapshot(ctx, epoch)) return;
+    const decryptedSessions: Session[] = [];
+    for (const api of apiSessions) {
+        if (!canCommitSessionsSnapshot(ctx, epoch)) return;
+        const session = await decryptApiSession(ctx, api);
+        if (!canCommitSessionsSnapshot(ctx, epoch)) return;
+        decryptedSessions.push(session);
+    }
+    if (!canCommitSessionsSnapshot(ctx, epoch)) return;
+    const store = getCurrentProtocolStore(ctx);
+    if (!store) return;
+    const sessions = decryptedSessions
+        .map((session) => applySessionActivityPatch(ctx, session))
+        .map((session) => mergeSessionSnapshot(session, store.sessions[session.id]));
+    store.replaceSessions(sessions);
+    removeMissingSessionCiphers(ctx, sessions);
+    removeMissingSessionActivityPatches(ctx, sessions);
+}
+
 export async function refreshSessions(): Promise<void> {
     if (isFixturesActive) return;
-    const ctx = requireContext();
-    const apiSessions = await fetchSessions(restConfigOf(ctx));
-    const sessions: Session[] = [];
-    for (const api of apiSessions) {
-        sessions.push(await decryptApiSession(ctx, api));
+    await refreshSessionsForContext(requireContext());
+}
+
+async function refreshMachinesForContext(ctx: ClientContext): Promise<void> {
+    const epoch = beginMachinesRefresh(ctx);
+    const apiMachines = await fetchMachines(restConfigOf(ctx));
+    if (!canCommitMachinesSnapshot(ctx, epoch)) return;
+    const decryptedMachines: Machine[] = [];
+    for (const api of apiMachines) {
+        if (!canCommitMachinesSnapshot(ctx, epoch)) return;
+        const machine = await decryptApiMachine(ctx, api);
+        if (!canCommitMachinesSnapshot(ctx, epoch)) return;
+        decryptedMachines.push(machine);
     }
-    useProtocolStore.getState().applySessions(sessions);
+    if (!canCommitMachinesSnapshot(ctx, epoch)) return;
+    const store = getCurrentProtocolStore(ctx);
+    if (!store) return;
+    const machines = decryptedMachines.map((machine) => applyMachineActivityPatch(ctx, machine));
+    store.replaceMachines(machines);
+    removeMissingMachineCiphers(ctx, machines);
+    removeMissingMachineActivityPatches(ctx, machines);
 }
 
 export async function refreshMachines(): Promise<void> {
     if (isFixturesActive) return;
-    const ctx = requireContext();
-    const apiMachines = await fetchMachines(restConfigOf(ctx));
-    const machines: Machine[] = [];
-    for (const api of apiMachines) {
-        machines.push(await decryptApiMachine(ctx, api));
-    }
-    useProtocolStore.getState().applyMachines(machines);
+    await refreshMachinesForContext(requireContext());
 }
 
 /**
@@ -351,7 +539,7 @@ export async function loadSessionMessages(
     const cipher = ctx.sessionCiphers.get(sessionId);
     if (!cipher) {
         // Session list not fetched yet — fetch it to initialize the cipher
-        await refreshSessions();
+        await refreshSessionsForContext(ctx);
     }
     const readyCipher = ctx.sessionCiphers.get(sessionId);
     if (!readyCipher) {
@@ -359,20 +547,27 @@ export async function loadSessionMessages(
     }
 
     const page = await fetchMessages(restConfigOf(ctx), sessionId, options);
-    const normalized: NormalizedMessage[] = [];
-    for (const message of page.messages) {
-        const decrypted = await decryptApiMessage(readyCipher, message);
-        if (decrypted) {
-            normalized.push(decrypted);
-        }
-    }
-    useProtocolStore.getState().applyMessages(sessionId, normalized, { markLoaded: true });
-    return {
+    const result: SessionMessagesPage = {
         total: page.total,
         hasMore: page.hasMore,
         consumed: page.messages.length,
         nextOffset: offset + page.messages.length
     };
+    if (!isCurrentClientContext(ctx)) return result;
+
+    const normalized: NormalizedMessage[] = [];
+    for (const message of page.messages) {
+        const decrypted = await decryptApiMessage(readyCipher, message);
+        if (!isCurrentClientContext(ctx)) return result;
+        if (decrypted) {
+            normalized.push(decrypted);
+        }
+    }
+    const store = getCurrentProtocolStore(ctx);
+    if (store?.sessions[sessionId]) {
+        store.applyMessages(sessionId, normalized, { markLoaded: true });
+    }
+    return result;
 }
 
 /**
@@ -417,12 +612,17 @@ export async function sendSessionMessage(
         throw new Error(`Session encryption not found for ${sessionId}`);
     }
     const encryptedRecord = await cipher.encryptRaw(record);
+    if (!isCurrentClientContext(ctx)) return;
 
     // Local echo — replaced when the server broadcasts the stored copy
     const createdAt = Date.now();
+    const store = getCurrentProtocolStore(ctx);
+    if (!store?.sessions[sessionId]) {
+        throw new Error(`Unknown session: ${sessionId}`);
+    }
     const normalized = normalizeRawMessage(localId, localId, null, createdAt, record);
     if (normalized) {
-        useProtocolStore.getState().applyMessages(sessionId, [normalized]);
+        store.applyMessages(sessionId, [normalized]);
     }
 
     sendEncryptedMessage({ sessionId, encryptedRecord, localId, permissionMode });
@@ -481,17 +681,21 @@ export async function machineSetDisplayName(machineId: string, displayName: stri
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         const encrypted = await cipher.encryptRaw(metadata);
+        if (!isCurrentClientContext(ctx)) return;
         const result = await socketEmitWithAck<{
             result: 'success' | 'version-mismatch' | 'error';
             version?: number;
             metadata?: string;
             message?: string;
         }>('machine-update-metadata', { machineId, metadata: encrypted, expectedVersion });
+        if (!isCurrentClientContext(ctx)) return;
 
         if (result.result === 'success') {
-            const current = useProtocolStore.getState().machines[machineId];
-            if (current) {
-                useProtocolStore.getState().applyMachines([{
+            const store = getCurrentProtocolStore(ctx);
+            const current = store?.machines[machineId];
+            if (current && store) {
+                markMachinesMutation(ctx);
+                store.applyMachines([{
                     ...current,
                     metadata,
                     metadataVersion: result.version ?? expectedVersion + 1
@@ -503,6 +707,7 @@ export async function machineSetDisplayName(machineId: string, displayName: stri
             // Merge: take the latest metadata, keep our intended displayName change
             expectedVersion = result.version;
             const latest = await decryptMachineMetadata(cipher, result.metadata);
+            if (!isCurrentClientContext(ctx)) return;
             metadata = { ...(latest ?? metadata), displayName: displayName.trim() || undefined };
             continue;
         }
@@ -515,6 +720,7 @@ export async function machineSetDisplayName(machineId: string, displayName: stri
 function evictMachine(machineId: string): void {
     context?.machineCiphers.delete(machineId);
     context?.machineDataCiphers.delete(machineId);
+    context?.machineActivityPatches.delete(machineId);
     useProtocolStore.getState().removeMachine(machineId);
 }
 
@@ -531,7 +737,8 @@ export async function machineDelete(machineId: string): Promise<DeleteMachineRes
     }
     const ctx = requireContext();
     const result = await deleteMachine(restConfigOf(ctx), machineId);
-    if (result.ok || result.status === 404) {
+    if (isCurrentClientContext(ctx) && (result.ok || result.status === 404)) {
+        markMachinesMutation(ctx);
         evictMachine(machineId);
     }
     return result;
@@ -552,41 +759,56 @@ export function subscribeKvChanges(listener: (changes: KvChange[]) => void): () 
 // ─── Socket event handlers ───────────────────────────────────────
 
 async function handleUpdate(ctx: ClientContext, data: unknown): Promise<void> {
+    if (!isCurrentClientContext(ctx)) return;
     const parsed = ApiUpdateContainerSchema.safeParse(data);
     if (!parsed.success) {
         return;
     }
     const update = parsed.data;
-    const store = useProtocolStore.getState();
 
     if (update.body.t === 'new-message') {
         const { sid, message } = update.body;
         let cipher = ctx.sessionCiphers.get(sid);
         if (!cipher) {
-            await refreshSessions();
+            await refreshSessionsForContext(ctx);
+            if (!isCurrentClientContext(ctx)) return;
             cipher = ctx.sessionCiphers.get(sid);
         }
         if (!cipher) return;
         const normalized = await decryptApiMessage(cipher, message);
+        const store = getCurrentProtocolStore(ctx);
+        const session = store?.sessions[sid];
+        if (!store || !session) return;
         if (normalized) {
             store.applyMessages(sid, [normalized]);
         }
-        const session = store.sessions[sid];
-        if (session) {
-            store.applySessions([{ ...session, updatedAt: update.createdAt }]);
-        }
+        const currentSession = getCurrentProtocolStore(ctx)?.sessions[sid];
+        if (!currentSession) return;
+        const shouldApplyTimestamp = update.createdAt > currentSession.updatedAt;
+        const shouldApplySequence = update.seq > currentSession.seq;
+        if (!shouldApplyTimestamp && !shouldApplySequence) return;
+
+        getCurrentProtocolStore(ctx)?.applySessions([{
+            ...currentSession,
+            updatedAt: Math.max(currentSession.updatedAt, update.createdAt),
+            seq: Math.max(currentSession.seq, update.seq)
+        }]);
         return;
     }
 
     if (update.body.t === 'new-session') {
-        await refreshSessions();
+        await refreshSessionsForContext(ctx);
         return;
     }
 
     if (update.body.t === 'delete-session') {
         const sessionId = update.body.sid ?? update.body.sessionId;
         if (sessionId) {
+            const store = getCurrentProtocolStore(ctx);
+            if (!store) return;
+            markSessionsMutation(ctx);
             ctx.sessionCiphers.delete(sessionId);
+            ctx.sessionActivityPatches.delete(sessionId);
             store.removeSession(sessionId);
         }
         return;
@@ -594,37 +816,68 @@ async function handleUpdate(ctx: ClientContext, data: unknown): Promise<void> {
 
     if (update.body.t === 'update-session') {
         const body = update.body;
+        const store = getCurrentProtocolStore(ctx);
+        if (!store) return;
         const session = store.sessions[body.id];
         if (!session) {
-            await refreshSessions();
+            await refreshSessionsForContext(ctx);
             return;
         }
         const cipher = ctx.sessionCiphers.get(body.id);
         if (!cipher) return;
-        const metadata = body.metadata
-            ? await decryptSessionMetadata(cipher, body.metadata.value)
-            : session.metadata;
-        const agentState = body.agentState
-            ? await decryptAgentState(cipher, body.agentState.value)
-            : session.agentState;
-        store.applySessions([{
-            ...session,
-            metadata,
-            metadataVersion: body.metadata ? body.metadata.version : session.metadataVersion,
-            agentState,
-            agentStateVersion: body.agentState ? body.agentState.version : session.agentStateVersion,
-            updatedAt: update.createdAt,
-            seq: update.seq
+        const shouldDecryptMetadata = body.metadata !== null
+            && body.metadata !== undefined
+            && body.metadata.version > session.metadataVersion;
+        const shouldDecryptAgentState = body.agentState !== null
+            && body.agentState !== undefined
+            && body.agentState.version > session.agentStateVersion;
+        const shouldApplyTimestamp = update.createdAt > session.updatedAt;
+        if (!shouldDecryptMetadata && !shouldDecryptAgentState && !shouldApplyTimestamp) {
+            return;
+        }
+
+        let metadata = session.metadata;
+        if (shouldDecryptMetadata && body.metadata) {
+            metadata = await decryptSessionMetadata(cipher, body.metadata.value);
+            if (!isCurrentClientContext(ctx)) return;
+        }
+        let agentState = session.agentState;
+        if (shouldDecryptAgentState && body.agentState) {
+            agentState = await decryptAgentState(cipher, body.agentState.value);
+            if (!isCurrentClientContext(ctx)) return;
+        }
+        const currentStore = getCurrentProtocolStore(ctx);
+        const currentSession = currentStore?.sessions[body.id];
+        if (!currentStore || !currentSession) return;
+        const shouldApplyMetadata = body.metadata !== null
+            && body.metadata !== undefined
+            && body.metadata.version > currentSession.metadataVersion;
+        const shouldApplyAgentState = body.agentState !== null
+            && body.agentState !== undefined
+            && body.agentState.version > currentSession.agentStateVersion;
+        const shouldApplyCurrentTimestamp = update.createdAt > currentSession.updatedAt;
+        if (!shouldApplyMetadata && !shouldApplyAgentState && !shouldApplyCurrentTimestamp) return;
+        markSessionsMutation(ctx);
+        currentStore.applySessions([{
+            ...currentSession,
+            metadata: shouldApplyMetadata ? metadata : currentSession.metadata,
+            metadataVersion: shouldApplyMetadata && body.metadata ? body.metadata.version : currentSession.metadataVersion,
+            agentState: shouldApplyAgentState ? agentState : currentSession.agentState,
+            agentStateVersion: shouldApplyAgentState && body.agentState ? body.agentState.version : currentSession.agentStateVersion,
+            updatedAt: Math.max(currentSession.updatedAt, update.createdAt),
+            seq: Math.max(currentSession.seq, update.seq)
         }]);
         return;
     }
 
     if (update.body.t === 'new-machine') {
-        await refreshMachines();
+        await refreshMachinesForContext(ctx);
         return;
     }
 
     if (update.body.t === 'delete-machine') {
+        markMachinesMutation(ctx);
+        ctx.machineActivityPatches.delete(update.body.machineId);
         evictMachine(update.body.machineId);
         return;
     }
@@ -632,6 +885,7 @@ async function handleUpdate(ctx: ClientContext, data: unknown): Promise<void> {
     if (update.body.t === 'kv-batch-update') {
         const changes = update.body.changes;
         for (const listener of kvListeners) {
+            if (!isCurrentClientContext(ctx)) return;
             listener(changes);
         }
         return;
@@ -639,43 +893,87 @@ async function handleUpdate(ctx: ClientContext, data: unknown): Promise<void> {
 
     if (update.body.t === 'update-machine') {
         const body = update.body;
+        const store = getCurrentProtocolStore(ctx);
+        if (!store) return;
         const machine = store.machines[body.machineId];
         if (!machine) {
-            await refreshMachines();
+            await refreshMachinesForContext(ctx);
             return;
         }
         const cipher = ctx.machineDataCiphers.get(body.machineId);
         if (!cipher) return;
-        const metadata = body.metadata
-            ? await decryptMachineMetadata(cipher, body.metadata.value)
-            : machine.metadata;
-        const daemonState = body.daemonState
-            ? await cipher.decryptRaw(body.daemonState.value)
-            : machine.daemonState;
-        store.applyMachines([{
-            ...machine,
-            metadata,
-            metadataVersion: body.metadata ? body.metadata.version : machine.metadataVersion,
-            daemonState,
-            daemonStateVersion: body.daemonState ? body.daemonState.version : machine.daemonStateVersion,
-            active: body.active ?? machine.active,
-            activeAt: body.activeAt ?? machine.activeAt,
-            updatedAt: update.createdAt
+        const shouldDecryptMetadata = body.metadata !== null
+            && body.metadata !== undefined
+            && body.metadata.version > machine.metadataVersion;
+        const shouldDecryptDaemonState = body.daemonState !== null
+            && body.daemonState !== undefined
+            && body.daemonState.version > machine.daemonStateVersion;
+        const shouldApplyActivity = body.active !== undefined
+            && body.activeAt !== undefined
+            && body.activeAt > machine.activeAt;
+        if (!shouldDecryptMetadata && !shouldDecryptDaemonState && !shouldApplyActivity) {
+            return;
+        }
+
+        let metadata = machine.metadata;
+        if (shouldDecryptMetadata && body.metadata) {
+            metadata = await decryptMachineMetadata(cipher, body.metadata.value);
+            if (!isCurrentClientContext(ctx)) return;
+        }
+        let daemonState = machine.daemonState;
+        if (shouldDecryptDaemonState && body.daemonState) {
+            daemonState = await cipher.decryptRaw(body.daemonState.value);
+            if (!isCurrentClientContext(ctx)) return;
+        }
+        const currentStore = getCurrentProtocolStore(ctx);
+        const currentMachine = currentStore?.machines[body.machineId];
+        if (!currentStore || !currentMachine) return;
+        const shouldApplyMetadata = body.metadata !== null
+            && body.metadata !== undefined
+            && body.metadata.version > currentMachine.metadataVersion;
+        const shouldApplyDaemonState = body.daemonState !== null
+            && body.daemonState !== undefined
+            && body.daemonState.version > currentMachine.daemonStateVersion;
+        const shouldApplyCurrentActivity = body.active !== undefined
+            && body.activeAt !== undefined
+            && body.activeAt > currentMachine.activeAt;
+        if (!shouldApplyMetadata && !shouldApplyDaemonState && !shouldApplyCurrentActivity) return;
+        markMachinesMutation(ctx);
+        currentStore.applyMachines([{
+            ...currentMachine,
+            metadata: shouldApplyMetadata ? metadata : currentMachine.metadata,
+            metadataVersion: shouldApplyMetadata && body.metadata ? body.metadata.version : currentMachine.metadataVersion,
+            daemonState: shouldApplyDaemonState ? daemonState : currentMachine.daemonState,
+            daemonStateVersion: shouldApplyDaemonState && body.daemonState ? body.daemonState.version : currentMachine.daemonStateVersion,
+            active: shouldApplyCurrentActivity && body.active !== undefined ? body.active : currentMachine.active,
+            activeAt: shouldApplyCurrentActivity && body.activeAt !== undefined ? body.activeAt : currentMachine.activeAt,
+            updatedAt: Math.max(currentMachine.updatedAt, update.createdAt)
         }]);
     }
 }
 
-function handleEphemeral(data: unknown): void {
+function handleEphemeral(ctx: ClientContext, data: unknown): void {
+    if (!isCurrentClientContext(ctx)) return;
     const parsed = ApiEphemeralUpdateSchema.safeParse(data);
     if (!parsed.success) {
         return;
     }
     const update = parsed.data;
-    const store = useProtocolStore.getState();
+    const store = getCurrentProtocolStore(ctx);
+    if (!store) return;
 
     if (update.type === 'activity') {
+        setBoundedActivityPatch(ctx.sessionActivityPatches, update.id, {
+            active: update.active,
+            activeAt: update.activeAt,
+            thinking: update.thinking,
+        });
         store.applySessionActivity(update.id, update.active, update.activeAt, update.thinking);
     } else if (update.type === 'machine-activity') {
+        setBoundedActivityPatch(ctx.machineActivityPatches, update.id, {
+            active: update.active,
+            activeAt: update.activeAt,
+        });
         store.applyMachineActivity(update.id, update.active, update.activeAt);
     }
     // 'usage' — not consumed by the web client yet
@@ -686,10 +984,28 @@ function handleEphemeral(data: unknown): void {
 /** Период замера латентности демона (GET /health) для пилюли соединения. */
 const LATENCY_PING_INTERVAL_MS = 30_000;
 
+async function refreshAfterReconnect(ctx: ClientContext): Promise<void> {
+    const machinesRefresh = refreshMachinesForContext(ctx).catch(() => undefined);
+    try {
+        await refreshSessionsForContext(ctx);
+    } finally {
+        for (const listener of protocolReconnectedListeners) {
+            if (!isCurrentClientContext(ctx)) break;
+            listener();
+        }
+        await machinesRefresh;
+    }
+}
+
 async function startWithCredentials(credentials: P2PCredentials): Promise<void> {
     stopProtocolClient();
 
     const ctx: ClientContext = {
+        generation: lifecycleGeneration,
+        sessionsEpoch: 0,
+        machinesEpoch: 0,
+        sessionActivityPatches: new Map(),
+        machineActivityPatches: new Map(),
         credentials,
         encryption: createEncryption(credentials.secret),
         sessionCiphers: new Map(),
@@ -700,21 +1016,15 @@ async function startWithCredentials(credentials: P2PCredentials): Promise<void> 
     context = ctx;
 
     ctx.unsubscribers.push(onSocketStatusChange((status) => {
-        useProtocolStore.getState().setConnectionStatus(status);
+        getCurrentProtocolStore(ctx)?.setConnectionStatus(status);
     }));
     ctx.unsubscribers.push(onSocketMessage('update', (data) => {
         void handleUpdate(ctx, data);
     }));
     ctx.unsubscribers.push(onSocketMessage('ephemeral', (data) => {
-        handleEphemeral(data);
+        handleEphemeral(ctx, data);
     }));
-    ctx.unsubscribers.push(onSocketReconnected(() => {
-        void Promise.all([
-            refreshSessions(),
-            refreshMachines()
-        ]).catch(() => undefined);
-        protocolReconnectedListeners.forEach((listener) => listener());
-    }));
+    ctx.unsubscribers.push(onSocketReconnected(() => refreshAfterReconnect(ctx).catch(() => undefined)));
 
     socketConnect(
         { endpoint: credentials.endpoint, token: credentials.token },
@@ -729,7 +1039,7 @@ async function startWithCredentials(credentials: P2PCredentials): Promise<void> 
     // Латентность соединения: GET /health раз в ~30s — пилюля HomePage («p2p · 12ms»)
     const measureLatency = async () => {
         const latencyMs = await measureHealthLatency(credentials.endpoint);
-        useProtocolStore.getState().setLatency(latencyMs);
+        getCurrentProtocolStore(ctx)?.setLatency(latencyMs);
     };
     void measureLatency();
     const latencyTimer = window.setInterval(() => { void measureLatency(); }, LATENCY_PING_INTERVAL_MS);
@@ -737,8 +1047,8 @@ async function startWithCredentials(credentials: P2PCredentials): Promise<void> 
 
     // Initial data load (socket handlers keep it fresh afterwards)
     await Promise.all([
-        refreshSessions().catch(() => undefined),
-        refreshMachines().catch(() => undefined)
+        refreshSessionsForContext(ctx).catch(() => undefined),
+        refreshMachinesForContext(ctx).catch(() => undefined)
     ]);
 }
 
@@ -763,6 +1073,7 @@ export async function restoreProtocolClient(): Promise<boolean> {
 /** Disconnect the socket and drop in-memory state (keeps stored credentials). */
 export function stopProtocolClient(): void {
     if (isFixturesActive) return; // фикстуры в сторе живут до выключения режима
+    lifecycleGeneration += 1;
     if (context) {
         for (const unsubscribe of context.unsubscribers) {
             unsubscribe();

@@ -665,6 +665,7 @@ export async function runGemini(opts: {
           session.sendAgentMessage('gemini', {
             type: 'message',
             message: `Error: ${errorMessage}`,
+            isError: true,
           });
         }
         break;
@@ -1091,7 +1092,7 @@ export async function runGemini(opts: {
               }
               const quotaMsg = `Gemini quota exceeded.${resetTimeMsg} Try using a different model (gemini-2.5-flash-lite) or wait for quota reset.`;
               messageBuffer.addMessage(quotaMsg, 'status');
-              session.sendAgentMessage('gemini', { type: 'message', message: quotaMsg });
+              session.sendAgentMessage('gemini', { type: 'message', message: quotaMsg, isError: true });
               throw promptError; // Don't retry quota errors
             }
             
@@ -1221,6 +1222,7 @@ export async function runGemini(opts: {
           session.sendAgentMessage('gemini', {
             type: 'message',
             message: errorMsg,
+            isError: true,
           });
         }
       } finally {
@@ -1251,6 +1253,7 @@ export async function runGemini(opts: {
             type: 'message',
             message: finalMessageText,
             id: randomUUID(),
+            isError: false,
             ...(options.length > 0 && { options }),
           };
           

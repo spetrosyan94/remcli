@@ -1,4 +1,4 @@
-import { expect, test, type ConsoleMessage, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type ConsoleMessage, type Locator, type Page, type TestInfo } from "@playwright/test";
 
 interface FixtureRoute {
     name: string;
@@ -28,6 +28,13 @@ interface OverflowReport {
     offenders: ElementReport[];
 }
 
+interface ChatHeaderReport {
+    clientWidth: number;
+    scrollWidth: number;
+    metadataWidth: number;
+    statusHeight: number;
+}
+
 const FIXTURE_ROUTES: FixtureRoute[] = [
     { name: "home", path: "/?fixtures=1" },
     { name: "new-session", path: "/new?fixtures=1" },
@@ -38,6 +45,10 @@ const FIXTURE_ROUTES: FixtureRoute[] = [
 
 const MOBILE_TOUCH_TARGET_MIN_PX = 44;
 const BOTTOM_SAFE_AREA_PX = 96;
+const CHAT_HEADER_METADATA_MIN_WIDTH_PX = 200;
+const CHAT_HEADER_STATUS_MAX_HEIGHT_PX = 20;
+const CLAUDE_PERMISSION_LABELS = ["manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"] as const;
+const CODEX_PERMISSION_LABELS = ["read-only", "workspace-write", "danger-full-access"] as const;
 
 function collectPageIssues(page: Page): PageIssue[] {
     const issues: PageIssue[] = [];
@@ -75,7 +86,7 @@ async function openFixtureRoute(page: Page, path: string): Promise<void> {
     });
     await page.goto(path, { waitUntil: "domcontentloaded" });
     await expect(page.locator("body")).toBeVisible();
-    await expect(page.locator('[data-slot="skeleton"]')).toHaveCount(0);
+    await expect(page.locator('[data-slot="skeleton"]:visible')).toHaveCount(0);
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 
@@ -128,6 +139,44 @@ async function assertNoHorizontalOverflow(page: Page): Promise<void> {
 
     expect(report.scrollWidth, JSON.stringify(report, null, 2)).toBeLessThanOrEqual(report.viewportWidth + 1);
     expect(report.offenders, JSON.stringify(report.offenders, null, 2)).toEqual([]);
+}
+
+async function assertChatHeaderHasSpace(page: Page): Promise<void> {
+    const report = await page.locator("header").evaluate<ChatHeaderReport>((header) => {
+        const metadata = header.querySelector<HTMLElement>(":scope > div.flex.min-w-0.flex-1.flex-col");
+        const status = metadata?.querySelector<HTMLElement>("span:last-child");
+
+        return {
+            clientWidth: header.clientWidth,
+            scrollWidth: header.scrollWidth,
+            metadataWidth: metadata?.getBoundingClientRect().width ?? 0,
+            statusHeight: status?.getBoundingClientRect().height ?? 0,
+        };
+    });
+
+    expect(report.scrollWidth, JSON.stringify(report, null, 2)).toBeLessThanOrEqual(report.clientWidth + 1);
+    expect(report.metadataWidth, JSON.stringify(report, null, 2)).toBeGreaterThanOrEqual(CHAT_HEADER_METADATA_MIN_WIDTH_PX);
+    expect(report.statusHeight, JSON.stringify(report, null, 2)).toBeLessThanOrEqual(CHAT_HEADER_STATUS_MAX_HEIGHT_PX);
+}
+
+async function assertPermissionLabelsAreFullyVisible(scope: Locator, labels: readonly string[]): Promise<void> {
+    const reports = await Promise.all(labels.map(async (label) => {
+        const button = scope.getByRole("button", { name: label, exact: true });
+        await expect(button).toBeVisible();
+
+        const labelElement = button.locator("span").first();
+        const metrics = await labelElement.evaluate((element) => ({
+            clientWidth: element.clientWidth,
+            scrollWidth: element.scrollWidth,
+        }));
+
+        return { label, ...metrics };
+    }));
+
+    for (const report of reports) {
+        expect(report.clientWidth, JSON.stringify(report)).toBeGreaterThan(0);
+        expect(report.scrollWidth, JSON.stringify(report)).toBeLessThanOrEqual(report.clientWidth + 1);
+    }
 }
 
 async function assertNoBottomToastOverlap(page: Page): Promise<void> {
@@ -275,6 +324,65 @@ test("new session keeps its primary action fully visible", async ({ page }) => {
     await openFixtureRoute(page, "/new?fixtures=1");
     await assertPrimaryActionIsFullyVisible(page);
     await assertNoHorizontalOverflow(page);
+
+    expect(pageIssues).toEqual([]);
+});
+
+test("Claude 1024 keeps metadata readable with a compact permission picker", async ({ page }, testInfo) => {
+    test.skip(isMobileProject(testInfo), "Desktop breakpoint regression.");
+    const pageIssues = collectPageIssues(page);
+
+    await page.setViewportSize({ width: 1024, height: 800 });
+    await openFixtureRoute(page, "/session/fx-chat?fixtures=1");
+
+    const header = page.locator("header");
+    const picker = header.getByRole("button", { name: "manual", exact: true });
+    await expect(picker).toHaveCount(1);
+    await expect(picker).toBeVisible();
+    for (const label of CLAUDE_PERMISSION_LABELS.slice(1)) {
+        await expect(header.getByRole("button", { name: label, exact: true })).toHaveCount(0);
+    }
+    await expect(header.getByRole("link", { name: /terminal/i })).toBeVisible();
+    await assertChatHeaderHasSpace(page);
+
+    await picker.click();
+    const drawer = page.locator('[data-slot="drawer-content"]');
+    await expect(drawer).toBeVisible();
+    await assertPermissionLabelsAreFullyVisible(drawer, CLAUDE_PERMISSION_LABELS);
+
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("Codex 1280 keeps every desktop permission segment fully visible", async ({ page }, testInfo) => {
+    test.skip(isMobileProject(testInfo), "Desktop breakpoint regression.");
+    const pageIssues = collectPageIssues(page);
+
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openFixtureRoute(page, "/session/fx-running?fixtures=1");
+
+    await assertPermissionLabelsAreFullyVisible(page.locator("header"), CODEX_PERMISSION_LABELS);
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("typed execution outcome renders a visible error session card", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await openFixtureRoute(page, "/?fixtures=1");
+    const errorCard = page.getByRole("button", { name: /mobile error/i });
+
+    await expect(errorCard).toBeVisible();
+    await expect(errorCard).toHaveClass(/border-status-error/);
+    await expect(errorCard).toContainText("error");
+    await errorCard.click();
+    await expect(page).toHaveURL(/\/session\/fx-error$/);
+
+    await assertNoHorizontalOverflow(page);
+    await assertNoBottomToastOverlap(page);
+    if (isMobileProject(testInfo)) {
+        await assertMobileTouchTargets(page);
+    }
 
     expect(pageIssues).toEqual([]);
 });

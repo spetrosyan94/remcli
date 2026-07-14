@@ -1,7 +1,7 @@
 import { logger } from '@/ui/logger'
 import { EventEmitter } from 'node:events'
 import { io, Socket } from 'socket.io-client'
-import { AgentState, ClientToServerEvents, MessageContent, Metadata, ServerToClientEvents, Session, Update, UserMessage, UserMessageSchema, Usage } from './types'
+import { AgentState, ClientToServerEvents, DeliveredUserMessage, MessageContent, Metadata, RetryableUserMessageDeliveryError, ServerToClientEvents, Session, Update, UserMessageSchema, Usage } from './types'
 import { decodeBase64, decrypt, encodeBase64, encrypt } from './encryption';
 import { backoff } from '@/utils/time';
 import { getEffectiveServerUrl } from '@/daemon/p2p/p2pSession';
@@ -19,7 +19,7 @@ import { calculateCost } from '@/utils/pricing';
  */
 export type ACPMessageData =
     // Core message types
-    | { type: 'message'; message: string }
+    | { type: 'message'; message: string; isError?: boolean }
     | { type: 'reasoning'; message: string }
     | { type: 'thinking'; text: string }
     // Tool interactions
@@ -40,6 +40,28 @@ export type ACPMessageData =
 
 export type ACPProvider = 'gemini' | 'codex' | 'cursor' | 'claude' | 'opencode';
 
+export type SessionEvent = {
+    type: 'switch', mode: 'local' | 'remote'
+} | {
+    type: 'message', message: string, isError?: boolean
+} | {
+    type: 'permission-mode-changed', mode: 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk'
+} | {
+    type: 'ready'
+};
+
+const TERMINAL_LIFECYCLE_STATE = 'archived';
+const P2P_DELIVERY_ID_PREFIX = 'p2p';
+
+interface PendingUserMessage {
+    message: DeliveredUserMessage;
+    sequence: number;
+}
+
+function isRetryableUserMessageDeliveryError(error: unknown): error is RetryableUserMessageDeliveryError {
+    return error instanceof RetryableUserMessageDeliveryError;
+}
+
 export class ApiSessionClient extends EventEmitter {
     private readonly token: string;
     readonly sessionId: string;
@@ -48,16 +70,20 @@ export class ApiSessionClient extends EventEmitter {
     private agentState: AgentState | null;
     private agentStateVersion: number;
     private socket: Socket<ServerToClientEvents, ClientToServerEvents>;
-    private pendingMessages: Array<{ message: UserMessage; sequence: number }> = [];
+    private pendingMessages: PendingUserMessage[] = [];
     private pendingMessageSequences = new Set<number>();
     private processedMessageSequences = new Set<number>();
     private acknowledgedMessageSequence = 0;
-    private pendingMessageCallback: ((message: UserMessage) => void) | null = null;
+    private pendingMessageCallback: ((message: DeliveredUserMessage) => void | Promise<void>) | null = null;
+    private isDrainingPendingMessages = false;
+    private pendingMessageInFlight: PendingUserMessage | null = null;
+    private cancelledPendingMessageSequences = new Set<number>();
     private isRunnerMessageConsumer = false;
     private doesSocketAuthIncludeRunnerCredential = false;
     readonly rpcHandlerManager: RpcHandlerManager;
     private agentStateLock = new AsyncLock();
     private metadataLock = new AsyncLock();
+    private hasSessionEnded = false;
     private encryptionKey: Uint8Array;
     private encryptionVariant: 'legacy' | 'dataKey';
 
@@ -117,6 +143,7 @@ export class ApiSessionClient extends EventEmitter {
         this.socket.on('connect', () => {
             logger.debug('Socket connected successfully');
             this.rpcHandlerManager.onSocketConnect(this.socket);
+            void this.drainPendingUserMessages();
         })
 
         // Set up global RPC request handler
@@ -158,21 +185,10 @@ export class ApiSessionClient extends EventEmitter {
                     // Try to parse as user message first
                     const userResult = UserMessageSchema.safeParse(body);
                     if (userResult.success) {
-                        // Server already filtered to only our session
-                        if (this.pendingMessageCallback) {
-                            this.pendingMessageSequences.add(messageSequence);
-                            this.pendingMessageCallback(userResult.data);
-                            this.pendingMessageSequences.delete(messageSequence);
-                            this.markMessageProcessed(messageSequence);
-                        } else if (!this.pendingMessageSequences.has(messageSequence)) {
-                            this.pendingMessages.push({
-                                message: userResult.data,
-                                sequence: messageSequence
-                            });
-                            this.pendingMessageSequences.add(messageSequence);
-                        } else {
-                            logger.debug(`[SOCKET] Ignoring duplicate pending message sequence ${messageSequence}`);
-                        }
+                        this.enqueuePendingUserMessage({
+                            ...userResult.data,
+                            deliveryId: `${P2P_DELIVERY_ID_PREFIX}:${this.sessionId}:${messageSequence}`,
+                        }, messageSequence);
                     } else {
                         // If not a user message, it might be a permission response or other message type
                         this.pendingMessageSequences.add(messageSequence);
@@ -213,7 +229,7 @@ export class ApiSessionClient extends EventEmitter {
         this.socket.connect();
     }
 
-    onUserMessage(callback: (data: UserMessage) => void): void {
+    onUserMessage(callback: (data: DeliveredUserMessage) => void | Promise<void>): void {
         if (!this.isRunnerMessageConsumer) {
             this.isRunnerMessageConsumer = true;
             if (
@@ -226,13 +242,114 @@ export class ApiSessionClient extends EventEmitter {
         }
 
         this.pendingMessageCallback = callback;
-        while (this.pendingMessages.length > 0) {
-            const pendingMessage = this.pendingMessages[0];
-            callback(pendingMessage.message);
-            this.pendingMessages.shift();
-            this.pendingMessageSequences.delete(pendingMessage.sequence);
-            this.markMessageProcessed(pendingMessage.sequence);
+        void this.drainPendingUserMessages();
+    }
+
+    /**
+     * Re-offers the blocked head delivery after the provider runner has
+     * completed its own recovery. This intentionally has no timer: transport
+     * ordering stays here, while retry policy stays with the provider.
+     */
+    requestPendingUserMessageRedelivery(): boolean {
+        if (
+            this.hasSessionEnded
+            || !this.socket.connected
+            || !this.pendingMessageCallback
+            || this.isDrainingPendingMessages
+            || this.pendingMessages.length === 0
+        ) {
+            return false;
         }
+
+        void this.drainPendingUserMessages();
+        return true;
+    }
+
+    /**
+     * A cancelled prompt is terminal for this runner: acknowledge only the
+     * matching queue head so it cannot replay after a reconnect.
+     */
+    cancelPendingUserMessageDelivery(deliveryId: string): boolean {
+        const pendingMessage = this.pendingMessages[0];
+        if (!pendingMessage || pendingMessage.message.deliveryId !== deliveryId) {
+            return false;
+        }
+
+        if (this.pendingMessageInFlight === pendingMessage) {
+            this.cancelledPendingMessageSequences.add(pendingMessage.sequence);
+            return true;
+        }
+
+        this.completePendingUserMessage(pendingMessage);
+        void this.drainPendingUserMessages();
+        return true;
+    }
+
+    private enqueuePendingUserMessage(message: DeliveredUserMessage, sequence: number): void {
+        if (this.pendingMessageSequences.has(sequence)) {
+            logger.debug(`[SOCKET] Ignoring duplicate pending message sequence ${sequence}`);
+            void this.drainPendingUserMessages();
+            return;
+        }
+
+        this.pendingMessages.push({ message, sequence });
+        this.pendingMessageSequences.add(sequence);
+        void this.drainPendingUserMessages();
+    }
+
+    private async drainPendingUserMessages(): Promise<void> {
+        if (
+            this.isDrainingPendingMessages
+            || !this.pendingMessageCallback
+        ) {
+            return;
+        }
+
+        this.isDrainingPendingMessages = true;
+        try {
+            while (this.pendingMessages.length > 0) {
+                const pendingMessage = this.pendingMessages[0];
+                this.pendingMessageInFlight = pendingMessage;
+                let deliveryError: unknown = null;
+                try {
+                    await this.pendingMessageCallback(pendingMessage.message);
+                } catch (error) {
+                    deliveryError = error;
+                } finally {
+                    if (this.pendingMessageInFlight === pendingMessage) {
+                        this.pendingMessageInFlight = null;
+                    }
+                }
+
+                if (this.cancelledPendingMessageSequences.delete(pendingMessage.sequence)) {
+                    this.completePendingUserMessage(pendingMessage);
+                    continue;
+                }
+
+                if (deliveryError) {
+                    if (isRetryableUserMessageDeliveryError(deliveryError)) {
+                        return;
+                    }
+                    logger.warn(`[SOCKET] User message sequence ${pendingMessage.sequence} was not accepted by the session consumer.`, deliveryError);
+                    return;
+                }
+
+                this.completePendingUserMessage(pendingMessage);
+            }
+        } finally {
+            this.isDrainingPendingMessages = false;
+        }
+    }
+
+    private completePendingUserMessage(pendingMessage: PendingUserMessage): void {
+        const index = this.pendingMessages.indexOf(pendingMessage);
+        if (index === -1) {
+            return;
+        }
+
+        this.pendingMessages.splice(index, 1);
+        this.pendingMessageSequences.delete(pendingMessage.sequence);
+        this.markMessageProcessed(pendingMessage.sequence);
     }
 
     private markMessageProcessed(messageSequence: number): void {
@@ -418,17 +535,17 @@ export class ApiSessionClient extends EventEmitter {
             sid: this.sessionId,
             message: encrypted
         });
+
+        if (body.type === 'message') {
+            if (body.isError === true) {
+                this.recordExecutionError();
+            } else if (body.isError === false && body.message.trim().length > 0) {
+                this.recordSuccessfulAgentOutput();
+            }
+        }
     }
 
-    sendSessionEvent(event: {
-        type: 'switch', mode: 'local' | 'remote'
-    } | {
-        type: 'message', message: string, isError?: boolean
-    } | {
-        type: 'permission-mode-changed', mode: 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk'
-    } | {
-        type: 'ready'
-    }, id?: string) {
+    sendSessionEvent(event: SessionEvent, id?: string) {
         let content = {
             role: 'agent',
             content: {
@@ -442,6 +559,10 @@ export class ApiSessionClient extends EventEmitter {
             sid: this.sessionId,
             message: encrypted
         });
+
+        if (event.type === 'message' && event.isError === true) {
+            this.recordExecutionError();
+        }
     }
 
     /**
@@ -463,7 +584,63 @@ export class ApiSessionClient extends EventEmitter {
      * Send session death message
      */
     sendSessionDeath() {
+        this.hasSessionEnded = true;
+        this.cancelledPendingMessageSequences.clear();
         this.socket.emit('session-end', { sid: this.sessionId, time: Date.now() });
+    }
+
+    /**
+     * Records a live, non-error agent output. Callers must not use this for
+     * history replay, summaries, status events, or tool output.
+     */
+    recordSuccessfulAgentOutput(): void {
+        const occurredAt = Date.now();
+        this.updateExecutionOutcome((metadata) => {
+            const currentOutcome = metadata.executionOutcome;
+            if (currentOutcome?.occurredAt !== undefined && currentOutcome.occurredAt >= occurredAt) {
+                return metadata;
+            }
+
+            return {
+                ...metadata,
+                executionOutcome: {
+                    kind: 'success',
+                    occurredAt
+                }
+            };
+        });
+    }
+
+    private recordExecutionError(): void {
+        const occurredAt = Date.now();
+        this.updateExecutionOutcome((metadata) => {
+            const currentOutcome = metadata.executionOutcome;
+            if (currentOutcome?.occurredAt !== undefined && currentOutcome.occurredAt >= occurredAt) {
+                return metadata;
+            }
+
+            return {
+                ...metadata,
+                executionOutcome: {
+                    kind: 'error',
+                    occurredAt
+                }
+            };
+        });
+    }
+
+    private updateExecutionOutcome(handler: (metadata: Metadata) => Metadata): void {
+        if (this.hasSessionEnded) {
+            return;
+        }
+
+        void this.updateMetadata((metadata) => {
+            if (metadata.lifecycleState === TERMINAL_LIFECYCLE_STATE) {
+                return metadata;
+            }
+
+            return handler(metadata);
+        });
     }
 
     /**
@@ -500,10 +677,19 @@ export class ApiSessionClient extends EventEmitter {
      * Update session metadata
      * @param handler - Handler function that returns the updated metadata
      */
-    updateMetadata(handler: (metadata: Metadata) => Metadata) {
-        this.metadataLock.inLock(async () => {
+    updateMetadata(handler: (metadata: Metadata) => Metadata): Promise<void> {
+        return this.metadataLock.inLock(async () => {
             await backoff(async () => {
-                let updated = handler(this.metadata!); // Weird state if metadata is null - should never happen but here we are
+                const currentMetadata = this.metadata;
+                if (!currentMetadata) {
+                    return;
+                }
+
+                const updated = handler(currentMetadata);
+                if (updated === currentMetadata) {
+                    return;
+                }
+
                 const answer = await this.socket.emitWithAck('update-metadata', { sid: this.sessionId, expectedVersion: this.metadataVersion, metadata: encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, updated)) });
                 if (answer.result === 'success') {
                     this.metadata = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.metadata));
@@ -568,6 +754,7 @@ export class ApiSessionClient extends EventEmitter {
 
     async close() {
         logger.debug('[API] socket.close() called');
+        this.cancelledPendingMessageSequences.clear();
         this.socket.close();
     }
 }

@@ -35,6 +35,8 @@ const protectedNativeCodexThreadBindingSchema = nativeCodexThreadBindingSchema.e
 
 const codexRemoteTuiOpenRequestSchema = nativeCodexThreadBindingSchema.extend({
   endpoint: z.string().url(),
+  reasoningEffort: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
 });
 
 const protectedCodexRemoteTuiOpenRequestSchema = codexRemoteTuiOpenRequestSchema.extend({
@@ -239,13 +241,20 @@ export function startDaemonControlServer({
         },
       },
     }, async (request, reply) => {
-      const { agent, nativeThreadId, remcliSessionId, endpoint, runnerCredential } = request.body;
+      const { agent, nativeThreadId, remcliSessionId, endpoint, reasoningEffort, model, runnerCredential } = request.body;
       if (!runnerCredential || !verifySessionRunnerCredential(remcliSessionId, runnerCredential)) {
         reply.code(403);
         return { error: INVALID_SESSION_RUNNER_CREDENTIAL_ERROR } as const;
       }
 
-      const remoteTuiRequest: CodexRemoteTuiOpenRequest = { agent, nativeThreadId, remcliSessionId, endpoint };
+      const remoteTuiRequest: CodexRemoteTuiOpenRequest = {
+        agent,
+        nativeThreadId,
+        remcliSessionId,
+        endpoint,
+        reasoningEffort,
+        model,
+      };
       const result = await openCodexRemoteTui(remoteTuiRequest);
       logger.debug(`[CONTROL SERVER] Codex remote TUI open for ${remcliSessionId}: ${result.type}`);
       return result;

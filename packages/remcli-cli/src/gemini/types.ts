@@ -22,5 +22,6 @@ export interface CodexMessagePayload {
   type: 'message';
   message: string;
   id: string;
+  isError?: boolean;
   options?: string[];
 }

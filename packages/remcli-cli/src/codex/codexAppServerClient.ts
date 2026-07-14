@@ -3,14 +3,20 @@ import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 
 import { logger } from '@/ui/logger';
+import { redactDiagnosticData, redactSensitiveText } from '@/utils/redaction';
 import type { CodexApprovalPolicy, CodexSandbox, CodexToolResponse } from './types';
 import { CodexPermissionHandler, type PermissionResult } from './utils/permissionHandler';
 
 const DEFAULT_TIMEOUT = 14 * 24 * 60 * 60 * 1000;
-const CONNECT_TIMEOUT = 10_000;
+const CONNECTION_HANDSHAKE_TIMEOUT = 10_000;
 const WEBSOCKET_OPEN_STATE = 1;
 const MAX_ACTIVE_USER_MESSAGE_ITEMS = 256;
 const MAX_RECENT_USER_MESSAGE_IDS = 512;
+const MAX_RECENT_COMPLETED_ITEM_IDS = 512;
+const MAX_RECENT_TURN_THREAD_IDS = 512;
+const WEBSOCKET_RECOVERY_DELAYS_MS = [0, 100, 500] as const;
+const RECOVERY_REQUEST_TIMEOUT = 10_000;
+const THREAD_START_RESPONSE_TIMEOUT = 10_000;
 
 type JsonRpcId = number;
 
@@ -35,7 +41,18 @@ interface PendingRequest {
 
 interface TurnWaiter {
     turnId: string;
+    completion: Promise<CodexToolResponse>;
     resolve: (value: CodexToolResponse) => void;
+    reject: (error: Error) => void;
+    timeout: NodeJS.Timeout;
+    cleanup?: () => void;
+}
+
+interface InterruptedTurnWaiter {
+    threadId: string;
+    turnId: string;
+    completion: Promise<void>;
+    resolve: () => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
     cleanup?: () => void;
@@ -119,6 +136,7 @@ export type CodexAppServerEvent =
     | CodexUserMessageEvent
     | { type: 'task_started' }
     | { type: 'task_complete' }
+    | { type: 'turn_aborted' }
     | { type: 'turn_diff'; unified_diff: string }
     | { type: 'agent_error'; message: string }
     | { type: 'agent_message'; message: string }
@@ -147,6 +165,7 @@ interface CodexAppServerStartThreadOptions {
 interface CodexAppServerTurnOptions {
     threadId: string;
     prompt: string;
+    clientUserMessageId?: string;
     sandbox: CodexSandbox;
     approvalPolicy: CodexApprovalPolicy;
     model?: string;
@@ -158,6 +177,130 @@ interface CodexAppServerSteerOptions {
     threadId: string;
     expectedTurnId: string;
     prompt: string;
+    clientUserMessageId?: string;
+}
+
+interface CodexAppServerTurnCompletionOptions {
+    threadId: string;
+    turnId: string;
+    signal?: AbortSignal;
+    interruptOnAbort?: boolean;
+    timeoutMs?: number;
+}
+
+interface ReconciledTurn {
+    id: string;
+    status: string;
+    turn: Record<string, unknown>;
+}
+
+type ReconciledThreadStatus = 'idle' | 'active';
+
+interface ReconciledThread {
+    status: ReconciledThreadStatus;
+    turns: ReconciledTurn[];
+    activeTurn: ReconciledTurn | null;
+}
+
+interface ReconciledThreadMessage {
+    acceptedTurn: ReconciledTurn | null;
+    activeTurn: ReconciledTurn | null;
+}
+
+interface ReconciledUserMessage {
+    acceptedTurn: ReconciledTurn;
+    activeTurn: ReconciledTurn | null;
+}
+
+type CodexThreadStartAmbiguityReason =
+    | 'invalid-response'
+    | 'response-lost'
+    | 'previous-start-ambiguous';
+
+type CodexThreadStateErrorReason =
+    | 'active-without-turn'
+    | 'idle-with-active-turn'
+    | 'invalid-status'
+    | 'not-loaded'
+    | 'system-error'
+    | 'unknown-status';
+
+export class CodexAppServerTransportError extends Error {
+    readonly isRecoverable = true;
+
+    constructor(message: string) {
+        super(message);
+        this.name = 'CodexAppServerTransportError';
+    }
+}
+
+export class CodexAppServerThreadStateError extends Error {
+    readonly isRecoverable = true;
+    readonly code = 'CODEX_THREAD_STATE_UNAVAILABLE';
+
+    constructor(
+        readonly reason: CodexThreadStateErrorReason,
+        message: string,
+    ) {
+        super(message);
+        this.name = 'CodexAppServerThreadStateError';
+    }
+}
+
+export class CodexAppServerJsonRpcError extends Error {
+    constructor(
+        message: string,
+        readonly code?: number,
+    ) {
+        super(message);
+        this.name = 'CodexAppServerJsonRpcError';
+    }
+}
+
+export class CodexAppServerActiveTurnHandoffError extends Error {
+    readonly code = 'CODEX_ACTIVE_TURN_HANDOFF';
+
+    constructor(
+        readonly threadId: string,
+        readonly turnId: string,
+    ) {
+        super(`Codex app-server has an active turn ${turnId} in thread ${threadId}.`);
+        this.name = 'CodexAppServerActiveTurnHandoffError';
+    }
+}
+
+/**
+ * A `thread/start` write can reach app-server while its response is lost. The
+ * caller must not retry that non-idempotent operation without the native id.
+ */
+export class CodexAppServerAmbiguousThreadStartError extends Error {
+    readonly code = 'CODEX_THREAD_START_AMBIGUOUS';
+
+    constructor(readonly reason: CodexThreadStartAmbiguityReason = 'response-lost') {
+        super('Codex app-server may have created a thread, but its id was not confirmed.');
+        this.name = 'CodexAppServerAmbiguousThreadStartError';
+    }
+}
+
+export function isCodexAppServerTransientTransportError(error: unknown): error is CodexAppServerTransportError {
+    return error instanceof CodexAppServerTransportError;
+}
+
+export function isCodexAppServerRecoverableStateError(error: unknown): error is CodexAppServerThreadStateError {
+    return error instanceof CodexAppServerThreadStateError;
+}
+
+export function isCodexAppServerActiveTurnHandoffError(error: unknown): error is CodexAppServerActiveTurnHandoffError {
+    return error instanceof CodexAppServerActiveTurnHandoffError;
+}
+
+export function isCodexAppServerFreshThreadUnmaterializedError(
+    error: unknown,
+    threadId: string,
+): error is CodexAppServerJsonRpcError {
+    return error instanceof CodexAppServerJsonRpcError
+        && error.code === -32600
+        && error.message === `thread ${threadId} is not materialized yet; includeTurns is unavailable before first user message`;
 }
 
 export function codexSandboxToAppServerPolicy(sandbox: CodexSandbox): Record<string, unknown> {
@@ -192,7 +335,10 @@ function permissionResultToMcpAction(result: PermissionResult): string {
 
 function errorFromJsonRpc(message: JsonRpcMessage): Error {
     const text = message.error?.message ?? 'Codex app-server request failed.';
-    return new Error(text);
+    return new CodexAppServerJsonRpcError(
+        text,
+        typeof message.error?.code === 'number' ? message.error.code : undefined,
+    );
 }
 
 function getTurnErrorText(turn: any): string | null {
@@ -225,6 +371,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function getNotificationThreadId(params: unknown): string | null {
+    if (!isRecord(params)) return null;
+    if (typeof params.threadId === 'string') return params.threadId;
+    return isRecord(params.thread) && typeof params.thread.id === 'string'
+        ? params.thread.id
+        : null;
+}
+
+function getNotificationTurnId(params: unknown): string | null {
+    if (!isRecord(params)) return null;
+    if (typeof params.turnId === 'string') return params.turnId;
+    return isRecord(params.turn) && typeof params.turn.id === 'string'
+        ? params.turn.id
+        : null;
+}
+
 function normalizeUserMessageContent(content: unknown): CodexUserMessageContent | null {
     if (!isRecord(content) || typeof content.type !== 'string') return null;
     if (content.type === 'text' && typeof content.text === 'string') {
@@ -237,6 +399,110 @@ function normalizeUserMessageContent(content: unknown): CodexUserMessageContent 
     };
 }
 
+function getReconciledTurns(response: unknown): ReconciledThread | null {
+    if (!isRecord(response) || !isRecord(response.thread)) {
+        return null;
+    }
+
+    const status = getReconciledThreadStatus(response.thread.status);
+    if (!Array.isArray(response.thread.turns)) {
+        return null;
+    }
+    const turns: ReconciledTurn[] = [];
+    for (const turn of response.thread.turns) {
+        if (!isRecord(turn) || typeof turn.id !== 'string' || typeof turn.status !== 'string') {
+            return null;
+        }
+        turns.push({ id: turn.id, status: turn.status, turn });
+    }
+
+    const activeTurns = turns.filter((turn) => turn.status === 'inProgress');
+    if (status === 'active') {
+        if (activeTurns.length !== 1) {
+            throw new CodexAppServerThreadStateError(
+                'active-without-turn',
+                'Codex app-server reported an active thread without exactly one in-progress turn.',
+            );
+        }
+        return { status, turns, activeTurn: activeTurns[0] };
+    }
+
+    if (activeTurns.length > 0) {
+        throw new CodexAppServerThreadStateError(
+            'idle-with-active-turn',
+            'Codex app-server reported an idle thread with an in-progress turn.',
+        );
+    }
+    return { status, turns, activeTurn: null };
+}
+
+function getReconciledThreadStatus(status: unknown): ReconciledThreadStatus {
+    if (!isRecord(status) || typeof status.type !== 'string') {
+        throw new CodexAppServerThreadStateError(
+            'invalid-status',
+            'Codex app-server thread status is invalid or unavailable.',
+        );
+    }
+
+    switch (status.type) {
+        case 'idle':
+            return 'idle';
+        case 'active':
+            if (!Array.isArray(status.activeFlags) || !status.activeFlags.every((flag) => typeof flag === 'string')) {
+                throw new CodexAppServerThreadStateError(
+                    'invalid-status',
+                    'Codex app-server active thread status is invalid.',
+                );
+            }
+            return 'active';
+        case 'notLoaded':
+            throw new CodexAppServerThreadStateError(
+                'not-loaded',
+                'Codex app-server thread state is not loaded.',
+            );
+        case 'systemError':
+            throw new CodexAppServerThreadStateError(
+                'system-error',
+                'Codex app-server thread is in a system error state.',
+            );
+        default:
+            throw new CodexAppServerThreadStateError(
+                'unknown-status',
+                `Codex app-server returned unknown thread status "${status.type}".`,
+            );
+    }
+}
+
+function turnHasClientUserMessage(turn: ReconciledTurn, clientUserMessageId: string): boolean {
+    if (!Array.isArray(turn.turn.items)) {
+        return false;
+    }
+
+    return turn.turn.items.some((item) => isRecord(item)
+        && item.type === 'userMessage'
+        && item.clientId === clientUserMessageId);
+}
+
+function isRemcliP2PDeliveryId(clientId: string | null): boolean {
+    return clientId?.startsWith('p2p:') ?? false;
+}
+
+function getReconciledTurnResponse(turn: ReconciledTurn): CodexToolResponse {
+    const errorText = getTurnErrorText(turn.turn);
+    if (errorText) {
+        return { content: [{ type: 'text', text: errorText }], isError: true };
+    }
+
+    const content = Array.isArray(turn.turn.items)
+        ? turn.turn.items.flatMap((item): Array<{ type: 'text'; text: string }> => (
+            isRecord(item) && item.type === 'agentMessage' && typeof item.text === 'string' && item.text.length > 0
+                ? [{ type: 'text', text: item.text }]
+                : []
+        ))
+        : [];
+    return { content, isError: false };
+}
+
 export class CodexAppServerClient {
     private readonly endpoint?: string;
     private readonly webSocketFactory: (endpoint: string) => WebSocketLike;
@@ -244,6 +510,9 @@ export class CodexAppServerClient {
     private rl: readline.Interface | null = null;
     private ws: WebSocketLike | null = null;
     private connected = false;
+    private connectionPromise: Promise<void> | null = null;
+    private recoveryPromise: Promise<void> | null = null;
+    private isDisconnecting = false;
     private nextRequestId = 1;
     private pendingRequests = new Map<JsonRpcId, PendingRequest>();
     private turnWaiters = new Map<string, TurnWaiter>();
@@ -252,6 +521,14 @@ export class CodexAppServerClient {
     private readonly recentOwnUserMessageIds = new BoundedIdSet(MAX_RECENT_USER_MESSAGE_IDS);
     private readonly activeUserMessageItemIds = new Map<string, string | null>();
     private readonly recentUserMessageItemIds = new BoundedIdSet(MAX_RECENT_USER_MESSAGE_IDS);
+    private readonly recentCompletedItemIds = new BoundedIdSet(MAX_RECENT_COMPLETED_ITEM_IDS);
+    private readonly interruptingTurnIds = new Map<string, string>();
+    private readonly interruptedTurnWaiters = new Map<string, InterruptedTurnWaiter>();
+    private readonly interruptedTurnFailures = new Map<string, Error>();
+    private readonly turnThreadIds = new Map<string, string>();
+    private isStartingThread = false;
+    private resumingThreadId: string | null = null;
+    private hasAmbiguousThreadStart = false;
     private handler: ((event: CodexAppServerEvent) => void) | null = null;
     private threadIdChangeHandler: ((threadId: string) => void) | null = null;
     private permissionHandler: CodexPermissionHandler | null = null;
@@ -275,28 +552,140 @@ export class CodexAppServerClient {
         this.permissionHandler = handler;
     }
 
+    private setActiveThreadId(threadId: string): void {
+        if (this.activeThreadId === threadId) {
+            return;
+        }
+
+        this.activeThreadId = threadId;
+        this.threadIdChangeHandler?.(threadId);
+    }
+
+    private rememberTurnThreadId(threadId: string, turnId: string): void {
+        this.turnThreadIds.delete(turnId);
+        this.turnThreadIds.set(turnId, threadId);
+        while (this.turnThreadIds.size > MAX_RECENT_TURN_THREAD_IDS) {
+            const oldestTurnId = this.turnThreadIds.keys().next().value;
+            if (typeof oldestTurnId !== 'string') return;
+            this.turnThreadIds.delete(oldestTurnId);
+        }
+    }
+
+    private shouldHandleThreadScopedNotification(
+        method: string,
+        params: unknown,
+        allowThreadActivation: boolean,
+    ): boolean {
+        if (this.isStartingThread) {
+            logger.debug(`[CodexAppServer] ignoring ${method} while waiting for thread/start response`);
+            return false;
+        }
+
+        const notificationThreadId = getNotificationThreadId(params);
+        const notificationTurnId = getNotificationTurnId(params);
+        if (notificationThreadId) {
+            if (this.resumingThreadId && notificationThreadId !== this.resumingThreadId) {
+                logger.debug(`[CodexAppServer] ignoring ${method} for foreign thread during resume`);
+                return false;
+            }
+            if (!this.resumingThreadId && this.activeThreadId && this.activeThreadId !== notificationThreadId) {
+                logger.debug(`[CodexAppServer] ignoring ${method} for foreign thread ${notificationThreadId}`);
+                return false;
+            }
+            if (!this.activeThreadId && !allowThreadActivation && !this.resumingThreadId) {
+                logger.debug(`[CodexAppServer] ignoring ${method} before a thread is established`);
+                return false;
+            }
+
+            const knownThreadId = notificationTurnId ? this.turnThreadIds.get(notificationTurnId) : undefined;
+            if (knownThreadId && knownThreadId !== notificationThreadId) {
+                logger.debug(`[CodexAppServer] ignoring ${method} with mismatched turn ${notificationTurnId}`);
+                return false;
+            }
+
+            if (this.activeThreadId !== notificationThreadId) {
+                this.setActiveThreadId(notificationThreadId);
+            }
+            if (notificationTurnId) {
+                this.rememberTurnThreadId(notificationThreadId, notificationTurnId);
+            }
+            return true;
+        }
+
+        if (!notificationTurnId) {
+            logger.debug(`[CodexAppServer] ignoring unscoped ${method} notification`);
+            return false;
+        }
+
+        const knownThreadId = this.turnThreadIds.get(notificationTurnId);
+        if (this.resumingThreadId && knownThreadId !== this.resumingThreadId) {
+            logger.debug(`[CodexAppServer] ignoring ${method} for unassociated turn during resume`);
+            return false;
+        }
+        if (!knownThreadId || knownThreadId !== this.activeThreadId) {
+            logger.debug(`[CodexAppServer] ignoring ${method} for unassociated turn ${notificationTurnId}`);
+            return false;
+        }
+        return true;
+    }
+
     async connect(): Promise<void> {
         if (this.connected) return;
 
+        this.isDisconnecting = false;
+        if (this.connectionPromise) {
+            return await this.connectionPromise;
+        }
+
+        const connection = this.connectTransport();
+        this.connectionPromise = connection;
+        try {
+            await connection;
+        } finally {
+            if (this.connectionPromise === connection) {
+                this.connectionPromise = null;
+            }
+        }
+    }
+
+    private async connectTransport(): Promise<void> {
         if (this.endpoint) {
             await this.connectWebSocket();
         } else {
             this.connectStdio();
         }
 
-        await this.request('initialize', {
-            clientInfo: {
-                name: 'remcli',
-                title: 'Remcli',
-                version: '1.0.0',
-            },
-            capabilities: {
-                experimentalApi: true,
-            },
-        });
-        this.notify('initialized', {});
-        this.connected = true;
-        logger.debug(`[CodexAppServer] Connected via ${this.endpoint ? 'websocket' : 'stdio'}`);
+        try {
+            await this.request('initialize', {
+                clientInfo: {
+                    name: 'remcli',
+                    title: 'Remcli',
+                    version: '1.0.0',
+                },
+                capabilities: {
+                    experimentalApi: true,
+                },
+            }, undefined, CONNECTION_HANDSHAKE_TIMEOUT);
+            this.notify('initialized', {});
+            this.connected = true;
+            logger.debug(`[CodexAppServer] Connected via ${this.endpoint ? 'websocket' : 'stdio'}`);
+        } catch (error) {
+            if (this.endpoint && this.ws) {
+                this.closeWebSocketTransport(
+                    this.ws,
+                    error instanceof CodexAppServerJsonRpcError
+                        ? error
+                        : error instanceof CodexAppServerTransportError
+                            ? error
+                            : new CodexAppServerTransportError(
+                                error instanceof Error
+                                    ? error.message
+                                    : 'Codex app-server websocket initialization failed.',
+                            ),
+                );
+            }
+            throw error;
+        }
     }
 
     private connectStdio(): void {
@@ -311,7 +700,7 @@ export class CodexAppServerClient {
         this.rl.on('line', (line) => this.handleLine(line));
         this.proc.stderr.on('data', (chunk) => {
             const text = chunk.toString().trim();
-            if (text) logger.debug('[CodexAppServer][stderr]', text);
+            if (text) logger.debug('[CodexAppServer][stderr]', redactSensitiveText(text));
         });
         this.proc.on('exit', (code, signal) => {
             logger.debug(`[CodexAppServer] exited code=${code ?? 'null'} signal=${signal ?? 'null'}`);
@@ -320,7 +709,7 @@ export class CodexAppServerClient {
             this.rejectAll(error);
         });
         this.proc.on('error', (error) => {
-            logger.debug('[CodexAppServer] process error:', error);
+            logger.debug('[CodexAppServer] process error:', redactDiagnosticData(error));
             this.connected = false;
             this.rejectAll(error);
         });
@@ -344,7 +733,7 @@ export class CodexAppServerClient {
                 if (settled) return;
                 settled = true;
                 cleanup();
-                this.ws = null;
+                this.closeWebSocketTransport(ws, error);
                 reject(error);
             };
             const onOpen = () => {
@@ -354,14 +743,16 @@ export class CodexAppServerClient {
                 resolve();
             };
             const onError = (event: unknown) => {
-                fail(new Error(`Codex app-server websocket error: ${String(event)}`));
+                fail(new CodexAppServerTransportError(
+                    `Codex app-server websocket error: ${redactSensitiveText(String(event))}`,
+                ));
             };
             const onCloseBeforeOpen = () => {
-                fail(new Error('Codex app-server websocket closed before connection opened.'));
+                fail(new CodexAppServerTransportError('Codex app-server websocket closed before connection opened.'));
             };
             const timeout = setTimeout(() => {
-                fail(new Error(`Timed out connecting to Codex app-server ${this.endpoint}.`));
-            }, CONNECT_TIMEOUT);
+                fail(new CodexAppServerTransportError(`Timed out connecting to Codex app-server ${this.endpoint}.`));
+            }, CONNECTION_HANDSHAKE_TIMEOUT);
 
             ws.addEventListener('open', onOpen);
             ws.addEventListener('error', onError);
@@ -382,61 +773,326 @@ export class CodexAppServerClient {
             this.handleTransportText(text);
         });
         ws.addEventListener('close', () => {
+            if (this.ws !== ws) {
+                return;
+            }
             logger.debug('[CodexAppServer] websocket closed');
             this.connected = false;
             this.ws = null;
-            this.rejectAll(new Error('Codex app-server websocket disconnected.'));
+            const error = new CodexAppServerTransportError('Codex app-server websocket disconnected.');
+            this.rejectPendingRequests(error);
+            if (this.isDisconnecting) {
+                return;
+            }
+            this.recoverActiveWebSocketTurn();
         });
         ws.addEventListener('error', (event: unknown) => {
-            logger.debug('[CodexAppServer] websocket error:', event);
+            logger.debug('[CodexAppServer] websocket error:', redactDiagnosticData(event));
         });
+    }
+
+    private closeWebSocketTransport(ws: WebSocketLike, error: Error): void {
+        if (this.ws !== ws) {
+            return;
+        }
+
+        this.ws = null;
+        this.connected = false;
+        try {
+            ws.close();
+        } catch {
+            // best effort
+        }
+        this.rejectPendingRequests(error);
+        this.recoverActiveWebSocketTurn();
+    }
+
+    private recoverActiveWebSocketTurn(): void {
+        const threadId = this.activeThreadId;
+        const turnId = this.activeTurnId;
+        if (
+            !this.endpoint
+            || !threadId
+            || !turnId
+            || this.isDisconnecting
+            || this.recoveryPromise
+        ) {
+            return;
+        }
+
+        const recovery = this.recoverWebSocketTurn(threadId, turnId);
+        this.recoveryPromise = recovery;
+        void recovery.finally(() => {
+            if (this.recoveryPromise === recovery) {
+                this.recoveryPromise = null;
+            }
+        }).catch((error) => logger.debug(
+            '[CodexAppServer] websocket recovery failed unexpectedly:',
+            redactDiagnosticData(error),
+        ));
+    }
+
+    private async recoverWebSocketTurn(threadId: string, turnId: string): Promise<void> {
+        let lastError: Error = new Error('Codex app-server websocket recovery failed.');
+
+        for (const delayMs of WEBSOCKET_RECOVERY_DELAYS_MS) {
+            if (this.isDisconnecting || this.activeThreadId !== threadId) {
+                return;
+            }
+            if (delayMs > 0) {
+                await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+            }
+            if (this.isDisconnecting || this.activeThreadId !== threadId) {
+                return;
+            }
+
+            try {
+                await this.connect();
+                const observedThread = await this.readThreadTurns(threadId, RECOVERY_REQUEST_TIMEOUT);
+
+                const observedTurn = observedThread.turns.find((turn) => turn.id === turnId);
+                if (!observedTurn) {
+                    throw new Error(`Codex turn ${turnId} was not found during websocket recovery.`);
+                }
+
+                const observedActiveTurn = observedThread.activeTurn;
+                const attachedThread = observedActiveTurn
+                    ? await this.attachReconciledThread(threadId, RECOVERY_REQUEST_TIMEOUT)
+                    : observedThread;
+                const reconciledTurn = attachedThread.turns.find((turn) => turn.id === turnId) ?? observedTurn;
+                const activeTurn = attachedThread.activeTurn;
+
+                this.replayReconciledTurnItems(threadId, reconciledTurn);
+                if (activeTurn && activeTurn.id !== reconciledTurn.id) {
+                    this.replayReconciledTurnItems(threadId, activeTurn);
+                    this.applyReconciledTurn(threadId, undefined, activeTurn);
+                }
+                this.applyReconciledTurn(threadId, undefined, reconciledTurn);
+                return;
+            } catch (error) {
+                lastError = error instanceof Error ? error : new Error(String(error));
+                logger.debug(
+                    `[CodexAppServer] websocket recovery attempt failed for turn ${turnId}:`,
+                    redactDiagnosticData(lastError),
+                );
+            }
+        }
+
+        if (!this.isDisconnecting && this.activeThreadId === threadId) {
+            this.rejectTurnWaiter(turnId, lastError);
+        }
     }
 
     async resumeThread(options: CodexAppServerResumeOptions): Promise<string> {
-        await this.connect();
-        this.clearUserMessageTracking();
-        logger.debug('[CodexAppServer] Resuming thread:', {
-            threadId: options.threadId,
-            cwd: options.cwd,
-            sandbox: options.sandbox,
-            approvalPolicy: options.approvalPolicy,
-            model: options.model,
-        });
-        const result = await this.request('thread/resume', {
-            threadId: options.threadId,
-            cwd: options.cwd,
-            sandbox: options.sandbox,
-            approvalPolicy: options.approvalPolicy,
-            ...(options.model ? { model: options.model } : {}),
-        });
-        const threadId = result?.thread?.id;
-        if (typeof threadId === 'string') {
-            this.activeThreadId = threadId;
-            this.threadIdChangeHandler?.(threadId);
+        const previousResumingThreadId = this.resumingThreadId;
+        this.resumingThreadId = options.threadId;
+        try {
+            await this.connect();
+            this.clearUserMessageTracking();
+            logger.debug('[CodexAppServer] Resuming thread:', {
+                threadId: options.threadId,
+                cwd: options.cwd,
+                sandbox: options.sandbox,
+                approvalPolicy: options.approvalPolicy,
+                model: options.model,
+            });
+            const result = await this.request(
+                'thread/resume',
+                {
+                    threadId: options.threadId,
+                    cwd: options.cwd,
+                    sandbox: options.sandbox,
+                    approvalPolicy: options.approvalPolicy,
+                    ...(options.model ? { model: options.model } : {}),
+                },
+                undefined,
+                RECOVERY_REQUEST_TIMEOUT,
+            );
+            const returnedThreadId = typeof result?.thread?.id === 'string' ? result.thread.id : options.threadId;
+            if (returnedThreadId !== options.threadId) {
+                throw new CodexAppServerThreadStateError(
+                    'unknown-status',
+                    'Codex app-server resumed a thread other than the requested native thread.',
+                );
+            }
+            const threadId = options.threadId;
+            this.hasAmbiguousThreadStart = false;
+            this.setActiveThreadId(threadId);
+
+            // `thread/resume` only returns the thread summary. The active turn is
+            // available from the documented `thread/read` response with turns.
+            const activeTurn = (await this.readThreadTurns(threadId, RECOVERY_REQUEST_TIMEOUT)).activeTurn;
+            if (activeTurn) {
+                this.replayReconciledTurnItems(threadId, activeTurn);
+                this.applyReconciledTurn(threadId, undefined, activeTurn);
+            }
+
             return threadId;
+        } finally {
+            if (this.resumingThreadId === options.threadId) {
+                this.resumingThreadId = previousResumingThreadId;
+            }
         }
-        this.activeThreadId = options.threadId;
-        this.threadIdChangeHandler?.(options.threadId);
-        return options.threadId;
     }
 
     async startThread(options: CodexAppServerStartThreadOptions): Promise<string> {
+        if (this.hasAmbiguousThreadStart) {
+            throw new CodexAppServerAmbiguousThreadStartError('previous-start-ambiguous');
+        }
         await this.connect();
         this.clearUserMessageTracking();
-        const result = await this.request('thread/start', {
-            cwd: options.cwd,
-            sandbox: options.sandbox,
-            approvalPolicy: options.approvalPolicy,
-            ephemeral: options.ephemeral ?? false,
-            ...(options.model ? { model: options.model } : {}),
-        });
-        const threadId = result?.thread?.id;
-        if (typeof threadId !== 'string') {
-            throw new Error('Codex app-server did not return a thread id.');
+        this.isStartingThread = true;
+
+        try {
+            const result = await this.request('thread/start', {
+                cwd: options.cwd,
+                sandbox: options.sandbox,
+                approvalPolicy: options.approvalPolicy,
+                ephemeral: options.ephemeral ?? false,
+                ...(options.model ? { model: options.model } : {}),
+            }, undefined, THREAD_START_RESPONSE_TIMEOUT);
+            const threadId = result?.thread?.id;
+            if (typeof threadId !== 'string') {
+                this.hasAmbiguousThreadStart = true;
+                throw new CodexAppServerAmbiguousThreadStartError('invalid-response');
+            }
+            this.hasAmbiguousThreadStart = false;
+            this.setActiveThreadId(threadId);
+            return threadId;
+        } catch (error) {
+            if (error instanceof CodexAppServerJsonRpcError) {
+                throw error;
+            }
+
+            if (error instanceof CodexAppServerAmbiguousThreadStartError) {
+                this.hasAmbiguousThreadStart = true;
+                throw error;
+            }
+
+            this.hasAmbiguousThreadStart = true;
+            throw new CodexAppServerAmbiguousThreadStartError('response-lost');
+        } finally {
+            this.isStartingThread = false;
         }
-        this.activeThreadId = threadId;
-        this.threadIdChangeHandler?.(threadId);
-        return threadId;
+    }
+
+    /**
+     * Re-attach a known native thread after Remcli was disconnected while the
+     * terminal was idle. A terminal can start a turn during that gap, so the
+     * caller must hydrate it before deciding whether a phone prompt starts or
+     * steers a turn.
+     */
+    async hydrateThreadIfNeeded(threadId: string): Promise<void> {
+        if (
+            !threadId
+            || this.activeThreadId !== null && this.activeThreadId !== threadId
+            || this.activeThreadId === threadId && this.activeTurnId !== null
+        ) {
+            return;
+        }
+
+        let observedThread: ReconciledThread;
+        try {
+            observedThread = await this.readThreadTurns(threadId, RECOVERY_REQUEST_TIMEOUT);
+        } catch (error) {
+            if (
+                (error instanceof CodexAppServerThreadStateError && error.reason === 'not-loaded')
+                || isCodexAppServerFreshThreadUnmaterializedError(error, threadId)
+            ) {
+                return;
+            }
+            throw error;
+        }
+        const observedActiveTurn = observedThread.activeTurn;
+        if (!observedActiveTurn) {
+            return;
+        }
+
+        // `thread/read` is a snapshot only. `thread/resume` joins the native
+        // live stream before we apply terminal-origin items or steer the turn.
+        const attachedThread = await this.attachReconciledThread(threadId, RECOVERY_REQUEST_TIMEOUT);
+        const activeTurn = attachedThread.activeTurn;
+        if (activeTurn) {
+            this.replayReconciledTurnItems(threadId, activeTurn);
+            this.applyReconciledTurn(threadId, undefined, activeTurn);
+            return;
+        }
+
+        const completedTurn = attachedThread.turns.find((turn) => turn.id === observedActiveTurn.id);
+        if (completedTurn) {
+            this.replayReconciledTurnItems(threadId, completedTurn);
+            this.applyReconciledTurn(threadId, undefined, completedTurn);
+        }
+    }
+
+    isTurnInterrupting(turnId: string): boolean {
+        return this.interruptingTurnIds.has(turnId);
+    }
+
+    interruptActiveTurn(): Promise<void> {
+        const threadId = this.activeThreadId;
+        const turnId = this.activeTurnId;
+        if (!threadId || !turnId) {
+            return Promise.resolve();
+        }
+
+        return this.requestTurnInterrupt(threadId, turnId);
+    }
+
+    waitForInterruptedTurn(options: CodexAppServerTurnCompletionOptions): Promise<void> {
+        if (this.interruptingTurnIds.get(options.turnId) !== options.threadId) {
+            return Promise.resolve();
+        }
+
+        const interruptionFailure = this.interruptedTurnFailures.get(options.turnId);
+        if (interruptionFailure) {
+            return Promise.reject(interruptionFailure);
+        }
+
+        const existingWaiter = this.interruptedTurnWaiters.get(options.turnId);
+        if (existingWaiter) {
+            return existingWaiter.completion;
+        }
+
+        let resolveCompletion: () => void = () => {};
+        let rejectCompletion: (error: Error) => void = () => {};
+        const completion = new Promise<void>((resolve, reject) => {
+            resolveCompletion = resolve;
+            rejectCompletion = reject;
+        });
+        let waiter: InterruptedTurnWaiter;
+        const timeout = setTimeout(() => {
+            const timeoutError = new Error('Timed out waiting for Codex interrupted turn to settle.');
+            if (this.interruptingTurnIds.get(options.turnId) === options.threadId) {
+                this.interruptedTurnFailures.set(options.turnId, timeoutError);
+            }
+            this.rejectInterruptedTurnWaiter(options.turnId, timeoutError);
+        }, options.timeoutMs ?? DEFAULT_TIMEOUT);
+        waiter = {
+            threadId: options.threadId,
+            turnId: options.turnId,
+            completion,
+            resolve: resolveCompletion,
+            reject: rejectCompletion,
+            timeout,
+        };
+        this.interruptedTurnWaiters.set(options.turnId, waiter);
+
+        if (options.signal) {
+            const onAbort = () => {
+                const abortError = new Error('Aborted');
+                abortError.name = 'AbortError';
+                this.rejectInterruptedTurnWaiter(options.turnId, abortError);
+            };
+            waiter.cleanup = () => options.signal?.removeEventListener('abort', onAbort);
+            if (options.signal.aborted) {
+                onAbort();
+                return completion;
+            }
+            options.signal.addEventListener('abort', onAbort, { once: true });
+        }
+
+        return completion;
     }
 
     async startTurn(options: CodexAppServerTurnOptions): Promise<CodexToolResponse> {
@@ -446,107 +1102,419 @@ export class CodexAppServerClient {
 
     async beginTurn(options: CodexAppServerTurnOptions): Promise<StartedTurn> {
         await this.connect();
-        const clientUserMessageId = this.trackOwnUserMessage();
-        const result = await this.request(
-            'turn/start',
-            {
-                threadId: options.threadId,
-                input: [{ type: 'text', text: options.prompt, text_elements: [] }],
+        const clientUserMessageId = this.trackOwnUserMessage(options.clientUserMessageId);
+        const reconciliation = options.clientUserMessageId
+            ? await this.reconcileThreadUserMessage(options.threadId, clientUserMessageId)
+            : null;
+        if (reconciliation?.acceptedTurn) {
+            return this.createReconciledStartedTurn(
+                options,
                 clientUserMessageId,
-                approvalPolicy: options.approvalPolicy,
-                sandboxPolicy: codexSandboxToAppServerPolicy(options.sandbox),
-                ...(options.model ? { model: options.model } : {}),
-                ...(options.effort ? { effort: options.effort } : {}),
-            },
-            options.signal,
-        ).catch((error: unknown): never => {
+                reconciliation.acceptedTurn,
+                reconciliation.activeTurn,
+            );
+        }
+        if (reconciliation?.activeTurn) {
+            const activeTurnHandoff = await this.reconcileActiveTurnHandoff(
+                options.threadId,
+                clientUserMessageId,
+            );
+            if (activeTurnHandoff) {
+                throw activeTurnHandoff;
+            }
+        }
+
+        let result: unknown;
+        try {
+            result = await this.request(
+                'turn/start',
+                {
+                    threadId: options.threadId,
+                    input: [{ type: 'text', text: options.prompt, text_elements: [] }],
+                    clientUserMessageId,
+                    approvalPolicy: options.approvalPolicy,
+                    sandboxPolicy: codexSandboxToAppServerPolicy(options.sandbox),
+                    ...(options.model ? { model: options.model } : {}),
+                    ...(options.effort ? { effort: options.effort } : {}),
+                },
+                options.signal,
+            );
+        } catch (error) {
+            const reconciliationAfterFailure = await this.reconcileThreadUserMessage(options.threadId, clientUserMessageId);
+            if (reconciliationAfterFailure.acceptedTurn) {
+                return this.createReconciledStartedTurn(
+                    options,
+                    clientUserMessageId,
+                    reconciliationAfterFailure.acceptedTurn,
+                    reconciliationAfterFailure.activeTurn,
+                );
+            }
+            if (reconciliationAfterFailure.activeTurn) {
+                const activeTurnHandoff = await this.reconcileActiveTurnHandoff(
+                    options.threadId,
+                    clientUserMessageId,
+                );
+                if (activeTurnHandoff) {
+                    throw activeTurnHandoff;
+                }
+            }
             this.forgetOwnUserMessage(clientUserMessageId);
             throw error;
-        });
+        }
 
-        const turnId = result?.turn?.id;
+        const turnId = isRecord(result) && isRecord(result.turn) ? result.turn.id : undefined;
         if (typeof turnId !== 'string') {
+            const reconciliationAfterMissingTurn = await this.reconcileThreadUserMessage(options.threadId, clientUserMessageId);
+            if (reconciliationAfterMissingTurn.acceptedTurn) {
+                return this.createReconciledStartedTurn(
+                    options,
+                    clientUserMessageId,
+                    reconciliationAfterMissingTurn.acceptedTurn,
+                    reconciliationAfterMissingTurn.activeTurn,
+                );
+            }
+            if (reconciliationAfterMissingTurn.activeTurn) {
+                const activeTurnHandoff = await this.reconcileActiveTurnHandoff(
+                    options.threadId,
+                    clientUserMessageId,
+                );
+                if (activeTurnHandoff) {
+                    throw activeTurnHandoff;
+                }
+            }
             this.forgetOwnUserMessage(clientUserMessageId);
-            const response = { content: [], isError: false };
-            return { turnId: '', completion: Promise.resolve(response) };
+            throw new Error('Codex app-server did not return a turn id for turn/start.');
         }
-        this.associateOwnUserMessageWithTurn(clientUserMessageId, turnId);
-        this.activeTurnId = turnId;
-
-        const completedTurn = this.completedTurns.get(turnId);
-        if (completedTurn) {
-            this.completeUserMessageTrackingForTurn(turnId);
-            this.completedTurns.delete(turnId);
-            if (this.activeTurnId === turnId) {
-                this.activeTurnId = null;
-            }
-            return { turnId, completion: Promise.resolve(completedTurn) };
-        }
-
-        const completion = new Promise<CodexToolResponse>((resolve, reject) => {
-            const timeout = setTimeout(() => {
-                this.turnWaiters.delete(turnId);
-                waiter.cleanup?.();
-                this.completeUserMessageTrackingForTurn(turnId);
-                if (this.activeTurnId === turnId) {
-                    this.activeTurnId = null;
-                }
-                reject(new Error('Timed out waiting for Codex turn to complete.'));
-            }, DEFAULT_TIMEOUT);
-            const waiter: TurnWaiter = { turnId, resolve, reject, timeout };
-            this.turnWaiters.set(turnId, waiter);
-
-            if (options.signal) {
-                const onAbort = () => {
-                    void this.request('turn/interrupt', { threadId: options.threadId, turnId })
-                        .catch((error) => logger.debug('[CodexAppServer] turn interrupt failed:', error));
-                    this.turnWaiters.delete(turnId);
-                    clearTimeout(timeout);
-                    this.completeUserMessageTrackingForTurn(turnId);
-                    if (this.activeTurnId === turnId) {
-                        this.activeTurnId = null;
-                    }
-                    const abortError = new Error('Aborted');
-                    abortError.name = 'AbortError';
-                    reject(abortError);
-                };
-                waiter.cleanup = () => options.signal?.removeEventListener('abort', onAbort);
-                if (options.signal.aborted) {
-                    onAbort();
-                    return;
-                }
-                options.signal.addEventListener('abort', onAbort, { once: true });
-            }
-        });
-        return { turnId, completion };
+        return this.createStartedTurn(options, clientUserMessageId, turnId);
     }
 
     async steerTurn(options: CodexAppServerSteerOptions): Promise<string> {
         await this.connect();
-        const clientUserMessageId = this.trackOwnUserMessage();
-        const result = await this.request(
-            'turn/steer',
-            {
+        const clientUserMessageId = this.trackOwnUserMessage(options.clientUserMessageId);
+        const reconciliation = options.clientUserMessageId
+            ? await this.reconcileAcceptedUserMessage(options.threadId, clientUserMessageId)
+            : null;
+        if (reconciliation) {
+            return (await this.prepareReconciledTurn(
+                options.threadId,
+                clientUserMessageId,
+                reconciliation.acceptedTurn,
+                reconciliation.activeTurn,
+            )).id;
+        }
+
+        let result: unknown;
+        try {
+            result = await this.request('turn/steer', {
                 threadId: options.threadId,
                 expectedTurnId: options.expectedTurnId,
                 input: [{ type: 'text', text: options.prompt, text_elements: [] }],
                 clientUserMessageId,
-            },
-        ).catch((error: unknown): never => {
+            });
+        } catch (error) {
+            const reconciliationAfterFailure = await this.reconcileAcceptedUserMessage(options.threadId, clientUserMessageId);
+            if (reconciliationAfterFailure) {
+                return (await this.prepareReconciledTurn(
+                    options.threadId,
+                    clientUserMessageId,
+                    reconciliationAfterFailure.acceptedTurn,
+                    reconciliationAfterFailure.activeTurn,
+                )).id;
+            }
+            await this.reconcileCompletedTurn(options.threadId, options.expectedTurnId);
             this.forgetOwnUserMessage(clientUserMessageId);
             throw error;
-        });
-        const turnId = result?.turnId;
+        }
+        const turnId = isRecord(result) ? result.turnId : undefined;
         if (typeof turnId !== 'string') {
+            const reconciliationAfterMissingTurn = await this.reconcileAcceptedUserMessage(options.threadId, clientUserMessageId);
+            if (reconciliationAfterMissingTurn) {
+                return (await this.prepareReconciledTurn(
+                    options.threadId,
+                    clientUserMessageId,
+                    reconciliationAfterMissingTurn.acceptedTurn,
+                    reconciliationAfterMissingTurn.activeTurn,
+                )).id;
+            }
             this.forgetOwnUserMessage(clientUserMessageId);
             throw new Error('Codex app-server did not return a turn id for turn/steer.');
         }
         this.associateOwnUserMessageWithTurn(clientUserMessageId, turnId);
+        this.setActiveThreadId(options.threadId);
+        this.rememberTurnThreadId(options.threadId, turnId);
         this.activeTurnId = turnId;
         return turnId;
     }
 
+    waitForTurnCompletion(options: CodexAppServerTurnCompletionOptions): Promise<CodexToolResponse> {
+        const completedTurn = this.completedTurns.get(options.turnId);
+        if (completedTurn) {
+            this.completedTurns.delete(options.turnId);
+            this.completeUserMessageTrackingForTurn(options.turnId);
+            if (this.activeTurnId === options.turnId) {
+                this.activeTurnId = null;
+            }
+            return Promise.resolve(completedTurn);
+        }
+
+        const existingWaiter = this.turnWaiters.get(options.turnId);
+        if (existingWaiter) {
+            return existingWaiter.completion;
+        }
+
+        let resolveCompletion: (value: CodexToolResponse) => void = () => {};
+        let rejectCompletion: (error: Error) => void = () => {};
+        const completion = new Promise<CodexToolResponse>((resolve, reject) => {
+            resolveCompletion = resolve;
+            rejectCompletion = reject;
+        });
+        const timeout = setTimeout(() => {
+            this.turnWaiters.delete(options.turnId);
+            waiter.cleanup?.();
+            this.completeUserMessageTrackingForTurn(options.turnId);
+            if (this.activeTurnId === options.turnId) {
+                this.activeTurnId = null;
+            }
+            rejectCompletion(new Error('Timed out waiting for Codex turn to complete.'));
+        }, options.timeoutMs ?? DEFAULT_TIMEOUT);
+        const waiter: TurnWaiter = {
+            turnId: options.turnId,
+            completion,
+            resolve: resolveCompletion,
+            reject: rejectCompletion,
+            timeout,
+        };
+        this.turnWaiters.set(options.turnId, waiter);
+
+        if (options.signal) {
+            const onAbort = () => {
+                if (options.interruptOnAbort !== false) {
+                    void this.requestTurnInterrupt(options.threadId, options.turnId).catch((error) => logger.debug(
+                        '[CodexAppServer] turn interrupt failed:',
+                        redactDiagnosticData(error),
+                    ));
+                }
+                this.turnWaiters.delete(options.turnId);
+                clearTimeout(timeout);
+                if (options.interruptOnAbort !== false) {
+                    this.completeUserMessageTrackingForTurn(options.turnId);
+                }
+                const abortError = new Error('Aborted');
+                abortError.name = 'AbortError';
+                rejectCompletion(abortError);
+            };
+            waiter.cleanup = () => options.signal?.removeEventListener('abort', onAbort);
+            if (options.signal.aborted) {
+                onAbort();
+                return completion;
+            }
+            options.signal.addEventListener('abort', onAbort, { once: true });
+        }
+
+        return completion;
+    }
+
+    private createStartedTurn(
+        options: CodexAppServerTurnOptions,
+        clientUserMessageId: string,
+        turnId: string,
+    ): StartedTurn {
+        this.associateOwnUserMessageWithTurn(clientUserMessageId, turnId);
+        this.setActiveThreadId(options.threadId);
+        this.rememberTurnThreadId(options.threadId, turnId);
+        this.activeTurnId = turnId;
+        return {
+            turnId,
+            completion: this.waitForTurnCompletion({
+                threadId: options.threadId,
+                turnId,
+                signal: options.signal,
+            }),
+        };
+    }
+
+    private async createReconciledStartedTurn(
+        options: CodexAppServerTurnOptions,
+        clientUserMessageId: string,
+        acceptedTurn: ReconciledTurn,
+        observedActiveTurn: ReconciledTurn | null,
+    ): Promise<StartedTurn> {
+        const reconciledTurn = await this.prepareReconciledTurn(
+            options.threadId,
+            clientUserMessageId,
+            acceptedTurn,
+            observedActiveTurn,
+        );
+        return {
+            turnId: reconciledTurn.id,
+            completion: this.waitForTurnCompletion({
+                threadId: options.threadId,
+                turnId: reconciledTurn.id,
+                signal: options.signal,
+            }),
+        };
+    }
+
+    private async prepareReconciledTurn(
+        threadId: string,
+        clientUserMessageId: string,
+        turn: ReconciledTurn,
+        observedActiveTurn: ReconciledTurn | null = null,
+    ): Promise<ReconciledTurn> {
+        let reconciledTurn = turn;
+        let attachedThread: ReconciledThread | null = null;
+
+        if (turn.status === 'inProgress' || observedActiveTurn?.id !== undefined && observedActiveTurn.id !== turn.id) {
+            // thread/resume re-joins a running thread on this connection, which
+            // is required before acknowledging a replayed P2P delivery.
+            attachedThread = await this.attachReconciledThread(threadId);
+            reconciledTurn = attachedThread.turns.find((candidate) => candidate.id === turn.id) ?? turn;
+        }
+
+        const activeTurn = attachedThread ? attachedThread.activeTurn : observedActiveTurn;
+
+        this.trackOwnUserMessage(clientUserMessageId);
+        this.replayReconciledTurnItems(threadId, reconciledTurn);
+        this.applyReconciledTurn(threadId, clientUserMessageId, reconciledTurn);
+        if (activeTurn && activeTurn.id !== reconciledTurn.id) {
+            this.replayReconciledTurnItems(threadId, activeTurn);
+            this.applyReconciledTurn(threadId, undefined, activeTurn);
+        }
+        return reconciledTurn;
+    }
+
+    private async attachReconciledThread(
+        threadId: string,
+        timeoutMs: number = RECOVERY_REQUEST_TIMEOUT,
+    ): Promise<ReconciledThread> {
+        await this.request('thread/resume', { threadId }, undefined, timeoutMs);
+        return await this.readThreadTurns(threadId, timeoutMs);
+    }
+
+    private replayReconciledTurnItems(threadId: string, turn: ReconciledTurn): void {
+        if (!Array.isArray(turn.turn.items)) {
+            return;
+        }
+
+        for (const item of turn.turn.items) {
+            if (!isRecord(item)) continue;
+            this.handleItemCompleted(item, turn.id);
+        }
+    }
+
+    private async reconcileAcceptedUserMessage(
+        threadId: string,
+        clientUserMessageId: string,
+    ): Promise<ReconciledUserMessage | null> {
+        const reconciliation = await this.reconcileThreadUserMessage(threadId, clientUserMessageId);
+        if (!reconciliation.acceptedTurn) {
+            return null;
+        }
+        return {
+            acceptedTurn: reconciliation.acceptedTurn,
+            activeTurn: reconciliation.activeTurn,
+        };
+    }
+
+    private async reconcileThreadUserMessage(
+        threadId: string,
+        clientUserMessageId: string,
+    ): Promise<ReconciledThreadMessage> {
+        let reconciledThread: ReconciledThread;
+        try {
+            reconciledThread = await this.readThreadTurns(threadId);
+        } catch (error) {
+            if (isCodexAppServerFreshThreadUnmaterializedError(error, threadId)) {
+                return { acceptedTurn: null, activeTurn: null };
+            }
+            throw error;
+        }
+        return {
+            acceptedTurn: reconciledThread.turns.find((turn) => turnHasClientUserMessage(turn, clientUserMessageId)) ?? null,
+            activeTurn: reconciledThread.activeTurn,
+        };
+    }
+
+    private async reconcileActiveTurnHandoff(
+        threadId: string,
+        clientUserMessageId: string,
+    ): Promise<CodexAppServerActiveTurnHandoffError | null> {
+        const attachedThread = await this.attachReconciledThread(threadId);
+        const activeTurn = attachedThread.activeTurn;
+        if (!activeTurn) {
+            return null;
+        }
+
+        this.forgetOwnUserMessage(clientUserMessageId);
+        this.replayReconciledTurnItems(threadId, activeTurn);
+        this.applyReconciledTurn(threadId, undefined, activeTurn);
+        return new CodexAppServerActiveTurnHandoffError(threadId, activeTurn.id);
+    }
+
+    private async reconcileCompletedTurn(threadId: string, turnId: string): Promise<void> {
+        const reconciledThread = await this.readThreadTurns(threadId);
+        const activeTurn = reconciledThread.activeTurn;
+        const completedTurn = reconciledThread.turns.find((turn) => turn.id === turnId && turn.status !== 'inProgress');
+        if (activeTurn && completedTurn && activeTurn.id !== completedTurn.id) {
+            const attachedThread = await this.attachReconciledThread(threadId);
+            if (attachedThread.activeTurn) {
+                this.replayReconciledTurnItems(threadId, attachedThread.activeTurn);
+                this.applyReconciledTurn(threadId, undefined, attachedThread.activeTurn);
+            }
+        } else if (activeTurn) {
+            this.replayReconciledTurnItems(threadId, activeTurn);
+            this.applyReconciledTurn(threadId, undefined, activeTurn);
+        }
+        if (completedTurn) {
+            this.replayReconciledTurnItems(threadId, completedTurn);
+            this.applyReconciledTurn(threadId, undefined, completedTurn);
+        }
+    }
+
+    private async readThreadTurns(
+        threadId: string,
+        timeoutMs: number = RECOVERY_REQUEST_TIMEOUT,
+    ): Promise<ReconciledThread> {
+        await this.connect();
+        const result = await this.request('thread/read', { threadId, includeTurns: true }, undefined, timeoutMs);
+        const reconciledThread = getReconciledTurns(result);
+        if (!reconciledThread) {
+            throw new Error(`Codex app-server returned an invalid thread/read response for ${threadId}.`);
+        }
+        return reconciledThread;
+    }
+
+    private applyReconciledTurn(
+        threadId: string,
+        clientUserMessageId: string | undefined,
+        turn: ReconciledTurn,
+    ): void {
+        this.setActiveThreadId(threadId);
+        this.rememberTurnThreadId(threadId, turn.id);
+        if (clientUserMessageId) {
+            this.associateOwnUserMessageWithTurn(clientUserMessageId, turn.id);
+        }
+
+        if (turn.status === 'inProgress') {
+            this.activeTurnId = turn.id;
+            return;
+        }
+
+        const hasInterruptedBarrier = this.interruptingTurnIds.get(turn.id) === threadId;
+        const isCurrentActiveTurn = this.activeThreadId === threadId && this.activeTurnId === turn.id;
+        if (hasInterruptedBarrier) {
+            if (turn.status === 'interrupted' && isCurrentActiveTurn) {
+                this.settleCompletedTurn(turn.id, getReconciledTurnResponse(turn));
+                this.releaseInterruptedTurnBarrier(threadId, turn.id);
+            }
+            return;
+        }
+
+        this.settleCompletedTurn(turn.id, getReconciledTurnResponse(turn));
+    }
+
     async disconnect(): Promise<void> {
+        this.isDisconnecting = true;
         this.clearUserMessageTracking();
         this.rl?.close();
         this.rl = null;
@@ -573,6 +1541,7 @@ export class CodexAppServerClient {
     async forceCloseSession(): Promise<void> {
         await this.disconnect();
         this.activeThreadId = null;
+        this.turnThreadIds.clear();
     }
 
     hasActiveSession(): boolean {
@@ -590,11 +1559,11 @@ export class CodexAppServerClient {
     clearSession(): void {
         this.activeThreadId = null;
         this.activeTurnId = null;
+        this.turnThreadIds.clear();
         this.clearUserMessageTracking();
     }
 
-    private trackOwnUserMessage(): string {
-        const clientUserMessageId = randomUUID();
+    private trackOwnUserMessage(clientUserMessageId: string = randomUUID()): string {
         this.ownUserMessageIds.set(clientUserMessageId, null);
         this.boundOwnUserMessageIds();
         return clientUserMessageId;
@@ -605,6 +1574,7 @@ export class CodexAppServerClient {
         this.recentOwnUserMessageIds.clear();
         this.activeUserMessageItemIds.clear();
         this.recentUserMessageItemIds.clear();
+        this.recentCompletedItemIds.clear();
     }
 
     private boundOwnUserMessageIds(): void {
@@ -646,18 +1616,30 @@ export class CodexAppServerClient {
         }
     }
 
-    private request(method: string, params: unknown, signal?: AbortSignal): Promise<any> {
+    private request(
+        method: string,
+        params: unknown,
+        signal?: AbortSignal,
+        timeoutMs: number = DEFAULT_TIMEOUT,
+    ): Promise<any> {
         if (!this.proc && !this.ws) {
             return Promise.reject(new Error('Codex app-server is not running.'));
         }
         const id = this.nextRequestId++;
         const payload = { method, id, params };
+        const requestWebSocket = this.ws;
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
                 this.pendingRequests.delete(id);
                 pending.cleanup?.();
-                reject(new Error(`Timed out waiting for Codex app-server ${method}.`));
-            }, DEFAULT_TIMEOUT);
+                const timeoutError = requestWebSocket
+                    ? new CodexAppServerTransportError(`Timed out waiting for Codex app-server ${method}.`)
+                    : new Error(`Timed out waiting for Codex app-server ${method}.`);
+                if (requestWebSocket) {
+                    this.closeWebSocketTransport(requestWebSocket, timeoutError);
+                }
+                reject(timeoutError);
+            }, timeoutMs);
             const pending: PendingRequest = { resolve, reject, timeout };
             this.pendingRequests.set(id, pending);
             if (signal) {
@@ -681,7 +1663,11 @@ export class CodexAppServerClient {
                 this.pendingRequests.delete(id);
                 clearTimeout(timeout);
                 pending.cleanup?.();
-                reject(error instanceof Error ? error : new Error(String(error)));
+                const requestError = error instanceof Error ? error : new Error(String(error));
+                if (requestWebSocket && requestError instanceof CodexAppServerTransportError) {
+                    this.closeWebSocketTransport(requestWebSocket, requestError);
+                }
+                reject(requestError);
             }
         });
     }
@@ -702,7 +1688,7 @@ export class CodexAppServerClient {
         const serialized = JSON.stringify(payload);
         if (this.ws) {
             if (this.ws.readyState !== WEBSOCKET_OPEN_STATE) {
-                throw new Error('Codex app-server websocket is not open.');
+                throw new CodexAppServerTransportError('Codex app-server websocket is not open.');
             }
             this.ws.send(serialized);
             return;
@@ -726,7 +1712,7 @@ export class CodexAppServerClient {
         try {
             message = JSON.parse(line) as JsonRpcMessage;
         } catch {
-            logger.debug('[CodexAppServer] Ignoring non-json line:', line);
+            logger.debug('[CodexAppServer] Ignoring non-json line:', redactSensitiveText(line));
             return;
         }
 
@@ -797,7 +1783,7 @@ export class CodexAppServerClient {
             }
             this.respondError(id, -32601, `Unsupported remcli app-server request: ${method ?? 'unknown'}`);
         } catch (error) {
-            logger.debug('[CodexAppServer] request handler failed:', error);
+            logger.debug('[CodexAppServer] request handler failed:', redactDiagnosticData(error));
             this.respond(id, { decision: 'cancel' });
         }
     }
@@ -810,37 +1796,55 @@ export class CodexAppServerClient {
     }
 
     private handleNotification(method: string, params: any): void {
-        logger.debug(`[CodexAppServer] notification ${method}: ${JSON.stringify(params)}`);
+        logger.debug(`[CodexAppServer] notification ${method}:`, redactDiagnosticData(params));
+        if (this.hasAmbiguousThreadStart && method !== 'error') {
+            logger.debug(`[CodexAppServer] ignoring ${method} after an ambiguous thread/start result`);
+            return;
+        }
         switch (method) {
             case 'thread/started':
+                this.shouldHandleThreadScopedNotification(method, params, true);
+                return;
             case 'thread/status/changed':
-                if (typeof params?.threadId === 'string') {
-                    this.activeThreadId = params.threadId;
-                    this.threadIdChangeHandler?.(params.threadId);
-                } else if (typeof params?.thread?.id === 'string') {
-                    this.activeThreadId = params.thread.id;
-                    this.threadIdChangeHandler?.(params.thread.id);
-                }
+                this.shouldHandleThreadScopedNotification(method, params, true);
                 return;
             case 'turn/started':
+                if (!this.shouldHandleThreadScopedNotification(method, params, true)) return;
+                if (typeof params?.turn?.id === 'string') {
+                    this.activeTurnId = params.turn.id;
+                }
                 this.handler?.({ type: 'task_started' });
                 return;
             case 'turn/completed':
-                this.completeTurn(params);
-                this.handler?.({ type: 'task_complete' });
+                {
+                    if (!this.shouldHandleThreadScopedNotification(method, params, true)) return;
+                    const completionEvent = this.completeTurn(params);
+                    if (completionEvent) {
+                        this.handler?.(completionEvent);
+                    }
+                }
                 return;
             case 'item/started':
-                this.handleItemStarted(params?.item, params?.turnId);
+                if (!this.shouldHandleThreadScopedNotification(method, params, false)) return;
+                this.handleItemStarted(params?.item, getNotificationTurnId(params));
                 return;
             case 'item/completed':
-                this.handleItemCompleted(params?.item, params?.turnId);
+                if (!this.shouldHandleThreadScopedNotification(method, params, false)) return;
+                this.handleItemCompleted(params?.item, getNotificationTurnId(params));
                 return;
             case 'turn/diff/updated':
+                if (!this.shouldHandleThreadScopedNotification(method, params, false)) return;
                 if (typeof params?.diff === 'string') {
                     this.handler?.({ type: 'turn_diff', unified_diff: params.diff });
                 }
                 return;
             case 'error':
+                if (
+                    (getNotificationThreadId(params) || getNotificationTurnId(params))
+                    && !this.shouldHandleThreadScopedNotification(method, params, false)
+                ) {
+                    return;
+                }
                 this.handler?.({ type: 'agent_error', message: params?.message ?? 'Codex app-server error.' });
                 return;
             default:
@@ -867,6 +1871,12 @@ export class CodexAppServerClient {
         if (item.type === 'userMessage') {
             this.emitUserMessage(item, notificationTurnId, 'completed');
             return;
+        }
+        if (typeof item.id === 'string') {
+            if (this.recentCompletedItemIds.has(item.id)) {
+                return;
+            }
+            this.recentCompletedItemIds.add(item.id);
         }
         if (item.type === 'agentMessage' && typeof item.text === 'string' && item.text.length > 0) {
             this.handler?.({ type: 'agent_message', message: item.text });
@@ -916,7 +1926,9 @@ export class CodexAppServerClient {
             .join('\n');
         const clientId = typeof item.clientId === 'string' ? item.clientId : null;
         const source: CodexUserMessageSource = clientId !== null && (
-            this.ownUserMessageIds.has(clientId) || this.recentOwnUserMessageIds.has(clientId)
+            isRemcliP2PDeliveryId(clientId)
+            || this.ownUserMessageIds.has(clientId)
+            || this.recentOwnUserMessageIds.has(clientId)
         )
             ? 'own'
             : 'external';
@@ -950,15 +1962,50 @@ export class CodexAppServerClient {
         }
     }
 
-    private completeTurn(params: any): void {
+    private completeTurn(params: any): CodexAppServerEvent | null {
         const turnId = params?.turn?.id;
-        if (typeof turnId !== 'string') return;
-        this.completeUserMessageTrackingForTurn(turnId);
-        const waiter = this.turnWaiters.get(turnId);
+        if (typeof turnId !== 'string') return null;
+        const threadId = getNotificationThreadId(params) ?? this.turnThreadIds.get(turnId);
+        if (!threadId) return null;
+        const status = params.turn.status;
         const errorText = getTurnErrorText(params.turn);
+        const isInterrupted = status === 'interrupted';
+        const isSuccessful = status === 'completed' && !errorText;
         const response: CodexToolResponse = errorText
             ? { content: [{ type: 'text', text: errorText }], isError: true }
-            : { content: [], isError: false };
+            : { content: [], isError: !isSuccessful && !isInterrupted };
+
+        const isCurrentActiveTurn = this.activeThreadId === threadId && this.activeTurnId === turnId;
+        const hasInterruptedBarrier = this.interruptingTurnIds.get(turnId) === threadId;
+        if (hasInterruptedBarrier) {
+            if (!isCurrentActiveTurn || !isInterrupted) {
+                return null;
+            }
+
+            this.settleCompletedTurn(turnId, response);
+            this.releaseInterruptedTurnBarrier(threadId, turnId);
+            return { type: 'turn_aborted' };
+        }
+
+        this.settleCompletedTurn(turnId, response);
+        if (!isCurrentActiveTurn) {
+            return null;
+        }
+        if (isInterrupted) {
+            return { type: 'turn_aborted' };
+        }
+        if (isSuccessful) {
+            return { type: 'task_complete' };
+        }
+        return {
+            type: 'agent_error',
+            message: errorText ?? 'Codex app-server turn failed.',
+        };
+    }
+
+    private settleCompletedTurn(turnId: string, response: CodexToolResponse): void {
+        this.completeUserMessageTrackingForTurn(turnId);
+        const waiter = this.turnWaiters.get(turnId);
         if (!waiter) {
             this.completedTurns.set(turnId, response);
             if (this.activeTurnId === turnId) {
@@ -972,23 +2019,96 @@ export class CodexAppServerClient {
         if (this.activeTurnId === turnId) {
             this.activeTurnId = null;
         }
-        if (errorText) {
-            waiter.resolve(response);
-        } else {
-            waiter.resolve(response);
-        }
+        waiter.resolve(response);
     }
 
-    private rejectAll(error: Error): void {
-        this.clearUserMessageTracking();
-        this.completedTurns.clear();
-        this.activeTurnId = null;
+    private requestTurnInterrupt(threadId: string, turnId: string): Promise<void> {
+        const interruptedThreadId = this.interruptingTurnIds.get(turnId);
+        if (interruptedThreadId) {
+            if (interruptedThreadId !== threadId) {
+                return Promise.reject(new Error(`Codex turn ${turnId} is already interrupting in another thread.`));
+            }
+            const interruptionFailure = this.interruptedTurnFailures.get(turnId);
+            return interruptionFailure
+                ? Promise.reject(interruptionFailure)
+                : Promise.resolve();
+        }
+
+        this.interruptingTurnIds.set(turnId, threadId);
+        return this.request('turn/interrupt', { threadId, turnId }, undefined, RECOVERY_REQUEST_TIMEOUT)
+            .then(() => undefined)
+            .catch((error) => {
+                const interruptionFailure = error instanceof Error ? error : new Error(String(error));
+                if (this.interruptingTurnIds.get(turnId) === threadId) {
+                    this.interruptedTurnFailures.set(turnId, interruptionFailure);
+                    this.rejectInterruptedTurnWaiter(turnId, interruptionFailure);
+                }
+                throw interruptionFailure;
+            });
+    }
+
+    private releaseInterruptedTurnBarrier(threadId: string, turnId: string): void {
+        if (this.interruptingTurnIds.get(turnId) !== threadId) {
+            return;
+        }
+
+        this.interruptingTurnIds.delete(turnId);
+        this.interruptedTurnFailures.delete(turnId);
+        const waiter = this.interruptedTurnWaiters.get(turnId);
+        if (!waiter) {
+            return;
+        }
+        this.interruptedTurnWaiters.delete(turnId);
+        clearTimeout(waiter.timeout);
+        waiter.cleanup?.();
+        waiter.resolve();
+    }
+
+    private rejectPendingRequests(error: Error): void {
         for (const [id, pending] of this.pendingRequests.entries()) {
             this.pendingRequests.delete(id);
             clearTimeout(pending.timeout);
             pending.cleanup?.();
             pending.reject(error);
         }
+    }
+
+    private rejectTurnWaiter(turnId: string, error: Error): void {
+        const waiter = this.turnWaiters.get(turnId);
+        if (!waiter) {
+            return;
+        }
+        this.turnWaiters.delete(turnId);
+        clearTimeout(waiter.timeout);
+        waiter.cleanup?.();
+        this.completeUserMessageTrackingForTurn(turnId);
+        if (this.activeTurnId === turnId) {
+            this.activeTurnId = null;
+        }
+        waiter.reject(error);
+    }
+
+    private rejectInterruptedTurnWaiter(turnId: string, error: Error): void {
+        const waiter = this.interruptedTurnWaiters.get(turnId);
+        if (!waiter) {
+            return;
+        }
+        this.interruptedTurnWaiters.delete(turnId);
+        clearTimeout(waiter.timeout);
+        waiter.cleanup?.();
+        waiter.reject(error);
+    }
+
+    private rejectAll(error: Error): void {
+        this.clearUserMessageTracking();
+        this.completedTurns.clear();
+        for (const turnId of Array.from(this.interruptedTurnWaiters.keys())) {
+            this.rejectInterruptedTurnWaiter(turnId, error);
+        }
+        this.interruptingTurnIds.clear();
+        this.interruptedTurnFailures.clear();
+        this.activeTurnId = null;
+        this.rejectPendingRequests(error);
         for (const [turnId, waiter] of this.turnWaiters.entries()) {
             this.turnWaiters.delete(turnId);
             clearTimeout(waiter.timeout);

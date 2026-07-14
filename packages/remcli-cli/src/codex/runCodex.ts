@@ -1,16 +1,24 @@
 import { render } from "ink";
 import React from "react";
 import { ApiClient } from '@/api/api';
-import { CodexAppServerClient } from './codexAppServerClient';
+import {
+    CodexAppServerClient,
+    CodexAppServerJsonRpcError,
+    CodexAppServerAmbiguousThreadStartError,
+    isCodexAppServerActiveTurnHandoffError,
+    isCodexAppServerRecoverableStateError,
+    isCodexAppServerTransientTransportError,
+} from './codexAppServerClient';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
 import { DiffProcessor } from './utils/diffProcessor';
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
+import { redactDiagnosticData, redactSensitiveText } from '@/utils/redaction';
 import { Credentials, readDaemonState, readSettings } from '@/persistence';
 import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
-import { MessageQueue2 } from '@/utils/MessageQueue2';
+import { MessageQueue2, type MessageQueueBatch } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { MessageBuffer } from "@/ui/ink/messageBuffer";
@@ -25,14 +33,21 @@ import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
 import type { ApiSessionClient } from '@/api/apiSession';
-import type { PermissionMode } from '@/api/types';
+import {
+    RetryableUserMessageDeliveryError,
+    type DeliveredUserMessage,
+    type PermissionMode,
+} from '@/api/types';
 import {
     acquireDaemonRunnerCredential,
     reportTerminalSessionStarted,
 } from '@/utils/daemonRunnerCredentialBootstrap';
 import { replayCodexSessionHistory } from './utils/replayCodexSessionHistory';
 import type { CodexApprovalPolicy, CodexSandbox, CodexToolResponse } from './types';
-import { isCodexAppServerStateUsable } from './codexAppServerHost';
+import {
+    CODEX_DEFAULT_REASONING_EFFORT,
+    isCodexAppServerStateUsable,
+} from './codexAppServerHost';
 
 type ReadyEventOptions = {
     pending: unknown;
@@ -43,10 +58,26 @@ type ReadyEventOptions = {
 };
 
 export const CODEX_DEFAULT_PERMISSION_MODE: CodexSandbox = 'workspace-write';
+const REMOTE_TUI_RETRY_DELAYS_MS = [250, 1_000] as const;
+const CODEX_DELIVERY_RECOVERY_DELAYS_MS = [250, 1_000, 3_000] as const;
+const CODEX_APP_SERVER_OVERLOADED_ERROR_CODE = -32001;
+const CODEX_APP_SERVER_OVERLOADED_ERROR_MESSAGE = 'Server overloaded; retry later.';
+const CODEX_INTERRUPTED_TURN_SETTLE_TIMEOUT_MS = 10_000;
 
 interface CodexPermissionConfig {
     approvalPolicy: CodexApprovalPolicy;
     sandbox: CodexSandbox;
+}
+
+type NativeThreadBootstrap =
+    | { state: 'unstarted' }
+    | { state: 'resume-pending'; threadId: string }
+    | { state: 'ready'; threadId: string }
+    | { state: 'ambiguous'; error: CodexAppServerAmbiguousThreadStartError };
+
+interface ScheduledDeliveryRecovery {
+    deliveryId: string;
+    timeout: ReturnType<typeof setTimeout>;
 }
 
 function isCodexPermissionMode(permissionMode: PermissionMode): permissionMode is CodexSandbox {
@@ -93,6 +124,19 @@ function getCodexErrorText(response: CodexToolResponse): string {
     }
 
     return 'Codex returned an error.';
+}
+
+function isRecoverableCodexDeliveryError(error: unknown): boolean {
+    if (
+        isCodexAppServerTransientTransportError(error)
+        || isCodexAppServerRecoverableStateError(error)
+    ) {
+        return true;
+    }
+
+    return error instanceof CodexAppServerJsonRpcError
+        && error.code === CODEX_APP_SERVER_OVERLOADED_ERROR_CODE
+        && error.message === CODEX_APP_SERVER_OVERLOADED_ERROR_MESSAGE;
 }
 
 /**
@@ -154,8 +198,14 @@ export async function runCodex(opts: {
         permissionMode: CodexSandbox;
         model?: string;
         reasoningEffort?: string;
+        clientUserMessageId?: string;
+        abortGeneration: number;
     }
-    type QueuedCodexMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
+    type QueuedCodexMessage = MessageQueueBatch<EnhancedMode>;
+    type StartedCodexTurn = {
+        turnId: string;
+        completion: Promise<CodexToolResponse>;
+    };
     type TurnCompletionResult =
         | { type: 'completed'; response: CodexToolResponse }
         | { type: 'failed'; error: unknown };
@@ -225,6 +275,7 @@ export async function runCodex(opts: {
     // Permission handler declared here so it can be updated in onSessionSwap callback
     // (assigned later at line ~385 after client setup)
     let permissionHandler: CodexPermissionHandler;
+    let userMessageConsumer: ((message: DeliveredUserMessage) => Promise<void>) | null = null;
     const { session: initialSession, reconnectionHandle } = setupOfflineReconnection({
         api,
         sessionTag,
@@ -244,23 +295,57 @@ export async function runCodex(opts: {
             if (permissionHandler) {
                 permissionHandler.updateSession(newSession);
             }
+            if (userMessageConsumer) {
+                newSession.onUserMessage(userMessageConsumer);
+            }
         }
     });
     session = initialSession;
 
-    const messageQueue = new MessageQueue2<EnhancedMode>((mode) => hashObject({
+    const getTurnModeHash = (mode: EnhancedMode): string => hashObject({
         permissionMode: mode.permissionMode,
         model: mode.model,
         reasoningEffort: mode.reasoningEffort,
+    });
+    const messageQueue = new MessageQueue2<EnhancedMode>((mode) => hashObject({
+        turnModeHash: getTurnModeHash(mode),
+        clientUserMessageId: mode.clientUserMessageId,
+        abortGeneration: mode.abortGeneration,
     }));
+    const deliveryRetryAttempts = new Map<string, number>();
+    const scheduledDeliveryRecoveries = new Map<string, ScheduledDeliveryRecovery>();
+    const cancelledDeliveryKeys = new Set<string>();
+    let activeDeliveryRetryKey: string | null = null;
+    let activeDeliveryId: string | null = null;
+    let abortGeneration = 0;
+    const getDeliveryRetryKey = (message: QueuedCodexMessage): string => (
+        message.mode.clientUserMessageId ?? `${message.hash}:${message.message}`
+    );
+    let clearScheduledDeliveryRecovery = (retryKey: string): void => {
+        deliveryRetryAttempts.delete(retryKey);
+    };
+    let cancelScheduledDeliveryRecoveries = (): string[] => [];
+    const acknowledgeQueuedMessage = (message: QueuedCodexMessage): void => {
+        clearScheduledDeliveryRecovery(getDeliveryRetryKey(message));
+        message.acknowledge();
+    };
+    const cancelQueuedMessageAfterAbort = (message: QueuedCodexMessage): void => {
+        const deliveryId = message.mode.clientUserMessageId;
+        if (deliveryId) {
+            session.cancelPendingUserMessageDelivery(deliveryId);
+        }
+        acknowledgeQueuedMessage(message);
+        messageBuffer.addMessage('Aborted by user', 'status');
+        session.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+    };
 
     // Track current overrides to apply per message
     // Use shared PermissionMode type from api/types for cross-agent compatibility
     let currentPermissionMode: CodexSandbox | undefined = undefined;
     let currentModel: string | undefined = undefined;
-    let currentReasoningEffort = opts.reasoningEffort;
+    const currentReasoningEffort = opts.reasoningEffort ?? CODEX_DEFAULT_REASONING_EFFORT;
 
-    session.onUserMessage((message) => {
+    userMessageConsumer = async (message) => {
         if (message.meta?.sentFrom === 'history' || message.meta?.sentFrom === 'native-app-server') {
             logger.debug(`[Codex] Ignoring ${message.meta.sentFrom} user message in turn queue`);
             return;
@@ -300,9 +385,12 @@ export async function runCodex(opts: {
             permissionMode: messagePermissionMode || CODEX_DEFAULT_PERMISSION_MODE,
             model: messageModel,
             reasoningEffort: currentReasoningEffort,
+            clientUserMessageId: message.deliveryId,
+            abortGeneration,
         };
-        messageQueue.push(message.content.text, enhancedMode);
-    });
+        await messageQueue.pushWithAcceptance(message.content.text, enhancedMode);
+    };
+    session.onUserMessage(userMessageConsumer);
     let thinking = false;
     session.keepAlive(thinking, 'remote');
     // Periodic keep-alive; store handle so we can clear on exit
@@ -351,11 +439,39 @@ export async function runCodex(opts: {
     async function handleAbort() {
         logger.debug('[Codex] Abort requested - stopping current task');
         try {
+            abortGeneration += 1;
+            const cancelledRecoveryDeliveryIds = cancelScheduledDeliveryRecoveries();
+            if (activeDeliveryRetryKey) {
+                cancelledDeliveryKeys.add(activeDeliveryRetryKey);
+            }
+            if (activeDeliveryId) {
+                session.cancelPendingUserMessageDelivery(activeDeliveryId);
+            }
+            for (const deliveryId of cancelledRecoveryDeliveryIds) {
+                session.cancelPendingUserMessageDelivery(deliveryId);
+            }
+            const activeTurnId = activeClient?.getActiveTurnId();
+            const interruptRequest = activeClient?.interruptActiveTurn();
+            const hasInterruptBarrier = Boolean(
+                activeTurnId && activeClient?.isTurnInterrupting(activeTurnId),
+            );
+            void interruptRequest?.catch((error) => {
+                const errorMessage = redactSensitiveText(
+                    error instanceof Error ? error.message : 'Codex app-server rejected turn/interrupt.',
+                );
+                logger.debug('[Codex] Failed to interrupt the active Codex turn:', redactDiagnosticData(error));
+                messageBuffer.addMessage(`Error: ${errorMessage}`, 'status');
+                session.sendSessionEvent({ type: 'message', message: errorMessage, isError: true });
+            });
             abortController.abort();
             reasoningProcessor.abort();
+            if (!hasInterruptBarrier && !activeDeliveryId && cancelledRecoveryDeliveryIds.length > 0) {
+                messageBuffer.addMessage('Aborted by user', 'status');
+                session.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+            }
             logger.debug('[Codex] Abort completed - session remains active');
         } catch (error) {
-            logger.debug('[Codex] Error during abort:', error);
+            logger.debug('[Codex] Error during abort:', redactDiagnosticData(error));
         } finally {
             abortController = new AbortController();
         }
@@ -393,7 +509,10 @@ export async function runCodex(opts: {
             try {
                 await activeClient?.forceCloseSession();
             } catch (e) {
-                logger.debug('[Codex] Error while force closing Codex session during termination', e);
+                logger.debug(
+                    '[Codex] Error while force closing Codex session during termination',
+                    redactDiagnosticData(e),
+                );
             }
 
             // Stop caffeinate
@@ -402,7 +521,7 @@ export async function runCodex(opts: {
             logger.debug('[Codex] Session termination complete, exiting');
             process.exit(0);
         } catch (error) {
-            logger.debug('[Codex] Error during session termination:', error);
+            logger.debug('[Codex] Error during session termination:', redactDiagnosticData(error));
             process.exit(1);
         }
     };
@@ -494,7 +613,7 @@ export async function runCodex(opts: {
     });
     appServerClient.setPermissionHandler(permissionHandler);
     const handleCodexClientMessage = (msg: any) => {
-        logger.debug(`[Codex] app-server message: ${JSON.stringify(msg)}`);
+        logger.debug('[Codex] app-server message:', redactDiagnosticData(msg));
 
         if (msg.type === 'user_message') {
             if (msg.source === 'external') {
@@ -567,6 +686,9 @@ export async function runCodex(opts: {
                 message: msg.message,
                 id: randomUUID()
             });
+            if (msg.message.trim()) {
+                session.recordSuccessfulAgentOutput();
+            }
         }
         if (msg.type === 'exec_approval_request') {
             // Permission request — must be forwarded to mobile for approve/deny
@@ -620,12 +742,18 @@ export async function runCodex(opts: {
         try {
             await activeClient.connect();
         } catch (error) {
-            if (!usesSharedAppServer) throw error;
-            logger.warn('[Codex] Shared daemon Codex app-server connect failed; retrying with private stdio app-server:', error);
+            if (!usesSharedAppServer || !isCodexAppServerTransientTransportError(error)) throw error;
+            logger.warn(
+                '[Codex] Shared daemon Codex app-server connect failed; retrying with private stdio app-server:',
+                redactDiagnosticData(error),
+            );
             try {
                 await activeClient.disconnect();
             } catch (disconnectError) {
-                logger.debug('[Codex] Failed to disconnect stale shared app-server client:', disconnectError);
+                logger.debug(
+                    '[Codex] Failed to disconnect stale shared app-server client:',
+                    redactDiagnosticData(disconnectError),
+                );
             }
             appServerClient = new CodexAppServerClient();
             usesSharedAppServer = false;
@@ -638,10 +766,17 @@ export async function runCodex(opts: {
             await activeClient.connect();
         }
         logger.debug('[codex]: client.connect done');
-        let wasCreated = false;
+        let nativeThreadBootstrap: NativeThreadBootstrap = opts.resumeSessionId
+            ? { state: 'resume-pending', threadId: opts.resumeSessionId }
+            : { state: 'unstarted' };
+        const getAmbiguousNativeThreadBootstrapError = (): CodexAppServerAmbiguousThreadStartError | null => {
+            const bootstrap = nativeThreadBootstrap as NativeThreadBootstrap;
+            return bootstrap.state === 'ambiguous' ? bootstrap.error : null;
+        };
         let pending: QueuedCodexMessage | null = null;
         const nativeThreadBindingResults = new Map<string, Promise<'open-tui' | 'skip-tui' | 'stop-runner'>>();
         const openedRemoteTuiThreadIds = new Set<string>();
+        const pendingRemoteTuiOpenPromises = new Map<string, Promise<boolean>>();
 
         const publishNativeThreadBindingError = (errorMessage: string): void => {
             logger.warn(`[Codex] ${errorMessage}`);
@@ -705,37 +840,75 @@ export async function runCodex(opts: {
             return bindingResult;
         };
 
-        const openRemoteTuiAfterThreadBinding = async (nativeThreadId: string): Promise<boolean> => {
-            const bindingResult = await ensureNativeThreadBinding(nativeThreadId);
-            if (bindingResult === 'stop-runner') {
-                return false;
-            }
-            const endpoint = remoteTuiEndpoint;
-            if (bindingResult !== 'open-tui' || !endpoint || openedRemoteTuiThreadIds.has(nativeThreadId)) {
-                return true;
+        const openRemoteTuiAfterThreadBinding = (nativeThreadId: string): Promise<boolean> => {
+            if (openedRemoteTuiThreadIds.has(nativeThreadId)) {
+                return Promise.resolve(true);
             }
 
-            openedRemoteTuiThreadIds.add(nativeThreadId);
-            const remoteTuiResult = await openDaemonCodexRemoteTui({
-                agent: 'codex',
-                nativeThreadId,
-                remcliSessionId: session.sessionId,
-                endpoint,
+            const pendingOpen = pendingRemoteTuiOpenPromises.get(nativeThreadId);
+            if (pendingOpen) {
+                return pendingOpen;
+            }
+
+            const open = async (): Promise<boolean> => {
+                const bindingResult = await ensureNativeThreadBinding(nativeThreadId);
+                if (bindingResult === 'stop-runner') {
+                    return false;
+                }
+                const endpoint = remoteTuiEndpoint;
+                if (bindingResult !== 'open-tui' || !endpoint) {
+                    return true;
+                }
+
+                for (let attempt = 0; attempt <= REMOTE_TUI_RETRY_DELAYS_MS.length; attempt += 1) {
+                    if (attempt > 0) {
+                        const delay = REMOTE_TUI_RETRY_DELAYS_MS[attempt - 1];
+                        logger.debug(`[Codex] Retrying remote TUI open for thread ${nativeThreadId} after ${delay}ms.`);
+                        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+                    }
+
+                    const remoteTuiResult = await openDaemonCodexRemoteTui({
+                        agent: 'codex',
+                        nativeThreadId,
+                        remcliSessionId: session.sessionId,
+                        endpoint,
+                        reasoningEffort: currentReasoningEffort,
+                        model: currentModel,
+                    });
+                    if (
+                        remoteTuiResult.ok
+                        && (remoteTuiResult.data.type === 'opened' || remoteTuiResult.data.type === 'already-open')
+                    ) {
+                        openedRemoteTuiThreadIds.add(nativeThreadId);
+                        return true;
+                    }
+
+                    const isRetryable = !remoteTuiResult.ok
+                        || remoteTuiResult.data.type === 'host-unavailable';
+                    if (isRetryable && attempt < REMOTE_TUI_RETRY_DELAYS_MS.length) {
+                        continue;
+                    }
+
+                    const errorMessage = remoteTuiResult.ok
+                        ? remoteTuiResult.data.type === 'host-unavailable'
+                            ? remoteTuiResult.data.error ?? 'tmux host is unavailable'
+                            : `Daemon rejected the Codex remote TUI request: ${remoteTuiResult.data.type}`
+                        : remoteTuiResult.error;
+                    publishNativeThreadBindingError(`Could not open Codex remote TUI for thread ${nativeThreadId}: ${errorMessage}`);
+                    return true;
+                }
+
+                return true;
+            };
+
+            let openPromise: Promise<boolean>;
+            openPromise = open().finally(() => {
+                if (pendingRemoteTuiOpenPromises.get(nativeThreadId) === openPromise) {
+                    pendingRemoteTuiOpenPromises.delete(nativeThreadId);
+                }
             });
-            if (
-                remoteTuiResult.ok
-                && (remoteTuiResult.data.type === 'opened' || remoteTuiResult.data.type === 'already-open')
-            ) {
-                return true;
-            }
-
-            const errorMessage = remoteTuiResult.ok
-                ? remoteTuiResult.data.type === 'host-unavailable'
-                    ? remoteTuiResult.data.error
-                    : `Daemon rejected the Codex remote TUI request: ${remoteTuiResult.data.type}`
-                : remoteTuiResult.error;
-            publishNativeThreadBindingError(`Could not open Codex remote TUI for thread ${nativeThreadId}: ${errorMessage}`);
-            return true;
+            pendingRemoteTuiOpenPromises.set(nativeThreadId, openPromise);
+            return openPromise;
         };
 
         if (opts.resumeSessionId) {
@@ -744,13 +917,99 @@ export async function runCodex(opts: {
             }
         }
 
+        clearScheduledDeliveryRecovery = (retryKey: string): void => {
+            const scheduledRecovery = scheduledDeliveryRecoveries.get(retryKey);
+            if (scheduledRecovery) {
+                clearTimeout(scheduledRecovery.timeout);
+                scheduledDeliveryRecoveries.delete(retryKey);
+            }
+            deliveryRetryAttempts.delete(retryKey);
+            cancelledDeliveryKeys.delete(retryKey);
+        };
+
+        cancelScheduledDeliveryRecoveries = (): string[] => {
+            const cancelledDeliveryIds: string[] = [];
+            for (const [retryKey, scheduledRecovery] of scheduledDeliveryRecoveries) {
+                clearTimeout(scheduledRecovery.timeout);
+                scheduledDeliveryRecoveries.delete(retryKey);
+                deliveryRetryAttempts.delete(retryKey);
+                cancelledDeliveryKeys.add(retryKey);
+                cancelledDeliveryIds.push(scheduledRecovery.deliveryId);
+            }
+            return cancelledDeliveryIds;
+        };
+
+        const reportDeliveryRecoveryFailure = (error: unknown): void => {
+            const errorMessage = error instanceof Error ? error.message : 'Codex app-server recovery failed.';
+            logger.warn('[Codex] Could not recover an unacknowledged P2P delivery:', redactDiagnosticData(error));
+            messageBuffer.addMessage(`Error: ${errorMessage}`, 'status');
+            session.sendSessionEvent({ type: 'message', message: errorMessage, isError: true });
+        };
+
+        const scheduleDeliveryRecovery = (
+            message: QueuedCodexMessage,
+            recoveryError: unknown,
+        ): boolean => {
+            const deliveryId = message.mode.clientUserMessageId;
+            if (!deliveryId) {
+                return false;
+            }
+
+            const retryKey = getDeliveryRetryKey(message);
+            if (cancelledDeliveryKeys.has(retryKey) || scheduledDeliveryRecoveries.has(retryKey)) {
+                return false;
+            }
+
+            const retryAttempt = deliveryRetryAttempts.get(retryKey) ?? 0;
+            const retryDelay = CODEX_DELIVERY_RECOVERY_DELAYS_MS[retryAttempt];
+            if (retryDelay === undefined) {
+                return false;
+            }
+
+            deliveryRetryAttempts.set(retryKey, retryAttempt + 1);
+            const scheduledRecovery = {
+                deliveryId,
+                timeout: setTimeout(() => {
+                    void (async () => {
+                        if (
+                            scheduledDeliveryRecoveries.get(retryKey) !== scheduledRecovery
+                            || shouldExit
+                            || cancelledDeliveryKeys.has(retryKey)
+                        ) {
+                            return;
+                        }
+
+                        try {
+                            await appServerClient.connect();
+                        } catch (error) {
+                            if (scheduledDeliveryRecoveries.get(retryKey) === scheduledRecovery) {
+                                scheduledDeliveryRecoveries.delete(retryKey);
+                                if (!scheduleDeliveryRecovery(message, error)) {
+                                    reportDeliveryRecoveryFailure(error);
+                                }
+                            }
+                            return;
+                        }
+
+                        if (scheduledDeliveryRecoveries.get(retryKey) === scheduledRecovery) {
+                            scheduledDeliveryRecoveries.delete(retryKey);
+                            session.requestPendingUserMessageRedelivery();
+                        }
+                    })();
+                }, retryDelay),
+            } satisfies ScheduledDeliveryRecovery;
+            scheduledDeliveryRecoveries.set(retryKey, scheduledRecovery);
+            logger.warn(`[Codex] Deferring unacknowledged delivery until app-server recovery (attempt ${retryAttempt + 1}/${CODEX_DELIVERY_RECOVERY_DELAYS_MS.length}).`);
+            return true;
+        };
+
         const handleTurnResponse = (response: CodexToolResponse) => {
             if (!response.isError) {
                 return;
             }
 
             const errorText = getCodexErrorText(response);
-            logger.warn('[Codex] app-server turn returned error:', errorText);
+            logger.warn('[Codex] app-server turn returned error:', redactSensitiveText(errorText));
             messageBuffer.addMessage(`Error: ${errorText}`, 'status');
             session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
         };
@@ -763,8 +1022,29 @@ export async function runCodex(opts: {
             handleTurnResponse(completion.response);
         };
 
+        const waitForThreadToBecomeIdle = async (
+            threadId: string,
+            initialTurnId: string,
+            turnSignal: AbortSignal,
+        ): Promise<void> => {
+            let turnId = initialTurnId;
+            while (true) {
+                await appServerClient.waitForTurnCompletion({
+                    threadId,
+                    turnId,
+                    signal: turnSignal,
+                    interruptOnAbort: false,
+                });
+                const activeTurnId = appServerClient.getActiveTurnId();
+                if (!activeTurnId) {
+                    return;
+                }
+                turnId = activeTurnId;
+            }
+        };
+
         const waitForTurnWithSteering = async (
-            startedTurn: Awaited<ReturnType<CodexAppServerClient['beginTurn']>>,
+            startedTurn: StartedCodexTurn,
             threadId: string,
             originalMessageHash: string,
             turnSignal: AbortSignal,
@@ -799,7 +1079,10 @@ export async function runCodex(opts: {
 
                 if (result.type === 'completed') {
                     handleTurnResponse(result.response);
-                    return null;
+                    const queuedAfterCompletion = await queuedMessagePromise;
+                    return queuedAfterCompletion.type === 'queued'
+                        ? queuedAfterCompletion.message
+                        : null;
                 }
 
                 if (result.type === 'failed') {
@@ -814,7 +1097,7 @@ export async function runCodex(opts: {
                     continue;
                 }
 
-                if (result.message.hash !== originalMessageHash) {
+                if (getTurnModeHash(result.message.mode) !== originalMessageHash) {
                     logger.debug('[Codex] Message mode/model changed during active turn; deferring to next turn');
                     await waitForCompletion(completionPromise);
                     return result.message;
@@ -825,12 +1108,22 @@ export async function runCodex(opts: {
                         threadId,
                         expectedTurnId: activeTurnId,
                         prompt: result.message.message,
+                        clientUserMessageId: result.message.mode.clientUserMessageId,
                     });
+                    acknowledgeQueuedMessage(result.message);
                     messageBuffer.addMessage(result.message.message, 'user');
                     autoSetTitle(result.message.message);
                 } catch (error) {
-                    logger.warn('[Codex] turn/steer failed; deferring message to next turn:', error);
-                    await waitForCompletion(completionPromise);
+                    logger.warn(
+                        '[Codex] turn/steer failed; deferring message to next turn:',
+                        redactDiagnosticData(error),
+                    );
+                    const currentActiveTurnId = appServerClient.getActiveTurnId();
+                    if (currentActiveTurnId && currentActiveTurnId !== activeTurnId) {
+                        await waitForThreadToBecomeIdle(threadId, activeTurnId, turnSignal);
+                    } else {
+                        await waitForCompletion(completionPromise);
+                    }
                     return result.message;
                 }
             }
@@ -866,67 +1159,212 @@ export async function runCodex(opts: {
                 break;
             }
 
-            // Display user messages in the UI
-            messageBuffer.addMessage(message.message, 'user');
+            if (message.mode.abortGeneration !== abortGeneration) {
+                cancelQueuedMessageAfterAbort(message);
+                continue;
+            }
+
+            activeDeliveryRetryKey = getDeliveryRetryKey(message);
+            activeDeliveryId = message.mode.clientUserMessageId ?? null;
 
             try {
+                const bootstrapError = getAmbiguousNativeThreadBootstrapError();
+                if (bootstrapError) {
+                    throw bootstrapError;
+                }
                 const permissionConfig = resolveCodexPermissionConfig(message.mode.permissionMode);
+                const turnSignal = abortController.signal;
+                let didSteerActiveTurn = false;
 
-                if (!wasCreated) {
-                    if (opts.resumeSessionId) {
-                        activeCodexThreadId = await appServerClient.resumeThread({
-                            threadId: opts.resumeSessionId,
-                            cwd: process.cwd(),
-                            sandbox: permissionConfig.sandbox,
-                            approvalPolicy: permissionConfig.approvalPolicy,
-                            model: message.mode.model,
+                // A terminal can begin a turn while the app-server websocket is
+                // disconnected and Remcli is otherwise idle. Hydrate it before
+                // choosing turn/start, otherwise the phone would create a
+                // parallel turn and miss the terminal prompt in its chat.
+                if (activeCodexThreadId) {
+                    await appServerClient.hydrateThreadIfNeeded(activeCodexThreadId);
+                }
+
+                const steerActiveTurn = async (threadId: string, turnId: string): Promise<void> => {
+                    try {
+                        const steeredTurnId = await appServerClient.steerTurn({
+                            threadId,
+                            expectedTurnId: turnId,
+                            prompt: message.message,
+                            clientUserMessageId: message.mode.clientUserMessageId,
+                        });
+                        acknowledgeQueuedMessage(message);
+                        messageBuffer.addMessage(message.message, 'user');
+                        nativeThreadBootstrap = { state: 'ready', threadId };
+                        autoSetTitle(message.message);
+                        pending = await waitForTurnWithSteering({
+                            turnId: steeredTurnId,
+                            completion: appServerClient.waitForTurnCompletion({
+                                threadId,
+                                turnId: steeredTurnId,
+                                signal: turnSignal,
+                            }),
+                        }, threadId, getTurnModeHash(message.mode), turnSignal);
+                        didSteerActiveTurn = true;
+                    } catch (error) {
+                        if (appServerClient.getActiveTurnId() === turnId) {
+                            throw error;
+                        }
+
+                        logger.debug('[Codex] Active turn changed before turn/steer could be accepted; waiting for the thread to become idle before starting the same delivery.');
+                        await waitForThreadToBecomeIdle(threadId, turnId, turnSignal);
+                        activeCodexThreadId = threadId;
+                        nativeThreadBootstrap = { state: 'ready', threadId };
+                    }
+                };
+
+                const activeTurnId = appServerClient.getActiveTurnId();
+                const activeThreadId = appServerClient.getActiveThreadId();
+                if (
+                    activeTurnId
+                    && activeThreadId
+                    && activeThreadId === activeCodexThreadId
+                ) {
+                    if (appServerClient.isTurnInterrupting(activeTurnId)) {
+                        await appServerClient.waitForInterruptedTurn({
+                            threadId: activeThreadId,
+                            turnId: activeTurnId,
+                            signal: turnSignal,
+                            timeoutMs: CODEX_INTERRUPTED_TURN_SETTLE_TIMEOUT_MS,
                         });
                     } else {
-                        activeCodexThreadId = await appServerClient.startThread({
-                            cwd: process.cwd(),
-                            sandbox: permissionConfig.sandbox,
-                            approvalPolicy: permissionConfig.approvalPolicy,
-                            model: message.mode.model,
-                        });
+                        await steerActiveTurn(activeThreadId, activeTurnId);
                     }
-                    if (!await openRemoteTuiAfterThreadBinding(activeCodexThreadId)) {
-                        return;
-                    }
-                    wasCreated = true;
                 }
 
-                if (!activeCodexThreadId) {
-                    throw new Error('Codex app-server did not provide a thread id.');
-                }
+                if (!didSteerActiveTurn) {
+                    if (nativeThreadBootstrap.state !== 'ready') {
+                        try {
+                            if (nativeThreadBootstrap.state === 'resume-pending') {
+                                activeCodexThreadId = await appServerClient.resumeThread({
+                                    threadId: nativeThreadBootstrap.threadId,
+                                    cwd: process.cwd(),
+                                    sandbox: permissionConfig.sandbox,
+                                    approvalPolicy: permissionConfig.approvalPolicy,
+                                    model: message.mode.model,
+                                });
+                            } else {
+                                activeCodexThreadId = await appServerClient.startThread({
+                                    cwd: process.cwd(),
+                                    sandbox: permissionConfig.sandbox,
+                                    approvalPolicy: permissionConfig.approvalPolicy,
+                                    model: message.mode.model,
+                                });
+                            }
+                        } catch (error) {
+                            if (error instanceof CodexAppServerAmbiguousThreadStartError) {
+                                nativeThreadBootstrap = { state: 'ambiguous', error };
+                            }
+                            throw error;
+                        }
 
-                autoSetTitle(message.message);
-                const turnSignal = abortController.signal;
-                const startedTurn = await appServerClient.beginTurn({
-                    threadId: activeCodexThreadId,
-                    prompt: message.message,
-                    sandbox: permissionConfig.sandbox,
-                    approvalPolicy: permissionConfig.approvalPolicy,
-                    model: message.mode.model,
-                    effort: message.mode.reasoningEffort,
-                    signal: turnSignal,
-                });
-                pending = await waitForTurnWithSteering(startedTurn, activeCodexThreadId, message.hash, turnSignal);
+                        if (!activeCodexThreadId) {
+                            throw new Error('Codex app-server did not provide a thread id.');
+                        }
+                        nativeThreadBootstrap = { state: 'ready', threadId: activeCodexThreadId };
+                        if (!await openRemoteTuiAfterThreadBinding(activeCodexThreadId)) {
+                            return;
+                        }
+                    } else {
+                        activeCodexThreadId = nativeThreadBootstrap.threadId;
+                    }
+
+                    if (!activeCodexThreadId) {
+                        throw new Error('Codex app-server did not provide a thread id.');
+                    }
+
+                    // A resumed native thread can already have a terminal-origin
+                    // turn. Re-read after resume so the phone prompt steers that
+                    // exact turn instead of starting a parallel one.
+                    const resumedActiveTurnId = appServerClient.getActiveTurnId();
+                    const resumedActiveThreadId = appServerClient.getActiveThreadId();
+                    if (
+                        resumedActiveTurnId
+                        && resumedActiveThreadId === activeCodexThreadId
+                    ) {
+                        await steerActiveTurn(resumedActiveThreadId, resumedActiveTurnId);
+                    }
+
+                    if (didSteerActiveTurn) {
+                        continue;
+                    }
+
+                    const beginTurnOptions = {
+                        threadId: activeCodexThreadId,
+                        prompt: message.message,
+                        clientUserMessageId: message.mode.clientUserMessageId,
+                        sandbox: permissionConfig.sandbox,
+                        approvalPolicy: permissionConfig.approvalPolicy,
+                        model: message.mode.model,
+                        effort: message.mode.reasoningEffort,
+                        signal: turnSignal,
+                    };
+                    let startedTurn: StartedCodexTurn;
+                    try {
+                        startedTurn = await appServerClient.beginTurn(beginTurnOptions);
+                    } catch (error) {
+                        if (!isCodexAppServerActiveTurnHandoffError(error)) {
+                            throw error;
+                        }
+
+                        activeCodexThreadId = error.threadId;
+                        beginTurnOptions.threadId = error.threadId;
+                        nativeThreadBootstrap = { state: 'ready', threadId: error.threadId };
+                        await steerActiveTurn(error.threadId, error.turnId);
+                        if (didSteerActiveTurn) {
+                            continue;
+                        }
+                        startedTurn = await appServerClient.beginTurn(beginTurnOptions);
+                    }
+                    if (!startedTurn.turnId) {
+                        throw new Error('Codex app-server did not return a turn id.');
+                    }
+                    acknowledgeQueuedMessage(message);
+                    messageBuffer.addMessage(message.message, 'user');
+                    autoSetTitle(message.message);
+                    pending = await waitForTurnWithSteering(
+                        startedTurn,
+                        activeCodexThreadId,
+                        getTurnModeHash(message.mode),
+                        turnSignal,
+                    );
+                }
             } catch (error) {
-                logger.warn('Error in codex session:', error);
+                const retryKey = getDeliveryRetryKey(message);
                 const isAbortError = error instanceof Error && error.name === 'AbortError';
-                
-                if (isAbortError) {
-                    messageBuffer.addMessage('Aborted by user', 'status');
-                    session.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
-                    // Abort cancels the current task/inference but keeps the Codex session alive.
-                    // Do not clear session state here; the next user message should continue on the
-                    // existing session if possible.
+                const activeTurnId = appServerClient.getActiveTurnId();
+                const hasInterruptBarrier = Boolean(
+                    activeTurnId && appServerClient.isTurnInterrupting(activeTurnId),
+                );
+                const canDeferDelivery = !isAbortError
+                    && isRecoverableCodexDeliveryError(error)
+                    && scheduleDeliveryRecovery(message, error);
+                if (canDeferDelivery) {
+                    message.reject(new RetryableUserMessageDeliveryError(error));
+                    logger.warn('[Codex] Waiting for a controlled app-server recovery before re-offering the same P2P delivery.');
+                } else if (isAbortError || cancelledDeliveryKeys.has(retryKey)) {
+                    clearScheduledDeliveryRecovery(retryKey);
+                    acknowledgeQueuedMessage(message);
+                    if (!hasInterruptBarrier) {
+                        messageBuffer.addMessage('Aborted by user', 'status');
+                        session.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+                    }
                 } else {
+                    deliveryRetryAttempts.delete(retryKey);
+                    message.reject(error);
+                    logger.warn('Error in codex session:', redactDiagnosticData(error));
+
                     const errorMessage = error instanceof Error ? error.message : 'Process exited unexpectedly';
                     messageBuffer.addMessage(`Error: ${errorMessage}`, 'status');
                     session.sendSessionEvent({ type: 'message', message: errorMessage, isError: true });
                 }
             } finally {
+                activeDeliveryRetryKey = null;
+                activeDeliveryId = null;
                 // Reset permission handler, reasoning processor, and diff processor
                 permissionHandler.reset();
                 reasoningProcessor.abort();  // Use abort to properly finish any in-progress tool calls
@@ -934,7 +1372,7 @@ export async function runCodex(opts: {
                 thinking = false;
                 session.keepAlive(thinking, 'remote');
                 emitReadyIfIdle({
-                    pending,
+                    pending: pending ?? (scheduledDeliveryRecoveries.size > 0 ? true : null),
                     queueSize: () => messageQueue.size(),
                     shouldExit,
                     sendReady,
@@ -944,6 +1382,7 @@ export async function runCodex(opts: {
         }
 
     } finally {
+        cancelScheduledDeliveryRecoveries();
         // Clean up resources when main loop exits
         logger.debug('[codex]: Final cleanup start');
         logActiveHandles('cleanup-start');
@@ -964,7 +1403,7 @@ export async function runCodex(opts: {
             await session.close();
             logger.debug('[codex]: session.close done');
         } catch (e) {
-            logger.debug('[codex]: Error while closing session', e);
+            logger.debug('[codex]: Error while closing session', redactDiagnosticData(e));
         }
         logger.debug('[codex]: client.forceCloseSession begin');
         await activeClient?.forceCloseSession();

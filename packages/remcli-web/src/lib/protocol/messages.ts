@@ -171,7 +171,7 @@ const rawAgentRecordSchema = z.discriminatedUnion('type', [z.object({
     type: z.literal('codex'),
     data: z.discriminatedUnion('type', [
         z.object({ type: z.literal('reasoning'), message: z.string() }),
-        z.object({ type: z.literal('message'), message: z.string() }),
+        z.object({ type: z.literal('message'), message: z.string(), isError: z.boolean().optional() }),
         z.object({
             type: z.literal('tool-call'),
             callId: z.string(),
@@ -192,7 +192,7 @@ const rawAgentRecordSchema = z.discriminatedUnion('type', [z.object({
     provider: z.enum(['gemini', 'codex', 'cursor', 'claude', 'opencode']),
     data: z.discriminatedUnion('type', [
         z.object({ type: z.literal('reasoning'), message: z.string() }),
-        z.object({ type: z.literal('message'), message: z.string() }),
+        z.object({ type: z.literal('message'), message: z.string(), isError: z.boolean().optional() }),
         z.object({ type: z.literal('thinking'), text: z.string() }),
         z.object({
             type: z.literal('tool-call'),
@@ -570,6 +570,18 @@ export function normalizeRawMessage(
     // ACP — unified format for all agent providers
     if (raw.content.type === 'acp') {
         const data = raw.content.data;
+        if (data.type === 'message' && data.isError === true) {
+            return {
+                ...base,
+                role: 'event',
+                content: {
+                    type: 'message',
+                    message: data.message,
+                    isError: true
+                },
+                isSidechain: false,
+            };
+        }
         if (data.type === 'message' || data.type === 'reasoning') {
             return {
                 ...base,

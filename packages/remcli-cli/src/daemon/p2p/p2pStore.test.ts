@@ -168,3 +168,19 @@ describe('P2PStore machines — deletion', () => {
         expect(store.isOwnMachine('other')).toBe(false);
     });
 });
+
+describe('P2PStore sessions — terminal lifecycle', () => {
+    it('rejects late metadata writes after an explicit terminal stop', () => {
+        const store = new P2PStore({ kvFilePath: null });
+        const session = store.createSession('terminal-session', 'initial-metadata', null);
+
+        expect(store.markSessionStopped(session.id, session.activeAt + 1)).toBe(true);
+
+        expect(store.updateSessionMetadata(session.id, 'late-metadata', session.metadataVersion)).toEqual({
+            result: 'error',
+            version: session.metadataVersion,
+            metadata: 'initial-metadata',
+        });
+        expect(store.getSession(session.id)?.metadata).toBe('initial-metadata');
+    });
+});

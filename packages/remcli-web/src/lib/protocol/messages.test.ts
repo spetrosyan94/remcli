@@ -163,6 +163,30 @@ describe('normalizeRawMessage', () => {
         expect(result).toMatchObject({ role: 'event', content: { type: 'switch', mode: 'remote' } });
     });
 
+    it('normalizes an ACP error message into a red chat event', () => {
+        const result = normalizeRawMessage('m6-error', null, 11, 6100, {
+            role: 'agent',
+            content: {
+                type: 'acp',
+                provider: 'gemini',
+                data: {
+                    type: 'message',
+                    message: 'Provider rejected the selected model.',
+                    isError: true,
+                },
+            },
+        });
+
+        expect(result).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'message',
+                message: 'Provider rejected the selected model.',
+                isError: true,
+            },
+        });
+    });
+
     it('skips meta and compact-summary messages', () => {
         const meta = normalizeRawMessage('m7', null, 11, 7000, {
             role: 'agent',

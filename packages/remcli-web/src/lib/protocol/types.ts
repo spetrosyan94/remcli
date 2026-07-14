@@ -172,6 +172,10 @@ export const MetadataSchema = z.object({
         text: z.string(),
         updatedAt: z.number()
     }).optional(),
+    executionOutcome: z.object({
+        kind: z.enum(['error', 'success']),
+        occurredAt: z.number()
+    }).optional(),
     machineId: z.string().optional(),
     agentSessionId: z.string().optional(),
     claudeSessionId: z.string().optional(), // Claude Code session ID

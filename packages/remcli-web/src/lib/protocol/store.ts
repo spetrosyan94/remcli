@@ -66,8 +66,10 @@ interface ProtocolActions {
     setAuthenticated: (isAuthenticated: boolean) => void;
     setLatency: (latencyMs: number | null) => void;
     applySessions: (sessions: Session[]) => void;
+    replaceSessions: (sessions: Session[]) => void;
     removeSession: (sessionId: string) => void;
     applyMachines: (machines: Machine[]) => void;
+    replaceMachines: (machines: Machine[]) => void;
     removeMachine: (machineId: string) => void;
     applyMessages: (sessionId: string, messages: NormalizedMessage[], options?: { markLoaded?: boolean }) => void;
     applySessionActivity: (sessionId: string, active: boolean, activeAt: number, thinking: boolean) => void;
@@ -101,6 +103,19 @@ export const useProtocolStore = create<ProtocolState & ProtocolActions>()((set) 
         return { sessions: next };
     }),
 
+    replaceSessions: (sessions) => set((state) => {
+        const nextSessions: Record<string, Session> = {};
+        const nextSessionMessages: Record<string, SessionMessagesState> = {};
+        for (const session of sessions) {
+            nextSessions[session.id] = session;
+            const messages = state.sessionMessages[session.id];
+            if (messages) {
+                nextSessionMessages[session.id] = messages;
+            }
+        }
+        return { sessions: nextSessions, sessionMessages: nextSessionMessages };
+    }),
+
     removeSession: (sessionId) => set((state) => {
         if (!state.sessions[sessionId] && !state.sessionMessages[sessionId]) return {};
         const sessions = { ...state.sessions };
@@ -116,6 +131,14 @@ export const useProtocolStore = create<ProtocolState & ProtocolActions>()((set) 
             next[machine.id] = machine;
         }
         return { machines: next };
+    }),
+
+    replaceMachines: (machines) => set(() => {
+        const nextMachines: Record<string, Machine> = {};
+        for (const machine of machines) {
+            nextMachines[machine.id] = machine;
+        }
+        return { machines: nextMachines };
     }),
 
     removeMachine: (machineId) => set((state) => {

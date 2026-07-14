@@ -252,6 +252,9 @@ function sidebarRowFrame(status: Status, isActive: boolean): string {
     if (status === "running" || status === "thinking") {
         return "border border-border bg-secondary/60";
     }
+    if (status === "error") {
+        return "border border-status-error/35 bg-status-error/[0.06]";
+    }
     if (status === "offline") {
         return "border border-transparent opacity-50";
     }

@@ -20,6 +20,7 @@ import { execFileSync } from 'node:child_process'
 import { getStatus as getWhisperStatus } from '@/daemon/whisper/whisperService'
 import { readSetupConfig } from '@/persistence'
 import { homedir } from 'node:os'
+import { redactDiagnosticData, redactSensitiveCommand } from '@/utils/redaction'
 
 /**
  * Get relevant environment information for debugging
@@ -119,7 +120,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         try {
             const settings = await readSettings();
             console.log(chalk.bold('\n📄 Settings (settings.json):'));
-            console.log(chalk.gray(JSON.stringify(settings, null, 2)));
+            console.log(chalk.gray(JSON.stringify(redactDiagnosticData(settings), null, 2)));
         } catch (error) {
             console.log(chalk.bold('\n📄 Settings:'));
             console.log(chalk.red('❌ Failed to read settings'));
@@ -163,7 +164,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         if (state) {
             console.log(chalk.bold('\n📄 Daemon State:'));
             console.log(chalk.blue(`Location: ${configuration.daemonStateFile}`));
-            console.log(chalk.gray(JSON.stringify(state, null, 2)));
+            console.log(chalk.gray(JSON.stringify(redactDiagnosticData(state), null, 2)));
         }
 
         // All Remcli processes
@@ -200,7 +201,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
                     const color = type === 'current' ? chalk.green :
                         type.startsWith('dev') ? chalk.cyan :
                             type.includes('daemon') ? chalk.blue : chalk.gray;
-                    console.log(`  ${color(`PID ${pid}`)}: ${chalk.gray(command)}`);
+                    console.log(`  ${color(`PID ${pid}`)}: ${chalk.gray(redactSensitiveCommand(command))}`);
                 });
             });
         } else {

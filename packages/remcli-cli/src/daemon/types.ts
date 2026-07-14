@@ -22,6 +22,8 @@ export interface CodexRemoteTuiOpenRequest {
   nativeThreadId: string;
   remcliSessionId: string;
   endpoint: string;
+  reasoningEffort?: string;
+  model?: string;
 }
 
 /** Immutable tmux identity captured when the daemon creates a pane. */

@@ -332,6 +332,8 @@ describe('startDaemonControlServer', () => {
             nativeThreadId: 'thread-123',
             remcliSessionId: 'remcli-123',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: 'high',
+            model: 'gpt-5.6-luna',
         };
         const response = await fetch(`http://127.0.0.1:${controlServer.port}/codex-remote-tui-open`, {
             method: 'POST',

@@ -3,11 +3,13 @@ import { createServer } from 'node:net';
 import type { Readable } from 'node:stream';
 
 import { logger } from '@/ui/logger';
+import { redactSensitiveText } from '@/utils/redaction';
 
 const LOOPBACK_HOST = '127.0.0.1';
 const DEFAULT_READY_TIMEOUT_MS = 10_000;
 const DEFAULT_READY_POLL_MS = 100;
 const DEFAULT_STOP_TIMEOUT_MS = 2_000;
+export const CODEX_DEFAULT_REASONING_EFFORT = 'xhigh';
 
 type CodexAppServerProcess = ChildProcessByStdio<null, Readable, Readable>;
 
@@ -40,12 +42,19 @@ export function buildCodexAppServerEndpoint(port: number): string {
     return `ws://${LOOPBACK_HOST}:${port}`;
 }
 
-export function buildCodexRemoteTuiCommand(endpoint: string, threadId?: string): string {
+export function buildCodexRemoteTuiCommand(
+    endpoint: string,
+    threadId?: string,
+    reasoningEffort: string = CODEX_DEFAULT_REASONING_EFFORT,
+    model?: string,
+): string {
     const quotedEndpoint = shellQuote(endpoint);
+    const quotedReasoningEffort = shellQuote(`model_reasoning_effort=${JSON.stringify(reasoningEffort)}`);
+    const modelArgument = model ? ` --model ${shellQuote(model)}` : '';
     if (threadId) {
-        return `codex resume ${shellQuote(threadId)} --remote ${quotedEndpoint}`;
+        return `codex -c ${quotedReasoningEffort}${modelArgument} resume ${shellQuote(threadId)} --remote ${quotedEndpoint}`;
     }
-    return `codex --remote ${quotedEndpoint}`;
+    return `codex -c ${quotedReasoningEffort}${modelArgument} --remote ${quotedEndpoint}`;
 }
 
 export function buildCodexAppServerReadyUrl(endpoint: string): string | null {
@@ -102,7 +111,7 @@ export async function startCodexAppServerHost(deps: StartCodexAppServerHostDeps 
     proc.stderr.setEncoding('utf8');
     proc.stderr.on('data', (chunk) => {
         const text = String(chunk).trim();
-        if (text) logger.debug('[CodexAppServerHost][stderr]', text);
+        if (text) logger.debug('[CodexAppServerHost][stderr]', redactSensitiveText(text));
     });
 
     await waitUntilReady({

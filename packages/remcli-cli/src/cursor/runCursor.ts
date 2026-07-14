@@ -401,6 +401,7 @@ export async function runCursor(opts: {
                     session.sendAgentMessage('cursor', {
                         type: 'message',
                         message: accumulatedResponse,
+                        isError: false,
                     });
                 }
 
@@ -437,6 +438,7 @@ export async function runCursor(opts: {
                     session.sendAgentMessage('cursor', {
                         type: 'message',
                         message: `Error: ${errorMsg}`,
+                        isError: true,
                     });
                 }
             } finally {

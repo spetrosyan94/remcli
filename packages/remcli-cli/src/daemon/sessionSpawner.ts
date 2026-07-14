@@ -822,7 +822,12 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             };
         }
         const tmuxResult = await tmux.spawnInOwnedTmuxSession(
-            [buildCodexRemoteTuiCommand(request.endpoint, request.nativeThreadId)],
+            [buildCodexRemoteTuiCommand(
+                request.endpoint,
+                request.nativeThreadId,
+                request.reasoningEffort,
+                request.model,
+            )],
             {
                 hostOwnership: hostAnchor,
                 windowName: buildCodexRemoteTuiWindowName(request.nativeThreadId),

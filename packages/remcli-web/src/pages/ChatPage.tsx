@@ -907,16 +907,25 @@ export function ChatPage() {
                         {agent}{host ? ` · ${host}` : ""} · {statusLabel(status)}
                     </span>
                 </div>
-                {/* десктоп (3a): реальные режимы разрешений текущего агента + кнопка «терминал» */}
-                <div className="hidden items-center gap-2 md:flex">
-                    <Segmented options={permissionModes} value={activePermissionMode} onChange={handleModeChange} getLabel={formatPermissionMode} />
+                {/* Терминал доступен на desktop; сегменты — только когда для них достаточно места. */}
+                <div className="hidden items-center gap-2 lg:flex">
+                    <div className="hidden xl:block">
+                        <Segmented
+                            options={permissionModes}
+                            value={activePermissionMode}
+                            onChange={handleModeChange}
+                            getLabel={formatPermissionMode}
+                            shouldFitContent
+                        />
+                    </div>
                     <Link to={`/session/${session.id}/terminal`}
                         className="flex h-10 items-center rounded-lg border border-border px-3 font-mono text-[11px] text-muted-foreground">
                         {t("chat.terminal")}
                     </Link>
                 </div>
+                {/* Компактный picker нужен на mobile и узком desktop; полные labels — в Drawer. */}
                 <button onClick={() => setIsPermissionSheetOpen(true)}
-                    className="flex h-11 max-w-[118px] items-center gap-1 rounded-lg bg-muted px-3 font-mono text-[10.5px] transition-[background-color,color,transform] active:scale-[0.96] md:hidden">
+                    className="flex h-11 max-w-[118px] items-center gap-1 rounded-lg bg-muted px-3 font-mono text-[10.5px] transition-[background-color,color,transform] active:scale-[0.96] xl:hidden">
                     <span className="truncate">{formatPermissionMode(activePermissionMode)}</span>
                     <ChevronDown className="size-2.5 shrink-0 text-muted-foreground" />
                 </button>

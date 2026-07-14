@@ -9,7 +9,7 @@
 - Codex remote connections: https://developers.openai.com/codex/remote-connections
 - Codex MCP: https://developers.openai.com/codex/mcp
 
-Проверено 2026-07-13 через official OpenAI docs, локальный `codex --help` и `codex app-server` 0.144.1 `model/list`.
+Проверено 2026-07-14 через official OpenAI docs, локальный `codex --help` и `codex-cli 0.144.3`.
 
 ## Цель
 
@@ -61,7 +61,8 @@ runCodex --resume <threadId> -> app-server initialize -> thread/resume -> turn/s
 Продолжение:
 
 ```text
-existing threadId -> turn/start(prompt)
+idle threadId -> turn/start(prompt)
+active threadId -> turn/steer(expectedTurnId, prompt)
 ```
 
 Ввод из native terminal не превращается в дополнительный `turn/start`. Shared
@@ -77,8 +78,10 @@ in-flight turnId + same mode/model hash -> turn/steer(expectedTurnId, prompt)
 ```
 
 Изменение mode/model не создаёт новый Codex thread. Sandbox и model передаются
-как параметры конкретного turn. Если настройки изменились во время активного
-turn, новый prompt ждёт следующего `turn/start`.
+как параметры конкретного turn. Выбранная до первого открытия TUI model также
+передаётся в команду managed remote TUI. Уже открытый TUI не перезапускается при
+поздней смене model. Если настройки изменились во время активного turn, новый
+prompt ждёт следующего `turn/start`.
 
 ## Transport contract
 
@@ -98,11 +101,47 @@ turn, новый prompt ждёт следующего `turn/start`.
 - `item/completed` с `reasoning` -> reasoning summary;
 - `item/completed` с `commandExecution` -> command result;
 - `turn/diff/updated` -> diff event;
-- `turn/completed` -> task complete;
+- `turn/completed(completed)` текущего active turn -> task complete;
+- `turn/completed(interrupted)` текущего active turn -> turn aborted;
+- `turn/completed(failed)` текущего active turn -> видимая ошибка;
+- stale completion не меняет состояние чата;
 - `error` -> видимая ошибка чата.
 
 `codex-reply` для chat/resume transport не используется. `remcli-mcp` остаётся
 отдельным bridge для инструментов Remcli.
+
+### Доставка и восстановление
+
+- `thread/start` неидемпотентен: Remcli принимает native id только из JSON-RPC
+  response. `thread/started` не содержит correlation id и не используется как
+  receipt. Потерянный или неполный response становится
+  `CODEX_THREAD_START_AMBIGUOUS`: runner не делает retry/reattach и не
+  привязывается к потенциально чужому thread.
+- Каждый phone prompt получает стабильный `clientUserMessageId` из P2P delivery
+  id. Перед повторной отправкой Remcli читает thread и, если Codex уже принял
+  этот id, продолжает существующий turn вместо создания второго prompt.
+- P2P ACK/high-water продвигается только после принятия prompt app-server. Для
+  recoverable `-32001` или transport отказа runner повторяет ту же delivery
+  ограниченное число раз с тем же `clientUserMessageId`; окончательный отказ
+  остаётся видимой ошибкой чата.
+- При потере WebSocket во время active turn клиент reconnect-ится, читает
+  thread, выполняет `thread/resume` для running turn и сохраняет исходный
+  completion waiter. Исторические non-user items публикуются с bounded dedupe
+  по native `item.id`.
+- Если terminal успел завершить T1 и открыть T2 до `turn/steer`, Remcli
+  reattach-ится к T2 до ожидания idle. Abort ожидания не прерывает external
+  successor turn.
+- Успешный ответ на `turn/interrupt` только подтверждает принятие запроса.
+  Phone delivery ждёт точный `threadId + turnId + turn/completed(interrupted)`
+  до `turn/start` или `turn/steer`; delivery не ACK-ится в отменяемый turn.
+  Foreign, stale, `completed` и `failed` barrier не открывают. Rejected request
+  или settle-timeout остаётся видимой fail-closed ошибкой до точного позднего
+  `interrupted` либо reconnect. Recovery snapshot открывает barrier только для
+  того же текущего `threadId + turnId + interrupted`; stale predecessor остаётся
+  заблокированным. Interrupted turn публикуется как
+  `turn_aborted`, не как успешный `task_complete`.
+- Диагностика app-server проходит redaction до логов и chat event: в том числе
+  enumerable поля `Error` и ключи заголовков/JSON с `_`.
 
 ## Устойчивость runtime
 
@@ -133,15 +172,18 @@ Approval policy:
 Официальный CLI поддерживает remote TUI:
 
 ```text
-codex --remote ws://127.0.0.1:<port>
-codex resume <threadId> --remote ws://127.0.0.1:<port>
+codex -c 'model_reasoning_effort="xhigh"' [--model <selected-model>] --remote ws://127.0.0.1:<port>
+codex -c 'model_reasoning_effort="xhigh"' [--model <selected-model>] resume <threadId> --remote ws://127.0.0.1:<port>
 ```
 
 ### Daemon-owned tmux lifecycle
 
 Daemon-spawned Codex runner остаётся headless в tmux. После успешной привязки
 native `threadId` Remcli открывает TUI через
-`codex resume <threadId> --remote <endpoint>`.
+`codex -c 'model_reasoning_effort="<effective-effort>"' --model <selected-model> resume <threadId> --remote <endpoint>`.
+Default effort — `xhigh`; выбранные model и effort идут одинаково в phone turn
+и TUI command. Если model не выбрана явно, `--model` не передаётся и Codex
+использует свой default без изменения `~/.codex/config.toml`.
 
 - Одна native Codex thread имеет одну активную Remcli wrapper-сессию: повторный
   resume возвращает существующую wrapper-сессию.
@@ -203,6 +245,8 @@ P2P session consumer. Повторный authenticated handoff того же own
 - Unit: app-server client отправляет JSON-RPC через shared endpoint.
 - Unit: `turn/steer` отправляет `threadId`, `expectedTurnId` и текст активному
   turn.
+- Unit: `turn/interrupt` не разблокирует delivery до точного matching
+  `turn/completed(interrupted)`; rejected request и settle-timeout fail closed.
 - Unit: daemon-spawned runner не открывает attach-terminal; TUI использует
   `codex resume <threadId> --remote <endpoint>` только для shared endpoint.
 - Security: неизвестный runner token, повторный token exchange, отсутствующий
@@ -214,6 +258,9 @@ P2P session consumer. Повторный authenticated handoff того же own
 - Unit/integration: native thread dedupe, runner capability, stale/response-loss
   recovery, duplicate display names, occupied numeric index, exact cleanup при
   stop, prune и shutdown. Real tmux regression использует isolated socket.
+- Unit: active WebSocket loss reattach-ит turn без повторной публикации item;
+  T1→T2 steer race подключает successor; transient overload повторяет одну P2P
+  delivery без нового native prompt.
 - Unit: daemon запускает `codex app-server --listen ws://127.0.0.1:<port>` и ждёт
   `/readyz`.
 - CLI: `npm -w remcli run typecheck`, `npm -w remcli run build`,

@@ -134,6 +134,7 @@ interface SessionSeed {
     activeAt: number;
     thinking?: boolean;
     summary?: string;
+    executionOutcome?: NonNullable<Session['metadata']>['executionOutcome'];
     requests?: NonNullable<NonNullable<Session['agentState']>['requests']>;
 }
 
@@ -154,7 +155,8 @@ function makeSession(seed: SessionSeed): Session {
             flavor: seed.flavor ?? null,
             name: seed.path.split('/').pop(),
             claudeSessionId: `${seed.id}-agent`,
-            summary: seed.summary ? { text: seed.summary, updatedAt: seed.activeAt } : undefined
+            summary: seed.summary ? { text: seed.summary, updatedAt: seed.activeAt } : undefined,
+            executionOutcome: seed.executionOutcome,
         },
         metadataVersion: 1,
         agentState: {
@@ -237,7 +239,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         activeAt: T - 30 * MINUTE,
         summary: 'Готово: обновил README и changelog'
     }),
-    // error: живая сессия с упавшей командой в summary
+    // error: typed outcome; summary intentionally does not carry an error prefix.
     makeSession({
         id: 'fx-error',
         seq: 14,
@@ -249,7 +251,8 @@ export const FIXTURE_SESSIONS: Session[] = [
         homeDir: '/Users/dev',
         active: true,
         activeAt: T - 45 * MINUTE,
-        summary: 'Error: build failed (exit 1)'
+        summary: 'Последний запуск не завершился',
+        executionOutcome: { kind: 'error', occurredAt: T - 45 * MINUTE }
     }),
     // offline: завершённая сессия на выключенной машине
     makeSession({

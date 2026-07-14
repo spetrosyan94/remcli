@@ -5,6 +5,22 @@ interface QueueItem<T> {
     mode: T;
     modeHash: string;
     isolate?: boolean; // If true, this message must be processed alone
+    acceptance?: QueueItemAcceptance;
+}
+
+interface QueueItemAcceptance {
+    isSettled: boolean;
+    resolve: () => void;
+    reject: (error: Error) => void;
+}
+
+export interface MessageQueueBatch<T> {
+    message: string;
+    mode: T;
+    hash: string;
+    isolate: boolean;
+    acknowledge: () => void;
+    reject: (error: unknown) => void;
 }
 
 /**
@@ -69,6 +85,49 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * Push a message and resolve only when the consumer has accepted it.
+     * Callers use this for durable transports that must not acknowledge delivery
+     * before the downstream agent accepted the request.
+     */
+    pushWithAcceptance(message: string, mode: T): Promise<void> {
+        return new Promise((resolve, reject) => {
+            if (this.closed) {
+                reject(new Error('Cannot push to closed queue'));
+                return;
+            }
+
+            const modeHash = this.modeHasher(mode);
+            const acceptance: QueueItemAcceptance = {
+                isSettled: false,
+                resolve,
+                reject,
+            };
+            logger.debug(`[MessageQueue2] pushWithAcceptance() called with mode hash: ${modeHash}`);
+
+            this.queue.push({
+                message,
+                mode,
+                modeHash,
+                isolate: false,
+                acceptance,
+            });
+
+            if (this.onMessageHandler) {
+                this.onMessageHandler(message, mode);
+            }
+
+            if (this.waiter) {
+                logger.debug(`[MessageQueue2] Notifying waiter for accepted message`);
+                const waiter = this.waiter;
+                this.waiter = null;
+                waiter(true);
+            }
+
+            logger.debug(`[MessageQueue2] pushWithAcceptance() completed. Queue size: ${this.queue.length}`);
+        });
+    }
+
+    /**
      * Push a message immediately without batching delay.
      * Does not clear the queue or enforce isolation.
      */
@@ -116,7 +175,8 @@ export class MessageQueue2<T> {
         const modeHash = this.modeHasher(mode);
         logger.debug(`[MessageQueue2] pushIsolateAndClear() called with mode hash: ${modeHash} - clearing ${this.queue.length} pending messages`);
 
-        // Clear any pending messages to ensure this message is processed in complete isolation
+        // Clear any pending messages to ensure this message is processed in complete isolation.
+        this.rejectQueuedAcceptances(new Error('Message queue was cleared before the message was accepted.'));
         this.queue = [];
 
         this.queue.push({
@@ -181,6 +241,7 @@ export class MessageQueue2<T> {
      */
     reset(): void {
         logger.debug(`[MessageQueue2] reset() called. Clearing ${this.queue.length} messages`);
+        this.rejectQueuedAcceptances(new Error('Message queue was reset before the message was accepted.'));
         this.queue = [];
         this.closed = false;
 
@@ -194,6 +255,7 @@ export class MessageQueue2<T> {
     close(): void {
         logger.debug(`[MessageQueue2] close() called`);
         this.closed = true;
+        this.rejectQueuedAcceptances(new Error('Message queue was closed before the message was accepted.'));
 
         // Notify any waiting caller
         if (this.waiter) {
@@ -221,7 +283,7 @@ export class MessageQueue2<T> {
      * Wait for messages and return all messages with the same mode as a single string
      * Returns { message: string, mode: T } or null if aborted/closed
      */
-    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string } | null> {
+    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<MessageQueueBatch<T> | null> {
         // If we have messages, return them immediately
         if (this.queue.length > 0) {
             return this.collectBatch();
@@ -245,13 +307,14 @@ export class MessageQueue2<T> {
     /**
      * Collect a batch of messages with the same mode, respecting isolation requirements
      */
-    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean } | null {
+    private collectBatch(): MessageQueueBatch<T> | null {
         if (this.queue.length === 0) {
             return null;
         }
 
         const firstItem = this.queue[0];
         const sameModeMessages: string[] = [];
+        const acceptances: QueueItemAcceptance[] = [];
         let mode = firstItem.mode;
         let isolate = firstItem.isolate ?? false;
         const targetModeHash = firstItem.modeHash;
@@ -260,6 +323,7 @@ export class MessageQueue2<T> {
         if (firstItem.isolate) {
             const item = this.queue.shift()!;
             sameModeMessages.push(item.message);
+            if (item.acceptance) acceptances.push(item.acceptance);
             logger.debug(`[MessageQueue2] Collected isolated message with mode hash: ${targetModeHash}`);
         } else {
             // Collect all messages with the same mode until we hit an isolated message
@@ -268,6 +332,7 @@ export class MessageQueue2<T> {
                 !this.queue[0].isolate) {
                 const item = this.queue.shift()!;
                 sameModeMessages.push(item.message);
+                if (item.acceptance) acceptances.push(item.acceptance);
             }
             logger.debug(`[MessageQueue2] Collected batch of ${sameModeMessages.length} messages with mode hash: ${targetModeHash}`);
         }
@@ -279,8 +344,34 @@ export class MessageQueue2<T> {
             message: combinedMessage,
             mode,
             hash: targetModeHash,
-            isolate
+            isolate,
+            acknowledge: () => this.resolveAcceptances(acceptances),
+            reject: (error) => this.rejectAcceptances(acceptances, error),
         };
+    }
+
+    private resolveAcceptances(acceptances: QueueItemAcceptance[]): void {
+        for (const acceptance of acceptances) {
+            if (acceptance.isSettled) continue;
+            acceptance.isSettled = true;
+            acceptance.resolve();
+        }
+    }
+
+    private rejectAcceptances(acceptances: QueueItemAcceptance[], error: unknown): void {
+        const rejection = error instanceof Error ? error : new Error(String(error));
+        for (const acceptance of acceptances) {
+            if (acceptance.isSettled) continue;
+            acceptance.isSettled = true;
+            acceptance.reject(rejection);
+        }
+    }
+
+    private rejectQueuedAcceptances(error: Error): void {
+        this.rejectAcceptances(
+            this.queue.flatMap((item) => item.acceptance ? [item.acceptance] : []),
+            error,
+        );
     }
 
     /**

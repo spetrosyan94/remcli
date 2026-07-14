@@ -297,6 +297,7 @@ function openTrackedCodexRemoteTui(
         remcliSessionId: string;
         nativeThreadId: string;
         endpoint: string;
+        reasoningEffort?: string;
     },
 ) {
     mockTrackedDaemonTmuxOwnership(manager, request.remcliSessionId);
@@ -818,6 +819,8 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-remote-tui',
             nativeThreadId: 'codex-thread-remote-tui',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: 'high',
+            model: 'gpt-5.6-luna',
         };
         await expect(openTrackedCodexRemoteTui(manager, request)).resolves.toMatchObject({
             type: 'opened',
@@ -837,6 +840,9 @@ describe('createSessionManager resume deduplication', () => {
         expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledWith(
             'env -u TMUX tmux attach -t %500',
         );
+        expect(tmuxMocks.spawnInTmux.mock.calls[1]?.[0]).toEqual([
+            "codex -c 'model_reasoning_effort=\"high\"' --model 'gpt-5.6-luna' resume 'codex-thread-remote-tui' --remote 'ws://127.0.0.1:45123'",
+        ]);
         expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2);
         await expect(manager.stopSession('remcli-session-remote-tui')).resolves.toEqual({
             success: true,

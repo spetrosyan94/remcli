@@ -7,6 +7,7 @@
 
 import psList from 'ps-list';
 import spawn from 'cross-spawn';
+import { redactSensitiveCommand } from '@/utils/redaction';
 
 /**
  * Find all Remcli processes (including current process)
@@ -85,7 +86,7 @@ export async function killRunawayRemcliProcesses(): Promise<{ killed: number, er
   
   for (const { pid, command } of runawayProcesses) {
     try {
-      console.log(`Killing runaway process PID ${pid}: ${command}`);
+      console.log(`Killing runaway process PID ${pid}: ${redactSensitiveCommand(command)}`);
       
       if (process.platform === 'win32') {
         // Windows: use taskkill

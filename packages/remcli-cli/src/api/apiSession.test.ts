@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ApiSessionClient } from './apiSession';
-import type { Session } from './types';
+import {
+    RetryableUserMessageDeliveryError,
+    type DeliveredUserMessage,
+    type Session,
+} from './types';
 import {
     forgetSessionRunnerCredential,
     rememberSessionRunnerCredential,
@@ -26,6 +30,13 @@ interface MockSocket {
     on: ReturnType<typeof vi.fn>;
     off: ReturnType<typeof vi.fn>;
     disconnect: ReturnType<typeof vi.fn>;
+    close: ReturnType<typeof vi.fn>;
+    emit: ReturnType<typeof vi.fn>;
+    connected: boolean;
+}
+
+interface ApiSessionClientInternals {
+    enqueuePendingUserMessage(message: DeliveredUserMessage, sequence: number): void;
 }
 
 interface SocketIoOptions {
@@ -45,7 +56,10 @@ describe('ApiSessionClient connection handling', () => {
             connect: vi.fn(),
             on: vi.fn(),
             off: vi.fn(),
-            disconnect: vi.fn()
+            disconnect: vi.fn(),
+            close: vi.fn(),
+            emit: vi.fn(),
+            connected: true,
         };
 
         mockIo.mockReturnValue(mockSocket);
@@ -111,9 +125,95 @@ describe('ApiSessionClient connection handling', () => {
         });
     });
 
+    it('reoffers only the blocked head after explicit recovery and acknowledges messages in order', async () => {
+        const deliveryOne: DeliveredUserMessage = {
+            role: 'user',
+            content: { type: 'text', text: 'first prompt' },
+            deliveryId: 'p2p:test-session-id:1',
+        };
+        const deliveryTwo: DeliveredUserMessage = {
+            role: 'user',
+            content: { type: 'text', text: 'second prompt' },
+            deliveryId: 'p2p:test-session-id:2',
+        };
+        rememberSessionRunnerCredential(mockSession.id, 'runner-credential');
+        const client = new ApiSessionClient('fake-token', mockSession);
+        const internals = client as unknown as ApiSessionClientInternals;
+        const receivedDeliveryIds: string[] = [];
+
+        client.onUserMessage(async (message) => {
+            receivedDeliveryIds.push(message.deliveryId ?? '');
+            if (receivedDeliveryIds.length === 1) {
+                throw new RetryableUserMessageDeliveryError(new Error('recover app-server first'));
+            }
+        });
+        internals.enqueuePendingUserMessage(deliveryOne, 1);
+        internals.enqueuePendingUserMessage(deliveryTwo, 2);
+
+        await vi.waitFor(() => {
+            expect(receivedDeliveryIds).toEqual([deliveryOne.deliveryId]);
+        });
+        expect(mockSocket.emit).not.toHaveBeenCalledWith('message-ack', expect.anything());
+
+        expect(client.requestPendingUserMessageRedelivery()).toBe(true);
+
+        await vi.waitFor(() => {
+            expect(receivedDeliveryIds).toEqual([
+                deliveryOne.deliveryId,
+                deliveryOne.deliveryId,
+                deliveryTwo.deliveryId,
+            ]);
+        });
+        expect(mockSocket.emit).toHaveBeenNthCalledWith(1, 'message-ack', {
+            sid: mockSession.id,
+            seq: 1,
+        });
+        expect(mockSocket.emit).toHaveBeenNthCalledWith(2, 'message-ack', {
+            sid: mockSession.id,
+            seq: 2,
+        });
+    });
+
+    it('acknowledges an in-flight cancelled delivery only after its callback unwinds', async () => {
+        const delivery: DeliveredUserMessage = {
+            role: 'user',
+            content: { type: 'text', text: 'cancel me' },
+            deliveryId: 'p2p:test-session-id:1',
+        };
+        rememberSessionRunnerCredential(mockSession.id, 'runner-credential');
+        const client = new ApiSessionClient('fake-token', mockSession);
+        const internals = client as unknown as ApiSessionClientInternals;
+        let resolveDelivery: (() => void) | null = null;
+
+        client.onUserMessage(async () => {
+            await new Promise<void>((resolve) => {
+                resolveDelivery = resolve;
+            });
+        });
+        internals.enqueuePendingUserMessage(delivery, 1);
+
+        await vi.waitFor(() => {
+            expect(resolveDelivery).not.toBeNull();
+        });
+        expect(client.cancelPendingUserMessageDelivery(delivery.deliveryId!)).toBe(true);
+        expect(mockSocket.emit).not.toHaveBeenCalledWith('message-ack', expect.anything());
+
+        const resolveInFlightDelivery = resolveDelivery as (() => void) | null;
+        resolveInFlightDelivery?.();
+
+        await vi.waitFor(() => {
+            expect(mockSocket.emit).toHaveBeenCalledWith('message-ack', {
+                sid: mockSession.id,
+                seq: 1,
+            });
+        });
+        expect(client.requestPendingUserMessageRedelivery()).toBe(false);
+    });
+
     afterEach(() => {
         forgetSessionRunnerCredential(mockSession.id);
         consoleSpy.mockRestore();
+        vi.useRealTimers();
         vi.restoreAllMocks();
     });
 });

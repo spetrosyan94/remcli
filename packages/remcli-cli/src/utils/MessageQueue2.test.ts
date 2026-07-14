@@ -23,6 +23,45 @@ describe('MessageQueue2', () => {
         expect(queue.size()).toBe(0);
     });
 
+    it('resolves every accepted delivery in a same-mode batch only after acknowledgement', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const firstDelivery = queue.pushWithAcceptance('first prompt', 'remote');
+        const secondDelivery = queue.pushWithAcceptance('second prompt', 'remote');
+
+        const batch = await queue.waitForMessagesAndGetAsString();
+
+        expect(batch?.message).toBe('first prompt\nsecond prompt');
+        let hasResolved = false;
+        void firstDelivery.then(() => {
+            hasResolved = true;
+        });
+        await Promise.resolve();
+        expect(hasResolved).toBe(false);
+
+        batch?.acknowledge();
+
+        await expect(Promise.all([firstDelivery, secondDelivery])).resolves.toEqual([undefined, undefined]);
+    });
+
+    it('rejects an unaccepted delivery when the consumer rejects its batch', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const delivery = queue.pushWithAcceptance('retry prompt', 'remote');
+        const batch = await queue.waitForMessagesAndGetAsString();
+
+        batch?.reject(new Error('Codex rejected turn/start'));
+
+        await expect(delivery).rejects.toThrow('Codex rejected turn/start');
+    });
+
+    it('rejects queued accepted deliveries when the queue closes before acceptance', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const delivery = queue.pushWithAcceptance('pending prompt', 'remote');
+
+        queue.close();
+
+        await expect(delivery).rejects.toThrow('Message queue was closed before the message was accepted.');
+    });
+
     it('should return only messages with same mode and keep others', async () => {
         const queue = new MessageQueue2<string>(mode => mode);
         

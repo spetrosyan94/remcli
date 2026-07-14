@@ -7,7 +7,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import { ApiSessionClient } from '@/api/apiSession';
 import { encodeBase64, encrypt } from '@/api/encryption';
-import type { Session, Update, UserMessage } from '@/api/types';
+import {
+    RetryableUserMessageDeliveryError,
+    type Session,
+    type Update,
+    type UserMessage,
+} from '@/api/types';
 import { configuration } from '@/configuration';
 import { deriveBearerToken, generateSharedSecret } from '@/daemon/p2p/p2pAuth';
 import { startP2PServer, type P2PServer } from '@/daemon/p2p/p2pServer';
@@ -427,6 +432,182 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         await noReplayAfterAcknowledgement;
 
         await runner.close();
+    });
+
+    it('reoffers an unacknowledged phone prompt to the same connected runner only after explicit recovery', async () => {
+        const sharedSecret = generateSharedSecret();
+        const bearerToken = deriveBearerToken(sharedSecret);
+        const store = new P2PStore({ kvFilePath: null });
+        const session = store.createSession('same-runner-redelivery', '{}', null);
+        const runnerCredentialStore = new P2PRunnerCredentialStore();
+        const runnerCredential = issueRunnerCredential(runnerCredentialStore, session.id);
+        const promptText = 'recover this prompt on the same runner';
+        cacheRunnerCredential(session.id, runnerCredential);
+        p2pServer = await startP2PServer({
+            port: 0,
+            host: '127.0.0.1',
+            sharedSecret,
+            store,
+            runnerCredentialStore,
+        });
+        configuration.p2pServerUrl = `http://127.0.0.1:${p2pServer.port}`;
+
+        const phoneSocket = createSocket(p2pServer.port, bearerToken, { clientType: 'user-scoped' });
+        await connectSocket(phoneSocket);
+
+        const runner = new ApiSessionClient(bearerToken, toApiSession(session.id, sharedSecret));
+        const runnerSocket = getRunnerSocket(runner);
+        const originalRunnerEmit = runnerSocket.emit;
+        const mutableRunnerSocket = runnerSocket as unknown as { emit: (...args: unknown[]) => unknown };
+        let acknowledgementAttempts = 0;
+        mutableRunnerSocket.emit = (...args: unknown[]): unknown => {
+            if (args[0] === 'message-ack') {
+                acknowledgementAttempts++;
+            }
+            return Reflect.apply(originalRunnerEmit, runnerSocket, args);
+        };
+
+        const deliveryIds: string[] = [];
+        let attempts = 0;
+        runner.onUserMessage(async (message) => {
+            attempts++;
+            deliveryIds.push(message.deliveryId ?? '');
+            if (attempts === 1) {
+                throw new RetryableUserMessageDeliveryError(new Error('wait for Codex recovery'));
+            }
+        });
+        await waitForSocketConnection(runnerSocket);
+
+        sendPhonePrompt(phoneSocket, session.id, sharedSecret, promptText);
+        await waitForCondition(() => attempts === 1);
+        expect(runnerSocket.connected).toBe(true);
+        expect(acknowledgementAttempts).toBe(0);
+        await expectNoUpdate(runnerSocket);
+
+        expect(runner.requestPendingUserMessageRedelivery()).toBe(true);
+        await waitForCondition(() => attempts === 2);
+        await waitForCondition(() => acknowledgementAttempts === 1);
+        expect(deliveryIds).toEqual([`p2p:${session.id}:1`, `p2p:${session.id}:1`]);
+        await runner.flush();
+
+        const runnerDisconnected = waitForSocketEvent(runnerSocket, 'disconnect');
+        await runner.close();
+        await runnerDisconnected;
+
+        const acknowledgedReconnect = createSocket(
+            p2pServer.port,
+            bearerToken,
+            acknowledgedRunnerAuth(session.id, runnerCredential),
+        );
+        const noReplayAfterAcknowledgement = expectNoUpdate(acknowledgedReconnect);
+        await connectSocket(acknowledgedReconnect);
+        await noReplayAfterAcknowledgement;
+    });
+
+    it('replays an unacknowledged phone prompt to a new runner after an async callback rejection', async () => {
+        const sharedSecret = generateSharedSecret();
+        const bearerToken = deriveBearerToken(sharedSecret);
+        const store = new P2PStore({ kvFilePath: null });
+        const session = store.createSession('async-callback-retry', '{}', null);
+        const runnerCredentialStore = new P2PRunnerCredentialStore();
+        const runnerCredential = issueRunnerCredential(runnerCredentialStore, session.id);
+        const promptText = 'retry this async callback prompt';
+        const expectedPromptSequence = 1;
+        cacheRunnerCredential(session.id, runnerCredential);
+        p2pServer = await startP2PServer({
+            port: 0,
+            host: '127.0.0.1',
+            sharedSecret,
+            store,
+            runnerCredentialStore,
+        });
+        configuration.p2pServerUrl = `http://127.0.0.1:${p2pServer.port}`;
+
+        const phoneSocket = createSocket(p2pServer.port, bearerToken, { clientType: 'user-scoped' });
+        await connectSocket(phoneSocket);
+
+        const rejectedRunner = new ApiSessionClient(bearerToken, toApiSession(session.id, sharedSecret));
+        const rejectedRunnerSocket = getRunnerSocket(rejectedRunner);
+        const originalRejectedRunnerEmit = rejectedRunnerSocket.emit;
+        const mutableRejectedRunnerSocket = rejectedRunnerSocket as unknown as { emit: (...args: unknown[]) => unknown };
+        let rejectedRunnerAcknowledgementAttempts = 0;
+        mutableRejectedRunnerSocket.emit = (...args: unknown[]): unknown => {
+            if (args[0] === 'message-ack') {
+                rejectedRunnerAcknowledgementAttempts++;
+            }
+            return Reflect.apply(originalRejectedRunnerEmit, rejectedRunnerSocket, args);
+        };
+
+        const rejectedCallbackMessages: UserMessage[] = [];
+        const rejectedDeliveryIds: string[] = [];
+        rejectedRunner.onUserMessage(async (message) => {
+            rejectedCallbackMessages.push(message);
+            rejectedDeliveryIds.push(message.deliveryId ?? '');
+            await Promise.resolve();
+            throw new Error('Simulated asynchronous runner callback failure');
+        });
+        await waitForSocketConnection(rejectedRunnerSocket);
+
+        sendPhonePrompt(phoneSocket, session.id, sharedSecret, promptText);
+        await waitForCondition(() => rejectedCallbackMessages.length === 1);
+        expect(rejectedRunnerAcknowledgementAttempts).toBe(0);
+
+        const rejectedRunnerDisconnected = waitForSocketEvent(rejectedRunnerSocket, 'disconnect');
+        await rejectedRunner.close();
+        await rejectedRunnerDisconnected;
+
+        // The retry runner has no local queue from the rejected callback, so the
+        // observed update must be replayed by the P2P server.
+        const retryRunner = new ApiSessionClient(bearerToken, toApiSession(session.id, sharedSecret));
+        const retryRunnerSocket = getRunnerSocket(retryRunner);
+        const replayedUpdates: Update[] = [];
+        retryRunnerSocket.on('update', (update: Update) => {
+            if (isNewMessageUpdate(update)) {
+                replayedUpdates.push(update);
+            }
+        });
+        const originalRetryRunnerEmit = retryRunnerSocket.emit;
+        const mutableRetryRunnerSocket = retryRunnerSocket as unknown as { emit: (...args: unknown[]) => unknown };
+        let retryRunnerAcknowledgementAttempts = 0;
+        mutableRetryRunnerSocket.emit = (...args: unknown[]): unknown => {
+            if (args[0] === 'message-ack') {
+                retryRunnerAcknowledgementAttempts++;
+            }
+            return Reflect.apply(originalRetryRunnerEmit, retryRunnerSocket, args);
+        };
+        await waitForSocketConnection(retryRunnerSocket);
+        await waitForCondition(() => replayedUpdates.length === 1);
+
+        expect(replayedUpdates.map((update) => update.body.message.seq)).toEqual([expectedPromptSequence]);
+        await expectNoUpdate(retryRunnerSocket);
+
+        const retriedCallbackMessages: UserMessage[] = [];
+        const retriedDeliveryIds: string[] = [];
+        retryRunner.onUserMessage(async (message) => {
+            retriedCallbackMessages.push(message);
+            retriedDeliveryIds.push(message.deliveryId ?? '');
+            await Promise.resolve();
+        });
+        await waitForCondition(() => retriedCallbackMessages.length === 1);
+        await waitForCondition(() => retryRunnerAcknowledgementAttempts === 1);
+        await retryRunner.flush();
+
+        expect(retriedCallbackMessages.map((message) => message.content.text)).toEqual([promptText]);
+        expect(rejectedDeliveryIds).toEqual([`p2p:${session.id}:${expectedPromptSequence}`]);
+        expect(retriedDeliveryIds).toEqual(rejectedDeliveryIds);
+
+        const retryRunnerDisconnected = waitForSocketEvent(retryRunnerSocket, 'disconnect');
+        await retryRunner.close();
+        await retryRunnerDisconnected;
+
+        const acknowledgedReconnect = createSocket(
+            p2pServer.port,
+            bearerToken,
+            acknowledgedRunnerAuth(session.id, runnerCredential)
+        );
+        const noReplayAfterAcknowledgement = expectNoUpdate(acknowledgedReconnect);
+        await connectSocket(acknowledgedReconnect);
+        await noReplayAfterAcknowledgement;
     });
 
     it('replays every runner-directed message that has not been acknowledged before advancing the cursor', async () => {

@@ -3,6 +3,8 @@ import type { Session } from '@/lib/protocol';
 
 let dedupeSessionsByNativeAgent: typeof import('./sessionDisplay').dedupeSessionsByNativeAgent;
 let nativeAgentSessionKey: typeof import('./sessionDisplay').nativeAgentSessionKey;
+let sessionMessage: typeof import('./sessionDisplay').sessionMessage;
+let sessionStatus: typeof import('./sessionDisplay').sessionStatus;
 
 beforeAll(async () => {
     vi.stubGlobal('localStorage', {
@@ -19,6 +21,8 @@ beforeAll(async () => {
     const mod = await import('./sessionDisplay');
     dedupeSessionsByNativeAgent = mod.dedupeSessionsByNativeAgent;
     nativeAgentSessionKey = mod.nativeAgentSessionKey;
+    sessionMessage = mod.sessionMessage;
+    sessionStatus = mod.sessionStatus;
 });
 
 afterAll(() => {
@@ -103,5 +107,68 @@ describe('sessionDisplay native session dedupe', () => {
         const second = session({ id: 'second' });
 
         expect(dedupeSessionsByNativeAgent([first, second]).map((item) => item.id)).toEqual(['first', 'second']);
+    });
+});
+
+describe('sessionDisplay execution outcome', () => {
+    it('shows an online typed error outcome as an error status', () => {
+        const errored = session({
+            active: true,
+            presence: 'online',
+            metadata: {
+                path: '/tmp/project',
+                host: 'test-host',
+                flavor: 'codex',
+                executionOutcome: { kind: 'error', occurredAt: 100 },
+            },
+        });
+
+        expect(sessionStatus(errored)).toBe('error');
+        expect(sessionMessage(errored)).toBe('error');
+    });
+
+    it('does not infer an error from a free-form summary', () => {
+        const summaryOnly = session({
+            active: true,
+            presence: 'online',
+            metadata: {
+                path: '/tmp/project',
+                host: 'test-host',
+                flavor: 'codex',
+                summary: { text: 'Error: build failed', updatedAt: 100 },
+            },
+        });
+
+        expect(sessionStatus(summaryOnly)).toBe('idle');
+        expect(sessionMessage(summaryOnly)).toBe('Error: build failed');
+    });
+
+    it('prioritizes offline, permission, and thinking over a previous error outcome', () => {
+        const withError = {
+            path: '/tmp/project',
+            host: 'test-host',
+            flavor: 'codex',
+            executionOutcome: { kind: 'error' as const, occurredAt: 100 },
+        };
+
+        expect(sessionStatus(session({ metadata: withError }))).toBe('offline');
+        expect(sessionStatus(session({
+            active: true,
+            presence: 'online',
+            metadata: withError,
+            agentState: {
+                controlledByUser: false,
+                requests: {
+                    pending: { tool: 'Bash', arguments: {}, createdAt: 100 },
+                },
+                completedRequests: {},
+            },
+        }))).toBe('permission');
+        expect(sessionStatus(session({
+            active: true,
+            presence: 'online',
+            metadata: withError,
+            thinking: true,
+        }))).toBe('thinking');
     });
 });

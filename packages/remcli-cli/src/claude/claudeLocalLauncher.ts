@@ -3,6 +3,7 @@ import { claudeLocal, ExitCodeError } from "./claudeLocal";
 import { Session } from "./session";
 import { Future } from "@/utils/future";
 import { createSessionScanner } from "./utils/sessionScanner";
+import { hasNonEmptyAssistantText } from "./utils/hasAssistantText";
 
 export type LauncherResult = { type: 'switch' } | { type: 'exit', code: number };
 
@@ -15,7 +16,10 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
         onMessage: (message) => { 
             // Block SDK summary messages - we generate our own
             if (message.type !== 'summary') {
-                session.client.sendClaudeSessionMessage(message)
+                session.client.sendClaudeSessionMessage(message);
+                if (message.type === 'assistant' && hasNonEmptyAssistantText(message.message?.content)) {
+                    session.client.recordSuccessfulAgentOutput();
+                }
             }
         }
     });
@@ -126,11 +130,16 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
                 logger.debug('[local]: launch error', e);
                 // If Claude exited with non-zero exit code, propagate it
                 if (e instanceof ExitCodeError) {
+                    session.client.sendSessionEvent({
+                        type: 'message',
+                        message: `Claude process exited with code ${e.exitCode}`,
+                        isError: true,
+                    });
                     exitReason = { type: 'exit', code: e.exitCode };
                     break;
                 }
                 if (!exitReason) {
-                    session.client.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
+                    session.client.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly', isError: true });
                     continue;
                 } else {
                     break;

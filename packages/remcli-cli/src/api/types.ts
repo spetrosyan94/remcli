@@ -290,6 +290,31 @@ export const UserMessageSchema = z.object({
 
 export type UserMessage = z.infer<typeof UserMessageSchema>
 
+/**
+ * Runtime-only identity assigned by the P2P session consumer. It is never
+ * serialized inside the encrypted user-message payload.
+ */
+export interface DeliveredUserMessage extends UserMessage {
+  deliveryId?: string
+}
+
+/**
+ * Signals that the current durable P2P delivery should remain pending and be
+ * offered to the same runner only after its owner explicitly requests a
+ * redelivery. The API transport owns ordering and acknowledgement, while the
+ * provider runner owns retry and recovery policy.
+ */
+export class RetryableUserMessageDeliveryError extends Error {
+  readonly originalError: Error
+
+  constructor(error: unknown) {
+    const originalError = error instanceof Error ? error : new Error(String(error))
+    super(originalError.message)
+    this.name = 'RetryableUserMessageDeliveryError'
+    this.originalError = originalError
+  }
+}
+
 export const AgentMessageSchema = z.object({
   role: z.literal('agent'),
   content: z.object({
@@ -305,6 +330,13 @@ export const MessageContentSchema = z.union([UserMessageSchema, AgentMessageSche
 
 export type MessageContent = z.infer<typeof MessageContentSchema>
 
+export const ExecutionOutcomeSchema = z.object({
+  kind: z.enum(['error', 'success']),
+  occurredAt: z.number()
+})
+
+export type ExecutionOutcome = z.infer<typeof ExecutionOutcomeSchema>
+
 export type Metadata = {
   path: string,
   host: string,
@@ -315,6 +347,7 @@ export type Metadata = {
     text: string,
     updatedAt: number
   },
+  executionOutcome?: ExecutionOutcome,
   machineId?: string,
   agentSessionId?: string, // Native agent session/thread ID for the current flavor
   claudeSessionId?: string, // Claude Code session ID

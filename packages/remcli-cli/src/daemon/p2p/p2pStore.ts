@@ -232,6 +232,14 @@ export class P2PStore {
         const session = this.sessions.get(sessionId);
         if (!session) return { result: 'error', version: 0, metadata: '' };
 
+        if (this.terminalStoppedSessionIds.has(sessionId)) {
+            return {
+                result: 'error',
+                version: session.metadataVersion,
+                metadata: session.metadata
+            };
+        }
+
         if (session.metadataVersion !== expectedVersion) {
             return {
                 result: 'version-mismatch',

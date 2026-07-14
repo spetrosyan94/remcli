@@ -11,6 +11,7 @@ import { PLAN_FAKE_REJECT } from "./sdk/prompts";
 import { EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import { createAutoTitleSetter } from "@/utils/autoSessionTitle";
+import { hasNonEmptyAssistantText } from "./utils/hasAssistantText";
 
 interface PermissionsField {
     date: number;
@@ -77,9 +78,12 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
     const autoSetTitle = createAutoTitleSetter(session.client);
 
     // Create outgoing message queue
-    const messageQueue = new OutgoingMessageQueue(
-        (logMessage) => session.client.sendClaudeSessionMessage(logMessage)
-    );
+    const messageQueue = new OutgoingMessageQueue((logMessage) => {
+        session.client.sendClaudeSessionMessage(logMessage);
+        if (logMessage.type === 'assistant' && hasNonEmptyAssistantText(logMessage.message?.content)) {
+            session.client.recordSuccessfulAgentOutput();
+        }
+    });
 
     // Set up callback to release delayed messages when permission is requested
     permissionHandler.setOnPermissionRequest((toolCallId: string) => {
@@ -379,7 +383,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
             } catch (e) {
                 logger.debug('[remote]: launch error', e);
                 if (!exitReason) {
-                    session.client.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
+                    session.client.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly', isError: true });
                     continue;
                 }
             } finally {

@@ -82,13 +82,14 @@ export function hasPendingPermission(session: Session): boolean {
 }
 
 /**
- * Статус сессии для UI-кита: permission > thinking > idle у живых,
- * offline у неактивных ('running'/'error' протокол на списке не различает).
+ * Статус сессии для UI-кита: offline > permission > thinking > error > idle.
+ * Error берётся только из типизированного encrypted metadata outcome, а не summary.
  */
 export function sessionStatus(session: Session): Status {
     if (session.presence !== "online") return "offline";
     if (hasPendingPermission(session)) return "permission";
     if (session.thinking) return "thinking";
+    if (session.metadata?.executionOutcome?.kind === "error") return "error";
     return "idle";
 }
 
@@ -102,6 +103,7 @@ export function sessionMessage(session: Session): string {
     }
     if (status === "thinking") return `${t("status.thinking")}…`;
     if (status === "offline") return t("status.offline");
+    if (status === "error") return t("status.error");
     return session.metadata?.summary?.text ?? t("status.idle");
 }
 

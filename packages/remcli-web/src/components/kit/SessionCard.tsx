@@ -14,6 +14,8 @@ export function SessionCard(props: {
                 ? "border-accent/35 bg-card [--status-glow-color:hsl(var(--status-running)_/_0.2)]"
                 : status === "thinking"
                     ? "border-accent/35 bg-card [--status-glow-color:hsl(var(--status-thinking)_/_0.2)]"
+                    : status === "error"
+                        ? "border-status-error/45 bg-status-error/[0.07] [--status-glow-color:hsl(var(--status-error)_/_0.2)]"
                     : status === "offline"
                         ? "border-border bg-card opacity-55 [--status-glow-color:hsl(var(--status-offline)_/_0.12)]"
                         : "border-border bg-card [--status-glow-color:hsl(var(--status-idle)_/_0.12)]";
@@ -21,6 +23,7 @@ export function SessionCard(props: {
         status === "permission" ? "text-status-permission font-medium"
         : status === "running" ? "text-status-running"
         : status === "thinking" ? "text-status-thinking"
+        : status === "error" ? "text-status-error font-medium"
         : "text-muted-foreground";
     return (
         <button key={status} onClick={onClick} className={`flex w-full animate-status-glow items-center gap-3 rounded-xl border p-3 text-left transition-[background-color,border-color,color,box-shadow,opacity] duration-[250ms] ease-[var(--ease-out)] ${hasTrailingAction ? "pr-20" : ""} ${frame}`}>
