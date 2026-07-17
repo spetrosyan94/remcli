@@ -1,9 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import * as React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import type { NormalizedMessage } from '@/lib/protocol/messages';
 import { mergeMessages } from '@/lib/protocol/store';
 import type { Session } from '@/lib/protocol/types';
 
 let buildFeed: typeof import('@/pages/ChatPage').buildFeed;
+let MarkdownMessage: typeof import('@/pages/ChatPage').MarkdownMessage;
 let agentSessionIdOf: typeof import('@/pages/ChatPage').agentSessionIdOf;
 let createMessageLoadQueue: typeof import('@/pages/ChatPage').createMessageLoadQueue;
 let getMessageLoadScope: typeof import('@/pages/ChatPage').getMessageLoadScope;
@@ -42,6 +45,7 @@ beforeAll(async () => {
 
     const pageModule = await import('@/pages/ChatPage');
     buildFeed = pageModule.buildFeed;
+    MarkdownMessage = pageModule.MarkdownMessage;
     agentSessionIdOf = pageModule.agentSessionIdOf;
     createMessageLoadQueue = pageModule.createMessageLoadQueue;
     getMessageLoadScope = pageModule.getMessageLoadScope;
@@ -436,5 +440,60 @@ describe('ChatPage feed mapping', () => {
                 state: 'success'
             }]
         });
+    });
+});
+
+describe('ChatPage Markdown output', () => {
+    it('preserves semantic blocks while wrapping long paths, links, and code', () => {
+        const longPath = '/Users/solidhard1/Projects/pet-projects/remcli/packages/remcli-web/src/pages/ChatPage.tsx:1164';
+        const markup = renderToStaticMarkup(React.createElement(MarkdownMessage, {
+            text: [
+                '## Terminal output',
+                '',
+                `Inspect ${longPath} and [the design guide](https://example.com/remcli/design).`,
+                '',
+                '- keep `workspace-write` readable',
+                '- preserve the long path above',
+                '',
+                '1. render paragraphs',
+                '2. keep list spacing',
+                '',
+                '```ts',
+                `const source = '${longPath}';`,
+                '```',
+            ].join('\n'),
+        }));
+
+        expect(markup).toContain('<p');
+        expect(markup).toContain('<h2');
+        expect(markup).toContain('<ul');
+        expect(markup).toContain('<ol');
+        expect(markup).toContain('<pre');
+        expect(markup).toContain('<code>');
+        expect(markup).toContain('href="https://example.com/remcli/design"');
+        expect(markup).toContain('font-mono');
+        expect(markup).toContain('text-accent');
+        expect(markup).toContain('[overflow-wrap:anywhere]');
+        expect(markup).toContain(longPath);
+    });
+
+    it('does not turn unsafe Markdown URLs into clickable links', () => {
+        const markup = renderToStaticMarkup(React.createElement(MarkdownMessage, {
+            text: '[unsafe](javascript:alert(1)) <img src=x onerror=alert(1)>',
+        }));
+
+        expect(markup).not.toContain('href=');
+        expect(markup).toContain('javascript:alert(1)');
+        expect(markup).toContain('&lt;img');
+    });
+
+    it('keeps balanced parentheses in an allowed link destination', () => {
+        const href = 'https://en.wikipedia.org/wiki/Function_(mathematics)';
+        const markup = renderToStaticMarkup(React.createElement(MarkdownMessage, {
+            text: `[CommonMark destination](${href})`,
+        }));
+
+        expect(markup).toContain(`href="${href}"`);
+        expect(markup).toContain('CommonMark destination');
     });
 });

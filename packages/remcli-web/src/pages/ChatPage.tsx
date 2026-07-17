@@ -37,6 +37,11 @@ const PERMISSION_SHEET_CONTENT_CLASS =
     "data-[vaul-drawer-direction=bottom]:rounded-t-[20px] border-border bg-card pb-[max(10px,env(safe-area-inset-bottom))] " +
     "[&>div:first-child]:mt-2 [&>div:first-child]:mb-1 [&>div:first-child]:h-[4.5px] [&>div:first-child]:w-[38px] [&>div:first-child]:bg-muted-foreground/40";
 
+const CODE_FENCE_PATTERN = /^```([^`]*)$/;
+const HEADING_PATTERN = /^(#{1,6})\s+(.+)$/;
+const UNORDERED_LIST_ITEM_PATTERN = /^\s*[-*+]\s+(.+)$/;
+const ORDERED_LIST_ITEM_PATTERN = /^\s*(\d+)[.)]\s+(.+)$/;
+
 // ─── Маппинг протокола на модель ленты ───────────────────────────
 
 interface UserFeedItem {
@@ -75,6 +80,272 @@ interface AgentFeedGroup {
 }
 
 type FeedItem = UserFeedItem | AgentFeedGroup;
+
+interface InlineCodeToken {
+    kind: "code";
+    start: number;
+    end: number;
+    content: string;
+}
+
+interface InlineLinkToken {
+    kind: "link";
+    start: number;
+    end: number;
+    label: string;
+    href: string;
+    raw: string;
+}
+
+type InlineMarkdownToken = InlineCodeToken | InlineLinkToken;
+
+function safeMarkdownLinkHref(value: string): string | null {
+    const href = value.trim();
+    if (/^(https?:|mailto:)/i.test(href)) return href;
+    if (/^(?:\/(?!\/)|\.{1,2}\/|#)/.test(href)) return href;
+    return null;
+}
+
+function findMarkdownLinkDestinationEnd(text: string, start: number): number | null {
+    let parenthesisDepth = 0;
+
+    for (let index = start; index < text.length; index += 1) {
+        const character = text[index];
+        if (character === "\\" && index + 1 < text.length) {
+            index += 1;
+            continue;
+        }
+        if (character === "(") {
+            parenthesisDepth += 1;
+            continue;
+        }
+        if (character === ")") {
+            if (parenthesisDepth === 0) return index;
+            parenthesisDepth -= 1;
+        }
+    }
+
+    return null;
+}
+
+function parseMarkdownLink(text: string, start: number): InlineLinkToken | null {
+    const labelEnd = text.indexOf("]", start + 1);
+    if (labelEnd <= start + 1 || text[labelEnd + 1] !== "(") return null;
+
+    const destinationStart = labelEnd + 2;
+    const destinationEnd = findMarkdownLinkDestinationEnd(text, destinationStart);
+    if (destinationEnd === null || destinationEnd === destinationStart) return null;
+
+    const href = text.slice(destinationStart, destinationEnd);
+    if (/\s/.test(href)) return null;
+
+    return {
+        kind: "link",
+        start,
+        end: destinationEnd + 1,
+        label: text.slice(start + 1, labelEnd),
+        href,
+        raw: text.slice(start, destinationEnd + 1),
+    };
+}
+
+function findInlineMarkdownToken(text: string, start: number): InlineMarkdownToken | null {
+    for (let index = start; index < text.length; index += 1) {
+        if (text[index] === "`") {
+            const end = text.indexOf("`", index + 1);
+            if (end > index + 1) {
+                return {
+                    kind: "code",
+                    start: index,
+                    end: end + 1,
+                    content: text.slice(index + 1, end),
+                };
+            }
+        }
+        if (text[index] === "[") {
+            const link = parseMarkdownLink(text, index);
+            if (link) return link;
+        }
+    }
+
+    return null;
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string): React.ReactNode[] {
+    const nodes: React.ReactNode[] = [];
+    let cursor = 0;
+
+    while (cursor < text.length) {
+        const token = findInlineMarkdownToken(text, cursor);
+        if (!token) {
+            nodes.push(text.slice(cursor));
+            break;
+        }
+
+        if (token.start > cursor) nodes.push(text.slice(cursor, token.start));
+
+        if (token.kind === "code") {
+            nodes.push(
+                <code
+                    key={`${keyPrefix}-code-${token.start}`}
+                    className="rounded-[5px] bg-muted px-1 py-px font-mono text-[0.84em] text-emerald-700 [overflow-wrap:anywhere] dark:text-emerald-300"
+                >
+                    {token.content}
+                </code>
+            );
+        } else {
+            const safeHref = safeMarkdownLinkHref(token.href);
+            nodes.push(safeHref ? (
+                <a
+                    key={`${keyPrefix}-link-${token.start}`}
+                    href={safeHref}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium text-accent underline decoration-accent/40 underline-offset-4 [overflow-wrap:anywhere]"
+                >
+                    {token.label}
+                </a>
+            ) : token.raw);
+        }
+
+        cursor = token.end;
+    }
+
+    return nodes;
+}
+
+export function MarkdownMessage({ text, tone = "normal" }: { text: string; tone?: AgentFeedGroup["tone"] }) {
+    const blocks: React.ReactNode[] = [];
+    const lines = text.replace(/\r\n?/g, "\n").split("\n");
+    const textColor = tone === "error" ? "text-status-error" : "text-foreground/85";
+    let lineIndex = 0;
+    let blockIndex = 0;
+
+    while (lineIndex < lines.length) {
+        const line = lines[lineIndex];
+        if (line.trim() === "") {
+            lineIndex += 1;
+            continue;
+        }
+
+        const codeFence = CODE_FENCE_PATTERN.exec(line);
+        if (codeFence) {
+            const language = codeFence[1]?.trim();
+            const codeLines: string[] = [];
+            lineIndex += 1;
+            while (lineIndex < lines.length && !CODE_FENCE_PATTERN.test(lines[lineIndex])) {
+                codeLines.push(lines[lineIndex]);
+                lineIndex += 1;
+            }
+            if (lineIndex < lines.length) lineIndex += 1;
+
+            blocks.push(
+                <div key={`code-block-${blockIndex}`} className="max-w-full overflow-hidden rounded-[9px] border border-border bg-muted/65 shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
+                    {language && (
+                        <div className="border-b border-border px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                            {language}
+                        </div>
+                    )}
+                    <pre className={`select-text max-w-full whitespace-pre-wrap break-words px-3 py-3 font-mono text-[12px] leading-5 [overflow-wrap:anywhere] ${tone === "error" ? "text-status-error" : "text-zinc-800 dark:text-zinc-200"}`}>
+                        <code>{codeLines.join("\n")}</code>
+                    </pre>
+                </div>
+            );
+            blockIndex += 1;
+            continue;
+        }
+
+        const heading = HEADING_PATTERN.exec(line);
+        if (heading) {
+            const headingLevel = Math.min(heading[1].length, 6);
+            const Heading = `h${headingLevel}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
+            const headingClassName = headingLevel <= 2
+                ? "break-words text-base font-semibold tracking-tight text-foreground [overflow-wrap:anywhere]"
+                : "break-words text-sm font-semibold text-foreground [overflow-wrap:anywhere]";
+            blocks.push(
+                <Heading key={`heading-${blockIndex}`} className={headingClassName}>
+                    {renderInlineMarkdown(heading[2], `heading-${blockIndex}`)}
+                </Heading>
+            );
+            lineIndex += 1;
+            blockIndex += 1;
+            continue;
+        }
+
+        const unorderedItem = UNORDERED_LIST_ITEM_PATTERN.exec(line);
+        if (unorderedItem) {
+            const items: string[] = [];
+            while (lineIndex < lines.length) {
+                const item = UNORDERED_LIST_ITEM_PATTERN.exec(lines[lineIndex]);
+                if (!item) break;
+                items.push(item[1]);
+                lineIndex += 1;
+            }
+            blocks.push(
+                <ul key={`unordered-list-${blockIndex}`} className={`ml-5 list-outside list-disc space-y-1.5 text-sm leading-relaxed marker:text-accent ${textColor}`}>
+                    {items.map((item, index) => (
+                        <li key={`${blockIndex}-${index}`} className="pl-1 [overflow-wrap:anywhere]">
+                            {renderInlineMarkdown(item, `unordered-${blockIndex}-${index}`)}
+                        </li>
+                    ))}
+                </ul>
+            );
+            blockIndex += 1;
+            continue;
+        }
+
+        const orderedItem = ORDERED_LIST_ITEM_PATTERN.exec(line);
+        if (orderedItem) {
+            const start = Number(orderedItem[1]);
+            const items: string[] = [];
+            while (lineIndex < lines.length) {
+                const item = ORDERED_LIST_ITEM_PATTERN.exec(lines[lineIndex]);
+                if (!item) break;
+                items.push(item[2]);
+                lineIndex += 1;
+            }
+            blocks.push(
+                <ol key={`ordered-list-${blockIndex}`} start={start} className={`ml-5 list-outside list-decimal space-y-1.5 text-sm leading-relaxed marker:font-mono marker:text-accent ${textColor}`}>
+                    {items.map((item, index) => (
+                        <li key={`${blockIndex}-${index}`} className="pl-1 [overflow-wrap:anywhere]">
+                            {renderInlineMarkdown(item, `ordered-${blockIndex}-${index}`)}
+                        </li>
+                    ))}
+                </ol>
+            );
+            blockIndex += 1;
+            continue;
+        }
+
+        const paragraphLines: string[] = [];
+        while (lineIndex < lines.length) {
+            const paragraphLine = lines[lineIndex];
+            if (
+                paragraphLine.trim() === ""
+                || CODE_FENCE_PATTERN.test(paragraphLine)
+                || HEADING_PATTERN.test(paragraphLine)
+                || UNORDERED_LIST_ITEM_PATTERN.test(paragraphLine)
+                || ORDERED_LIST_ITEM_PATTERN.test(paragraphLine)
+            ) {
+                break;
+            }
+            paragraphLines.push(paragraphLine);
+            lineIndex += 1;
+        }
+        blocks.push(
+            <p key={`paragraph-${blockIndex}`} className={`whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere] ${textColor}`}>
+                {renderInlineMarkdown(paragraphLines.join("\n"), `paragraph-${blockIndex}`)}
+            </p>
+        );
+        blockIndex += 1;
+    }
+
+    return (
+        <div className={`select-text min-w-0 max-w-full space-y-3 ${tone === "error" ? "rounded-[9px] border border-status-error/35 bg-status-error/[0.06] px-3 py-2" : ""}`}>
+            {blocks}
+        </div>
+    );
+}
 
 function formatTime(timestamp: number): string {
     return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -433,7 +704,7 @@ function pendingPermissionsOf(session: Session | null): PendingPermission[] {
 function ToolOutputLine({ line, hasCaret }: { line: string; hasCaret: boolean }) {
     const passMatch = /^(.*?)(\d+ passed)$/.exec(line);
     return (
-        <div className="whitespace-pre-wrap">
+        <div className="min-w-0 max-w-full whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
             {passMatch ? (
                 <>
                     {passMatch[1]}
@@ -959,10 +1230,10 @@ export function ChatPage() {
             )}
 
             {/* лента */}
-            <div className="relative min-h-0 flex-1">
+            <div className="relative min-h-0 min-w-0 flex-1">
             <main ref={feedRef} onScroll={handleFeedScroll}
-                className="h-full overflow-y-auto px-3.5 py-3.5 [scroll-behavior:smooth]">
-                <div className="mx-auto flex w-full max-w-[720px] flex-col gap-3">
+                className="h-full min-w-0 overflow-x-hidden overflow-y-auto px-3.5 py-3.5 [scroll-behavior:smooth]">
+                <div className="mx-auto flex w-full min-w-0 max-w-[720px] flex-col gap-3">
                     {!messagesLoaded && (
                         <div className="flex justify-center py-4">
                             <Loader2 className="size-4 animate-spin text-muted-foreground" />
@@ -981,7 +1252,15 @@ export function ChatPage() {
                     )}
 
                     {feed.map((item) => {
-                        if (item.kind === "user") return <UserMessage key={item.id}>{item.text}</UserMessage>;
+                        if (item.kind === "user") {
+                            return (
+                                <div key={item.id} className="flex min-w-0 max-w-full justify-end">
+                                    <UserMessage>
+                                        <span className="block min-w-0 max-w-full break-words [overflow-wrap:anywhere]">{item.text}</span>
+                                    </UserMessage>
+                                </div>
+                            );
+                        }
 
                         const groupText = item.texts.join("\n\n");
                         const listenState: "idle" | "synth" | "playing" =
@@ -989,18 +1268,13 @@ export function ChatPage() {
                                 ? (ttsState === "synthesizing" ? "synth" : "playing")
                                 : "idle";
                         return (
-                            <div key={item.id} className="flex flex-col gap-2">
+                            <div key={item.id} className="flex min-w-0 max-w-full flex-col gap-2">
                                 {item.texts.length > 0 && (
                                     <>
                                         <AgentMeta agent={agent}>{item.timeLabel}</AgentMeta>
                                         {item.texts.map((text, index) => {
-                                            const textClassName = item.tone === "error"
-                                                ? "select-text whitespace-pre-wrap rounded-[9px] border border-status-error/35 bg-status-error/[0.06] px-3 py-2 text-sm leading-relaxed text-status-error"
-                                                : "select-text whitespace-pre-wrap text-sm leading-relaxed text-foreground/85";
                                             return (
-                                                <p key={index} className={textClassName}>
-                                                    {text}
-                                                </p>
+                                                <MarkdownMessage key={index} text={text} tone={item.tone} />
                                             );
                                         })}
                                     </>

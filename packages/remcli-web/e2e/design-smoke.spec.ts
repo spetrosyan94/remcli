@@ -296,6 +296,35 @@ function isMobileProject(testInfo: TestInfo): boolean {
     return testInfo.project.name.includes("mobile");
 }
 
+async function assertRequiredViewport(page: Page, testInfo: TestInfo): Promise<void> {
+    const expectedViewport = isMobileProject(testInfo)
+        ? { width: 390, height: 844 }
+        : { width: 1280, height: 800 };
+
+    expect(page.viewportSize()).toEqual(expectedViewport);
+}
+
+async function assertChatMessageContentDoesNotOverflow(page: Page): Promise<void> {
+    const overflow = await page.locator("main").evaluate((main) => {
+        const candidates = Array.from(main.querySelectorAll<HTMLElement>(":scope > div > div, pre, code, a"));
+
+        return candidates
+            .filter((element) => {
+                const style = window.getComputedStyle(element);
+                return style.display !== "none" && element.clientWidth > 0 && element.clientHeight > 0;
+            })
+            .map((element) => ({
+                tag: element.tagName.toLowerCase(),
+                text: (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 100),
+                clientWidth: element.clientWidth,
+                scrollWidth: element.scrollWidth,
+            }))
+            .filter((element) => element.scrollWidth > element.clientWidth + 1);
+    });
+
+    expect(overflow, JSON.stringify(overflow, null, 2)).toEqual([]);
+}
+
 for (const route of FIXTURE_ROUTES) {
     test(`${route.name} fixture route keeps layout invariants`, async ({ page }) => {
         const pageIssues = collectPageIssues(page);
@@ -467,5 +496,96 @@ test("terminal fixture hides Stop across chat, Home, and sidebar", async ({ page
         await assertMobileTouchTargets(page);
     }
 
+    expect(pageIssues).toEqual([]);
+});
+
+test("long Markdown paths, links, inline code, and fenced code stay within the chat", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/session/fx-chat?fixtures=1&chatFixture=long");
+
+    const commonMarkLink = page.getByRole("link", { name: "CommonMark destination", exact: true });
+    await expect(commonMarkLink).toBeVisible();
+    const href = await commonMarkLink.getAttribute("href");
+    expect(href).toContain("Function_(mathematics)");
+    expect(href?.length).toBeGreaterThan(400);
+
+    await expect(page.getByText(/calculate\.js:195/).last()).toBeVisible();
+    await expect(page.locator("pre").last()).toBeVisible();
+    await assertNoHorizontalOverflow(page);
+    await assertChatMessageContentDoesNotOverflow(page);
+
+    expect(pageIssues).toEqual([]);
+});
+
+test("resume history keeps loading and error visible, retries, and reaches the final long row internally", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/new?fixtures=1&resumeFixture=retry-long");
+    await page.getByRole("button", { name: /codex cli/i }).click();
+    await page.getByRole("button", { name: /resume a previous codex session/i }).click();
+
+    const resumeRegion = page.getByRole("region", { name: "Resume session", exact: true });
+    await expect(resumeRegion).toHaveAttribute("aria-busy", "true");
+    await expect(resumeRegion.getByRole("status")).toContainText("loading sessions");
+    await expect(resumeRegion.getByRole("alert")).toContainText("Fixture resume list rejected");
+    await expect(resumeRegion).toHaveAttribute("aria-busy", "false");
+
+    await resumeRegion.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(resumeRegion).toHaveAttribute("aria-busy", "true");
+    await expect(resumeRegion.getByRole("status")).toContainText("loading sessions");
+
+    const lastRow = resumeRegion.getByRole("button", { name: /Long resume session 24/i });
+    await expect(lastRow).toBeAttached();
+    const scrollMetrics = await resumeRegion.evaluate((element) => ({
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+    }));
+    expect(scrollMetrics.scrollHeight, JSON.stringify(scrollMetrics)).toBeGreaterThan(scrollMetrics.clientHeight);
+
+    await resumeRegion.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    const lastRowPosition = await lastRow.evaluate((element) => {
+        const region = element.closest<HTMLElement>("[role='region']");
+        const rowRect = element.getBoundingClientRect();
+        const regionRect = region?.getBoundingClientRect();
+        return {
+            rowTop: rowRect.top,
+            rowBottom: rowRect.bottom,
+            regionTop: regionRect?.top ?? 0,
+            regionBottom: regionRect?.bottom ?? 0,
+        };
+    });
+    expect(lastRowPosition.rowTop, JSON.stringify(lastRowPosition)).toBeGreaterThanOrEqual(lastRowPosition.regionTop - 1);
+    expect(lastRowPosition.rowBottom, JSON.stringify(lastRowPosition)).toBeLessThanOrEqual(lastRowPosition.regionBottom + 1);
+
+    await assertNoHorizontalOverflow(page);
+    await assertNoBottomToastOverlap(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("directory keeps its content region stable and disables motion when reduced motion is requested", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await openFixtureRoute(page, "/new?fixtures=1");
+    await page.getByRole("button", { name: /choose directory/i }).click();
+
+    const drawer = page.locator('[data-slot="drawer-content"]');
+    const directoryRegion = drawer.getByRole("region", { name: "Choose directory", exact: true });
+    await expect(directoryRegion.getByRole("button", { name: "packages", exact: true })).toBeVisible();
+    const initialHeight = await directoryRegion.evaluate((element) => element.getBoundingClientRect().height);
+
+    expect(await page.evaluate(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(true);
+    await expect.poll(() => directoryRegion.evaluate((element) => window.getComputedStyle(element).transitionProperty)).toBe("none");
+
+    await directoryRegion.getByRole("button", { name: "packages", exact: true }).click();
+    await expect(directoryRegion.getByRole("button", { name: "remcli-web", exact: true })).toBeVisible();
+    const nextHeight = await directoryRegion.evaluate((element) => element.getBoundingClientRect().height);
+    expect(Math.abs(nextHeight - initialHeight)).toBeLessThanOrEqual(1);
+
+    await assertNoHorizontalOverflow(page);
     expect(pageIssues).toEqual([]);
 });

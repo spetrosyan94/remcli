@@ -75,6 +75,21 @@ function jsonResponse(body: unknown, status = 200): Response {
 let zenTasksValue = JSON.stringify(FIXTURE_ZEN_TASKS);
 let zenTasksVersion = 1;
 let spawnedSessionCounter = 0;
+let fixtureResumeRetryAttempts = 0;
+
+const FIXTURE_RESUME_RESPONSE_DELAY_MS = 120;
+const FIXTURE_LONG_RESUME_ROW_COUNT = 24;
+const FIXTURE_LONG_CHAT_PATH = `/Users/dev/projects/remcli/${'nested-directory/'.repeat(36)}calculate.js:195`;
+const FIXTURE_LONG_CHAT_LINK = `https://en.wikipedia.org/wiki/Function_(mathematics)?trace=${'trace-segment-'.repeat(36)}`;
+
+function fixtureQueryParameter(name: string): string | null {
+    if (typeof window === 'undefined') return null;
+    return new URLSearchParams(window.location.search).get(name);
+}
+
+function waitForFixtureResumeResponse(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, FIXTURE_RESUME_RESPONSE_DELAY_MS));
+}
 
 const FIXTURE_UNKNOWN_RESUME_HISTORY: readonly NormalizedMessage[] = [{
     id: 'fixture-unknown-resume-history',
@@ -197,6 +212,45 @@ function cloneFixtureHistory(messages: readonly NormalizedMessage[], sessionId: 
     });
 }
 
+function fixtureChatMessages(): NormalizedMessage[] {
+    if (fixtureQueryParameter('chatFixture') !== 'long') return FIXTURE_CHAT_MESSAGES;
+
+    return [
+        ...FIXTURE_CHAT_MESSAGES,
+        {
+            id: 'fixture-long-user-message',
+            localId: null,
+            seq: 11,
+            createdAt: FIXTURE_BASE_TIME - 3 * 60_000,
+            isSidechain: false,
+            role: 'user',
+            content: { type: 'text', text: `Long path: ${FIXTURE_LONG_CHAT_PATH}` },
+        },
+        {
+            id: 'fixture-long-agent-message',
+            localId: null,
+            seq: 12,
+            createdAt: FIXTURE_BASE_TIME - 2 * 60_000,
+            isSidechain: false,
+            role: 'agent',
+            content: [{
+                type: 'text',
+                text: [
+                    `Follow [CommonMark destination](${FIXTURE_LONG_CHAT_LINK}).`,
+                    '',
+                    `Inline code: \`${FIXTURE_LONG_CHAT_PATH}\`.`,
+                    '',
+                    '```ts',
+                    `const fixturePath = "${FIXTURE_LONG_CHAT_PATH}";`,
+                    '```',
+                ].join('\n'),
+                uuid: 'fixture-long-agent-message',
+                parentUUID: null,
+            }],
+        },
+    ];
+}
+
 async function handleFixtureRequest(path: string, init?: RequestInit): Promise<Response> {
     const method = (init?.method ?? 'GET').toUpperCase();
     if (path === '/health') {
@@ -265,10 +319,11 @@ function installFetchInterceptor(): void {
 export function initFixturesIfEnabled(): boolean {
     if (!readFixtureFlag()) return false;
     installFetchInterceptor();
+    fixtureResumeRetryAttempts = 0;
     const store = useProtocolStore.getState();
     store.applyMachines(FIXTURE_MACHINES);
     store.applySessions(FIXTURE_SESSIONS);
-    store.applyMessages(FIXTURE_CHAT_SESSION_ID, FIXTURE_CHAT_MESSAGES, { markLoaded: true });
+    store.applyMessages(FIXTURE_CHAT_SESSION_ID, fixtureChatMessages(), { markLoaded: true });
     store.setConnectionStatus('connected');
     store.setAuthenticated(true);
     store.setLatency(FIXTURE_LATENCY_MS);
@@ -341,13 +396,38 @@ export function fixtureListDirectory(machineId: string, path?: string): Director
     };
 }
 
+function fixtureLongResumeSessions(agent?: string): AgentSessionInfo[] {
+    const sessionAgent = isAgentKind(agent) ? agent : 'codex';
+    const longContext = 'long-session-context-'.repeat(18);
+
+    return Array.from({ length: FIXTURE_LONG_RESUME_ROW_COUNT }, (_, index) => ({
+        sessionId: `fixture-long-resume-${sessionAgent}-${index + 1}`,
+        agent: sessionAgent,
+        projectPath: `/Users/dev/projects/remcli/${'nested/'.repeat(24)}project-${index + 1}`,
+        lastModified: FIXTURE_BASE_TIME - index * 60_000,
+        firstMessage: null,
+        messageCount: index + 1,
+        createdAt: FIXTURE_BASE_TIME - (index + 1) * 60_000,
+        sessionName: `Long resume session ${String(index + 1).padStart(2, '0')} · ${longContext}`,
+    }));
+}
+
 /** Локальный список native agent sessions для resume-sheet; shape совпадает с daemon `list-agent-sessions`. */
-export function fixtureListAgentSessions(
+export async function fixtureListAgentSessions(
     machineId: string,
     agent?: string,
     directory?: string,
     limit = 20
-): AgentSessionInfo[] {
+): Promise<AgentSessionInfo[]> {
+    if (fixtureQueryParameter('resumeFixture') === 'retry-long') {
+        await waitForFixtureResumeResponse();
+        fixtureResumeRetryAttempts += 1;
+        if (fixtureResumeRetryAttempts === 1) {
+            throw new Error('Fixture resume list rejected');
+        }
+        return fixtureLongResumeSessions(agent);
+    }
+
     return FIXTURE_SESSIONS
         .filter((session) => session.metadata?.machineId === machineId)
         .filter((session) => {

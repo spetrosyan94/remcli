@@ -82,6 +82,11 @@ function formatDirectoryError(error: unknown): string {
     return details ? `${t("new.dirError")} ${details}` : t("new.dirError");
 }
 
+function formatResumeError(error: unknown): string {
+    const details = error instanceof Error ? error.message : String(error);
+    return details || t("status.error");
+}
+
 interface RecentDir {
     path: string;
     lastUsedAt: number;
@@ -113,8 +118,8 @@ function SheetHeader({ title, tag }: { title: string; tag: string }) {
 
 function SheetRow({ isActive, label, meta, onClick }: { isActive: boolean; label: string; meta?: React.ReactNode; onClick: () => void }) {
     return (
-        <button onClick={onClick} className="flex w-full items-center gap-[11px] border-t border-border px-[18px] py-3 text-left">
-            <span className={`flex-1 truncate font-mono text-[12.5px] ${isActive ? "text-foreground" : "text-muted-foreground"}`}>{label}</span>
+        <button onClick={onClick} className="flex min-h-11 w-full min-w-0 items-center gap-[11px] border-t border-border px-[18px] py-3 text-left">
+            <span className={`min-w-0 flex-1 truncate font-mono text-[12.5px] ${isActive ? "text-foreground" : "text-muted-foreground"}`}>{label}</span>
             {meta}
         </button>
     );
@@ -124,6 +129,78 @@ const SHEET_CONTENT_CLASS =
     // rounded через тот же data-вариант, что в ui/drawer.tsx — иначе twMerge не схлопнет rounded-t-lg базы.
     "data-[vaul-drawer-direction=bottom]:rounded-t-[20px] border-border bg-card pb-[max(10px,env(safe-area-inset-bottom))] " +
     "[&>div:first-child]:mt-2 [&>div:first-child]:mb-1 [&>div:first-child]:h-[4.5px] [&>div:first-child]:w-[38px] [&>div:first-child]:bg-muted-foreground/40";
+
+export const DIRECTORY_SHEET_CONTENT_CLASS =
+    `${SHEET_CONTENT_CLASS} data-[vaul-drawer-direction=bottom]:h-[min(78dvh,35rem)] motion-reduce:transition-none`;
+
+export const RESUME_SHEET_CONTENT_CLASS =
+    `${SHEET_CONTENT_CLASS} data-[vaul-drawer-direction=bottom]:h-[min(72dvh,32rem)] motion-reduce:transition-none`;
+
+export function ResumeSheetContent({
+    agent,
+    items,
+    error = null,
+    onResume,
+    onRetry,
+}: {
+    agent: AgentId;
+    items: AgentSessionInfo[] | null;
+    error?: string | null;
+    onResume: (session: AgentSessionInfo) => void;
+    onRetry?: () => void;
+}) {
+    return (
+        <div className="flex min-h-0 flex-1 flex-col">
+            <SheetHeader title={`${t("new.resumeTitle")} · ${agent}`} tag={t("new.resumeTag")} />
+            <div
+                role="region"
+                aria-label={t("new.resumeTitle")}
+                aria-busy={items === null && error === null}
+                tabIndex={0}
+                className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain outline-none"
+            >
+                {error !== null ? (
+                    <div role="alert" aria-live="assertive" className="flex min-h-[12rem] flex-col justify-center gap-3 border-t border-border px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground">
+                        <div className="rounded-[10px] bg-destructive/10 px-3 py-2 leading-snug text-destructive">
+                            <div className="font-semibold">{t("status.error")}</div>
+                            <div className="mt-1 break-words text-[11.5px]">{error}</div>
+                        </div>
+                        {onRetry && (
+                            <button
+                                type="button"
+                                onClick={onRetry}
+                                className="min-h-11 rounded-[9px] border border-border px-3 font-mono text-[11.5px] transition-[background-color,border-color,color,transform] active:scale-[0.96]"
+                            >
+                                {t("connect.retry")}
+                            </button>
+                        )}
+                    </div>
+                ) : items === null ? (
+                    <div role="status" aria-live="polite" className="flex min-h-[12rem] items-center justify-center gap-2 border-t border-border px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground/70">
+                        <Loader2 className="size-3.5 animate-spin text-accent" />
+                        {t("new.resumeLoading")}
+                    </div>
+                ) : items.length === 0 ? (
+                    <div className="min-h-[12rem] border-t border-border px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground/70">
+                        {t("new.resumeEmpty")}
+                    </div>
+                ) : items.map((item, index) => (
+                    <SheetRow
+                        key={item.sessionId}
+                        isActive={index === 0}
+                        label={item.sessionName ?? item.firstMessage ?? item.sessionId}
+                        meta={
+                            <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
+                                {formatRelativeTime(item.lastModified)}
+                            </span>
+                        }
+                        onClick={() => onResume(item)}
+                    />
+                ))}
+            </div>
+        </div>
+    );
+}
 
 export function NewSessionPage() {
     const navigate = useNavigate();
@@ -151,8 +228,11 @@ export function NewSessionPage() {
     const [isApprovingDirectory, setIsApprovingDirectory] = React.useState(false);
     const [pendingDirectoryCreation, setPendingDirectoryCreation] = React.useState<PendingDirectoryCreation | null>(null);
     const [resumeItems, setResumeItems] = React.useState<AgentSessionInfo[] | null>(null);
+    const [resumeError, setResumeError] = React.useState<string | null>(null);
+    const [resumeReloadKey, setResumeReloadKey] = React.useState(0);
 
     const machine = machines.find((m) => m.id === machineId) ?? machines[0] ?? null;
+    const activeMachineId = machine?.id;
     const homeDir = machine?.metadata?.homeDir;
     const agentModels = AGENT_OPTIONS.find((a) => a.id === agent)?.models ?? [];
     const agentPermissionModes = getAgentPermissionModes(agent);
@@ -189,23 +269,29 @@ export function NewSessionPage() {
 
     // resume-sheet: RPC list-agent-sessions с фильтром по агенту
     React.useEffect(() => {
-        if (sheet !== "resume" || !machine) return;
+        if (sheet !== "resume" || !activeMachineId) return;
         let isStale = false;
         setResumeItems(null);
-        void machineListAgentSessions(machine.id, agent, undefined, RESUME_LIST_LIMIT).then((items) => {
-            if (!isStale) setResumeItems(items);
-        });
+        setResumeError(null);
+        void machineListAgentSessions(activeMachineId, agent, undefined, RESUME_LIST_LIMIT)
+            .then((items) => {
+                if (!isStale) setResumeItems(items);
+            })
+            .catch((error: unknown) => {
+                if (isStale) return;
+                setResumeError(formatResumeError(error));
+            });
         return () => { isStale = true; };
-    }, [sheet, machine, agent]);
+    }, [activeMachineId, agent, resumeReloadKey, sheet]);
 
     // directory-picker: RPC list-directory, stale responses ignored when user navigates fast.
     React.useEffect(() => {
-        if (sheet !== "directory" || !machine) return;
+        if (sheet !== "directory" || !activeMachineId) return;
         let isStale = false;
         setIsDirectoryLoading(true);
         setDirectoryError(null);
         setDirectoryListing(null);
-        void machineListDirectory(machine.id, directoryRequestPath).then((listing) => {
+        void machineListDirectory(activeMachineId, directoryRequestPath).then((listing) => {
             if (!isStale) setDirectoryListing(listing);
         }).catch((error: unknown) => {
             if (!isStale) setDirectoryError(formatDirectoryError(error));
@@ -213,7 +299,7 @@ export function NewSessionPage() {
             if (!isStale) setIsDirectoryLoading(false);
         });
         return () => { isStale = true; };
-    }, [sheet, machine, directoryRequestPath, directoryReloadKey]);
+    }, [activeMachineId, directoryReloadKey, directoryRequestPath, sheet]);
 
     const selectAgent = (id: AgentId) => {
         setAgent(id);
@@ -318,6 +404,12 @@ export function NewSessionPage() {
         }
     };
 
+    const drawerContentClassName = sheet === "directory"
+        ? DIRECTORY_SHEET_CONTENT_CLASS
+        : sheet === "resume"
+            ? RESUME_SHEET_CONTENT_CLASS
+            : SHEET_CONTENT_CLASS;
+
     return (
         <div className="flex h-dvh flex-col bg-background pt-[env(safe-area-inset-top)] text-foreground">
             <header className="flex items-center px-5 pb-3 pt-1.5">
@@ -386,9 +478,9 @@ export function NewSessionPage() {
                     <div className="overflow-hidden rounded-xl border border-border">
                         {shouldShowSelectedDir && (
                             <button onClick={() => selectDir(activeDir, activeDirDisplayPath)}
-                                className="flex min-h-11 w-full items-center gap-2.5 bg-secondary px-3.5 py-3 font-mono text-[12.5px]">
+                                className="flex min-h-11 w-full items-center gap-2.5 bg-secondary px-3.5 py-3 text-left font-mono text-[12.5px]">
                                 <FolderOpen className="size-3.5 shrink-0 text-accent" />
-                                <span className="min-w-0 flex-1 truncate">{activeDirDisplayPath}</span>
+                                <span className="min-w-0 flex-1 truncate text-left">{activeDirDisplayPath}</span>
                                 <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70">{t("new.dirSelected")}</span>
                             </button>
                         )}
@@ -396,9 +488,9 @@ export function NewSessionPage() {
                             const isActive = activeDir === d.path;
                             return (
                                 <button key={d.path} onClick={() => selectDir(d.path)}
-                                    className={`flex min-h-11 w-full items-center gap-2.5 px-3.5 py-3 font-mono text-[12.5px] ${(i > 0 || shouldShowSelectedDir) ? "border-t border-border " : ""}${isActive ? "bg-secondary" : "bg-card text-muted-foreground"}`}>
+                                    className={`flex min-h-11 w-full items-center gap-2.5 px-3.5 py-3 text-left font-mono text-[12.5px] ${(i > 0 || shouldShowSelectedDir) ? "border-t border-border " : ""}${isActive ? "bg-secondary" : "bg-card text-muted-foreground"}`}>
                                     <Folder className={`size-3.5 shrink-0 ${isActive ? "text-accent" : "text-muted-foreground/40"}`} />
-                                    <span className="min-w-0 flex-1 truncate">{d.path}</span>
+                                    <span className="min-w-0 flex-1 truncate text-left">{d.path}</span>
                                     <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70">{formatRelativeTime(d.lastUsedAt)}</span>
                                 </button>
                             );
@@ -437,7 +529,7 @@ export function NewSessionPage() {
             </footer>
 
             <Drawer open={sheet !== null} onOpenChange={(isOpen) => { if (!isOpen) setSheet(null); }}>
-                <DrawerContent className={SHEET_CONTENT_CLASS}>
+                <DrawerContent className={drawerContentClassName}>
                     {sheet === "machine" && (
                         <>
                             <SheetHeader title={t("new.machineTitle")} tag={t("new.machine")} />
@@ -487,16 +579,16 @@ export function NewSessionPage() {
                         </>
                     )}
                     {sheet === "directory" && (
-                        <>
+                        <div className="flex min-h-0 flex-1 flex-col">
                             <SheetHeader title={t("new.dirBrowserTitle")} tag={machine ? machineName(machine) : t("new.machine")} />
-                            <div className="mx-[18px] mb-3 rounded-xl bg-background/70 p-3 shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
+                            <div className="mx-[18px] mb-3 shrink-0 rounded-xl bg-background/70 p-3 shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
                                 <div className="mb-1 font-mono text-[10px] text-muted-foreground/70">{t("new.dirCurrent")}</div>
                                 <div className="break-all font-mono text-[12.5px] font-semibold leading-snug">
                                     {directoryHeaderDisplayPath || "…"}
                                 </div>
                             </div>
 
-                            <div className="border-t border-border">
+                            <div className="shrink-0 border-t border-border">
                                 <button
                                     type="button"
                                     disabled={!directoryParentPath || isDirectoryLoading}
@@ -513,14 +605,15 @@ export function NewSessionPage() {
                                 </button>
                             </div>
 
-                            <div className="max-h-[34dvh] overflow-y-auto border-t border-border">
-                                {isDirectoryLoading && (
+                            <div role="region" aria-label={t("new.dirBrowserTitle")} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain border-t border-border transition-[opacity,transform] duration-[var(--dur-std)] ease-[var(--ease-out)] motion-reduce:transition-none">
+                                <div key={isDirectoryLoading ? "loading" : directoryError ? "error" : directoryListing?.path ?? "empty"} className="animate-in fade-in duration-[var(--dur-enter)] ease-[var(--ease-out)] motion-reduce:animate-none">
+                                    {isDirectoryLoading && (
                                     <div className="flex min-h-11 items-center gap-2 px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground/70">
                                         <Loader2 className="size-3.5 animate-spin" />
                                         {t("new.dirLoading")}
                                     </div>
-                                )}
-                                {!isDirectoryLoading && directoryError && (
+                                    )}
+                                    {!isDirectoryLoading && directoryError && (
                                     <div className="flex flex-col gap-3 px-[18px] py-3 text-[12.5px] text-muted-foreground">
                                         <div className="rounded-[10px] bg-destructive/10 px-3 py-2 leading-snug text-destructive">
                                             {directoryError}
@@ -533,13 +626,13 @@ export function NewSessionPage() {
                                             {t("new.dirRetry")}
                                         </button>
                                     </div>
-                                )}
-                                {!isDirectoryLoading && !directoryError && directoryListing && directoryEntries.length === 0 && (
+                                    )}
+                                    {!isDirectoryLoading && !directoryError && directoryListing && directoryEntries.length === 0 && (
                                     <div className="min-h-11 px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground/70">
                                         {t("new.dirEmpty")}
                                     </div>
-                                )}
-                                {!isDirectoryLoading && !directoryError && directoryEntries.map((entry) => (
+                                    )}
+                                    {!isDirectoryLoading && !directoryError && directoryEntries.map((entry) => (
                                     <button
                                         key={entry.path}
                                         type="button"
@@ -550,10 +643,11 @@ export function NewSessionPage() {
                                         <span className="min-w-0 flex-1 truncate">{entry.name}</span>
                                         {entry.hidden && <span className="ml-auto size-1.5 shrink-0 rounded-full bg-muted-foreground/50" />}
                                     </button>
-                                ))}
+                                    ))}
+                                </div>
                             </div>
 
-                            <div className="border-t border-border px-[18px] pt-3">
+                            <div className="shrink-0 border-t border-border px-[18px] pt-3">
                                 <button
                                     type="button"
                                     disabled={!canSelectDirectoryHeaderPath}
@@ -567,30 +661,19 @@ export function NewSessionPage() {
                                     {t("new.dirSelectCurrent")}
                                 </button>
                             </div>
-                        </>
+                        </div>
                     )}
                     {sheet === "resume" && (
-                        <>
-                            <SheetHeader title={`${t("new.resumeTitle")} · ${agent}`} tag={t("new.resumeTag")} />
-                            {resumeItems === null ? (
-                                <div className="border-t border-border px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground/70">
-                                    {t("new.resumeLoading")}
-                                </div>
-                            ) : resumeItems.length === 0 ? (
-                                <div className="border-t border-border px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground/70">
-                                    {t("new.resumeEmpty")}
-                                </div>
-                            ) : resumeItems.map((e, i) => (
-                                <SheetRow key={e.sessionId} isActive={i === 0}
-                                    label={e.sessionName ?? e.firstMessage ?? e.sessionId}
-                                    meta={
-                                        <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
-                                            {formatRelativeTime(e.lastModified)}
-                                        </span>
-                                    }
-                                    onClick={() => { setSheet(null); void spawn(e); }} />
-                            ))}
-                        </>
+                        <ResumeSheetContent
+                            agent={agent}
+                            items={resumeItems}
+                            error={resumeError}
+                            onResume={(session) => {
+                                setSheet(null);
+                                void spawn(session);
+                            }}
+                            onRetry={() => setResumeReloadKey((value) => value + 1)}
+                        />
                     )}
                 </DrawerContent>
             </Drawer>

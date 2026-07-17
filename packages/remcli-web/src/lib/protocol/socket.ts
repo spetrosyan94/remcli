@@ -237,6 +237,10 @@ interface RpcErrorEnvelope {
     error: string;
 }
 
+interface AgentSessionListResponse {
+    sessions: AgentSessionInfo[];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
 }
@@ -286,6 +290,28 @@ function isDirectoryListing(value: unknown): value is DirectoryListing {
         Array.isArray(value.entries) &&
         value.entries.every(isDirectoryEntry)
     );
+}
+
+function isAgentKind(value: unknown): value is AgentKind {
+    return value === 'claude' || value === 'codex' || value === 'cursor' || value === 'gemini';
+}
+
+function isAgentSessionInfo(value: unknown): value is AgentSessionInfo {
+    if (!isRecord(value)) return false;
+    return (
+        typeof value.sessionId === 'string' &&
+        isAgentKind(value.agent) &&
+        typeof value.projectPath === 'string' &&
+        typeof value.lastModified === 'number' &&
+        (value.firstMessage === null || typeof value.firstMessage === 'string') &&
+        typeof value.messageCount === 'number' &&
+        (value.createdAt === null || typeof value.createdAt === 'number') &&
+        (value.sessionName === null || typeof value.sessionName === 'string')
+    );
+}
+
+function isAgentSessionListResponse(value: unknown): value is AgentSessionListResponse {
+    return isRecord(value) && Array.isArray(value.sessions) && value.sessions.every(isAgentSessionInfo);
 }
 
 /** Spawn a new agent session on a machine (daemon RPC `spawn-remcli-session`). */
@@ -341,16 +367,18 @@ export async function machineListAgentSessions(
     directory?: string,
     limit?: number
 ): Promise<AgentSessionInfo[]> {
-    try {
-        const result = await machineRpc<{ sessions: AgentSessionInfo[] } | null, {
-            agent?: string;
-            directory?: string;
-            limit?: number;
-        }>(machineId, 'list-agent-sessions', { agent, directory, limit });
-        return result?.sessions ?? [];
-    } catch {
-        return [];
+    const result = await machineRpc<unknown, {
+        agent?: string;
+        directory?: string;
+        limit?: number;
+    }>(machineId, 'list-agent-sessions', { agent, directory, limit });
+    if (isRpcErrorEnvelope(result)) {
+        throw new Error(result.error || 'Agent session list RPC failed');
     }
+    if (!isAgentSessionListResponse(result)) {
+        throw new Error('Agent session list RPC returned invalid response');
+    }
+    return result.sessions;
 }
 
 /** Stop a daemon-tracked session by its remcli session id (daemon RPC `stop-session`). */

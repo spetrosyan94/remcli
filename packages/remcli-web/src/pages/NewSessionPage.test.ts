@@ -32,6 +32,7 @@ const componentHooks = vi.hoisted(() => {
 
 const machineSpawnNewSessionMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
+const protocolSessions = vi.hoisted(() => ({ current: [] as unknown[] }));
 
 vi.mock('react', async (importOriginal) => {
     const actual = await importOriginal<typeof import('react')>();
@@ -101,7 +102,7 @@ vi.mock('@/lib/protocol', () => ({
     useProtocolStore: {
         getState: () => ({ sessions: { 'session-1': {} } }),
     },
-    useSessions: () => [],
+    useSessions: () => protocolSessions.current,
 }));
 
 vi.mock('@/lib/zenTasks', () => ({
@@ -114,6 +115,11 @@ interface TestElement {
         children?: unknown;
         label?: string;
         onClick?: () => void;
+        className?: string;
+        tabIndex?: number;
+        role?: string;
+        'aria-label'?: string;
+        'aria-busy'?: boolean;
     };
 }
 
@@ -177,6 +183,9 @@ let modelOverrideState = (_model: string, _hasExplicitModelSelection: boolean): 
     throw new Error('NewSessionPage module was not loaded');
 };
 let NewSessionPage: typeof import('@/pages/NewSessionPage').NewSessionPage;
+let ResumeSheetContent: typeof import('@/pages/NewSessionPage').ResumeSheetContent;
+let directorySheetContentClass = '';
+let resumeSheetContentClass = '';
 
 beforeAll(async () => {
     vi.stubGlobal('localStorage', {
@@ -195,6 +204,9 @@ beforeAll(async () => {
     getModelOverride = pageModule.getModelOverride;
     modelOverrideState = pageModule.modelOverrideState;
     NewSessionPage = pageModule.NewSessionPage;
+    ResumeSheetContent = pageModule.ResumeSheetContent;
+    directorySheetContentClass = pageModule.DIRECTORY_SHEET_CONTENT_CLASS;
+    resumeSheetContentClass = pageModule.RESUME_SHEET_CONTENT_CLASS;
 });
 
 afterAll(() => {
@@ -206,6 +218,7 @@ beforeEach(() => {
     machineSpawnNewSessionMock.mockReset();
     machineSpawnNewSessionMock.mockResolvedValue({ type: 'success', sessionId: 'session-1' });
     navigateMock.mockReset();
+    protocolSessions.current = [];
 });
 
 describe('NewSessionPage model selection', () => {
@@ -313,5 +326,87 @@ describe('NewSessionPage model navigation state', () => {
         const state = await startCodexSession(page);
 
         expect(state).toEqual({ permissionMode: 'workspace-write' });
+    });
+});
+
+describe('NewSessionPage directory and resume sheets', () => {
+    it('left-aligns a long recent directory path inside its row', () => {
+        const path = '/Users/solidhard1/Projects/pet-projects/remcli/packages/remcli-web/src/pages';
+        protocolSessions.current = [{
+            metadata: { machineId: 'machine-1', path },
+            updatedAt: 1,
+        }];
+
+        const page = renderNewSessionPage();
+        const pathLabel = findElement(page, (element) => element.type === 'span' && elementText(element) === path);
+        const pathRow = findElement(page, (element) => element.type === 'button' && elementText(element).includes(path));
+
+        expect(pathLabel.props.className).toContain('text-left');
+        expect(pathRow.props.className).toContain('text-left');
+        expect(pathLabel.props.className).toContain('truncate');
+    });
+
+    it('keeps directory and resume drawer surfaces at a stable height with a reduced-motion fallback', () => {
+        expect(directorySheetContentClass).toContain('data-[vaul-drawer-direction=bottom]:h-[min(78dvh,35rem)]');
+        expect(resumeSheetContentClass).toContain('data-[vaul-drawer-direction=bottom]:h-[min(72dvh,32rem)]');
+        expect(directorySheetContentClass).toContain('motion-reduce:transition-none');
+        expect(resumeSheetContentClass).toContain('motion-reduce:transition-none');
+    });
+
+    it('renders a keyboard-focusable internal resume scroll region and resumes the selected item', () => {
+        const onResume = vi.fn();
+        const items = Array.from({ length: 24 }, (_, index) => ({
+            sessionId: `codex-${index}`,
+            agent: 'codex' as const,
+            projectPath: '/Users/solidhard1/Projects/pet-projects/remcli',
+            lastModified: index,
+            firstMessage: null,
+            messageCount: index,
+            createdAt: index,
+            sessionName: `Long-running Codex session ${index}`,
+        }));
+
+        const content = ResumeSheetContent({ agent: 'codex', items, onResume });
+        const scrollRegion = findElement(content, (element) => element.props['aria-label'] === 'new.resumeTitle');
+        const lastSession = findElement(content, (element) => element.props.label === 'Long-running Codex session 23');
+
+        expect(scrollRegion.props.className).toContain('overflow-y-auto');
+        expect(scrollRegion.props.className).toContain('overscroll-contain');
+        expect(scrollRegion.props.tabIndex).toBe(0);
+
+        lastSession.props.onClick?.();
+        expect(onResume).toHaveBeenCalledWith(items[23]);
+    });
+
+    it('keeps the resume loading state inside the same scrollable surface', () => {
+        const content = ResumeSheetContent({ agent: 'codex', items: null, onResume: vi.fn() });
+        const loadingState = findElement(content, (element) => elementText(element).includes('new.resumeLoading')
+            && element.props.className?.includes('min-h-[12rem]') === true);
+
+        expect(loadingState.props.className).toContain('min-h-[12rem]');
+    });
+
+    it('keeps a rejected resume list distinct from an empty list and retries inside the scroll region', () => {
+        const onRetry = vi.fn();
+        const content = ResumeSheetContent({
+            agent: 'codex',
+            items: null,
+            error: 'history unavailable',
+            onResume: vi.fn(),
+            onRetry,
+        });
+        const scrollRegion = findElement(content, (element) => element.props.role === 'region'
+            && element.props['aria-label'] === 'new.resumeTitle');
+        const errorState = findElement(content, (element) => element.props.role === 'alert');
+        const retryButton = findElement(content, (element) => element.type === 'button'
+            && elementText(element) === 'connect.retry');
+
+        expect(scrollRegion.props.className).toContain('overflow-y-auto');
+        expect(scrollRegion.props['aria-busy']).toBe(false);
+        expect(elementText(errorState)).toContain('history unavailable');
+        expect(elementText(content)).not.toContain('new.resumeEmpty');
+
+        retryButton.props.onClick?.();
+        expect(onRetry).toHaveBeenCalledOnce();
     });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, writeFileSync, rmSync, existsSync, utimesSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, writeFileSync, rmSync, existsSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -48,28 +48,52 @@ function createClaudeSession(
     return filePath;
 }
 
+interface CodexSessionOptions {
+    cwd?: string;
+    timestamp?: string;
+    lastEventTimestamp?: string;
+    userMessage?: string;
+    dateDir?: string;
+    threadSource?: string;
+    source?: string | Record<string, unknown>;
+    parentThreadId?: string;
+    agentNickname?: string;
+    agentRole?: string;
+    agentPath?: string;
+}
+
 function createCodexSession(
     baseDir: string,
     sessionId: string,
-    opts?: { cwd?: string; timestamp?: string; userMessage?: string; dateDir?: string },
+    opts?: CodexSessionOptions,
 ): string {
     const dateDir = opts?.dateDir ?? '2026/01/15';
     const dir = join(baseDir, dateDir);
     mkdirSync(dir, { recursive: true });
     const filePath = join(dir, `rollout-${sessionId}.jsonl`);
+    const timestamp = opts?.timestamp ?? '2026-01-15T10:30:00Z';
     const lines = [
         JSON.stringify({
-            timestamp: opts?.timestamp ?? '2026-01-15T10:30:00Z',
+            timestamp,
             type: 'session_meta',
             payload: {
                 id: sessionId,
+                session_id: sessionId,
                 cwd: opts?.cwd ?? '/home/user/projects/api-server',
-                timestamp: opts?.timestamp ?? '2026-01-15T10:30:00Z',
+                timestamp,
+                originator: 'Codex Desktop',
+                source: opts?.source ?? 'vscode',
+                ...(opts?.threadSource === undefined ? {} : { thread_source: opts.threadSource }),
+                ...(opts?.parentThreadId === undefined ? {} : { parent_thread_id: opts.parentThreadId }),
+                ...(opts?.agentNickname === undefined ? {} : { agent_nickname: opts.agentNickname }),
+                ...(opts?.agentRole === undefined ? {} : { agent_role: opts.agentRole }),
+                ...(opts?.agentPath === undefined ? {} : { agent_path: opts.agentPath }),
             },
         }),
         JSON.stringify({
+            timestamp: opts?.lastEventTimestamp ?? timestamp,
             type: 'event_msg',
-            payload: { type: 'user_message', content: opts?.userMessage ?? 'Fix the database connection pooling' },
+            payload: { type: 'user_message', message: opts?.userMessage ?? 'Fix the database connection pooling' },
         }),
     ];
     writeFileSync(filePath, lines.join('\n') + '\n');
@@ -441,8 +465,16 @@ describe('listAgentSessions', () => {
             mkdirSync(dir, { recursive: true });
             const filePath = join(dir, 'rollout-fallback-id.jsonl');
             const lines = [
-                JSON.stringify({ type: 'session_meta', payload: { cwd: '/tmp' } }),
-                JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', content: 'Hello' } }),
+                JSON.stringify({
+                    timestamp: '2026-04-01T10:00:00Z',
+                    type: 'session_meta',
+                    payload: { cwd: '/tmp', source: 'vscode' },
+                }),
+                JSON.stringify({
+                    timestamp: '2026-04-01T11:00:00Z',
+                    type: 'event_msg',
+                    payload: { type: 'user_message', content: 'Hello' },
+                }),
             ];
             writeFileSync(filePath, lines.join('\n') + '\n');
 
@@ -457,12 +489,354 @@ describe('listAgentSessions', () => {
             const numericTs = Date.parse('2026-05-01T12:00:00Z');
             const filePath = join(dir, 'rollout-num-ts.jsonl');
             writeFileSync(filePath, JSON.stringify({
+                timestamp: numericTs,
                 type: 'session_meta',
                 payload: { id: 'num-ts-session', cwd: '/tmp', timestamp: numericTs },
             }) + '\n');
 
             const sessions = listCodexSessions();
             expect(sessions[0]!.createdAt).toBe(numericTs);
+        });
+
+        it('should parse a native session_meta record larger than 32 KiB', async () => {
+            const listCodexSessions = await getListCodexSessions();
+            const dir = join(codexSessionsDir, '2026/05/02');
+            mkdirSync(dir, { recursive: true });
+            const sessionId = 'large-native-metadata';
+            writeFileSync(join(dir, `rollout-${sessionId}.jsonl`), [
+                JSON.stringify({
+                    timestamp: '2026-05-02T10:00:00Z',
+                    type: 'session_meta',
+                    payload: {
+                        id: sessionId,
+                        cwd: '/tmp',
+                        timestamp: '2026-05-02T10:00:00Z',
+                        source: 'vscode',
+                        thread_source: 'user',
+                        base_instructions: 'x'.repeat(40 * 1024),
+                    },
+                }),
+                JSON.stringify({
+                    timestamp: '2026-05-02T11:00:00Z',
+                    type: 'event_msg',
+                    payload: { type: 'user_message', message: 'Keep this root session visible' },
+                }),
+            ].join('\n') + '\n');
+
+            expect(listCodexSessions().map(session => session.sessionId)).toEqual([sessionId]);
+        });
+
+        it('should include only user-owned sessions from native metadata', async () => {
+            const listCodexSessions = await getListCodexSessions();
+            createCodexSession(codexSessionsDir, 'user-thread', {
+                dateDir: '2026/07/17',
+                threadSource: 'user',
+            });
+            createCodexSession(codexSessionsDir, 'legacy-user-thread', {
+                dateDir: '2026/07/17',
+                source: 'cli',
+            });
+            createCodexSession(codexSessionsDir, 'subagent-with-parent', {
+                dateDir: '2026/07/17',
+                threadSource: 'subagent',
+                parentThreadId: 'parent-thread-id',
+                source: { subagent: {} },
+                agentNickname: 'Maxwell',
+                agentRole: 'backend-dev',
+            });
+            createCodexSession(codexSessionsDir, 'subagent-without-parent', {
+                dateDir: '2026/07/17',
+                threadSource: 'subagent',
+                source: { subagent: {} },
+                agentNickname: 'Faraday',
+                agentRole: 'code-reviewer',
+            });
+            createCodexSession(codexSessionsDir, 'automation-thread', {
+                dateDir: '2026/07/17',
+                threadSource: 'automation',
+            });
+            createCodexSession(codexSessionsDir, 'forged-user-with-parent', {
+                dateDir: '2026/07/17',
+                threadSource: 'user',
+                parentThreadId: 'parent-thread-id',
+            });
+            createCodexSession(codexSessionsDir, 'forged-user-with-agent-metadata', {
+                dateDir: '2026/07/17',
+                threadSource: 'user',
+                agentNickname: 'Noether',
+                agentRole: 'backend-dev',
+                agentPath: '/tmp/subagent',
+            });
+
+            const sessionIds = listCodexSessions().map(session => session.sessionId).sort();
+            expect(sessionIds).toEqual(['legacy-user-thread', 'user-thread']);
+        });
+
+        it('should sort by the latest native event timestamp instead of creation or file mtime', async () => {
+            const listCodexSessions = await getListCodexSessions();
+            const olderEventFile = createCodexSession(codexSessionsDir, 'older-event', {
+                dateDir: '2026/07/18',
+                timestamp: '2026-07-18T10:00:00Z',
+                lastEventTimestamp: '2026-07-18T11:00:00Z',
+                threadSource: 'user',
+            });
+            const newerEventFile = createCodexSession(codexSessionsDir, 'newer-event', {
+                dateDir: '2026/07/18',
+                timestamp: '2026-07-18T09:00:00Z',
+                lastEventTimestamp: '2026-07-18T12:00:00Z',
+                threadSource: 'user',
+            });
+            utimesSync(olderEventFile, new Date('2030-01-01T00:00:00Z'), new Date('2030-01-01T00:00:00Z'));
+            utimesSync(newerEventFile, new Date('2020-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z'));
+
+            const sessions = listCodexSessions();
+            expect(sessions.map(session => session.sessionId)).toEqual(['newer-event', 'older-event']);
+            expect(sessions.map(session => session.lastModified)).toEqual([
+                Date.parse('2026-07-18T12:00:00Z'),
+                Date.parse('2026-07-18T11:00:00Z'),
+            ]);
+        });
+
+        it('should ignore session_meta timestamp when deriving lastModified', async () => {
+            const listCodexSessions = await getListCodexSessions();
+            createCodexSession(codexSessionsDir, 'newer-metadata', {
+                dateDir: '2026/07/18',
+                timestamp: '2026-07-18T13:00:00Z',
+                lastEventTimestamp: '2026-07-18T10:00:00Z',
+                threadSource: 'user',
+            });
+            createCodexSession(codexSessionsDir, 'newer-event', {
+                dateDir: '2026/07/18',
+                timestamp: '2026-07-18T09:00:00Z',
+                lastEventTimestamp: '2026-07-18T11:00:00Z',
+                threadSource: 'user',
+            });
+
+            const sessions = listCodexSessions();
+            expect(sessions.map(session => session.sessionId)).toEqual(['newer-event', 'newer-metadata']);
+            expect(sessions.map(session => session.lastModified)).toEqual([
+                Date.parse('2026-07-18T11:00:00Z'),
+                Date.parse('2026-07-18T10:00:00Z'),
+            ]);
+        });
+
+        it('should use the safe legacy fallback and skip JSONL files without session metadata', async () => {
+            const listCodexSessions = await getListCodexSessions();
+            createCodexSession(codexSessionsDir, 'legacy-root', {
+                dateDir: '2026/07/19',
+                source: 'mcp',
+            });
+            createCodexSession(codexSessionsDir, 'ambiguous-structured-source', {
+                dateDir: '2026/07/19',
+                source: { subagent: {} },
+            });
+            const dir = join(codexSessionsDir, '2026/07/19');
+            writeFileSync(
+                join(dir, 'rollout-metadata-missing.jsonl'),
+                JSON.stringify({
+                    timestamp: '2026-07-19T11:00:00Z',
+                    type: 'event_msg',
+                    payload: { type: 'user_message', message: 'Do not list this ambiguous thread' },
+                }) + '\n',
+            );
+
+            expect(listCodexSessions().map(session => session.sessionId)).toEqual(['legacy-root']);
+        });
+
+        it('should fail closed for malformed JSONL and malformed session records', async () => {
+            const listCodexSessions = await getListCodexSessions();
+            const dir = join(codexSessionsDir, '2026/07/19');
+            mkdirSync(dir, { recursive: true });
+
+            writeFileSync(join(dir, 'rollout-malformed-json.jsonl'), [
+                JSON.stringify({
+                    timestamp: '2026-07-19T10:00:00Z',
+                    type: 'session_meta',
+                    payload: { id: 'malformed-json', cwd: '/tmp', source: 'vscode', thread_source: 'user' },
+                }),
+                '{"timestamp":',
+            ].join('\n') + '\n');
+            writeFileSync(join(dir, 'rollout-malformed-event.jsonl'), [
+                JSON.stringify({
+                    timestamp: '2026-07-19T10:00:00Z',
+                    type: 'session_meta',
+                    payload: { id: 'malformed-event', cwd: '/tmp', source: 'vscode', thread_source: 'user' },
+                }),
+                JSON.stringify({
+                    timestamp: '2026-07-19T11:00:00Z',
+                    type: 'event_msg',
+                    payload: 'invalid-event-payload',
+                }),
+            ].join('\n') + '\n');
+
+            expect(listCodexSessions()).toEqual([]);
+        });
+
+        it('should fail closed when malformed JSONL is found in the activity tail', async () => {
+            const listCodexSessions = await getListCodexSessions();
+            const dir = join(codexSessionsDir, '2026/07/19');
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(join(dir, 'rollout-malformed-tail.jsonl'), [
+                JSON.stringify({
+                    timestamp: '2026-07-19T10:00:00Z',
+                    type: 'session_meta',
+                    payload: { id: 'malformed-tail', cwd: '/tmp', source: 'vscode', thread_source: 'user' },
+                }),
+                JSON.stringify({
+                    timestamp: '2026-07-19T11:00:00Z',
+                    type: 'response_item',
+                    payload: { content: 'x'.repeat(70 * 1024) },
+                }),
+                '{"timestamp":',
+            ].join('\n') + '\n');
+
+            expect(listCodexSessions()).toEqual([]);
+        });
+
+        it('should fail closed when an activity-tail event record is malformed', async () => {
+            const listCodexSessions = await getListCodexSessions();
+            const dir = join(codexSessionsDir, '2026/07/19');
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(join(dir, 'rollout-malformed-tail-event.jsonl'), [
+                JSON.stringify({
+                    timestamp: '2026-07-19T10:00:00Z',
+                    type: 'session_meta',
+                    payload: { id: 'malformed-tail-event', cwd: '/tmp', source: 'vscode', thread_source: 'user' },
+                }),
+                JSON.stringify({
+                    timestamp: '2026-07-19T11:00:00Z',
+                    type: 'response_item',
+                    payload: { content: 'x'.repeat(70 * 1024) },
+                }),
+                JSON.stringify({
+                    timestamp: '2026-07-19T12:00:00Z',
+                    type: 'event_msg',
+                    payload: 'invalid-event-payload',
+                }),
+            ].join('\n') + '\n');
+
+            expect(listCodexSessions()).toEqual([]);
+        });
+
+        it('should refresh changed cached files and newly discovered directories without listing subagents', async () => {
+            const listCodexSessions = await getListCodexSessions();
+            vi.useFakeTimers();
+            vi.setSystemTime(new Date('2026-07-20T10:00:00Z'));
+
+            try {
+                const dateDir = '2026/07/20';
+                const rootFile = createCodexSession(codexSessionsDir, 'cached-root', {
+                    dateDir,
+                    threadSource: 'user',
+                    lastEventTimestamp: '2026-07-20T10:00:00Z',
+                });
+
+                expect(listCodexSessions().map(session => session.sessionId)).toEqual(['cached-root']);
+
+                appendFileSync(rootFile, JSON.stringify({
+                    timestamp: '2026-07-20T12:00:00Z',
+                    type: 'event_msg',
+                    payload: { type: 'task_complete' },
+                }) + '\n');
+                createCodexSession(codexSessionsDir, 'new-user-root', {
+                    dateDir,
+                    threadSource: 'user',
+                    lastEventTimestamp: '2026-07-20T11:00:00Z',
+                });
+                createCodexSession(codexSessionsDir, 'new-subagent', {
+                    dateDir,
+                    threadSource: 'subagent',
+                    parentThreadId: 'cached-root',
+                    source: { subagent: {} },
+                    agentNickname: 'Parfit',
+                    agentRole: 'code-reviewer',
+                });
+                const directoryPath = join(codexSessionsDir, dateDir);
+                utimesSync(directoryPath, new Date('2030-01-01T00:00:00Z'), new Date('2030-01-01T00:00:00Z'));
+
+                expect(listCodexSessions().map(session => session.sessionId)).toEqual(['cached-root']);
+                vi.advanceTimersByTime(501);
+
+                const sessions = listCodexSessions();
+                expect(sessions.map(session => session.sessionId)).toEqual(['cached-root', 'new-user-root']);
+                expect(sessions[0]!.lastModified).toBe(Date.parse('2026-07-20T12:00:00Z'));
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('should retain a valid cached session through a transient read failure and retry it', async () => {
+            const listCodexSessions = await getListCodexSessions();
+            vi.useFakeTimers();
+            vi.setSystemTime(new Date('2026-07-20T10:00:00Z'));
+
+            let sessionFilePath: string | null = null;
+            try {
+                sessionFilePath = createCodexSession(codexSessionsDir, 'cached-read-failure', {
+                    dateDir: '2026/07/20',
+                    threadSource: 'user',
+                    lastEventTimestamp: '2026-07-20T10:00:00Z',
+                });
+                expect(listCodexSessions()[0]!.lastModified).toBe(Date.parse('2026-07-20T10:00:00Z'));
+
+                appendFileSync(sessionFilePath, JSON.stringify({
+                    timestamp: '2026-07-20T12:00:00Z',
+                    type: 'event_msg',
+                    payload: { type: 'task_complete' },
+                }) + '\n');
+                chmodSync(sessionFilePath, 0o000);
+
+                vi.advanceTimersByTime(501);
+                const cachedSessions = listCodexSessions();
+                expect(cachedSessions).toHaveLength(1);
+                expect(cachedSessions[0]!.sessionId).toBe('cached-read-failure');
+                expect(cachedSessions[0]!.lastModified).toBe(Date.parse('2026-07-20T10:00:00Z'));
+
+                chmodSync(sessionFilePath, 0o600);
+                vi.advanceTimersByTime(501);
+                expect(listCodexSessions()[0]!.lastModified).toBe(Date.parse('2026-07-20T12:00:00Z'));
+            } finally {
+                if (sessionFilePath !== null) {
+                    chmodSync(sessionFilePath, 0o600);
+                }
+                vi.useRealTimers();
+            }
+        });
+
+        it('should discover a new root through the periodic directory reindex', async () => {
+            const listCodexSessions = await getListCodexSessions();
+            vi.useFakeTimers();
+            vi.setSystemTime(new Date('2026-07-20T10:00:00Z'));
+
+            try {
+                const dateDir = '2026/07/22';
+                const directoryPath = join(codexSessionsDir, dateDir);
+                createCodexSession(codexSessionsDir, 'cached-root', {
+                    dateDir,
+                    threadSource: 'user',
+                });
+                const fixedDirectoryTime = new Date('2026-07-22T08:00:00Z');
+                utimesSync(directoryPath, fixedDirectoryTime, fixedDirectoryTime);
+
+                expect(listCodexSessions().map(session => session.sessionId)).toEqual(['cached-root']);
+
+                createCodexSession(codexSessionsDir, 'periodic-root', {
+                    dateDir,
+                    threadSource: 'user',
+                });
+                utimesSync(directoryPath, fixedDirectoryTime, fixedDirectoryTime);
+
+                vi.advanceTimersByTime(501);
+                expect(listCodexSessions().map(session => session.sessionId)).toEqual(['cached-root']);
+
+                vi.advanceTimersByTime(4_500);
+                expect(listCodexSessions().map(session => session.sessionId).sort()).toEqual([
+                    'cached-root',
+                    'periodic-root',
+                ]);
+            } finally {
+                vi.useRealTimers();
+            }
         });
     });
 
@@ -797,6 +1171,29 @@ describe('listAgentSessions', () => {
             const sessions = listAllAgentSessions('codex');
             expect(sessions).toHaveLength(1);
             expect(sessions[0]!.agent).toBe('codex');
+        });
+
+        it('should preserve native Codex history ordering through the aggregate contract', async () => {
+            const listAllAgentSessions = await getListAllAgentSessions();
+            const codexDir = join(testDir, '.codex', 'sessions');
+            createCodexSession(codexDir, 'earlier-codex-update', {
+                dateDir: '2026/07/21',
+                timestamp: '2026-07-21T10:00:00Z',
+                lastEventTimestamp: '2026-07-21T11:00:00Z',
+                threadSource: 'user',
+            });
+            createCodexSession(codexDir, 'later-codex-update', {
+                dateDir: '2026/07/21',
+                timestamp: '2026-07-21T09:00:00Z',
+                lastEventTimestamp: '2026-07-21T12:00:00Z',
+                threadSource: 'user',
+            });
+
+            const sessions = listAllAgentSessions('codex');
+            expect(sessions.map(session => session.sessionId)).toEqual([
+                'later-codex-update',
+                'earlier-codex-update',
+            ]);
         });
 
         it('should filter by directory when specified (Claude only)', async () => {

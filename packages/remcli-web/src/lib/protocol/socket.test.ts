@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Socket } from 'socket.io-client';
+import type { Cipher } from '@/lib/protocol/encryption';
 
 interface FakeSocket {
     socket: Socket;
@@ -63,6 +64,50 @@ describe('socket reconnect lifecycle', () => {
         fakeSocket.trigger('disconnect');
         fakeSocket.trigger('connect');
         expect(onReconnect).toHaveBeenCalledTimes(2);
+
+        socketDisconnect();
+    });
+
+    it('returns an empty resume list only from a validated successful RPC response', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-list' });
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const cipher = {
+            encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
+            decryptRaw: vi.fn().mockResolvedValue({ sessions: [] }),
+        } as unknown as Cipher;
+
+        const { machineListAgentSessions, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+
+        await expect(machineListAgentSessions('machine-1', 'codex')).resolves.toEqual([]);
+
+        socketDisconnect();
+    });
+
+    it('propagates a rejected resume RPC instead of converting it to an empty list', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: false, error: 'history unavailable' });
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const cipher = {
+            encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
+            decryptRaw: vi.fn(),
+        } as unknown as Cipher;
+
+        const { machineListAgentSessions, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+
+        await expect(machineListAgentSessions('machine-1', 'codex')).rejects.toThrow('history unavailable');
 
         socketDisconnect();
     });
