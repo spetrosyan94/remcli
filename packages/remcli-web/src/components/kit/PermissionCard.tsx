@@ -13,7 +13,7 @@ export function PermissionCard(props: {
     const c = danger
         ? { frame: "border-status-error/50 bg-status-error/[0.06]", head: "border-status-error/25 text-status-error", dot: "bg-status-error" }
         : { frame: "border-status-permission/45 bg-status-permission/[0.06]", head: "border-status-permission/20 text-status-permission", dot: "bg-status-permission" };
-    const allowClass = danger ? "bg-status-error text-white" : "bg-accent text-accent-foreground";
+    const allowClass = danger ? "bg-status-error text-destructive-foreground" : "bg-accent text-accent-foreground";
     return (
         <div className={`animate-permission-glow overflow-hidden rounded-xl border shadow-lg shadow-black/5 transition-[background-color,border-color,box-shadow] duration-[250ms] ease-[var(--ease-out)] ${c.frame}`}>
             <div className={`flex items-center gap-2 border-b px-3 py-2.5 ${c.head}`}>
@@ -28,7 +28,7 @@ export function PermissionCard(props: {
             <div className="lg:hidden">
                 <div className="m-3 rounded-lg border border-border bg-zinc-950 px-3 py-2.5 font-mono text-xs leading-relaxed text-zinc-200">
                     <span className={danger ? "text-status-error" : "text-emerald-400"}>$</span> {command}
-                    {comment && <div className="text-zinc-500"># {comment}</div>}
+                    {comment && <div className="text-zinc-400"># {comment}</div>}
                 </div>
                 <div className="flex gap-2 px-3 pb-3">
                     <button onClick={onAllow}
@@ -53,7 +53,7 @@ export function PermissionCard(props: {
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground/85"
                     title={comment ? `# ${comment}` : undefined}>
                     <span className={danger ? "text-status-error" : "text-emerald-400"}>$</span> {command}
-                    {comment && <span className="text-muted-foreground/60"> # {comment}</span>}
+                    {comment && <span className="text-muted-foreground"> # {comment}</span>}
                 </span>
                 <button onClick={onAllow}
                     className={`h-[34px] shrink-0 cursor-pointer rounded-lg px-[18px] text-[13px] font-semibold transition-colors duration-[120ms] ${allowClass}`}>
@@ -65,7 +65,7 @@ export function PermissionCard(props: {
                 </button>
                 {!danger && alwaysLabel && (
                     <button onClick={onAlways} title={alwaysLabel}
-                        className="shrink-0 cursor-pointer font-mono text-[10px] text-muted-foreground/60 transition-colors duration-[120ms] hover:text-foreground">
+                        className="shrink-0 cursor-pointer font-mono text-[10px] text-muted-foreground transition-colors duration-[120ms] hover:text-foreground">
                         {t("permission.alwaysHint")}
                     </button>
                 )}

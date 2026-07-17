@@ -10,7 +10,9 @@
         "typecheck": "tsc -b --noEmit",
         "test": "vitest run",
         "test:e2e": "playwright test e2e/design-smoke.spec.ts e2e/route-error-boundary.spec.ts",
-        "test:visual:update": "playwright test --update-snapshots"
+        "test:visual": "playwright test --config=playwright.visual.config.ts e2e/design-visual.spec.ts",
+        "test:visual:update": "playwright test --config=playwright.visual.config.ts e2e/design-visual.spec.ts --update-snapshots=all",
+        "test:design-contract": "playwright test --config=playwright.visual.config.ts e2e/design-contract.spec.ts"
     },
     "dependencies": {
         "@fontsource/geist": "^5.2.9",
@@ -36,6 +38,7 @@
         "zustand": "^5.0.14"
     },
     "devDependencies": {
+        "@axe-core/playwright": "^4.12.1",
         "@playwright/test": "^1.61.1",
         "@types/node": "^24.13.2",
         "@types/react": "^19.2.17",
@@ -44,5 +47,11 @@
         "typescript": "~6.0.2",
         "vite": "^8.1.1",
         "vitest": "^4.1.9"
+    },
+    "optionalDependencies": {
+        "@esbuild/linux-x64": "0.27.2",
+        "@rollup/rollup-linux-x64-gnu": "4.57.0",
+        "@tailwindcss/oxide-linux-x64-gnu": "4.3.2",
+        "lightningcss-linux-x64-gnu": "1.32.0"
     }
 }

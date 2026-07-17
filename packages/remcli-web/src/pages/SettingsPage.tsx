@@ -56,7 +56,7 @@ function machineName(machine: Machine): string {
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
     return (
         <section className="flex flex-col gap-2">
-            <span className="px-1 font-mono text-[10px] text-muted-foreground/70">{label}</span>
+            <span className="px-1 font-mono text-[10px] text-muted-foreground">{label}</span>
             <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">{children}</div>
         </section>
     );
@@ -68,7 +68,7 @@ function Row({ label, value, chevron, children }: { label: string; value?: strin
             <span className="flex-1 text-[13.5px]">{label}</span>
             {value && <span className="font-mono text-xs text-muted-foreground">{value}</span>}
             {children}
-            {chevron && <ChevronRight className="size-3 text-muted-foreground/60" />}
+            {chevron && <ChevronRight className="size-3 text-muted-foreground" />}
         </div>
     );
 }
@@ -81,7 +81,7 @@ function PickerRow({ label, value, options, onSelect }: { label: string; value: 
                 <button type="button" className="flex min-h-12 w-full items-center gap-2.5 px-3.5 py-2.5 text-left">
                     <span className="flex-1 text-[13.5px]">{label}</span>
                     <span className="font-mono text-xs text-muted-foreground">{value}</span>
-                    <ChevronRight className="size-3 text-muted-foreground/60" />
+                    <ChevronRight className="size-3 text-muted-foreground" />
                 </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto">
@@ -98,9 +98,9 @@ function PickerRow({ label, value, options, onSelect }: { label: string; value: 
 }
 
 /** Тумблер: визуальный трек 36×22, реальная mobile touch-зона 44×44. */
-function ToggleSwitch({ isOn, onToggle }: { isOn: boolean; onToggle: () => void }) {
+function ToggleSwitch({ isOn, label, onToggle }: { isOn: boolean; label: string; onToggle: () => void }) {
     return (
-        <button type="button" role="switch" aria-checked={isOn} onClick={onToggle}
+        <button type="button" role="switch" aria-checked={isOn} aria-label={label} onClick={onToggle}
             className="flex size-11 items-center justify-center rounded-full transition-transform active:scale-[0.96]">
             <span className={`relative h-[22px] w-9 rounded-full transition-colors ${isOn ? "bg-accent" : "bg-border"}`}>
                 <span className={`absolute left-0.5 top-0.5 size-[18px] rounded-full transition-transform ${isOn ? "translate-x-[14px] bg-accent-foreground" : "bg-muted-foreground"}`} />
@@ -227,7 +227,7 @@ export function SettingsPage() {
                         <PickerRow label={t("settings.ttsVoice")} value={voiceValue} options={voices} onSelect={selectVoice} />
                     )}
                     <Row label={t("settings.autoSpeak")}>
-                        <ToggleSwitch isOn={isAutoSpeak} onToggle={toggleAutoSpeak} />
+                        <ToggleSwitch isOn={isAutoSpeak} label={t("settings.autoSpeak")} onToggle={toggleAutoSpeak} />
                     </Row>
                 </Group>
 
@@ -241,13 +241,13 @@ export function SettingsPage() {
                         <div key={machine.id} className="flex min-h-12 items-center gap-2.5 px-3.5 py-2.5">
                             <StatusDot status={machine.active ? "running" : "offline"} className="size-[7px]" />
                             <span className={`flex-1 font-mono text-[12.5px] ${machine.active ? "" : "text-muted-foreground"}`}>{machineName(machine)}</span>
-                            <span className="font-mono text-[10px] text-muted-foreground/70">
+                            <span className="font-mono text-[10px] text-muted-foreground">
                                 {machine.active ? t("home.machine.online") : t("status.offline")}
                             </span>
                             <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                     <button type="button" aria-label={machineName(machine)} className="-mr-3 flex size-11 items-center justify-center rounded-lg transition-[background-color,transform] hover:bg-muted active:scale-[0.96]">
-                                        <MoreHorizontal className="size-4 text-muted-foreground/60" />
+                                        <MoreHorizontal className="size-4 text-muted-foreground" />
                                     </button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end">

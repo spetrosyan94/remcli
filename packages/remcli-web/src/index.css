@@ -137,7 +137,33 @@ button {
     -webkit-touch-callout: none; /* long-press по ссылкам/кнопкам не открывает меню Safari */
 }
 
+/* Vaul injects its default 500ms rule at runtime; design/MOTION.md owns the timing. */
+[data-vaul-drawer][data-vaul-snap-points="false"] {
+    transition: transform var(--dur-sheet) var(--ease-sheet) !important;
+    animation-duration: var(--dur-sheet) !important;
+    animation-timing-function: var(--ease-sheet) !important;
+}
+
+[data-vaul-drawer][data-vaul-snap-points="false"][data-state="closed"] {
+    transition-duration: 260ms !important;
+    animation-duration: 260ms !important;
+}
+
+[data-vaul-overlay][data-vaul-snap-points="false"] {
+    animation-duration: var(--dur-std) !important;
+    animation-timing-function: var(--ease-out) !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
+    [data-vaul-drawer][data-vaul-snap-points="false"],
+    [data-vaul-drawer][data-vaul-snap-points="false"][data-state="closed"],
+    [data-vaul-overlay][data-vaul-snap-points="false"] {
+        transition-duration: var(--dur-micro) !important;
+        transition-timing-function: var(--ease-out) !important;
+        animation-duration: var(--dur-micro) !important;
+        animation-timing-function: var(--ease-out) !important;
+    }
+
     *,
     ::before,
     ::after {

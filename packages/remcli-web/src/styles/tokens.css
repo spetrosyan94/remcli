@@ -13,22 +13,22 @@
   --secondary: 240 5% 96%;           /* #F4F4F5 */
   --secondary-foreground: 240 6% 10%;
   --muted: 240 5% 96%;
-  --muted-foreground: 240 4% 46%;    /* #71717A */
-  --accent: 160 84% 30%;             /* #059669 — emerald, брендовый */
+  --muted-foreground: 240 5% 34%;    /* #52525B — читается на secondary и цветных tint-подложках */
+  --accent: 159 90% 23%;             /* #06714C — emerald, контрастный с white и accent/10 */
   --accent-foreground: 0 0% 100%;
-  --destructive: 0 72% 51%;          /* #DC2626 */
+  --destructive: 0 74% 42%;          /* #B91C1C */
   --destructive-foreground: 0 0% 100%;
   --border: 240 6% 90%;              /* #E4E4E7 */
   --input: 240 6% 90%;
-  --ring: 160 84% 30%;
+  --ring: 159 90% 23%;
 
   /* статусы агента */
-  --status-running: 160 84% 30%;     /* #059669 */
-  --status-thinking: 192 91% 36%;    /* #0891B2 */
-  --status-permission: 32 95% 44%;   /* #D97706 */
+  --status-running: 159 90% 23%;     /* #06714C */
+  --status-thinking: 193 83% 27%;    /* #0C667E */
+  --status-permission: 23 83% 31%;   /* #92400E */
   --status-idle: 240 4% 46%;         /* #71717A */
   --status-offline: 240 5% 65%;      /* #A1A1AA, полый дот */
-  --status-error: 0 72% 51%;         /* #DC2626 */
+  --status-error: 0 72% 42%;         /* #B91C1C */
 
   --radius: 0.5rem;                  /* 8px; sm=6, card=12, sheet=16 */
 
@@ -56,7 +56,8 @@
   --secondary: 240 6% 13%;           /* #1F1F23 */
   --secondary-foreground: 0 0% 98%;
   --muted: 240 6% 11%;               /* #1A1A1E — input/muted */
-  --muted-foreground: 240 4% 46%;
+  /* #A1A1AA keeps informational text readable against dark cards and chrome. */
+  --muted-foreground: 240 5% 65%;
   --accent: 158 64% 52%;             /* #34D399 */
   --accent-foreground: 158 84% 10%;  /* #052E1E */
   --destructive: 0 91% 71%;          /* #F87171 */

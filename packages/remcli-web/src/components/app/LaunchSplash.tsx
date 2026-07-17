@@ -160,7 +160,7 @@ export function LaunchSplash() {
                 <rect x="21.6" y="19.5" width="6" height="3.2" className="fill-accent rc-splash-cursor" />
             </svg>
             <span className="font-mono text-[13px] font-semibold">remcli</span>
-            <span className="absolute bottom-[calc(env(safe-area-inset-bottom)+24px)] font-mono text-[10px] tracking-[0.08em] text-muted-foreground/50">
+            <span className="absolute bottom-[calc(env(safe-area-inset-bottom)+24px)] font-mono text-[10px] tracking-[0.08em] text-muted-foreground">
                 P2P · E2E · NO CLOUD
             </span>
         </div>

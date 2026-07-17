@@ -18,7 +18,7 @@ on:
 
 jobs:
     web-checks:
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         timeout-minutes: 15
         steps:
             - name: Checkout
@@ -30,7 +30,7 @@ jobs:
                   node-version: 20
 
             - name: Install dependencies
-              run: npm install
+              run: npm ci
 
             - name: TypeScript typecheck
               run: npm -w remcli-web run typecheck
@@ -46,3 +46,31 @@ jobs:
 
             - name: Production build
               run: npm -w remcli-web run build
+
+    web-visual-gate:
+        runs-on: ubuntu-24.04
+        container:
+            image: mcr.microsoft.com/playwright@sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48
+        timeout-minutes: 20
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Install dependencies
+              run: npm ci --ignore-scripts
+
+            - name: Design token contract
+              run: npm -w remcli-web run test:design-contract
+
+            - name: Visual and accessibility gate
+              run: npm -w remcli-web run test:visual
+
+            - name: Upload visual failure artifacts
+              if: failure()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: remcli-web-visual-artifacts
+                  if-no-files-found: ignore
+                  path: |
+                      packages/remcli-web/test-results/visual
+                      packages/remcli-web/playwright-report/visual

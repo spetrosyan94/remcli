@@ -17,7 +17,7 @@ export function SessionCard(props: {
                     : status === "error"
                         ? "border-status-error/45 bg-status-error/[0.07] [--status-glow-color:hsl(var(--status-error)_/_0.2)]"
                     : status === "offline"
-                        ? "border-border bg-card opacity-55 [--status-glow-color:hsl(var(--status-offline)_/_0.12)]"
+                        ? "border-border/80 bg-muted/45 [--status-glow-color:hsl(var(--status-offline)_/_0.12)]"
                         : "border-border bg-card [--status-glow-color:hsl(var(--status-idle)_/_0.12)]";
     const msgCls =
         status === "permission" ? "text-status-permission font-medium"

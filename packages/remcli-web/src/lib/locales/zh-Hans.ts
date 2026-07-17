@@ -44,6 +44,7 @@ export const zhHans: Dictionary = {
     "chat.ended": "— 会话已结束 —",
     "chat.resumeFailed": "无法恢复会话",
     "chat.sendFailed": "消息发送失败",
+    "chat.executionError": "上一次操作因错误而结束",
 
     "tts.listen": "收听",
     "tts.synth": "合成中…",

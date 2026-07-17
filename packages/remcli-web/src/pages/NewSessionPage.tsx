@@ -8,6 +8,7 @@ import { ArrowUp, ChevronDown, Folder, FolderOpen, Loader2, RotateCcw, X } from 
 import { useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { AgentIcon, StatusDot, type AgentId } from "@/components/kit";
+import { formatPathRelativeToHome } from "@/components/app/sessionDisplay";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import {
@@ -89,6 +90,7 @@ function formatResumeError(error: unknown): string {
 
 interface RecentDir {
     path: string;
+    displayPath: string;
     lastUsedAt: number;
 }
 
@@ -111,7 +113,7 @@ function SheetHeader({ title, tag }: { title: string; tag: string }) {
     return (
         <div className="flex items-center px-[18px] pb-2 pt-1">
             <DrawerTitle className="text-[14.5px] font-semibold">{title}</DrawerTitle>
-            <span className="ml-auto font-mono text-[10px] text-muted-foreground/70">{tag}</span>
+            <span className="ml-auto font-mono text-[10px] text-muted-foreground">{tag}</span>
         </div>
     );
 }
@@ -131,10 +133,10 @@ const SHEET_CONTENT_CLASS =
     "[&>div:first-child]:mt-2 [&>div:first-child]:mb-1 [&>div:first-child]:h-[4.5px] [&>div:first-child]:w-[38px] [&>div:first-child]:bg-muted-foreground/40";
 
 export const DIRECTORY_SHEET_CONTENT_CLASS =
-    `${SHEET_CONTENT_CLASS} data-[vaul-drawer-direction=bottom]:h-[min(78dvh,35rem)] motion-reduce:transition-none`;
+    `${SHEET_CONTENT_CLASS} data-[vaul-drawer-direction=bottom]:h-[min(78dvh,35rem)]`;
 
 export const RESUME_SHEET_CONTENT_CLASS =
-    `${SHEET_CONTENT_CLASS} data-[vaul-drawer-direction=bottom]:h-[min(72dvh,32rem)] motion-reduce:transition-none`;
+    `${SHEET_CONTENT_CLASS} data-[vaul-drawer-direction=bottom]:h-[min(72dvh,32rem)]`;
 
 export function ResumeSheetContent({
     agent,
@@ -176,12 +178,12 @@ export function ResumeSheetContent({
                         )}
                     </div>
                 ) : items === null ? (
-                    <div role="status" aria-live="polite" className="flex min-h-[12rem] items-center justify-center gap-2 border-t border-border px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground/70">
+                    <div role="status" aria-live="polite" className="flex min-h-[12rem] items-center justify-center gap-2 border-t border-border px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground">
                         <Loader2 className="size-3.5 animate-spin text-accent" />
                         {t("new.resumeLoading")}
                     </div>
                 ) : items.length === 0 ? (
-                    <div className="min-h-[12rem] border-t border-border px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground/70">
+                    <div className="min-h-[12rem] border-t border-border px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground">
                         {t("new.resumeEmpty")}
                     </div>
                 ) : items.map((item, index) => (
@@ -190,7 +192,7 @@ export function ResumeSheetContent({
                         isActive={index === 0}
                         label={item.sessionName ?? item.firstMessage ?? item.sessionId}
                         meta={
-                            <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
+                            <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
                                 {formatRelativeTime(item.lastModified)}
                             </span>
                         }
@@ -241,27 +243,36 @@ export function NewSessionPage() {
     // недавние директории — из прошлых сессий выбранной машины (metadata.path)
     const recentDirs = React.useMemo<RecentDir[]>(() => {
         if (!machine) return [];
-        const byPath = new Map<string, number>();
+        const byPath = new Map<string, RecentDir>();
         for (const session of sessions) {
             const meta = session.metadata;
             if (!meta?.path) continue;
             if (meta.machineId && meta.machineId !== machine.id) continue;
-            const known = byPath.get(meta.path) ?? 0;
-            if (session.updatedAt > known) byPath.set(meta.path, session.updatedAt);
+            const known = byPath.get(meta.path);
+            if (!known || session.updatedAt > known.lastUsedAt) {
+                byPath.set(meta.path, {
+                    path: meta.path,
+                    displayPath: formatPathRelativeToHome(meta.path, meta.homeDir ?? homeDir),
+                    lastUsedAt: session.updatedAt,
+                });
+            }
         }
-        return [...byPath.entries()]
-            .map(([path, lastUsedAt]) => ({ path, lastUsedAt }))
+        return [...byPath.values()]
             .sort((a, b) => b.lastUsedAt - a.lastUsedAt)
             .slice(0, 4);
-    }, [machine, sessions]);
+    }, [homeDir, machine, sessions]);
 
     const activeDir = dir ?? recentDirs[0]?.path ?? homeDir ?? "";
-    const activeDirDisplayPath = dir ? (dirDisplayPath ?? dir) : (recentDirs[0]?.path ?? homeDir ?? "");
+    const activeDirDisplayPath = dir
+        ? (dirDisplayPath ?? formatPathRelativeToHome(dir, homeDir))
+        : (recentDirs[0]?.displayPath ?? formatPathRelativeToHome(activeDir, homeDir));
     const hasActiveDirInRecent = recentDirs.some((d) => d.path === activeDir);
     const shouldShowSelectedDir = activeDir !== "" && !hasActiveDirInRecent;
     const directoryHeaderPath = directoryListing?.path ?? directoryRequestPath ?? activeDir;
     const directoryHeaderDisplayPath = directoryListing?.displayPath
-        ?? (directoryHeaderPath === activeDir ? activeDirDisplayPath : directoryHeaderPath);
+        ?? (directoryHeaderPath === activeDir
+            ? activeDirDisplayPath
+            : formatPathRelativeToHome(directoryHeaderPath, homeDir));
     const canSelectDirectoryHeaderPath = directoryHeaderPath !== "" && !isDirectoryLoading && !directoryError && directoryListing !== null;
     const directoryParentPath = directoryListing?.parent ?? (directoryError ? directoryBackTarget?.path ?? null : null);
     const directoryParentDisplayPath = directoryListing?.parentDisplayPath ?? (directoryError ? directoryBackTarget?.displayPath ?? null : null);
@@ -424,7 +435,7 @@ export function NewSessionPage() {
                 {/* машина */}
                 <button onClick={() => setSheet("machine")} disabled={machines.length === 0}
                     className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-3.5 py-3">
-                    <span className="w-[52px] text-left font-mono text-[10px] text-muted-foreground/70">{t("new.machine")}</span>
+                    <span className="w-[52px] text-left font-mono text-[10px] text-muted-foreground">{t("new.machine")}</span>
                     {machine ? (
                         <>
                             <span className="font-mono text-[13px] font-semibold">{machineName(machine)}</span>
@@ -438,7 +449,7 @@ export function NewSessionPage() {
 
                 {/* агент — 4 карточки */}
                 <section className="flex flex-col gap-2">
-                    <span className="font-mono text-[10px] text-muted-foreground/70">{t("new.agent")}</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">{t("new.agent")}</span>
                     <div className="grid grid-cols-2 gap-2">
                         {AGENT_OPTIONS.map((a) => (
                             <button key={a.id} onClick={() => selectAgent(a.id)}
@@ -456,14 +467,14 @@ export function NewSessionPage() {
                 {/* модель + режим разрешений */}
                 <div className="flex gap-2">
                     <section className="flex flex-[1.2] flex-col gap-2">
-                        <span className="font-mono text-[10px] text-muted-foreground/70">{t("new.model")}</span>
+                        <span className="font-mono text-[10px] text-muted-foreground">{t("new.model")}</span>
                         <button onClick={() => setSheet("model")}
                             className="flex h-11 items-center rounded-[10px] border border-input bg-muted px-3 font-mono text-xs">
                             <span className="truncate">{model}</span> <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
                         </button>
                     </section>
                     <section className="flex flex-[1.6] flex-col gap-2">
-                        <span className="font-mono text-[10px] text-muted-foreground/70">{t("new.permissions")}</span>
+                        <span className="font-mono text-[10px] text-muted-foreground">{t("new.permissions")}</span>
                         <button onClick={() => setSheet("permission")}
                             className="flex h-11 items-center rounded-[10px] border border-input bg-muted px-3 font-mono text-xs transition-[background-color,border-color,transform] active:scale-[0.96]">
                             <span className="min-w-0 truncate">{activeModeLabel}</span>
@@ -474,29 +485,29 @@ export function NewSessionPage() {
 
                 {/* директория — недавние quick picks + browser/picker через RPC list-directory */}
                 <section className="flex flex-col gap-2">
-                    <span className="font-mono text-[10px] text-muted-foreground/70">{t("new.dirRecent")}</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">{t("new.dirRecent")}</span>
                     <div className="overflow-hidden rounded-xl border border-border">
                         {shouldShowSelectedDir && (
                             <button onClick={() => selectDir(activeDir, activeDirDisplayPath)}
                                 className="flex min-h-11 w-full items-center gap-2.5 bg-secondary px-3.5 py-3 text-left font-mono text-[12.5px]">
                                 <FolderOpen className="size-3.5 shrink-0 text-accent" />
                                 <span className="min-w-0 flex-1 truncate text-left">{activeDirDisplayPath}</span>
-                                <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70">{t("new.dirSelected")}</span>
+                                <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{t("new.dirSelected")}</span>
                             </button>
                         )}
                         {recentDirs.map((d, i) => {
                             const isActive = activeDir === d.path;
                             return (
-                                <button key={d.path} onClick={() => selectDir(d.path)}
+                                <button key={d.path} onClick={() => selectDir(d.path, d.displayPath)}
                                     className={`flex min-h-11 w-full items-center gap-2.5 px-3.5 py-3 text-left font-mono text-[12.5px] ${(i > 0 || shouldShowSelectedDir) ? "border-t border-border " : ""}${isActive ? "bg-secondary" : "bg-card text-muted-foreground"}`}>
                                     <Folder className={`size-3.5 shrink-0 ${isActive ? "text-accent" : "text-muted-foreground/40"}`} />
-                                    <span className="min-w-0 flex-1 truncate text-left">{d.path}</span>
-                                    <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70">{formatRelativeTime(d.lastUsedAt)}</span>
+                                    <span className="min-w-0 flex-1 truncate text-left">{d.displayPath}</span>
+                                    <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{formatRelativeTime(d.lastUsedAt)}</span>
                                 </button>
                             );
                         })}
                         <button onClick={openDirectoryPicker} disabled={!machine}
-                            className={`flex min-h-11 w-full items-center gap-2.5 bg-card px-3.5 py-3 font-mono text-[12.5px] text-muted-foreground/70 transition-[background-color,color,transform] active:scale-[0.96] disabled:opacity-50 ${(recentDirs.length > 0 || shouldShowSelectedDir) ? "border-t border-border" : ""}`}>
+                            className={`flex min-h-11 w-full items-center gap-2.5 bg-card px-3.5 py-3 font-mono text-[12.5px] text-muted-foreground transition-[background-color,color,transform] active:scale-[0.96] disabled:opacity-50 ${(recentDirs.length > 0 || shouldShowSelectedDir) ? "border-t border-border" : ""}`}>
                             <FolderOpen className="size-3.5 shrink-0" /> {t("new.dirBrowse")}
                         </button>
                     </div>
@@ -505,7 +516,7 @@ export function NewSessionPage() {
                 {/* промпт из задачи Zen — уйдёт первым сообщением после запуска */}
                 {zenState?.zenTaskTitle && (
                     <section className="flex flex-col gap-2">
-                        <span className="font-mono text-[10px] text-muted-foreground/70">{t("new.promptLabel")}</span>
+                        <span className="font-mono text-[10px] text-muted-foreground">{t("new.promptLabel")}</span>
                         <div className="rounded-xl border border-border bg-card px-3.5 py-3 text-[13px] leading-snug">
                             {zenState.zenTaskTitle}
                         </div>
@@ -521,10 +532,10 @@ export function NewSessionPage() {
 
             <footer className="px-5 pb-[max(14px,env(safe-area-inset-bottom))] pt-3">
                 <button onClick={() => void spawn()} disabled={!machine || activeDir === "" || isSpawning}
-                    className="h-[52px] w-full rounded-xl bg-accent text-base font-semibold text-accent-foreground disabled:opacity-50">
+                    className="h-[52px] w-full overflow-hidden rounded-xl bg-accent px-3 text-base font-semibold text-accent-foreground disabled:opacity-50">
                     {isSpawning
                         ? t("new.spawning")
-                        : t("new.startButton", { agent, dir: activeDirDisplayPath || "…" })}
+                        : <span className="block truncate whitespace-nowrap">{t("new.startButton", { agent, dir: activeDirDisplayPath || "…" })}</span>}
                 </button>
             </footer>
 
@@ -538,7 +549,7 @@ export function NewSessionPage() {
                                     meta={
                                         <>
                                             <StatusDot status={m.active ? "running" : "offline"} className="size-1.5" />
-                                            <span className="font-mono text-[10px] text-muted-foreground/70">
+                                            <span className="font-mono text-[10px] text-muted-foreground">
                                                 {m.active ? t("home.machine.online") : formatRelativeTime(m.activeAt)}
                                             </span>
                                         </>
@@ -582,7 +593,7 @@ export function NewSessionPage() {
                         <div className="flex min-h-0 flex-1 flex-col">
                             <SheetHeader title={t("new.dirBrowserTitle")} tag={machine ? machineName(machine) : t("new.machine")} />
                             <div className="mx-[18px] mb-3 shrink-0 rounded-xl bg-background/70 p-3 shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
-                                <div className="mb-1 font-mono text-[10px] text-muted-foreground/70">{t("new.dirCurrent")}</div>
+                                <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("new.dirCurrent")}</div>
                                 <div className="break-all font-mono text-[12.5px] font-semibold leading-snug">
                                     {directoryHeaderDisplayPath || "…"}
                                 </div>
@@ -605,10 +616,10 @@ export function NewSessionPage() {
                                 </button>
                             </div>
 
-                            <div role="region" aria-label={t("new.dirBrowserTitle")} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain border-t border-border transition-[opacity,transform] duration-[var(--dur-std)] ease-[var(--ease-out)] motion-reduce:transition-none">
-                                <div key={isDirectoryLoading ? "loading" : directoryError ? "error" : directoryListing?.path ?? "empty"} className="animate-in fade-in duration-[var(--dur-enter)] ease-[var(--ease-out)] motion-reduce:animate-none">
+                            <div role="region" aria-label={t("new.dirBrowserTitle")} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain border-t border-border transition-[opacity,transform] duration-[var(--dur-std)] ease-[var(--ease-out)]">
+                                <div key={isDirectoryLoading ? "loading" : directoryError ? "error" : directoryListing?.path ?? "empty"} className="animate-in fade-in duration-[var(--dur-enter)] ease-[var(--ease-out)]">
                                     {isDirectoryLoading && (
-                                    <div className="flex min-h-11 items-center gap-2 px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground/70">
+                                    <div className="flex min-h-11 items-center gap-2 px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground">
                                         <Loader2 className="size-3.5 animate-spin" />
                                         {t("new.dirLoading")}
                                     </div>
@@ -628,7 +639,7 @@ export function NewSessionPage() {
                                     </div>
                                     )}
                                     {!isDirectoryLoading && !directoryError && directoryListing && directoryEntries.length === 0 && (
-                                    <div className="min-h-11 px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground/70">
+                                    <div className="min-h-11 px-[18px] py-3 font-mono text-[12.5px] text-muted-foreground">
                                         {t("new.dirEmpty")}
                                     </div>
                                     )}

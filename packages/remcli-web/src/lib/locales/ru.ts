@@ -45,6 +45,7 @@ export const ru = {
     "chat.ended": "— сессия завершена —",
     "chat.resumeFailed": "не удалось продолжить сессию",
     "chat.sendFailed": "не удалось отправить сообщение",
+    "chat.executionError": "последняя операция завершилась с ошибкой",
 
     "tts.listen": "слушать",
     "tts.synth": "синтез…",

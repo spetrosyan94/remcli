@@ -9,7 +9,8 @@
 - Codex remote connections: https://developers.openai.com/codex/remote-connections
 - Codex MCP: https://developers.openai.com/codex/mcp
 
-Проверено 2026-07-14 через official OpenAI docs, локальный `codex --help` и `codex-cli 0.144.3`.
+Проверено 2026-07-17 через official OpenAI docs, локальные `codex --help`,
+`codex app-server --help` и `codex-cli 0.144.5`.
 
 ## Цель
 
@@ -107,8 +108,16 @@ prompt ждёт следующего `turn/start`.
 - stale completion не меняет состояние чата;
 - `error` -> видимая ошибка чата.
 
-`codex-reply` для chat/resume transport не используется. `remcli-mcp` остаётся
-отдельным bridge для инструментов Remcli.
+Ошибки Codex app-server проходят через redaction boundary до публикации в
+зашифрованную историю: `runCodex` записывает в chat error event только
+redacted text. `metadata.executionOutcome` при этом содержит только
+`{ kind: "error" | "success", occurredAt }`, без текста ошибки, stack trace или
+provider payload. Непустой live `agent_message` может записать `success`
+watermark; summary, history replay, reasoning и status events его не записывают.
+Полные правила watermark и UI-приоритета описаны в [протоколе](../protocol.md).
+
+`codex mcp-server` и `codex-reply` для chat/resume transport не используются.
+`remcli-mcp` остаётся отдельным bridge для инструментов Remcli.
 
 ### Доставка и восстановление
 
@@ -151,6 +160,10 @@ prompt ждёт следующего `turn/start`.
   `/readyz` отвечает успешно.
 - При stale shared endpoint `runCodex.ts` запускает private local app-server по
   stdio. Это всё ещё app-server transport, не MCP.
+- При transient ошибке первоначального подключения к уже проверенному shared endpoint
+  `runCodex.ts` отключает этот client и один раз переключается на private
+  app-server по stdio. Для private transport remote TUI не открывается, потому
+  что WebSocket endpoint отсутствует.
 - Heartbeat удаляет stale `codexAppServerEndpoint` и `codexAppServerPid` из
   `daemon.state.json`.
 

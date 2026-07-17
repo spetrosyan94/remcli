@@ -33,6 +33,10 @@ Open-source Remote CLI для удалённого управления AI аг�
 - **Claude Code** (`npm install -g @anthropic-ai/claude-code`) и/или [Cursor CLI](https://cursor.com/cli) / [Codex](https://github.com/openai/codex) / [Gemini CLI](https://github.com/google-gemini/gemini-cli)
 - **macOS** или **Linux** (Windows через WSL)
 
+> Docker и Linux Playwright image не нужны пользователю Remcli: они применяются
+> только разработчиками и GitHub CI для детерминированной визуальной проверки.
+> Установка, daemon, web/PWA-клиент и обычный запуск Remcli их не скачивают.
+
 ### 1. Установка и сборка
 
 ```bash
@@ -80,7 +84,7 @@ npm run gemini              # Gemini CLI
 | Claude Code | Полный — `--resume` с восстановлением истории |
 | Cursor | Полный — `agent --resume` |
 | Gemini | Полный — через ACP `session/load` (с фолбэком на новую сессию) |
-| Codex | Поддерживается — Remcli использует официальный Codex app-server: `thread/start`/`thread/resume`, `turn/start` и `turn/steer` в тот же `threadId`; MCP `codex-reply` не используется для chat/resume transport |
+| Codex | Поддерживается — Remcli использует официальный Codex app-server: shared daemon WebSocket endpoint предпочтителен; при stale state или initial transient WebSocket connect failure используется typed private stdio fallback. `thread/start`/`thread/resume`, `turn/start` и `turn/steer` работают с тем же `threadId`. `codex mcp-server` и `codex-reply` не используются для chat/resume transport; `remcli-mcp` остаётся отдельным tool bridge |
 
 ---
 
@@ -221,7 +225,7 @@ Remcli поддерживает голосовой ввод — нажмите �
 ## Безопасность
 
 - **QR-код** — демон создаёт или переиспользует persistent pairing: 32-байтный секрет и preferred port в `~/.remcli/p2p-pairing.json` с правами 0600. QR нужен для первого сопряжения или после `remcli daemon rekey`
-- **Аутентификация** — обе стороны вычисляют Bearer-токен через `HMAC-SHA256(secret, "p2p-auth")`. Секрет никогда не передаётся по сети; `daemon.state.json` тоже пишется с правами 0600, потому что содержит активный `p2pSharedSecret` для локальных CLI-сессий
+- **Аутентификация** — обе стороны вычисляют Bearer-токен через `HMAC-SHA512(secret, "p2p-auth").digest("hex")`. Секрет никогда не передаётся по сети; `daemon.state.json` тоже пишется с правами 0600, потому что содержит активный `p2pSharedSecret` для локальных CLI-сессий
 - **Шифрование** — все данные сессий зашифрованы AES-256-GCM (ключи на сессию) или XSalsa20-Poly1305
 - **Локальность** — P2P-сервер работает на вашей машине. Данные не покидают локальную сеть (кроме режима `--tunnel`)
 

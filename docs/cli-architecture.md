@@ -160,6 +160,9 @@ graph LR
 `ApiSessionClient` (`src/api/apiSession.ts`) подключается к Socket.IO как **session-scoped** клиент:
 - Принимает события `update` и расшифровывает содержимое сообщений.
 - Отправляет `message`, `update-metadata`, `update-state`, `session-alive` и `usage-report`.
+- Typed `metadata.executionOutcome` синхронизируется через `update-metadata` как
+  watermark `{ kind, occurredAt }`; error text, stack и provider payload туда не
+  входят. Правила записи и UI-приоритеты: [протокол](protocol.md).
 
 `ApiMachineClient` (`src/api/apiMachine.ts`) подключается как **machine-scoped** клиент:
 - Шлёт heartbeat-события `machine-alive`.
@@ -340,7 +343,7 @@ flowchart LR
 | Claude Code | Полный | `--resume <id>`; история исходной сессии реплеится в P2P-хранилище (`src/claude/utils/replaySessionHistory.ts`) |
 | Cursor | Полный | `agent --resume <id>` на каждый headless-запрос (`src/cursor/cursorQuery.ts`) |
 | Gemini | Полный | ACP `session/load`, если агент декларирует capability `loadSession`; иначе откат к новой сессии (`src/agent/acp/AcpBackend.ts`) |
-| Codex | Поддерживается | Remcli использует официальный Codex app-server: daemon поднимает `codex app-server --listen ws://127.0.0.1:<port>`, `runCodex.ts` делает `thread/start` или `thread/resume`, затем `turn/start` и `turn/steer` в тот же thread id. MCP `codex-reply` не используется для chat/resume transport. Детали: [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) |
+| Codex | Поддерживается | Remcli использует официальный Codex app-server: daemon поднимает shared `codex app-server --listen ws://127.0.0.1:<port>`, `runCodex.ts` делает `thread/start` или `thread/resume`, затем `turn/start` и `turn/steer` в тот же thread id. При stale state или initial transient shared-connect failure он переключается на typed private app-server по stdio; remote TUI для private transport не открывается. `codex mcp-server` и `codex-reply` не используются для chat/resume transport; `remcli-mcp` остаётся отдельным tool bridge. Детали: [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) |
 
 Примечания по агентам:
 - **Cursor**: бинарник CLI определяется как `agent` (fallback: `cursor-agent` для старых сборок); headless-запросы выполняются с `--trust`, чтобы пропустить промпты workspace-trust.

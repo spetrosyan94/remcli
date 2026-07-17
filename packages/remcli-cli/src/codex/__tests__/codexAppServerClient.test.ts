@@ -383,8 +383,16 @@ describe('CodexAppServerClient websocket transport', () => {
         expect(client.getActiveTurnId()).toBe('native-turn');
         expect(handler).toHaveBeenCalledWith({ type: 'task_started' });
         expect(handler).not.toHaveBeenCalledWith({ type: 'task_complete' });
-        expect(handler).toHaveBeenCalledWith({ type: 'agent_message', message: 'native agent message' });
-        expect(handler).not.toHaveBeenCalledWith({ type: 'agent_message', message: 'unassociated agent message' });
+        expect(handler).toHaveBeenCalledWith({
+            type: 'agent_message',
+            message: 'native agent message',
+            origin: 'live',
+        });
+        expect(handler).not.toHaveBeenCalledWith({
+            type: 'agent_message',
+            message: 'unassociated agent message',
+            origin: 'live',
+        });
 
         await client.disconnect();
     });
@@ -569,7 +577,11 @@ describe('CodexAppServerClient websocket transport', () => {
 
         await expect(turn).resolves.toEqual({ content: [], isError: false });
         expect(client.getActiveTurnId()).toBeNull();
-        expect(handler).toHaveBeenCalledWith({ type: 'agent_message', message: 'Ответ' });
+        expect(handler).toHaveBeenCalledWith({
+            type: 'agent_message',
+            message: 'Ответ',
+            origin: 'live',
+        });
         expect(handler).toHaveBeenCalledWith({ type: 'task_complete' });
 
         await client.disconnect();
@@ -1097,7 +1109,11 @@ describe('CodexAppServerClient websocket transport', () => {
             method: 'item/completed',
             params: { turnId: 'turn-1', item: replayedAgentItem },
         }));
-        expect(handler).toHaveBeenCalledWith({ type: 'agent_message', message: replayedAgentItem.text });
+        expect(handler).toHaveBeenCalledWith({
+            type: 'agent_message',
+            message: replayedAgentItem.text,
+            origin: 'live',
+        });
 
         ws.close();
         await vi.waitFor(() => {
@@ -1205,7 +1221,11 @@ describe('CodexAppServerClient websocket transport', () => {
             method: 'item/completed',
             params: { turnId: 'turn-1', item: replayedAgentItem },
         }));
-        expect(handler).toHaveBeenCalledWith({ type: 'agent_message', message: replayedAgentItem.text });
+        expect(handler).toHaveBeenCalledWith({
+            type: 'agent_message',
+            message: replayedAgentItem.text,
+            origin: 'live',
+        });
 
         ws.readyState = 0;
         const failedRequest = (client as unknown as {
@@ -1324,7 +1344,11 @@ describe('CodexAppServerClient websocket transport', () => {
         await expect(resumedThread).resolves.toBe('thread-1');
         expect(client.getActiveThreadId()).toBe('thread-1');
         expect(client.getActiveTurnId()).toBe('active-turn-1');
-        expect(handler).toHaveBeenCalledWith({ type: 'agent_message', message: 'Уже выполняю' });
+        expect(handler).toHaveBeenCalledWith({
+            type: 'agent_message',
+            message: 'Уже выполняю',
+            origin: 'replay',
+        });
 
         await client.disconnect();
     });
@@ -2056,6 +2080,7 @@ describe('CodexAppServerClient websocket transport', () => {
         expect(replayHandler).toHaveBeenCalledWith({
             type: 'agent_message',
             message: 'Ответ после attach',
+            origin: 'live',
         });
         expect(replayHandler).toHaveBeenCalledWith({ type: 'task_complete' });
 
@@ -2119,6 +2144,7 @@ describe('CodexAppServerClient websocket transport', () => {
         expect(handler).toHaveBeenCalledWith({
             type: 'agent_message',
             message: 'Восстановленный ответ',
+            origin: 'replay',
         });
         const agentMessageCall = handler.mock.invocationCallOrder.find((_, index) => (
             handler.mock.calls[index][0].type === 'agent_message'

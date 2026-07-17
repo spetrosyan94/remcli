@@ -21,6 +21,35 @@ type ConnectState = "idle" | "scanning" | "connecting" | "error" | "manual";
 
 const CONNECT_TIMEOUT_MS = 15_000;
 const SCAN_INTERVAL_MS = 350;
+const FIXTURE_CONNECT_STATES = new Set<ConnectState>(["scanning", "error", "manual"]);
+const FIXTURE_ERROR_PAYLOAD: P2PQRPayload = {
+    mode: "p2p",
+    host: "192.0.2.1",
+    port: 61921,
+    key: "fixture-connect-key",
+    v: 1,
+};
+
+function readFixtureConnectState(search: string): ConnectState | null {
+    const parameters = new URLSearchParams(search);
+    if (parameters.get("fixtures") !== "1") return null;
+
+    const value = parameters.get("connectFixture");
+    return value && FIXTURE_CONNECT_STATES.has(value as ConnectState)
+        ? value as ConnectState
+        : null;
+}
+
+function splitTimeoutMessage(template: string): { prefix: string; suffix: string } {
+    const marker = "{address}";
+    const markerIndex = template.indexOf(marker);
+    if (markerIndex === -1) return { prefix: template, suffix: "" };
+
+    return {
+        prefix: template.slice(0, markerIndex),
+        suffix: template.slice(markerIndex + marker.length).trimStart(),
+    };
+}
 
 /* ---------- BarcodeDetector (нет в lib.dom — минимальная типизация) ---------- */
 
@@ -57,11 +86,12 @@ export function ConnectPage() {
     const navigate = useNavigate();
     const location = useLocation();
     const connectionStatus = useConnectionStatus();
+    const fixtureState = readFixtureConnectState(location.search);
     // Упавший restore (LaunchSplash): приходим сразу в состояние error с payload
     // сохранённого подключения — кнопка «повторить» переподключается к нему.
     const failedPayload = (location.state as { failedPayload?: P2PQRPayload | null } | null)?.failedPayload ?? null;
-    const [state, setState] = React.useState<ConnectState>(failedPayload ? "error" : "idle");
-    const [payload, setPayload] = React.useState<P2PQRPayload | null>(failedPayload);
+    const [state, setState] = React.useState<ConnectState>(fixtureState ?? (failedPayload ? "error" : "idle"));
+    const [payload, setPayload] = React.useState<P2PQRPayload | null>(failedPayload ?? (fixtureState === "error" ? FIXTURE_ERROR_PAYLOAD : null));
     const [address, setAddress] = React.useState("");
     const [secretKey, setSecretKey] = React.useState("");
     const [manualError, setManualError] = React.useState<string | null>(null);
@@ -69,6 +99,7 @@ export function ConnectPage() {
     const videoRef = React.useRef<HTMLVideoElement | null>(null);
 
     const target = payload ? payloadTarget(payload) : address;
+    const timeoutMessage = splitTimeoutMessage(t("connect.error.timeout"));
 
     const beginConnect = React.useCallback((next: P2PQRPayload) => {
         setPayload(next);
@@ -115,6 +146,7 @@ export function ConnectPage() {
     // Камера-скан: getUserMedia + BarcodeDetector, опрос кадров по таймеру.
     React.useEffect(() => {
         if (state !== "scanning") return undefined;
+        if (fixtureState === "scanning") return undefined;
         const detector = createQrDetector();
         if (!detector || !hasCameraApi()) {
             setScannerNotice(t("connect.scanner.unsupported"));
@@ -210,7 +242,7 @@ export function ConnectPage() {
                             <span className="absolute bottom-3 font-mono text-[10px] text-muted-foreground">{t("connect.scanner.hint")}</span>
                             <button
                                 onClick={() => setState("idle")}
-                                className="absolute right-3 top-3 flex size-[34px] items-center justify-center rounded-[10px] border border-border bg-card/80 text-muted-foreground"
+                                className="absolute right-3 top-3 flex size-11 items-center justify-center rounded-[10px] border border-border bg-card/80 text-muted-foreground"
                                 aria-label={t("connect.scanner.close")}
                             >
                                 <X className="size-[15px]" />
@@ -235,12 +267,13 @@ export function ConnectPage() {
                             <span className="size-2 rounded-full bg-status-error" />
                             <span className="text-[13.5px] font-semibold">{t("connect.error.title")}</span>
                         </div>
-                        <p className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground">
-                            {t("connect.error.timeout", { address: target })}<br />{t("connect.error.hint")}
+                        <p className="font-mono text-[11px] leading-relaxed text-muted-foreground">
+                            {timeoutMessage.prefix}<span className="break-all">{target}</span>
+                            {timeoutMessage.suffix && <><br />{timeoutMessage.suffix}</>}<br />{t("connect.error.hint")}
                         </p>
                         <div className="flex gap-2">
-                            <button onClick={() => setState("connecting")} className="h-10 flex-1 rounded-[9px] bg-primary text-[13px] font-semibold text-primary-foreground">{t("connect.retry")}</button>
-                            <button onClick={() => setState("scanning")} className="h-10 flex-1 rounded-[9px] border border-border text-[13px] font-medium text-muted-foreground">{t("connect.rescan")}</button>
+                            <button onClick={() => setState("connecting")} className="h-11 flex-1 rounded-[9px] bg-primary text-[13px] font-semibold text-primary-foreground">{t("connect.retry")}</button>
+                            <button onClick={() => setState("scanning")} className="h-11 flex-1 rounded-[9px] border border-border text-[13px] font-medium text-muted-foreground">{t("connect.rescan")}</button>
                         </div>
                     </div>
                 )}
@@ -253,12 +286,14 @@ export function ConnectPage() {
                         )}
                         <input
                             className="h-11 rounded-[10px] border border-input bg-muted px-3 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15"
+                            aria-label={t("connect.manual.addressPlaceholder")}
                             placeholder={t("connect.manual.addressPlaceholder")}
                             value={address}
                             onChange={(event) => setAddress(event.target.value)}
                         />
                         <input
                             className="h-11 rounded-[10px] border border-input bg-muted px-3 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15"
+                            aria-label={t("connect.manual.keyPlaceholder")}
                             placeholder={t("connect.manual.keyPlaceholder")}
                             value={secretKey}
                             onChange={(event) => setSecretKey(event.target.value)}
@@ -277,7 +312,7 @@ export function ConnectPage() {
                     <QrCode className="size-[17px]" /> {t("connect.scanQr")}
                 </button>
                 <button onClick={() => setState("manual")} className="h-12 rounded-xl border border-border text-sm font-medium text-muted-foreground">{t("connect.enterManually")}</button>
-                <span className="mt-0.5 text-center font-mono text-[10px] text-muted-foreground/50">{t("connect.footerHint")}</span>
+                <span className="mt-0.5 text-center font-mono text-[10px] text-muted-foreground">{t("connect.footerHint")}</span>
             </div>
         </div>
     );

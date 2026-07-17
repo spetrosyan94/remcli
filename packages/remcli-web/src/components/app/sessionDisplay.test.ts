@@ -2,9 +2,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Session } from '@/lib/protocol';
 
 let dedupeSessionsByNativeAgent: typeof import('./sessionDisplay').dedupeSessionsByNativeAgent;
+let formatPathRelativeToHome: typeof import('./sessionDisplay').formatPathRelativeToHome;
+let hasPendingPermission: typeof import('./sessionDisplay').hasPendingPermission;
 let nativeAgentSessionKey: typeof import('./sessionDisplay').nativeAgentSessionKey;
 let sessionMessage: typeof import('./sessionDisplay').sessionMessage;
 let sessionStatus: typeof import('./sessionDisplay').sessionStatus;
+let taskSessionStatus: typeof import('./sessionDisplay').taskSessionStatus;
 
 beforeAll(async () => {
     vi.stubGlobal('localStorage', {
@@ -20,9 +23,12 @@ beforeAll(async () => {
 
     const mod = await import('./sessionDisplay');
     dedupeSessionsByNativeAgent = mod.dedupeSessionsByNativeAgent;
+    formatPathRelativeToHome = mod.formatPathRelativeToHome;
+    hasPendingPermission = mod.hasPendingPermission;
     nativeAgentSessionKey = mod.nativeAgentSessionKey;
     sessionMessage = mod.sessionMessage;
     sessionStatus = mod.sessionStatus;
+    taskSessionStatus = mod.taskSessionStatus;
 });
 
 afterAll(() => {
@@ -53,6 +59,11 @@ function session(overrides: Partial<Session>): Session {
 }
 
 describe('sessionDisplay native session dedupe', () => {
+    it('keeps the native path separator when abbreviating a Windows home directory', () => {
+        expect(formatPathRelativeToHome('C:\\Users\\Sergey\\Projects\\remcli', 'C:\\Users\\Sergey'))
+            .toBe('~\\Projects\\remcli');
+    });
+
     it('builds provider-specific native keys', () => {
         expect(nativeAgentSessionKey(session({
             metadata: {
@@ -111,6 +122,13 @@ describe('sessionDisplay native session dedupe', () => {
 });
 
 describe('sessionDisplay execution outcome', () => {
+    it('shows a live unfinished task session as running without changing the session-list idle state', () => {
+        const active = session({ active: true, presence: 'online' });
+
+        expect(sessionStatus(active)).toBe('idle');
+        expect(taskSessionStatus(active)).toBe('running');
+    });
+
     it('shows an online typed error outcome as an error status', () => {
         const errored = session({
             active: true,
@@ -170,5 +188,52 @@ describe('sessionDisplay execution outcome', () => {
             metadata: withError,
             thinking: true,
         }))).toBe('thinking');
+    });
+
+    it('ignores completed request ids that remain in a stale permission snapshot', () => {
+        const staleSnapshot = session({
+            active: true,
+            presence: 'online',
+            metadata: {
+                path: '/tmp/project',
+                host: 'test-host',
+                flavor: 'codex',
+                executionOutcome: { kind: 'error', occurredAt: 100 },
+            },
+            agentState: {
+                controlledByUser: false,
+                requests: {
+                    completed: { tool: 'Read', arguments: {}, createdAt: 100 },
+                    pending: { tool: 'Bash', arguments: {}, createdAt: 101 },
+                },
+                completedRequests: {
+                    completed: {
+                        tool: 'Read',
+                        arguments: {},
+                        createdAt: 100,
+                        completedAt: 102,
+                        status: 'approved',
+                    },
+                },
+            },
+        });
+
+        expect(hasPendingPermission(staleSnapshot)).toBe(true);
+        expect(sessionStatus(staleSnapshot)).toBe('permission');
+        expect(sessionMessage(staleSnapshot)).toBe('awaiting permission: Bash');
+
+        const onlyCompleted = session({
+            ...staleSnapshot,
+            agentState: {
+                ...staleSnapshot.agentState!,
+                requests: {
+                    completed: { tool: 'Read', arguments: {}, createdAt: 100 },
+                },
+            },
+        });
+
+        expect(hasPendingPermission(onlyCompleted)).toBe(false);
+        expect(sessionStatus(onlyCompleted)).toBe('error');
+        expect(sessionMessage(onlyCompleted)).toBe('error');
     });
 });

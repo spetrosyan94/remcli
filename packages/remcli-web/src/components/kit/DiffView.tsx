@@ -8,7 +8,7 @@ export interface DiffLine {
 export function DiffView({ file, added, removed, lines }: { file: string; added: number; removed: number; lines: DiffLine[] }) {
     const row: Record<DiffLine["t"], string> = {
         ctx: "text-muted-foreground",
-        add: "bg-status-running/10 text-emerald-700 dark:text-emerald-300",
+        add: "bg-status-running/10 text-emerald-800 dark:text-emerald-300",
         del: "bg-status-error/10 text-red-700 dark:text-red-300",
     };
     return (

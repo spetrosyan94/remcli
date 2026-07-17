@@ -7,32 +7,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Check, Loader2, Play, Plus } from "lucide-react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
-import { StatusDot, type AgentId, type Status } from "@/components/kit";
+import { StatusDot } from "@/components/kit";
+import { sessionAgent, sessionPath, taskSessionStatus } from "@/components/app/sessionDisplay";
 import { t } from "@/lib/i18n";
-import { useSessions, type Session } from "@/lib/protocol";
+import { useSessions } from "@/lib/protocol";
 import { addZenTask, loadZenTasks, subscribeZenTasks, toggleZenTask, type ZenTask } from "@/lib/zenTasks";
-
-function sessionStatus(session: Session): Status {
-    if (!session.active) return "offline";
-    if (Object.keys(session.agentState?.requests ?? {}).length > 0) return "permission";
-    if (session.thinking) return "thinking";
-    return "running";
-}
-
-function sessionAgent(session: Session): AgentId {
-    const flavor = session.metadata?.flavor;
-    return flavor === "codex" || flavor === "gemini" || flavor === "cursor" ? flavor : "claude";
-}
-
-/** Абсолютный путь → «~/…» для показа. */
-function sessionPath(session: Session): string {
-    const path = session.metadata?.path ?? "";
-    const homeDir = session.metadata?.homeDir;
-    if (!homeDir || !path.startsWith(homeDir)) return path;
-    const rest = path.slice(homeDir.length);
-    if (rest === "") return "~";
-    return rest.startsWith("/") || rest.startsWith("\\") ? `~${rest}` : path;
-}
 
 function TaskCheckbox({ isDone, onToggle }: { isDone: boolean; onToggle: () => void }) {
     if (isDone) {
@@ -112,7 +91,7 @@ export function ZenPage() {
         <div className="flex min-h-0 flex-1 flex-col">
             <header className="flex items-baseline gap-2.5 px-5 pb-3 pt-1.5">
                 <h1 className="text-xl font-semibold">{t("tabs.tasks")}</h1>
-                <span className="font-mono text-[11px] text-muted-foreground/70">
+                <span className="font-mono text-[11px] text-muted-foreground">
                     {openCount} {t("zen.openCount")}
                 </span>
             </header>
@@ -133,7 +112,7 @@ export function ZenPage() {
                     // выполненная
                     if (task.isDone) {
                         return (
-                            <div key={task.id} className={"flex items-start gap-3 px-2 py-3.5 opacity-45" + rowBorder}>
+                            <div key={task.id} className={"flex items-start gap-3 px-2 py-3.5" + rowBorder}>
                                 <TaskCheckbox isDone onToggle={() => applyMutation(toggleZenTask(task.id))} />
                                 <span className="text-[14.5px] leading-snug text-muted-foreground line-through">{task.title}</span>
                             </div>
@@ -145,15 +124,16 @@ export function ZenPage() {
                         return (
                             <div key={task.id} className={`flex items-start gap-3 px-2 py-3.5${rowBorder}`}>
                                 <TaskCheckbox isDone={false} onToggle={() => applyMutation(toggleZenTask(task.id))} />
-                                <div className="flex flex-1 flex-col gap-2">
+                                <div className="flex min-w-0 flex-1 flex-col gap-2">
                                     <span className="text-[14.5px] leading-snug">{task.title}</span>
                                     <button
                                         type="button"
                                         onClick={() => navigate(`/session/${linkedSession.id}`)}
-                                        className="flex min-h-11 w-fit items-center gap-1.5 rounded-[7px] border border-border bg-card px-3 font-mono text-[10.5px] text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96] lg:min-h-8 lg:px-2.5"
+                                        className="flex min-h-11 max-w-full items-center gap-1.5 overflow-hidden rounded-[7px] border border-border bg-card px-3 font-mono text-[10.5px] text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96] lg:min-h-8 lg:px-2.5"
                                     >
-                                        <StatusDot status={sessionStatus(linkedSession)} className="size-[5px]" />
-                                        {sessionPath(linkedSession)} · {sessionAgent(linkedSession)}
+                                        <StatusDot status={taskSessionStatus(linkedSession)} className="size-[5px]" />
+                                        <span className="min-w-0 truncate">{sessionPath(linkedSession)}</span>
+                                        <span className="shrink-0">· {sessionAgent(linkedSession)}</span>
                                     </button>
                                 </div>
                             </div>

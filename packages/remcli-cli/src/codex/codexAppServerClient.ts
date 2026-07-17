@@ -123,6 +123,14 @@ export interface CodexOpaqueUserMessageContent {
 
 export type CodexUserMessageContent = CodexTextUserMessageContent | CodexOpaqueUserMessageContent;
 
+export type CodexAgentMessageOrigin = 'live' | 'replay';
+
+export interface CodexAgentMessageEvent {
+    type: 'agent_message';
+    message: string;
+    origin: CodexAgentMessageOrigin;
+}
+
 export interface CodexUserMessageEvent {
     type: 'user_message';
     itemId: string;
@@ -139,7 +147,7 @@ export type CodexAppServerEvent =
     | { type: 'turn_aborted' }
     | { type: 'turn_diff'; unified_diff: string }
     | { type: 'agent_error'; message: string }
-    | { type: 'agent_message'; message: string }
+    | CodexAgentMessageEvent
     | { type: 'agent_reasoning'; text: string }
     | { type: 'exec_command_begin'; command: string }
     | { type: 'exec_command_end'; output: string; error?: string }
@@ -1398,7 +1406,7 @@ export class CodexAppServerClient {
 
         for (const item of turn.turn.items) {
             if (!isRecord(item)) continue;
-            this.handleItemCompleted(item, turn.id);
+            this.handleItemCompleted(item, turn.id, 'replay');
         }
     }
 
@@ -1866,7 +1874,11 @@ export class CodexAppServerClient {
         }
     }
 
-    private handleItemCompleted(item: any, notificationTurnId: unknown): void {
+    private handleItemCompleted(
+        item: any,
+        notificationTurnId: unknown,
+        origin: CodexAgentMessageOrigin = 'live',
+    ): void {
         if (!item || typeof item !== 'object') return;
         if (item.type === 'userMessage') {
             this.emitUserMessage(item, notificationTurnId, 'completed');
@@ -1879,7 +1891,7 @@ export class CodexAppServerClient {
             this.recentCompletedItemIds.add(item.id);
         }
         if (item.type === 'agentMessage' && typeof item.text === 'string' && item.text.length > 0) {
-            this.handler?.({ type: 'agent_message', message: item.text });
+            this.handler?.({ type: 'agent_message', message: item.text, origin });
         }
         if (item.type === 'reasoning') {
             const text = [

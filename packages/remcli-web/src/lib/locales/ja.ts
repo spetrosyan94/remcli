@@ -44,6 +44,7 @@ export const ja: Dictionary = {
     "chat.ended": "— セッション終了 —",
     "chat.resumeFailed": "セッションを再開できませんでした",
     "chat.sendFailed": "メッセージを送信できませんでした",
+    "chat.executionError": "直前の操作はエラーで終了しました",
 
     "tts.listen": "再生",
     "tts.synth": "合成中…",

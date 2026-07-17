@@ -10,9 +10,10 @@ import { toast } from "sonner";
 import {
     AgentMeta, Caret, ConnectionBanner, DiffView, ListenButton, PermissionCard,
     Segmented, statusLabel, StatusDot, ThinkingRow, ToolCallCard, UserMessage, VoiceRecordBar,
-    type AgentId, type DiffLine, type Status,
+    type AgentId, type DiffLine,
 } from "@/components/kit";
 import { SessionsSidebar, StopSessionDialog, type StopTarget } from "@/components/app/SessionsSidebar";
+import { sessionStatus } from "@/components/app/sessionDisplay";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { getAgentPermissionLabel, getAgentPermissionModes, normalizeAgentPermissionMode } from "@/lib/agentPermissions";
@@ -399,13 +400,6 @@ function displayPath(session: Session): string {
     return home && path.startsWith(home) ? `~${path.slice(home.length)}` : path;
 }
 
-function statusOf(session: Session, hasPendingPermission: boolean): Status {
-    if (session.presence !== "online") return "offline";
-    if (hasPendingPermission) return "permission";
-    if (session.thinking) return "thinking";
-    return "idle";
-}
-
 /** Ключевой строковый аргумент tool-вызова для компактного заголовка карточки. */
 function toolArgOf(input: unknown): string {
     if (typeof input === "string") return input;
@@ -752,7 +746,9 @@ export function ChatPage() {
 
     const feed = React.useMemo(() => buildFeed(messages, agent), [messages, agent]);
     const pendingPermissions = React.useMemo(() => pendingPermissionsOf(session), [session]);
-    const status = session ? statusOf(session, pendingPermissions.length > 0) : "offline";
+    const status = session ? sessionStatus(session) : "offline";
+    const hasVisibleErrorMessage = feed.some((item) => item.kind === "agent-group" && item.tone === "error");
+    const shouldShowExecutionErrorNotice = status === "error" && !hasVisibleErrorMessage;
     const permissionModes = React.useMemo(() => getAgentPermissionModes(agent), [agent]);
     const activePermissionMode = normalizeAgentPermissionMode(agent, uiMode);
     const formatPermissionMode = React.useCallback(
@@ -1173,9 +1169,9 @@ export function ChatPage() {
                 </button>
                 <div className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate font-mono text-[13.5px] font-semibold">{displayPath(session)}</span>
-                    <span className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
+                    <span className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[10px] text-muted-foreground">
                         <StatusDot status={status} className="size-1.5" />
-                        {agent}{host ? ` · ${host}` : ""} · {statusLabel(status)}
+                        <span className="min-w-0 truncate">{agent}{host ? ` · ${host}` : ""} · {statusLabel(status)}</span>
                     </span>
                 </div>
                 {/* Терминал доступен на desktop; сегменты — только когда для них достаточно места. */}
@@ -1251,6 +1247,13 @@ export function ChatPage() {
                         </div>
                     )}
 
+                    {shouldShowExecutionErrorNotice && (
+                        <div role="status" aria-live="polite" className="flex min-w-0 items-start gap-2 rounded-xl border border-status-error/35 bg-status-error/10 px-3 py-2.5 font-mono text-[11.5px] leading-snug text-status-error">
+                            <StatusDot status="error" className="mt-1 size-1.5 shrink-0" />
+                            <span className="min-w-0 break-words [overflow-wrap:anywhere]">{t("chat.executionError")}</span>
+                        </div>
+                    )}
+
                     {feed.map((item) => {
                         if (item.kind === "user") {
                             return (
@@ -1289,18 +1292,22 @@ export function ChatPage() {
                                     const expandedByDefault = entry.state === "error" || entry.state === "running";
                                     const isExpanded = expandedTools[entry.id] ?? expandedByDefault;
                                     return (
-                                        <div key={entry.id} onClick={() => toggleToolExpanded(entry.id, expandedByDefault)}
-                                            className="cursor-pointer">
-                                            <ToolCallCard
-                                                tool={entry.tool} arg={entry.arg} state={entry.state}
-                                                expanded={isExpanded && entry.outputLines.length > 0}
-                                                errorText={entry.errorText}>
-                                                {entry.outputLines.map((line, index) => (
-                                                    <ToolOutputLine key={index} line={line}
-                                                        hasCaret={entry.state === "running" && index === entry.outputLines.length - 1} />
-                                                ))}
-                                            </ToolCallCard>
-                                        </div>
+                                        <ToolCallCard
+                                            key={entry.id}
+                                            tool={entry.tool}
+                                            arg={entry.arg}
+                                            state={entry.state}
+                                            expanded={isExpanded && entry.outputLines.length > 0}
+                                            errorText={entry.errorText}
+                                            onToggle={entry.outputLines.length > 0
+                                                ? () => toggleToolExpanded(entry.id, expandedByDefault)
+                                                : undefined}
+                                        >
+                                            {entry.outputLines.map((line, index) => (
+                                                <ToolOutputLine key={index} line={line}
+                                                    hasCaret={entry.state === "running" && index === entry.outputLines.length - 1} />
+                                            ))}
+                                        </ToolCallCard>
                                     );
                                 })}
                                 {item.texts.length > 0 && (
@@ -1309,7 +1316,7 @@ export function ChatPage() {
                                             <ListenButton state={listenState} onClick={() => toggleListen(item.id, groupText)} />
                                         )}
                                         <button type="button" onClick={() => void copyText(groupText)}
-                                            className="h-11 cursor-pointer rounded-[7px] px-3 font-mono text-[10.5px] text-muted-foreground/60 transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-7 lg:px-2.5">
+                                            className="h-11 cursor-pointer rounded-[7px] px-3 font-mono text-[10.5px] text-muted-foreground transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-7 lg:px-2.5">
                                             {t("chat.copy")}
                                         </button>
                                     </div>
@@ -1400,7 +1407,7 @@ export function ChatPage() {
                                         }}
                                         className="block min-h-11 w-full resize-none rounded-xl border border-input bg-muted px-3.5 py-3 text-sm outline-none transition-[border-color,box-shadow,opacity] duration-[120ms] placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15 lg:pr-40" />
                                     {/* десктоп: хинт горячих клавиш внутри поля (desktop.html) */}
-                                    <span className="pointer-events-none absolute inset-y-0 right-3.5 hidden items-center font-mono text-[10px] text-muted-foreground/50 lg:flex">
+                                    <span className="pointer-events-none absolute inset-y-0 right-3.5 hidden items-center font-mono text-[10px] text-muted-foreground lg:flex">
                                         {t("chat.inputHint")}
                                     </span>
                                 </div>
@@ -1423,7 +1430,7 @@ export function ChatPage() {
                 <DrawerContent className={PERMISSION_SHEET_CONTENT_CLASS}>
                     <div className="flex items-center px-[18px] pb-2 pt-1">
                         <DrawerTitle className="text-[14.5px] font-semibold">{t("new.permissions")}</DrawerTitle>
-                        <span className="ml-auto font-mono text-[10px] text-muted-foreground/70">{agent}</span>
+                        <span className="ml-auto font-mono text-[10px] text-muted-foreground">{agent}</span>
                     </div>
                     {permissionModes.map((permission) => (
                         <button key={permission} onClick={() => selectPermissionMode(permission)}

@@ -48,7 +48,7 @@ export function TerminalPage() {
                 <span className="font-mono text-[12.5px] text-zinc-400">
                     {t("terminal.stub.title")}
                 </span>
-                <span className="max-w-[420px] font-mono text-[11px] leading-relaxed text-zinc-600">
+                <span className="max-w-[420px] font-mono text-[11px] leading-relaxed text-zinc-400">
                     {t("terminal.stub.hint")}
                 </span>
                 <button

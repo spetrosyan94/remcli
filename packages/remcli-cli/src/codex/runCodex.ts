@@ -126,6 +126,17 @@ function getCodexErrorText(response: CodexToolResponse): string {
     return 'Codex returned an error.';
 }
 
+/** Error text crosses into the encrypted chat history only after secret redaction. */
+export function redactCodexErrorForSession(error: unknown, fallback: string): string {
+    const source = typeof error === 'string'
+        ? error
+        : error instanceof Error
+            ? error.message
+            : fallback;
+    const redacted = redactSensitiveText(source).trim();
+    return redacted || fallback;
+}
+
 function isRecoverableCodexDeliveryError(error: unknown): boolean {
     if (
         isCodexAppServerTransientTransportError(error)
@@ -302,6 +313,16 @@ export async function runCodex(opts: {
     });
     session = initialSession;
 
+    // A queued P2P delivery can be drained synchronously by onUserMessage().
+    // Initialise the chat-error sink before registering any delivery handler.
+    const messageBuffer = new MessageBuffer();
+    const publishSessionError = (error: unknown, fallback: string): string => {
+        const errorMessage = redactCodexErrorForSession(error, fallback);
+        messageBuffer.addMessage(`Error: ${errorMessage}`, 'status');
+        session.sendSessionEvent({ type: 'message', message: errorMessage, isError: true });
+        return errorMessage;
+    };
+
     const getTurnModeHash = (mode: EnhancedMode): string => hashObject({
         permissionMode: mode.permissionMode,
         model: mode.model,
@@ -362,7 +383,7 @@ export async function runCodex(opts: {
             } else {
                 const errorText = formatUnsupportedCodexPermissionMessage(requestedPermissionMode);
                 logger.warn(`[Codex] ${errorText}`);
-                session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
+                publishSessionError(errorText, 'Codex rejected the requested permission mode.');
                 return;
             }
         } else {
@@ -456,12 +477,8 @@ export async function runCodex(opts: {
                 activeTurnId && activeClient?.isTurnInterrupting(activeTurnId),
             );
             void interruptRequest?.catch((error) => {
-                const errorMessage = redactSensitiveText(
-                    error instanceof Error ? error.message : 'Codex app-server rejected turn/interrupt.',
-                );
                 logger.debug('[Codex] Failed to interrupt the active Codex turn:', redactDiagnosticData(error));
-                messageBuffer.addMessage(`Error: ${errorMessage}`, 'status');
-                session.sendSessionEvent({ type: 'message', message: errorMessage, isError: true });
+                publishSessionError(error, 'Codex app-server rejected turn/interrupt.');
             });
             abortController.abort();
             reasoningProcessor.abort();
@@ -535,7 +552,6 @@ export async function runCodex(opts: {
     // Initialize Ink UI
     //
 
-    const messageBuffer = new MessageBuffer();
     const hasTTY = process.stdout.isTTY && process.stdin.isTTY;
     let inkInstance: any = null;
 
@@ -647,9 +663,7 @@ export async function runCodex(opts: {
             messageBuffer.addMessage('Turn aborted', 'status');
             sendReady();
         } else if (msg.type === 'agent_error') {
-            const errorMessage = msg.message ?? 'Codex app-server error.';
-            messageBuffer.addMessage(`Error: ${errorMessage}`, 'status');
-            session.sendSessionEvent({ type: 'message', message: errorMessage, isError: true });
+            publishSessionError(msg.message, 'Codex app-server error.');
         }
 
         if (msg.type === 'task_started') {
@@ -686,7 +700,7 @@ export async function runCodex(opts: {
                 message: msg.message,
                 id: randomUUID()
             });
-            if (msg.message.trim()) {
+            if (msg.origin === 'live' && msg.message.trim()) {
                 session.recordSuccessfulAgentOutput();
             }
         }
@@ -779,9 +793,9 @@ export async function runCodex(opts: {
         const pendingRemoteTuiOpenPromises = new Map<string, Promise<boolean>>();
 
         const publishNativeThreadBindingError = (errorMessage: string): void => {
-            logger.warn(`[Codex] ${errorMessage}`);
-            messageBuffer.addMessage(`Error: ${errorMessage}`, 'status');
-            session.sendSessionEvent({ type: 'message', message: errorMessage, isError: true });
+            const safeErrorMessage = redactCodexErrorForSession(errorMessage, 'Codex thread binding failed.');
+            logger.warn(`[Codex] ${safeErrorMessage}`);
+            publishSessionError(safeErrorMessage, 'Codex thread binding failed.');
         };
 
         const bindNativeThread = (nativeThreadId: string): Promise<'open-tui' | 'skip-tui' | 'stop-runner'> => {
@@ -940,10 +954,8 @@ export async function runCodex(opts: {
         };
 
         const reportDeliveryRecoveryFailure = (error: unknown): void => {
-            const errorMessage = error instanceof Error ? error.message : 'Codex app-server recovery failed.';
             logger.warn('[Codex] Could not recover an unacknowledged P2P delivery:', redactDiagnosticData(error));
-            messageBuffer.addMessage(`Error: ${errorMessage}`, 'status');
-            session.sendSessionEvent({ type: 'message', message: errorMessage, isError: true });
+            publishSessionError(error, 'Codex app-server recovery failed.');
         };
 
         const scheduleDeliveryRecovery = (
@@ -1008,10 +1020,8 @@ export async function runCodex(opts: {
                 return;
             }
 
-            const errorText = getCodexErrorText(response);
-            logger.warn('[Codex] app-server turn returned error:', redactSensitiveText(errorText));
-            messageBuffer.addMessage(`Error: ${errorText}`, 'status');
-            session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
+            const errorText = publishSessionError(getCodexErrorText(response), 'Codex returned an error.');
+            logger.warn('[Codex] app-server turn returned error:', errorText);
         };
 
         const waitForCompletion = async (completionPromise: Promise<TurnCompletionResult>): Promise<void> => {
@@ -1358,9 +1368,7 @@ export async function runCodex(opts: {
                     message.reject(error);
                     logger.warn('Error in codex session:', redactDiagnosticData(error));
 
-                    const errorMessage = error instanceof Error ? error.message : 'Process exited unexpectedly';
-                    messageBuffer.addMessage(`Error: ${errorMessage}`, 'status');
-                    session.sendSessionEvent({ type: 'message', message: errorMessage, isError: true });
+                    publishSessionError(error, 'Process exited unexpectedly');
                 }
             } finally {
                 activeDeliveryRetryKey = null;

@@ -77,7 +77,7 @@ let zenTasksVersion = 1;
 let spawnedSessionCounter = 0;
 let fixtureResumeRetryAttempts = 0;
 
-const FIXTURE_RESUME_RESPONSE_DELAY_MS = 120;
+const FIXTURE_RESUME_RESPONSE_DELAY_MS = 1_000;
 const FIXTURE_LONG_RESUME_ROW_COUNT = 24;
 const FIXTURE_LONG_CHAT_PATH = `/Users/dev/projects/remcli/${'nested-directory/'.repeat(36)}calculate.js:195`;
 const FIXTURE_LONG_CHAT_LINK = `https://en.wikipedia.org/wiki/Function_(mathematics)?trace=${'trace-segment-'.repeat(36)}`;

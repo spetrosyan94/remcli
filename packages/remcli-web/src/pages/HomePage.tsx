@@ -72,7 +72,7 @@ function ConciergeCard() {
                 <span className="font-mono text-[12.5px] font-semibold">{t("concierge.title")}</span>
                 <span className="truncate text-[11px] text-muted-foreground">{t("concierge.empty.hint")}</span>
             </span>
-            <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/60" />
+            <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
         </button>
     );
 }
@@ -204,10 +204,10 @@ function MachineSection({ group, controls, isFirst }: { group: MachineGroup; con
             {group.isOnline ? (
                 <div className={`flex items-center gap-2 px-1 font-mono text-[11px] text-muted-foreground ${isFirst ? "pt-1.5" : "pt-2.5"}`}>
                     <Monitor className="size-3" /> {group.name} <span className="text-status-running">{t("home.machine.online")}</span>
-                    <span className="ml-auto text-muted-foreground/50">{sessionsCountLabel(group.sessions.length)}</span>
+                    <span className="ml-auto text-muted-foreground">{sessionsCountLabel(group.sessions.length)}</span>
                 </div>
             ) : (
-                <div className={`flex items-center gap-2 px-1 font-mono text-[11px] text-muted-foreground/60 ${isFirst ? "pt-1.5" : "pt-2.5"}`}>
+                <div className={`flex items-center gap-2 px-1 font-mono text-[11px] text-muted-foreground ${isFirst ? "pt-1.5" : "pt-2.5"}`}>
                     <Monitor className="size-3" /> {group.name}{" "}
                     <span>{t("home.machine.offline")}{group.lastSeenLabel ? ` · ${group.lastSeenLabel}` : ""}</span>
                 </div>

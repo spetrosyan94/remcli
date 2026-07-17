@@ -122,7 +122,7 @@ function conciergeStorageKey(endpoint: string, machineId: string | null): string
 function ConciergeMeta({ children }: { children: React.ReactNode }) {
     return (
         <div className="flex items-center gap-2 font-mono text-[10.5px] text-muted-foreground">
-            <span className="flex size-[18px] shrink-0 items-center justify-center rounded-[5px] bg-accent/10 font-mono text-[9px] font-bold text-accent">
+            <span className="flex size-[18px] shrink-0 items-center justify-center rounded-[5px] bg-accent font-mono text-[9px] font-bold text-accent-foreground">
                 ai
             </span>
             {children}
@@ -300,11 +300,11 @@ export function ConciergeChat() {
                     {config && !isCheckingStatus && !isAvailable && (
                         <div className="flex flex-col items-center gap-1.5 rounded-xl border border-dashed border-border bg-card/50 px-4 py-6 text-center">
                             <span className="font-mono text-[11.5px] text-muted-foreground">{t("concierge.unavailable")}</span>
-                            <span className="font-mono text-[10px] text-muted-foreground/60">{t("concierge.unavailableHint")}</span>
+                            <span className="font-mono text-[10px] text-muted-foreground">{t("concierge.unavailableHint")}</span>
                         </div>
                     )}
                     {isAvailable && feed.length === 0 && (
-                        <span className="self-center py-6 font-mono text-[11px] text-muted-foreground/70">{t("concierge.empty.hint")}</span>
+                        <span className="self-center py-6 font-mono text-[11px] text-muted-foreground">{t("concierge.empty.hint")}</span>
                     )}
 
                     {feed.map((entry) =>
@@ -319,7 +319,7 @@ export function ConciergeChat() {
                                 ))}
                                 <div className="flex gap-2">
                                     <button type="button" onClick={() => void copyText(entry.content)}
-                                        className="h-11 cursor-pointer rounded-[7px] px-3 font-mono text-[10.5px] text-muted-foreground/60 transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-7 lg:px-2.5">
+                                        className="h-11 cursor-pointer rounded-[7px] px-3 font-mono text-[10.5px] text-muted-foreground transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-7 lg:px-2.5">
                                         {t("chat.copy")}
                                     </button>
                                 </div>

@@ -447,6 +447,14 @@ export const FIXTURE_ZEN_TASKS: ZenTask[] = [
         sessionId: 'fx-running'
     },
     {
+        id: 'fx-zen-error',
+        title: 'Показать ошибку выполнения в связанной сессии',
+        isDone: false,
+        createdAt: T - 90 * MINUTE,
+        updatedAt: T - 45 * MINUTE,
+        sessionId: 'fx-error'
+    },
+    {
         id: 'fx-zen-done',
         title: 'Починить прыжок скролла при подгрузке истории чата',
         isDone: true,

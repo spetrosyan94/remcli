@@ -39,8 +39,11 @@ const FIXTURE_ROUTES: FixtureRoute[] = [
     { name: "home", path: "/?fixtures=1" },
     { name: "new-session", path: "/new?fixtures=1" },
     { name: "chat", path: "/session/fx-chat?fixtures=1" },
+    { name: "terminal", path: "/session/fx-running/terminal?fixtures=1" },
+    { name: "zen", path: "/zen?fixtures=1" },
     { name: "settings", path: "/settings?fixtures=1" },
     { name: "concierge", path: "/concierge?fixtures=1" },
+    { name: "connect", path: "/connect?fixtures=1" },
 ];
 
 const MOBILE_TOUCH_TARGET_MIN_PX = 44;
@@ -78,12 +81,12 @@ function collectPageIssues(page: Page): PageIssue[] {
     return issues;
 }
 
-async function openFixtureRoute(page: Page, path: string): Promise<void> {
-    await page.addInitScript(() => {
+async function openFixtureRoute(page: Page, path: string, theme: "dark" | "light" = "dark"): Promise<void> {
+    await page.addInitScript((selectedTheme: "dark" | "light") => {
         window.localStorage.setItem("remcli-fixtures", "1");
         window.localStorage.setItem("remcli-locale", "en");
-        window.localStorage.setItem("remcli-theme", "dark");
-    });
+        window.localStorage.setItem("remcli-theme", selectedTheme);
+    }, theme);
     await page.goto(path, { waitUntil: "domcontentloaded" });
     await expect(page.locator("body")).toBeVisible();
     await expect(page.locator('[data-slot="skeleton"]:visible')).toHaveCount(0);
@@ -141,7 +144,7 @@ async function assertNoHorizontalOverflow(page: Page): Promise<void> {
     expect(report.offenders, JSON.stringify(report.offenders, null, 2)).toEqual([]);
 }
 
-async function assertChatHeaderHasSpace(page: Page): Promise<void> {
+async function assertChatHeaderHasSpace(page: Page, minimumMetadataWidth = CHAT_HEADER_METADATA_MIN_WIDTH_PX): Promise<void> {
     const report = await page.locator("header").evaluate<ChatHeaderReport>((header) => {
         const metadata = header.querySelector<HTMLElement>(":scope > div.flex.min-w-0.flex-1.flex-col");
         const status = metadata?.querySelector<HTMLElement>("span:last-child");
@@ -155,7 +158,7 @@ async function assertChatHeaderHasSpace(page: Page): Promise<void> {
     });
 
     expect(report.scrollWidth, JSON.stringify(report, null, 2)).toBeLessThanOrEqual(report.clientWidth + 1);
-    expect(report.metadataWidth, JSON.stringify(report, null, 2)).toBeGreaterThanOrEqual(CHAT_HEADER_METADATA_MIN_WIDTH_PX);
+    expect(report.metadataWidth, JSON.stringify(report, null, 2)).toBeGreaterThanOrEqual(minimumMetadataWidth);
     expect(report.statusHeight, JSON.stringify(report, null, 2)).toBeLessThanOrEqual(CHAT_HEADER_STATUS_MAX_HEIGHT_PX);
 }
 
@@ -347,6 +350,75 @@ for (const route of FIXTURE_ROUTES) {
     });
 }
 
+test("command palette opens above the current fixture route without layout regressions", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await openFixtureRoute(page, "/?fixtures=1");
+    await page.getByRole("button", { name: "Search (⌘K)" }).click();
+
+    const palette = page.getByRole("dialog");
+    await expect(palette).toBeVisible();
+    await expect(palette.getByPlaceholder("Search sessions and actions…")).toBeFocused();
+    await expect(palette.getByText("sessions", { exact: true })).toBeVisible();
+    await expect(palette.getByText("actions", { exact: true })).toBeVisible();
+    await expect(palette.getByText(/webapp/i)).toBeVisible();
+    await expect(palette.getByText("New session…", { exact: true })).toBeVisible();
+    await expect(palette.getByText("Open settings", { exact: true })).toBeVisible();
+    await expect(palette.getByText("Disconnect", { exact: true })).toBeVisible();
+    await assertNoHorizontalOverflow(page);
+    await assertNoBottomToastOverlap(page);
+    if (isMobileProject(testInfo)) {
+        await assertMobileTouchTargets(page);
+    }
+
+    await page.keyboard.press("Escape");
+    await expect(palette).toHaveCount(0);
+    await page.keyboard.press("Meta+k");
+    await expect(page.getByRole("dialog")).toBeVisible();
+
+    expect(pageIssues).toEqual([]);
+});
+
+test("Connect fixture states preserve usable controls and labelled manual inputs", async ({ page }, testInfo) => {
+    test.skip(!isMobileProject(testInfo), "Mobile connection-state regression.");
+    const pageIssues = collectPageIssues(page);
+
+    await openFixtureRoute(page, "/connect?fixtures=1&connectFixture=scanning");
+    await expect(page.getByRole("button", { name: "Close scanner" })).toBeVisible();
+    await assertMobileTouchTargets(page);
+    await assertNoHorizontalOverflow(page);
+
+    await openFixtureRoute(page, "/connect?fixtures=1&connectFixture=manual");
+    await expect(page.getByRole("textbox", { name: "address:port" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "connection key" })).toBeVisible();
+    await assertMobileTouchTargets(page);
+    await assertNoHorizontalOverflow(page);
+
+    await openFixtureRoute(page, "/connect?fixtures=1&connectFixture=error");
+    await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Scan again" })).toBeVisible();
+    await assertMobileTouchTargets(page);
+    await assertNoHorizontalOverflow(page);
+
+    expect(pageIssues).toEqual([]);
+});
+
+test("connect fixture state cannot change the production connection flow", async ({ page }) => {
+    const pageIssues = collectPageIssues(page);
+
+    await page.addInitScript(() => {
+        window.localStorage.removeItem("remcli-fixtures");
+    });
+    await page.goto("/connect?connectFixture=error", { waitUntil: "domcontentloaded" });
+
+    await expect(page.getByRole("button", { name: "Scan QR code" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Enter address manually" })).toBeVisible();
+    await expect(page.getByText("Failed to connect", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: "address:port" })).toHaveCount(0);
+
+    expect(pageIssues).toEqual([]);
+});
+
 test("new session keeps its primary action fully visible", async ({ page }) => {
     const pageIssues = collectPageIssues(page);
 
@@ -406,6 +478,9 @@ test("typed execution outcome renders a visible error session card", async ({ pa
     await expect(errorCard).toContainText("error");
     await errorCard.click();
     await expect(page).toHaveURL(/\/session\/fx-error$/);
+    await expect(page.locator("header")).toContainText("error");
+    await expect(page.getByText("the last operation ended with an error", { exact: true })).toBeVisible();
+    await assertChatHeaderHasSpace(page, isMobileProject(testInfo) ? 160 : CHAT_HEADER_METADATA_MIN_WIDTH_PX);
 
     await assertNoHorizontalOverflow(page);
     await assertNoBottomToastOverlap(page);
@@ -519,6 +594,67 @@ test("long Markdown paths, links, inline code, and fenced code stay within the c
     expect(pageIssues).toEqual([]);
 });
 
+test("expanded tool output remains readable in the light theme", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await page.emulateMedia({ colorScheme: "light" });
+    await openFixtureRoute(page, "/session/fx-chat?fixtures=1", "light");
+    const toolOutput = page.locator(".select-text").filter({ hasText: /src\/parser\.ts/i }).first();
+    await expect(toolOutput).toBeVisible();
+
+    const colors = await toolOutput.evaluate((element) => {
+        const style = window.getComputedStyle(element);
+        return { backgroundColor: style.backgroundColor, color: style.color };
+    });
+    expect(colors).toEqual({
+        backgroundColor: "oklch(0.141 0.005 285.823)",
+        color: "oklch(0.92 0.004 286.32)",
+    });
+
+    await assertNoHorizontalOverflow(page);
+    if (isMobileProject(testInfo)) {
+        await assertMobileTouchTargets(page);
+    }
+    expect(pageIssues).toEqual([]);
+});
+
+test("tool output can be expanded and collapsed with the keyboard", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/session/fx-chat?fixtures=1");
+
+    const toolToggle = page.getByRole("button", { name: /Read src\/parser\.ts/i });
+    await expect(toolToggle).toHaveAttribute("aria-expanded", "false");
+    const outputId = await toolToggle.getAttribute("aria-controls");
+    expect(outputId).toBeTruthy();
+
+    await toolToggle.focus();
+    await page.keyboard.press("Enter");
+    await expect(toolToggle).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator(`[id="${outputId}"]`)).toContainText("export function parse");
+
+    await page.keyboard.press("Space");
+    await expect(toolToggle).toHaveAttribute("aria-expanded", "false");
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("Zen keeps a linked session compact on mobile", async ({ page }, testInfo) => {
+    test.skip(!isMobileProject(testInfo), "Mobile overflow regression.");
+    const pageIssues = collectPageIssues(page);
+
+    await openFixtureRoute(page, "/zen?fixtures=1");
+    const linkedSession = page.getByRole("button", { name: /webapp.*codex/i });
+    const sessionPath = linkedSession.locator("span.min-w-0.truncate");
+    await sessionPath.evaluate((element) => {
+        element.textContent = `/remote/${"nested-directory/".repeat(42)}session`;
+    });
+
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
 test("resume history keeps loading and error visible, retries, and reaches the final long row internally", async ({ page }, testInfo) => {
     const pageIssues = collectPageIssues(page);
 
@@ -565,7 +701,7 @@ test("resume history keeps loading and error visible, retries, and reaches the f
     expect(pageIssues).toEqual([]);
 });
 
-test("directory keeps its content region stable and disables motion when reduced motion is requested", async ({ page }, testInfo) => {
+test("directory keeps its content region stable and reduces motion to the design token", async ({ page }, testInfo) => {
     const pageIssues = collectPageIssues(page);
 
     await assertRequiredViewport(page, testInfo);
@@ -579,7 +715,24 @@ test("directory keeps its content region stable and disables motion when reduced
     const initialHeight = await directoryRegion.evaluate((element) => element.getBoundingClientRect().height);
 
     expect(await page.evaluate(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(true);
-    await expect.poll(() => directoryRegion.evaluate((element) => window.getComputedStyle(element).transitionProperty)).toBe("none");
+    const reducedMotion = await drawer.evaluate((element) => {
+        const drawerStyle = window.getComputedStyle(element);
+        const overlayStyle = window.getComputedStyle(document.querySelector<HTMLElement>('[data-slot="drawer-overlay"]')!);
+        const region = element.querySelector<HTMLElement>('[role="region"]')!;
+        const regionStyle = window.getComputedStyle(region);
+        return {
+            drawerDuration: drawerStyle.animationDuration,
+            overlayDuration: overlayStyle.animationDuration,
+            regionDuration: regionStyle.transitionDuration,
+            regionProperty: regionStyle.transitionProperty,
+        };
+    });
+    expect(reducedMotion).toEqual({
+        drawerDuration: "0.12s",
+        overlayDuration: "0.12s",
+        regionDuration: "0.12s",
+        regionProperty: "opacity, transform",
+    });
 
     await directoryRegion.getByRole("button", { name: "packages", exact: true }).click();
     await expect(directoryRegion.getByRole("button", { name: "remcli-web", exact: true })).toBeVisible();
@@ -587,5 +740,39 @@ test("directory keeps its content region stable and disables motion when reduced
     expect(Math.abs(nextHeight - initialHeight)).toBeLessThanOrEqual(1);
 
     await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("directory drawer follows the design-system motion tokens", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await openFixtureRoute(page, "/new?fixtures=1");
+    await page.getByRole("button", { name: /choose directory/i }).click();
+
+    const drawer = page.locator('[data-slot="drawer-content"]');
+    const overlay = page.locator('[data-slot="drawer-overlay"]');
+    await expect(drawer).toBeVisible();
+    await expect(overlay).toBeVisible();
+
+    const motion = await drawer.evaluate((element) => {
+        const drawerStyle = window.getComputedStyle(element);
+        const overlayElement = document.querySelector<HTMLElement>('[data-slot="drawer-overlay"]');
+        const overlayStyle = overlayElement ? window.getComputedStyle(overlayElement) : null;
+        return {
+            drawerDuration: drawerStyle.animationDuration,
+            drawerTiming: drawerStyle.animationTimingFunction,
+            overlayDuration: overlayStyle?.animationDuration ?? null,
+            overlayTiming: overlayStyle?.animationTimingFunction ?? null,
+        };
+    });
+
+    expect(motion).toEqual({
+        drawerDuration: "0.32s",
+        drawerTiming: "cubic-bezier(0.32, 0.72, 0, 1)",
+        overlayDuration: "0.2s",
+        overlayTiming: "cubic-bezier(0.22, 1, 0.36, 1)",
+    });
     expect(pageIssues).toEqual([]);
 });

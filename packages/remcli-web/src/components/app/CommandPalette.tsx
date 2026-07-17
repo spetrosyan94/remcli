@@ -35,8 +35,8 @@ const paletteItemClass =
     "group flex w-full items-center gap-2.5 rounded-[9px] px-3 py-2.5 text-left " +
     "data-[selected=true]:bg-secondary data-[selected=true]:text-foreground";
 
-/** Заголовок группы (референс: font-mono text-[9.5px] text-muted-foreground/70). */
-const groupHeadingClass = "px-3 pb-1 font-mono text-[9.5px] text-muted-foreground/70";
+/** Заголовок группы (референс: font-mono text-[9.5px] text-muted-foreground). */
+const groupHeadingClass = "px-3 pb-1 font-mono text-[9.5px] text-muted-foreground";
 
 export function CommandPalette() {
     const [isOpen, setIsOpen] = React.useState(false);
@@ -98,21 +98,21 @@ export function CommandPalette() {
                     <DialogPrimitive.Title className="sr-only">{t("palette.placeholder")}</DialogPrimitive.Title>
                     <Command loop shouldFilter={false} className="bg-transparent">
                         {/* ввод */}
-                        <div className="flex items-center gap-2.5 border-b border-border px-4 py-3.5">
+                        <div className="flex h-12 items-center gap-2.5 border-b border-border px-4">
                             <Search className="size-[15px] shrink-0 text-muted-foreground" />
                             <CommandPrimitive.Input
                                 value={query}
                                 onValueChange={setQuery}
                                 placeholder={t("palette.placeholder")}
-                                className="min-w-0 flex-1 bg-transparent text-[15px] caret-accent outline-none placeholder:text-muted-foreground/70"
+                                className="h-[45px] min-w-0 flex-1 bg-transparent text-[15px] caret-accent outline-none placeholder:text-muted-foreground"
                             />
-                            <kbd className="ml-auto rounded-[5px] border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/70">esc</kbd>
+                            <kbd className="ml-auto rounded-[5px] border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">esc</kbd>
                         </div>
 
                         <CommandList className="max-h-[60vh] p-1.5 pb-2">
                             {/* сессии (cmdk Empty не срабатывает при shouldFilter={false} — рендерим сами) */}
                             {filteredSessions.length === 0 ? (
-                                <div className="py-6 text-center font-mono text-[12px] text-muted-foreground/70">
+                                <div className="py-6 text-center font-mono text-[12px] text-muted-foreground">
                                     {t("palette.empty")}
                                 </div>
                             ) : (
@@ -130,7 +130,7 @@ export function CommandPalette() {
                                                 <HighlightedPath path={sessionPath(session)} query={query} />
                                             </span>
                                             <StatusDot status={sessionStatus(session)} className="size-[7px]" />
-                                            <span className="hidden font-mono text-[10px] text-muted-foreground/70 group-data-[selected=true]:inline">⏎</span>
+                                            <span className="hidden font-mono text-[10px] text-muted-foreground group-data-[selected=true]:inline">⏎</span>
                                         </CommandItem>
                                     ))}
                                 </CommandGroup>
@@ -146,7 +146,7 @@ export function CommandPalette() {
                                 >
                                     <span className="flex size-6 items-center justify-center rounded-[7px] bg-secondary"><Plus className="size-3.5 text-muted-foreground" /></span>
                                     <span className="flex-1 text-[13px] text-foreground/85">{t("palette.newSession")}</span>
-                                    <kbd className="font-mono text-[10px] text-muted-foreground/70">⌘N</kbd>
+                                    <kbd className="font-mono text-[10px] text-muted-foreground">⌘N</kbd>
                                 </CommandItem>
                                 <CommandItem
                                     value={t("palette.settings")}

@@ -48,3 +48,5 @@ plans/
 notes/__pycache__/
 design/
 packages/remcli-cli/web-dist/
+packages/remcli-web/playwright-report/
+packages/remcli-web/test-results/

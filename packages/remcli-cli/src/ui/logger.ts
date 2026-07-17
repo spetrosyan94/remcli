@@ -10,6 +10,7 @@ import { appendFileSync } from 'fs'
 import { configuration } from '@/configuration'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
+import { redactDiagnosticData } from '@/utils/redaction'
 // Note: readDaemonState is imported lazily inside listDaemonLogFiles() to avoid
 // circular dependency: logger.ts ↔ persistence.ts
 
@@ -45,7 +46,7 @@ function getSessionLogPath(): string {
   return join(configuration.logsDir, filename)
 }
 
-class Logger {
+export class Logger {
   constructor(
     public readonly logFilePath = getSessionLogPath()
   ) {}
@@ -75,7 +76,7 @@ class Logger {
     maxArrayLength: number = 10,
   ): void {
     if (!process.env.DEBUG) {
-      this.debug(`In production, skipping message inspection`)
+      return
     }
 
     // Some of our messages are huge, but we still want to show them in the logs
@@ -109,7 +110,7 @@ class Logger {
       return obj
     }
 
-    const truncatedObject = truncateStrings(object)
+    const truncatedObject = truncateStrings(redactDiagnosticData(object))
     const json = JSON.stringify(truncatedObject, null, 2)
     this.logToFile(`[${this.localTimezoneTimestamp()}]`, message, '\n', json)
   }

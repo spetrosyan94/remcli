@@ -256,7 +256,7 @@ function sidebarRowFrame(status: Status, isActive: boolean): string {
         return "border border-status-error/35 bg-status-error/[0.06]";
     }
     if (status === "offline") {
-        return "border border-transparent opacity-50";
+        return "border border-transparent bg-muted/40";
     }
     return "border border-transparent";
 }
@@ -274,7 +274,7 @@ function SidebarMachineSection({ group, controls, isFirst, activeSessionId }: {
     };
     return (
         <>
-            <div className={`px-2.5 pb-0.5 font-mono text-[9.5px] ${group.isOnline ? "text-muted-foreground/70" : "text-muted-foreground/50"} ${isFirst ? "pt-1" : "pt-2.5"}`}>
+            <div className={`px-2.5 pb-0.5 font-mono text-[9.5px] ${group.isOnline ? "text-muted-foreground" : "text-muted-foreground"} ${isFirst ? "pt-1" : "pt-2.5"}`}>
                 {group.name} · {group.isOnline ? t("home.machine.online") : t("home.machine.offline")}
             </div>
             {group.sessions.map((session) => {
@@ -345,7 +345,7 @@ export function SessionsSidebar({ activeSessionId, className = "flex" }: {
                 className="mx-3 mb-2.5 flex h-[34px] cursor-pointer items-center gap-2 rounded-lg border border-border bg-card px-2.5 text-xs text-muted-foreground"
             >
                 <Search className="size-3" /> {t("home.search")}
-                <kbd className="ml-auto rounded border border-border px-[5px] py-px font-mono text-[9.5px] text-muted-foreground/60">⌘K</kbd>
+                <kbd className="ml-auto rounded border border-border px-[5px] py-px font-mono text-[9.5px] text-muted-foreground">⌘K</kbd>
             </button>
             <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 py-1">
                 {groups.map((group, index) => (
@@ -362,7 +362,7 @@ export function SessionsSidebar({ activeSessionId, className = "flex" }: {
                 >
                     <Plus className="size-3.5" /> {t("home.newSession")}
                 </button>
-                <div className="flex items-center px-0.5 font-mono text-[10px] text-muted-foreground/70">
+                <div className="flex items-center px-0.5 font-mono text-[10px] text-muted-foreground">
                     <NavLink to="/zen" className="hover:text-foreground">{t("tabs.tasks").toLowerCase()}</NavLink>
                     <NavLink to="/settings" className="ml-auto hover:text-foreground">{t("tabs.settings").toLowerCase()}</NavLink>
                 </div>

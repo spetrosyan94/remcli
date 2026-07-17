@@ -32,7 +32,7 @@ export function VoiceRecordBar({ state = "recording", seconds = "0:07", onStop, 
                 <Loader2 className="size-3.5 animate-spin text-status-thinking" />
                 <span className="font-mono text-xs text-muted-foreground">{t("voice.transcribing")}</span>
                 <button type="button" onClick={onCancel}
-                    className="ml-auto h-11 rounded-[7px] px-3 font-mono text-[11px] text-muted-foreground/60 transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-8">
+                    className="ml-auto h-11 rounded-[7px] px-3 font-mono text-[11px] text-muted-foreground transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-8">
                     {t("voice.cancel")}
                 </button>
             </div>
@@ -43,7 +43,7 @@ export function VoiceRecordBar({ state = "recording", seconds = "0:07", onStop, 
                 <span className="min-w-0 flex-1 font-mono text-xs text-status-error">{t("voice.micUnavailable")}</span>
                 <div className="ml-auto flex items-center gap-2">
                     <button type="button" onClick={onCancel}
-                        className="h-11 rounded-[7px] px-3 font-mono text-[11px] text-muted-foreground/70 transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-8">
+                        className="h-11 rounded-[7px] px-3 font-mono text-[11px] text-muted-foreground transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-8">
                         {t("voice.cancel")}
                     </button>
                     <button type="button" onClick={onRetry}

@@ -65,7 +65,7 @@ export function formatPathRelativeToHome(path: string, homeDir?: string): string
     if (!path.startsWith(normalizedHome)) return path;
     const relative = path.slice(normalizedHome.length);
     if (relative === "") return "~";
-    return relative.startsWith("/") ? `~${relative}` : `~/${relative}`;
+    return relative.startsWith("/") || relative.startsWith("\\") ? `~${relative}` : `~/${relative}`;
 }
 
 /** Отображаемый путь сессии (fallback — короткий id, если метаданные не расшифрованы). */
@@ -75,10 +75,16 @@ export function sessionPath(session: Session): string {
     return formatPathRelativeToHome(path, session.metadata?.homeDir);
 }
 
-/** Есть ли неотвеченный запрос разрешения (agentState.requests). */
-export function hasPendingPermission(session: Session): boolean {
+function pendingPermissionEntries(session: Session) {
     const requests = session.agentState?.requests;
-    return !!requests && Object.keys(requests).length > 0;
+    if (!requests) return [];
+    const completedRequests = session.agentState?.completedRequests ?? {};
+    return Object.entries(requests).filter(([id]) => !completedRequests[id]);
+}
+
+/** Есть ли неотвеченный запрос разрешения (agentState.requests без completedRequests). */
+export function hasPendingPermission(session: Session): boolean {
+    return pendingPermissionEntries(session).length > 0;
 }
 
 /**
@@ -93,12 +99,21 @@ export function sessionStatus(session: Session): Status {
     return "idle";
 }
 
+/**
+ * Незавершённая задача, привязанная к живой сессии, означает активную работу,
+ * даже если агент в этот момент не стримит ответ. Это отдельная семантика Zen,
+ * а не изменение общего idle-статуса списка сессий.
+ */
+export function taskSessionStatus(session: Session): Status {
+    const status = sessionStatus(session);
+    return status === "idle" && session.active ? "running" : status;
+}
+
 /** Строка состояния под путём: запрос разрешения / думает / summary / путь. */
 export function sessionMessage(session: Session): string {
     const status = sessionStatus(session);
     if (status === "permission") {
-        const requests = session.agentState?.requests ?? {};
-        const first = Object.values(requests)[0];
+        const first = pendingPermissionEntries(session)[0]?.[1];
         return first ? `${t("status.permission")}: ${first.tool}` : t("status.permission");
     }
     if (status === "thinking") return `${t("status.thinking")}…`;

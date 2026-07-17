@@ -67,6 +67,8 @@ type TestAppServerEvent =
     }
     | { type: 'task_started' }
     | { type: 'task_complete' }
+    | { type: 'agent_error'; message?: string }
+    | { type: 'agent_message'; message: string; origin: 'live' | 'replay' }
     | { type: 'exec_command_begin'; command: string };
 
 interface InterruptedTurnCompletedNotification {
@@ -78,10 +80,14 @@ interface InterruptedTurnCompletedNotification {
 interface TestState {
     incomingMessages: DeliveredUserMessage[];
     appServerEvents: TestAppServerEvent[];
+    resumeAppServerEvents: TestAppServerEvent[];
     beginTurns: CapturedTurn[];
     steeredTurns: CapturedSteer[];
     sentUserMessages: Array<{ text: string; sentFrom?: string }>;
+    sentCodexMessages: Array<{ type: string; message?: string }>;
     sessionEvents: Array<{ type: string; message?: string; isError?: boolean }>;
+    executionOutcome: { kind: 'error' | 'success'; occurredAt: number } | null;
+    successfulAgentOutputCalls: number;
     bindingCalls: Array<{ agent: string; nativeThreadId: string; remcliSessionId: string }>;
     remoteTuiOpenCalls: Array<{
         agent: string;
@@ -133,6 +139,7 @@ interface TestState {
     abortBeforeNextQueueDelivery: boolean;
     closeQueueWhenEmpty: boolean;
     cancelledDeliveryIds: string[];
+    deliverIncomingMessagesSynchronously: boolean;
     userMessageCallback: ((message: DeliveredUserMessage) => void | Promise<void>) | null;
     abortHandler: (() => void | Promise<void>) | null;
     bindingResult: {
@@ -169,10 +176,14 @@ const testState = vi.hoisted(() => {
     const state: TestState = {
         incomingMessages: [],
         appServerEvents: [],
+        resumeAppServerEvents: [],
         beginTurns: [],
         steeredTurns: [],
         sentUserMessages: [],
+        sentCodexMessages: [],
         sessionEvents: [],
+        executionOutcome: null,
+        successfulAgentOutputCalls: 0,
         bindingCalls: [],
         remoteTuiOpenCalls: [],
         callOrder: [],
@@ -217,6 +228,7 @@ const testState = vi.hoisted(() => {
         abortBeforeNextQueueDelivery: false,
         closeQueueWhenEmpty: false,
         cancelledDeliveryIds: [],
+        deliverIncomingMessagesSynchronously: false,
         userMessageCallback: null,
         abortHandler: null,
         bindingResult: {
@@ -242,10 +254,14 @@ const testState = vi.hoisted(() => {
         reset(): void {
             state.incomingMessages = [];
             state.appServerEvents = [];
+            state.resumeAppServerEvents = [];
             state.beginTurns = [];
             state.steeredTurns = [];
             state.sentUserMessages = [];
+            state.sentCodexMessages = [];
             state.sessionEvents = [];
+            state.executionOutcome = null;
+            state.successfulAgentOutputCalls = 0;
             state.bindingCalls = [];
             state.remoteTuiOpenCalls = [];
             state.callOrder = [];
@@ -290,6 +306,7 @@ const testState = vi.hoisted(() => {
             state.abortBeforeNextQueueDelivery = false;
             state.closeQueueWhenEmpty = false;
             state.cancelledDeliveryIds = [];
+            state.deliverIncomingMessagesSynchronously = false;
             state.userMessageCallback = null;
             state.abortHandler = null;
             state.bindingResult = {
@@ -318,7 +335,9 @@ vi.mock('@/api/api', () => ({
             getOrCreateSession: vi.fn(async () => ({
                 id: 'remcli-session',
                 seq: 1,
-                metadata: {},
+                metadata: testState.state.executionOutcome
+                    ? { executionOutcome: testState.state.executionOutcome }
+                    : {},
                 metadataVersion: 1,
                 agentState: null,
                 agentStateVersion: 1,
@@ -331,22 +350,36 @@ vi.mock('@/api/api', () => ({
                 sessionId: 'remcli-session',
                 onUserMessage(callback: (message: DeliveredUserMessage) => void | Promise<void>): void {
                     testState.state.userMessageCallback = callback;
-                    queueMicrotask(() => {
+                    const deliverIncomingMessages = () => {
                         for (const message of testState.state.incomingMessages) {
                             void Promise.resolve(callback(message)).catch(() => undefined);
                         }
-                    });
+                    };
+                    if (testState.state.deliverIncomingMessagesSynchronously) {
+                        deliverIncomingMessages();
+                    } else {
+                        queueMicrotask(deliverIncomingMessages);
+                    }
                 },
                 sendUserTextMessage(text: string, meta: { sentFrom?: string }): void {
                     testState.state.sentUserMessages.push({ text, sentFrom: meta.sentFrom });
                 },
-                sendCodexMessage: vi.fn(),
+                sendCodexMessage(message: { type: string; message?: string }): void {
+                    testState.state.sentCodexMessages.push(message);
+                },
                 sendAgentMessage: vi.fn(),
                 sendClaudeSessionMessage: vi.fn(),
                 sendSessionEvent(event: { type: string; message?: string; isError?: boolean }): void {
                     testState.state.sessionEvents.push(event);
                 },
                 sendSessionDeath: vi.fn(),
+                recordSuccessfulAgentOutput(): void {
+                    testState.state.successfulAgentOutputCalls += 1;
+                    testState.state.executionOutcome = {
+                        kind: 'success',
+                        occurredAt: 200,
+                    };
+                },
                 requestPendingUserMessageRedelivery(): boolean {
                     const message = testState.state.incomingMessages[0];
                     const callback = testState.state.userMessageCallback;
@@ -542,6 +575,9 @@ vi.mock('./codexAppServerClient', () => ({
             testState.state.activeThreadId = testState.state.nativeThreadId;
             testState.state.activeTurnId = testState.state.resumedActiveTurnId;
             this.threadIdChangeHandler?.(testState.state.nativeThreadId);
+            for (const event of testState.state.resumeAppServerEvents) {
+                this.handler?.(event);
+            }
             return testState.state.nativeThreadId;
         }
 
@@ -901,6 +937,73 @@ describe('runCodex app-server integration', () => {
         } finally {
             debug.mockRestore();
         }
+    });
+
+    it('redacts app-server errors before saving them to the encrypted chat history', async () => {
+        const bearer = 'bearer-secret-value';
+        const cookie = 'cookie-secret-value';
+        const accessToken = 'access-token-value';
+        testState.state.incomingMessages = [createIncomingMessage()];
+        testState.state.appServerEvents = [{
+            type: 'agent_error',
+            message: [
+                `Authorization: Bearer ${bearer}`,
+                `Cookie: ${cookie}`,
+                `https://example.test/run?access_token=${accessToken}`,
+            ].join(' · '),
+        }];
+
+        await runTestCodex();
+
+        const errorEvent = testState.state.sessionEvents.find((event) => event.isError);
+        expect(errorEvent).toMatchObject({ type: 'message', isError: true });
+        const serializedEvent = JSON.stringify(errorEvent);
+        expect(serializedEvent).toContain('[REDACTED]');
+        expect(serializedEvent).not.toContain(bearer);
+        expect(serializedEvent).not.toContain(cookie);
+        expect(serializedEvent).not.toContain(accessToken);
+    });
+
+    it('keeps an existing error outcome for replayed output after thread resume', async () => {
+        const existingError = { kind: 'error' as const, occurredAt: 100 };
+        testState.state.executionOutcome = existingError;
+        testState.state.incomingMessages = [createIncomingMessage()];
+        testState.state.resumeAppServerEvents = [{
+            type: 'agent_message',
+            message: 'Historical Codex response',
+            origin: 'replay',
+        }];
+
+        await runTestCodex({ resumeSessionId: 'native-resume-thread' });
+
+        expect(testState.state.sentCodexMessages).toContainEqual(expect.objectContaining({
+            type: 'message',
+            message: 'Historical Codex response',
+        }));
+        expect(testState.state.successfulAgentOutputCalls).toBe(0);
+        expect(testState.state.executionOutcome).toEqual(existingError);
+    });
+
+    it('replaces an existing error outcome after a live Codex response', async () => {
+        testState.state.executionOutcome = { kind: 'error', occurredAt: 100 };
+        testState.state.incomingMessages = [createIncomingMessage()];
+        testState.state.appServerEvents = [{
+            type: 'agent_message',
+            message: 'Live Codex response',
+            origin: 'live',
+        }];
+
+        await runTestCodex();
+
+        expect(testState.state.sentCodexMessages).toContainEqual(expect.objectContaining({
+            type: 'message',
+            message: 'Live Codex response',
+        }));
+        expect(testState.state.successfulAgentOutputCalls).toBe(1);
+        expect(testState.state.executionOutcome).toEqual({
+            kind: 'success',
+            occurredAt: 200,
+        });
     });
 
     it('caches the daemon runner credential before creating its session consumer and resuming a turn', async () => {
@@ -1645,6 +1748,19 @@ describe('runCodex app-server integration', () => {
             model: 'gpt-5.6-luna',
             effort: 'xhigh',
         })]);
+    });
+
+    it('publishes an unsupported permission error when a queued delivery drains during handler registration', async () => {
+        testState.state.deliverIncomingMessagesSynchronously = true;
+        testState.state.closeQueueWhenEmpty = true;
+        const unsupportedPermissionMessage = createIncomingMessage();
+        unsupportedPermissionMessage.meta!.permissionMode = 'unsupported-permission' as never;
+        testState.state.incomingMessages = [unsupportedPermissionMessage];
+
+        await runTestCodex();
+
+        expectExactlyOneSessionError('Unsupported Codex permission mode "unsupported-permission". Use read-only, workspace-write, or danger-full-access.');
+        expect(testState.state.beginTurns).toEqual([]);
     });
 
     it('preserves an explicit app-server reasoning effort override', async () => {

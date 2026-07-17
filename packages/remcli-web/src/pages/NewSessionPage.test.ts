@@ -346,11 +346,11 @@ describe('NewSessionPage directory and resume sheets', () => {
         expect(pathLabel.props.className).toContain('truncate');
     });
 
-    it('keeps directory and resume drawer surfaces at a stable height with a reduced-motion fallback', () => {
+    it('keeps directory and resume drawer surfaces at a stable height without disabling the shared reduced-motion token', () => {
         expect(directorySheetContentClass).toContain('data-[vaul-drawer-direction=bottom]:h-[min(78dvh,35rem)]');
         expect(resumeSheetContentClass).toContain('data-[vaul-drawer-direction=bottom]:h-[min(72dvh,32rem)]');
-        expect(directorySheetContentClass).toContain('motion-reduce:transition-none');
-        expect(resumeSheetContentClass).toContain('motion-reduce:transition-none');
+        expect(directorySheetContentClass).not.toContain('motion-reduce:transition-none');
+        expect(resumeSheetContentClass).not.toContain('motion-reduce:transition-none');
     });
 
     it('renders a keyboard-focusable internal resume scroll region and resumes the selected item', () => {

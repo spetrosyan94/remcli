@@ -104,6 +104,47 @@ auth: {
 - `update-machine`
   - `body`: `{ t: "update-machine", machineId, metadata?, daemonState?, activeAt? }`
 
+### `executionOutcome` в metadata сессии
+
+`metadata.executionOutcome` — опциональный типизированный watermark результата
+исполнения. Его форма строго ограничена двумя полями:
+
+```text
+{
+  "kind": "error" | "success",
+  "occurredAt": 0
+}
+```
+
+`occurredAt` — timestamp в миллисекундах Unix-времени. Outcome-обновление не
+помещает в metadata текст ошибки, stack trace или исходный provider payload.
+Текст ошибки живёт отдельно в зашифрованном chat event. В Codex app-server
+потоке `runCodex` публикует event вида `{ type: "message", message:
+"<redacted>", isError: true }` только после redaction текста; generic
+`ApiSessionClient` записывает в metadata лишь `kind` и `occurredAt` и сам не
+является универсальным redactor-ом для произвольных сообщений адаптеров.
+
+Правила записи:
+
+- `error` появляется только по явному error-сигналу (`isError: true` в session
+  event или ACP message).
+- `success` появляется только после live agent output с непустым текстом. Для
+  ACP message требуется явный `isError: false`; история при resume, reasoning,
+  tool/status events и пустые сообщения outcome не меняют.
+- При конфликте или запаздывающем событии побеждает только более новый
+  watermark: кандидат с `occurredAt <=` текущего значения игнорируется.
+- После `session-end` (завершённая terminal-сессия) новые outcome-обновления не
+  запускаются; при `metadata.lifecycleState === "archived"` кандидат блокируется
+  на этапе merge. Уже поставленная в очередь metadata-операция отдельно не
+  отменяется.
+- `success` заменяет предыдущий `error` watermark, но не является отдельным
+  UI-статусом. Для online-сессии UI применяет приоритет
+  `offline > permission > thinking > error > idle`; `success` приводит к
+  `idle`, если более приоритетное состояние отсутствует.
+- `summary.text` и другие свободные metadata-поля не устанавливают и не
+  очищают outcome. Summary может отображаться как текст, но сам по себе не
+  делает сессию ошибочной.
+
 ### Типы событий `ephemeral`
 - `activity`: `{ type: "activity", id: sessionId, active, activeAt, thinking }`
 - `machine-activity`: `{ type: "machine-activity", id: machineId, active, activeAt }`
