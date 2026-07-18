@@ -153,6 +153,8 @@ export const zhHans: Dictionary = {
     "settings.ttsOff": "已关闭",
     "settings.autoSpeak": "自动朗读回复",
     "settings.addMachineQr": "通过二维码添加机器",
+    "settings.pairing.showQr": "显示连接二维码",
+    "settings.pairing.rotate": "轮换配对密钥",
     "settings.machine.rename": "重命名",
     "settings.machine.renameTitle": "重命名机器",
     "settings.machine.renamePlaceholder": "机器名称",

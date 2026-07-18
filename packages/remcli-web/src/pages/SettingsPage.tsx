@@ -4,7 +4,7 @@
 // 403 для машины самого демона), TTS-статус демона, язык (10 локалей, @/lib/i18n),
 // отключение (logout → /connect).
 import * as React from "react";
-import { ChevronRight, LogOut, MoreHorizontal, QrCode } from "lucide-react";
+import { ChevronRight, KeyRound, LoaderCircle, LogOut, MoreHorizontal, QrCode } from "lucide-react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import { Segmented, StatusDot } from "@/components/kit";
@@ -30,9 +30,16 @@ import { Input } from "@/components/ui/input";
 import { LOCALES, setLocale, t, useLocale } from "@/lib/i18n";
 import {
     logoutProtocolClient,
+    machineCancelPairingRekey,
     machineDelete,
+    machineRequestPairingRekey,
     machineSetDisplayName,
+    machineShowPairingQr,
+    pollPairingRekey,
+    replaceProtocolClient,
     useMachines,
+    type PairingQrPresentation,
+    type PendingPairingRekey,
     type Machine,
 } from "@/lib/protocol";
 import {
@@ -48,6 +55,10 @@ const THEME_OPTIONS: { labelKey: "settings.theme.light" | "settings.theme.dark" 
     { labelKey: "settings.theme.dark", value: "dark" },
     { labelKey: "settings.theme.system", value: "system" },
 ];
+
+// DialogContent exits in 200ms. Keep the host-confirmation layer fully gone
+// before presenting the replacement QR instead of briefly stacking dialogs.
+const REKEY_DIALOG_EXIT_DELAY_MS = 240;
 
 function machineName(machine: Machine): string {
     return machine.metadata?.displayName || machine.metadata?.host || machine.id;
@@ -123,6 +134,11 @@ export function SettingsPage() {
     const [isRenaming, setIsRenaming] = React.useState(false);
     const [deleteTarget, setDeleteTarget] = React.useState<Machine | null>(null);
     const [isDeleting, setIsDeleting] = React.useState(false);
+    const [pairingQr, setPairingQr] = React.useState<PairingQrPresentation | null>(null);
+    const [isLoadingPairingQr, setIsLoadingPairingQr] = React.useState(false);
+    const [pendingRekey, setPendingRekey] = React.useState<PendingPairingRekey | null>(null);
+    const [rekeyPairingQr, setRekeyPairingQr] = React.useState<PairingQrPresentation | null>(null);
+    const [isCancellingRekey, setIsCancellingRekey] = React.useState(false);
 
     const themeLabel = t(THEME_OPTIONS.find((o) => o.value === theme)?.labelKey ?? "settings.theme.dark");
     const localeLabel = LOCALES.find((l) => l.id === locale)?.label ?? locale;
@@ -138,6 +154,7 @@ export function SettingsPage() {
 
     // Версия демона — из метаданных самой свежей машины
     const daemonVersion = machines.find((m) => m.metadata?.remcliCliVersion)?.metadata?.remcliCliVersion;
+    const pairingMachine = machines.find((machine) => machine.active) ?? machines[0] ?? null;
 
     const selectVoice = (next: string) => {
         setVoice(next);
@@ -191,6 +208,100 @@ export function SettingsPage() {
         logoutProtocolClient();
         navigate("/connect", { replace: true });
     };
+
+    const showPairingQr = async () => {
+        if (!pairingMachine || isLoadingPairingQr) return;
+        setIsLoadingPairingQr(true);
+        try {
+            setPairingQr(await machineShowPairingQr(pairingMachine.id));
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : t("status.error"));
+        } finally {
+            setIsLoadingPairingQr(false);
+        }
+    };
+
+    const requestPairingRekey = async () => {
+        if (!pairingMachine || pendingRekey) return;
+        try {
+            setPendingRekey(await machineRequestPairingRekey(pairingMachine.id));
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : t("status.error"));
+        }
+    };
+
+    const cancelPairingRekey = async () => {
+        const request = pendingRekey;
+        if (!request || isCancellingRekey) return;
+        if (!pairingMachine) {
+            setPendingRekey(null);
+            return;
+        }
+
+        setIsCancellingRekey(true);
+        try {
+            const result = await machineCancelPairingRekey(pairingMachine.id, request);
+            if (result.type === 'cancelled' || result.type === 'expired' || result.type === 'not-found') {
+                setPendingRekey((current) => current?.requestId === request.requestId ? null : current);
+                return;
+            }
+            if (result.type === 'invalid-code') {
+                toast.error(t("status.error"));
+            }
+            // `already-approved` stays open: the polling effect must receive
+            // the sealed replacement instead of hiding a completed rotation.
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : t("status.error"));
+        } finally {
+            setIsCancellingRekey(false);
+        }
+    };
+
+    React.useEffect(() => {
+        if (!pendingRekey) return undefined;
+        let isActive = true;
+        const poll = async () => {
+            try {
+                const result = await pollPairingRekey(pendingRekey);
+                if (!isActive || result.type !== "ready") return;
+                let reconnectError: Error | null = null;
+                try {
+                    await replaceProtocolClient(result.pairing.payload);
+                } catch (error) {
+                    reconnectError = error instanceof Error ? error : new Error(t("status.error"));
+                }
+                if (!isActive) return;
+                setPendingRekey(null);
+                setRekeyPairingQr(result.pairing);
+                if (reconnectError) {
+                    toast.error(reconnectError.message);
+                }
+            } catch (error) {
+                if (!isActive) return;
+                setPendingRekey(null);
+                toast.error(error instanceof Error ? error.message : t("status.error"));
+            }
+        };
+        void poll();
+        const intervalId = window.setInterval(() => { void poll(); }, 1_500);
+        return () => {
+            isActive = false;
+            window.clearInterval(intervalId);
+        };
+    }, [pendingRekey]);
+
+    React.useEffect(() => {
+        if (!rekeyPairingQr || pendingRekey !== null) return undefined;
+        const timeoutId = window.setTimeout(() => {
+            setPairingQr(rekeyPairingQr);
+            setRekeyPairingQr(null);
+        }, REKEY_DIALOG_EXIT_DELAY_MS);
+        return () => window.clearTimeout(timeoutId);
+    }, [pendingRekey, rekeyPairingQr]);
+
+    const pairingApprovalCommand = pendingRekey
+        ? `remcli daemon rekey approve ${pendingRekey.requestId} ${pendingRekey.approvalCode}`
+        : "";
 
     return (
         <>
@@ -265,6 +376,24 @@ export function SettingsPage() {
                         <QrCode className="size-[13px]" />
                         <span className="text-[13px] font-medium">{t("settings.addMachineQr")}</span>
                     </button>
+                    <button
+                        type="button"
+                        onClick={() => void showPairingQr()}
+                        disabled={!pairingMachine || isLoadingPairingQr}
+                        className="flex min-h-12 w-full items-center gap-2.5 px-3.5 py-2.5 text-accent disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                        {isLoadingPairingQr ? <LoaderCircle className="size-[13px] animate-spin" /> : <QrCode className="size-[13px]" />}
+                        <span className="text-[13px] font-medium">{t("settings.pairing.showQr")}</span>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => void requestPairingRekey()}
+                        disabled={!pairingMachine || pendingRekey !== null}
+                        className="flex min-h-12 w-full items-center gap-2.5 px-3.5 py-2.5 text-muted-foreground disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                        {pendingRekey ? <LoaderCircle className="size-[13px] animate-spin" /> : <KeyRound className="size-[13px]" />}
+                        <span className="text-[13px] font-medium">{t("settings.pairing.rotate")}</span>
+                    </button>
                 </Group>
 
                 <Group label={t("settings.group.about")}>
@@ -309,6 +438,44 @@ export function SettingsPage() {
                     <DialogFooter>
                         <Button variant="outline" size="sm" className="h-11 w-full lg:h-8 lg:w-auto" onClick={() => setDeleteTarget(null)}>{t("common.cancel")}</Button>
                         <Button variant="destructive" size="sm" className="h-11 w-full lg:h-8 lg:w-auto" disabled={isDeleting} onClick={() => void submitDelete()}>{t("common.delete")}</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog open={pairingQr !== null} onOpenChange={(isOpen) => { if (!isOpen) setPairingQr(null); }}>
+                <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-sm">
+                    <DialogHeader>
+                        <DialogTitle className="text-base">{t("settings.pairing.showQr")}</DialogTitle>
+                    </DialogHeader>
+                    {pairingQr && (
+                        <img
+                            src={pairingQr.qrDataUrl}
+                            alt={t("settings.pairing.showQr")}
+                            className="mx-auto aspect-square w-full max-w-64 rounded-lg bg-white p-2"
+                        />
+                    )}
+                    <DialogFooter>
+                        <Button size="sm" className="h-11 w-full lg:h-8 lg:w-auto" onClick={() => setPairingQr(null)}>{t("common.cancel")}</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog open={pendingRekey !== null} onOpenChange={(isOpen) => { if (!isOpen) void cancelPairingRekey(); }}>
+                <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-sm">
+                    <DialogHeader>
+                        <DialogTitle className="text-base">{t("settings.pairing.rotate")}</DialogTitle>
+                        <DialogDescription className="break-all font-mono text-xs leading-5">
+                            {pairingApprovalCommand}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="flex items-center gap-2 font-mono text-xs text-muted-foreground">
+                        <LoaderCircle className="size-3.5 animate-spin" />
+                        <span>{pendingRekey ? new Date(pendingRekey.expiresAt).toLocaleTimeString() : ""}</span>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" size="sm" className="h-11 w-full lg:h-8 lg:w-auto" disabled={isCancellingRekey} onClick={() => void cancelPairingRekey()}>
+                            {isCancellingRekey ? <LoaderCircle className="size-3.5 animate-spin" /> : t("common.cancel")}
+                        </Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>

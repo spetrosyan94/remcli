@@ -26,6 +26,7 @@ const TEST_MACHINE_ID = 'machine-rpc-directory-smoke';
 
 interface P2PModules {
     P2PStore: typeof import('@/daemon/p2p/p2pStore').P2PStore;
+    PairingRekeyCoordinator: typeof import('@/daemon/p2p/pairingRekey').PairingRekeyCoordinator;
     bootstrapMachineSocket: typeof import('@/daemon/machineSocket').bootstrapMachineSocket;
     deriveBearerToken: typeof import('@/daemon/p2p/p2pAuth').deriveBearerToken;
     generateSharedSecret: typeof import('@/daemon/p2p/p2pAuth').generateSharedSecret;
@@ -66,11 +67,13 @@ async function importP2PModules(): Promise<P2PModules> {
     vi.resetModules();
     const [
         p2pStore,
+        pairingRekey,
         machineSocket,
         p2pAuth,
         p2pServerModule,
     ] = await Promise.all([
         import('@/daemon/p2p/p2pStore'),
+        import('@/daemon/p2p/pairingRekey'),
         import('@/daemon/machineSocket'),
         import('@/daemon/p2p/p2pAuth'),
         import('@/daemon/p2p/p2pServer'),
@@ -78,11 +81,23 @@ async function importP2PModules(): Promise<P2PModules> {
 
     return {
         P2PStore: p2pStore.P2PStore,
+        PairingRekeyCoordinator: pairingRekey.PairingRekeyCoordinator,
         bootstrapMachineSocket: machineSocket.bootstrapMachineSocket,
         deriveBearerToken: p2pAuth.deriveBearerToken,
         generateSharedSecret: p2pAuth.generateSharedSecret,
         startP2PServer: p2pServerModule.startP2PServer,
     };
+}
+
+function createPairingRekeyCoordinator(modules: P2PModules, sharedSecret: Uint8Array) {
+    return new modules.PairingRekeyCoordinator({
+        currentSecrets: () => ({ authSecret: sharedSecret, contentSecret: sharedSecret }),
+        createQrPayload: async () => ({
+            qrUrl: "http://127.0.0.1/terminal/connect#test",
+            qrDataUrl: "data:image/png;base64,test",
+        }),
+        rotateAuthSecret: async () => undefined,
+    });
 }
 
 function createDeferred<T>(): Deferred<T> {
@@ -293,7 +308,7 @@ describe('machine RPC directory browser smoke', { timeout: 15_000 }, () => {
         p2pServer = await modules.startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
         });
 
@@ -301,7 +316,8 @@ describe('machine RPC directory browser smoke', { timeout: 15_000 }, () => {
             p2pPort: p2pServer.port,
             machineId: TEST_MACHINE_ID,
             bearerToken,
-            sharedSecret,
+            contentSecret: sharedSecret,
+            pairingRekeyCoordinator: createPairingRekeyCoordinator(modules, sharedSecret),
             spawnSession: async () => ({ type: 'error', errorMessage: 'spawn-session is outside this smoke test' }),
             stopSession: () => ({ success: false }),
             requestShutdown: () => undefined,
@@ -398,7 +414,7 @@ describe('machine RPC stop acknowledgements', { timeout: 15_000 }, () => {
         const server = await modules.startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
         });
         p2pServer = server;
@@ -410,7 +426,8 @@ describe('machine RPC stop acknowledgements', { timeout: 15_000 }, () => {
             p2pPort: server.port,
             machineId: TEST_MACHINE_ID,
             bearerToken,
-            sharedSecret,
+            contentSecret: sharedSecret,
+            pairingRekeyCoordinator: createPairingRekeyCoordinator(modules, sharedSecret),
             spawnSession: async () => ({ type: 'error', errorMessage: 'spawn-session is outside this smoke test' }),
             stopSession,
             requestShutdown: () => undefined,

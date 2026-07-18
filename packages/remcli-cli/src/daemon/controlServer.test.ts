@@ -13,6 +13,7 @@ import type {
     NativeCodexThreadBindingResult,
     StopSessionResult,
 } from './types';
+import type { PairingRekeyApprovalResult } from './p2p/pairingRekey';
 
 const sessionMetadata: Metadata = {
     path: '/tmp/remcli',
@@ -38,6 +39,7 @@ interface ControlServerTestOptions {
     verifySessionRunnerCredential?: (sessionId: string, credential: string) => boolean;
     bindNativeCodexThread?: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
     openCodexRemoteTui?: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
+    approvePairingRekey?: (requestId: string, approvalCode: string) => Promise<PairingRekeyApprovalResult>;
 }
 
 interface Deferred<T> {
@@ -75,6 +77,7 @@ async function startControlServerForTest(options: ControlServerTestOptions = {})
             type: 'wrapper-not-tracked',
             request,
         })),
+        approvePairingRekey: options.approvePairingRekey ?? (async () => ({ type: 'not-found' })),
     });
 }
 
@@ -113,6 +116,32 @@ describe('startDaemonControlServer', () => {
         const response = await responsePromise;
         expect(response.status).toBe(200);
         await expect(response.json()).resolves.toEqual({ success: true });
+    });
+
+    it('forwards pairing rekey approval only through the loopback control endpoint', async () => {
+        const approvePairingRekey = vi.fn(async () => ({
+            type: 'approved' as const,
+            expiresAt: 1_784_324_800_000,
+        }));
+        const controlServer = await startControlServerForTest({ approvePairingRekey });
+        stopServer = controlServer.stop;
+
+        const approved = await fetch(`http://127.0.0.1:${controlServer.port}/pairing-rekey/approve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requestId: 'request-0000000001', approvalCode: 'A1B2C3D4' }),
+        });
+        const malformed = await fetch(`http://127.0.0.1:${controlServer.port}/pairing-rekey/approve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requestId: '', approvalCode: '' }),
+        });
+
+        expect(approved.status).toBe(200);
+        await expect(approved.json()).resolves.toEqual({ type: 'approved', expiresAt: 1_784_324_800_000 });
+        expect(approvePairingRekey).toHaveBeenCalledWith('request-0000000001', 'A1B2C3D4');
+        expect(malformed.status).toBe(400);
+        expect(approvePairingRekey).toHaveBeenCalledOnce();
     });
 
     it('issues a daemon-owned runner credential and verifies it before binding a Codex thread', async () => {

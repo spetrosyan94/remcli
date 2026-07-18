@@ -20,6 +20,11 @@
     "gemini": "node packages/remcli-cli/bin/remcli.mjs gemini",
     "dev:web": "npm -w remcli-web run dev",
     "typecheck": "npm -w remcli-web run typecheck && npm -w remcli run typecheck",
-    "test": "npm -w remcli-web run test && npm -w remcli run test"
+    "test": "npm -w remcli-web run test && npm -w remcli run test",
+    "check:dead-code": "knip --no-progress --production --include files,dependencies,unlisted,unresolved",
+    "check:dead-code:advisory": "knip --no-progress --include exports,types --reporter json --no-exit-code"
+  },
+  "devDependencies": {
+    "knip": "6.27.0"
   }
 }

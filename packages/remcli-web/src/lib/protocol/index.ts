@@ -16,6 +16,8 @@ export {
     parseConnectUrl,
     parseManualInput,
     deriveBearerToken,
+    decodePairingKey,
+    createP2PCredentials,
     buildEndpoint,
     getStoredConnection,
     storeConnection,
@@ -30,6 +32,7 @@ export {
 
 export {
     startProtocolClient,
+    replaceProtocolClient,
     restoreProtocolClient,
     stopProtocolClient,
     logoutProtocolClient,
@@ -43,12 +46,20 @@ export {
     machineSpawnNewSession,
     machineListAgentSessions,
     machineListDirectory,
+    machineCancelPairingRekey,
+    machineShowPairingQr,
+    machineRequestPairingRekey,
+    pollPairingRekey,
     machineStopSession,
     sessionAllow,
     sessionDeny,
     machineSetDisplayName,
     machineDelete,
-    subscribeKvChanges
+    subscribeKvChanges,
+    type PairingQrPresentation,
+    type PairingRekeyCancellationResult,
+    type PendingPairingRekey,
+    type PairingRekeyPollResult
 } from '@/lib/protocol/client';
 
 export {
@@ -71,6 +82,7 @@ export {
     sessionKill,
     sessionRpc,
     machineRpc,
+    waitForSocketConnection,
     type ConnectionStatus,
     type DirectoryEntry,
     type DirectoryHome,

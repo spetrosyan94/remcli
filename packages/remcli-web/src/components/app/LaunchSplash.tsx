@@ -12,13 +12,11 @@
 import * as React from "react";
 import { useNavigate } from "react-router";
 import {
-    getStoredConnection,
     isClientStarted,
     parseConnectUrl,
     restoreCredentials,
     stopProtocolClient,
     useConnectionStatus,
-    type P2PQRPayload,
 } from "@/lib/protocol";
 
 /** Минимальное время показа — сплэш не должен мелькать (MOTION.md §9). */
@@ -47,13 +45,6 @@ function detectSplashReason(): SplashReason | null {
 }
 
 const splashReason = detectSplashReason();
-
-/** Payload для повторного подключения на ConnectPage после упавшего restore. */
-function buildStoredPayload(): P2PQRPayload | null {
-    const stored = getStoredConnection();
-    if (!stored) return null;
-    return { mode: "p2p", host: stored.host, port: stored.port, key: stored.key, v: 1 };
-}
 
 /* Тайминги §9 в процентах интро 1.4s: съезд шевронов 0–380ms (~27%),
    курсор 400–1400ms мигает 2 раза steps(1); после интро — blink 1.2s. */
@@ -130,7 +121,9 @@ export function LaunchSplash() {
         const leaveId = window.setTimeout(() => {
             if (outcome === "failed" && splashReason === "restore") {
                 stopProtocolClient();
-                navigate("/connect", { replace: true, state: { failedPayload: buildStoredPayload() } });
+                // Do not put the pairing key into browser history state. ConnectPage
+                // re-reads the already persisted local credential when retrying.
+                navigate("/connect", { replace: true, state: { restoreFailed: true } });
             }
             setPhase("leaving");
         }, waitMs);

@@ -16,14 +16,38 @@ export interface P2PQRPayload {
     mode: 'p2p';
     host: string;
     port: number;
-    key: string;      // base64-encoded shared secret
-    v: number;        // protocol version
+    key: string;      // base64-encoded pairing key material
+    v: 1 | 2;         // pairing protocol version
 }
 
 export interface P2PConnectionConfig {
     host: string;
     port: number;
     key: string;      // base64-encoded shared secret
+}
+
+const PAIRING_SECRET_SIZE = 32;
+
+export interface DecodedPairingKey {
+    authSecret: Uint8Array;
+    contentSecret: Uint8Array;
+    version: 1 | 2;
+}
+
+/** Decode legacy v1 and split v2 QR pairing material with strict lengths. */
+export function decodePairingKey(encoded: string): DecodedPairingKey {
+    const key = decodeBase64(encoded);
+    if (key.length === PAIRING_SECRET_SIZE) {
+        return { authSecret: key, contentSecret: key, version: 1 };
+    }
+    if (key.length === PAIRING_SECRET_SIZE * 2) {
+        return {
+            authSecret: key.slice(0, PAIRING_SECRET_SIZE),
+            contentSecret: key.slice(PAIRING_SECRET_SIZE),
+            version: 2,
+        };
+    }
+    throw new Error('Invalid pairing key length');
 }
 
 // ─── Parsing ─────────────────────────────────────────────────────
@@ -47,9 +71,10 @@ export function parseConnectData(data: string): P2PQRPayload | null {
             typeof (parsed as P2PQRPayload).host === 'string' &&
             typeof (parsed as P2PQRPayload).port === 'number' &&
             typeof (parsed as P2PQRPayload).key === 'string' &&
-            typeof (parsed as P2PQRPayload).v === 'number'
+            ((parsed as P2PQRPayload).v === 1 || (parsed as P2PQRPayload).v === 2)
         ) {
-            return parsed as P2PQRPayload;
+            const payload = parsed as P2PQRPayload;
+            return decodePairingKey(payload.key).version === payload.v ? payload : null;
         }
     } catch {
         // Not JSON — try URL format below
@@ -74,7 +99,8 @@ export function parseConnectUrl(data: string): P2PQRPayload | null {
         const decoded = atob(base64);
         const compact = JSON.parse(decoded) as { k?: string; v?: number };
 
-        if (typeof compact.k !== 'string' || typeof compact.v !== 'number') return null;
+        if (typeof compact.k !== 'string' || (compact.v !== 1 && compact.v !== 2)) return null;
+        if (decodePairingKey(compact.k).version !== compact.v) return null;
 
         if (url.protocol === 'https:') {
             // Tunnel mode — host carries the full origin, port=0 signals it
@@ -96,8 +122,9 @@ export function parseConnectUrl(data: string): P2PQRPayload | null {
 export function parseManualInput(serverUrl: string, key: string): P2PQRPayload | null {
     const trimmedKey = key.trim();
     if (!trimmedKey) return null;
+    let decoded: DecodedPairingKey;
     try {
-        decodeBase64(trimmedKey); // validate base64
+        decoded = decodePairingKey(trimmedKey);
     } catch {
         return null;
     }
@@ -108,10 +135,10 @@ export function parseManualInput(serverUrl: string, key: string): P2PQRPayload |
         const url = new URL(withProtocol);
         if (url.protocol === 'https:') {
             // Tunnel mode — host contains full URL with protocol, port=0
-            return { mode: 'p2p', host: url.origin, port: 0, key: trimmedKey, v: 1 };
+            return { mode: 'p2p', host: url.origin, port: 0, key: trimmedKey, v: decoded.version };
         }
         const port = url.port ? parseInt(url.port, 10) : 80;
-        return { mode: 'p2p', host: url.hostname, port, key: trimmedKey, v: 1 };
+        return { mode: 'p2p', host: url.hostname, port, key: trimmedKey, v: decoded.version };
     } catch {
         return null;
     }
@@ -183,7 +210,8 @@ export function clearStoredConnection(): void {
 
 export interface P2PCredentials {
     token: string;
-    secret: Uint8Array;
+    authSecret: Uint8Array;
+    contentSecret: Uint8Array;
     endpoint: string;
 }
 
@@ -192,11 +220,24 @@ export interface P2PCredentials {
  * build the endpoint URL, persist the connection config.
  */
 export function connectP2P(payload: P2PQRPayload): P2PCredentials {
-    const sharedSecret = decodeBase64(payload.key);
-    const token = deriveBearerToken(sharedSecret);
+    const credentials = createP2PCredentials(payload);
     const config: P2PConnectionConfig = { host: payload.host, port: payload.port, key: payload.key };
     storeConnection(config);
-    return { token, secret: sharedSecret, endpoint: buildEndpoint(config) };
+    return credentials;
+}
+
+/** Build in-memory credentials without persisting a new pairing yet. */
+export function createP2PCredentials(payload: P2PQRPayload): P2PCredentials {
+    const pairing = decodePairingKey(payload.key);
+    if (pairing.version !== payload.v) {
+        throw new Error('Pairing key version does not match the QR payload');
+    }
+    return {
+        token: deriveBearerToken(pairing.authSecret),
+        authSecret: pairing.authSecret,
+        contentSecret: pairing.contentSecret,
+        endpoint: buildEndpoint({ host: payload.host, port: payload.port, key: payload.key }),
+    };
 }
 
 /**
@@ -207,10 +248,11 @@ export function restoreCredentials(): P2PCredentials | null {
     const config = getStoredConnection();
     if (!config) return null;
     try {
-        const sharedSecret = decodeBase64(config.key);
+        const pairing = decodePairingKey(config.key);
         return {
-            token: deriveBearerToken(sharedSecret),
-            secret: sharedSecret,
+            token: deriveBearerToken(pairing.authSecret),
+            authSecret: pairing.authSecret,
+            contentSecret: pairing.contentSecret,
             endpoint: buildEndpoint(config)
         };
     } catch {

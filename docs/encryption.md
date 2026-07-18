@@ -34,6 +34,20 @@ graph TB
 - Явные, стабильные бинарные форматы, чтобы клиенты разных версий были совместимы.
 - Простое, единообразное кодирование base64 на проводе.
 
+## Pairing material v2
+
+QR pairing v2 разделяет две 32-byte части:
+
+```text
+[ authSecret (32) | contentSecret (32) ]
+```
+
+- `authSecret` используется только для bearer `HMAC-SHA512(authSecret, "p2p-auth")` и меняется при rekey.
+- `contentSecret` остаётся ключом legacy secretbox/RPC transport, поэтому активный session runner не теряет возможность дочитать или подтвердить сообщения во время rekey.
+- Legacy QR v1 содержит один 32-byte secret и при загрузке сопоставляется с обоими полями; persistent pairing автоматически мигрируется в v2.
+
+Новый QR не передаётся как открытый JSON. Browser создаёт ephemeral `tweetnacl.box` keypair, а daemon возвращает bundle `[ephemeral public key (32) | nonce (24) | ciphertext]`, зашифрованный только для этого browser keypair. `daemon.state.json`, heartbeat, P2P update/event и logs не содержат pairing material.
+
 ## Варианты шифрования
 
 ```mermaid

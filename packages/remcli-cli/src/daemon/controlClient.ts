@@ -18,6 +18,7 @@ import {
   type TrackedSession,
 } from './types';
 import { getSessionRunnerCredential, rememberSessionRunnerCredential } from './p2p/p2pRunnerCredentials';
+import type { PairingRekeyApprovalResult } from './p2p/pairingRekey';
 
 /**
  * Consistent envelope for all daemon HTTP responses.
@@ -143,6 +144,13 @@ export async function spawnDaemonSession(directory: string, sessionId?: string):
 
 export async function stopDaemonHttp(): Promise<void> {
   await daemonPost('/stop');
+}
+
+export async function approveDaemonPairingRekey(
+  requestId: string,
+  approvalCode: string,
+): Promise<DaemonResponse<PairingRekeyApprovalResult>> {
+  return daemonPost<PairingRekeyApprovalResult>('/pairing-rekey/approve', { requestId, approvalCode });
 }
 
 /**

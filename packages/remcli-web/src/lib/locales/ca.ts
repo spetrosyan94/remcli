@@ -153,6 +153,8 @@ export const ca: Dictionary = {
     "settings.ttsOff": "apagat",
     "settings.autoSpeak": "Llegeix les respostes en veu alta",
     "settings.addMachineQr": "Afegeix una màquina per QR",
+    "settings.pairing.showQr": "Mostra el QR de connexió",
+    "settings.pairing.rotate": "Gira la clau d'aparellament",
     "settings.machine.rename": "Canvia el nom",
     "settings.machine.renameTitle": "Canvia el nom de la màquina",
     "settings.machine.renamePlaceholder": "nom de la màquina",

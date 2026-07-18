@@ -18,12 +18,17 @@ import {
 } from '@/lib/fixtures';
 import {
     connectP2P,
+    createP2PCredentials,
     disconnectP2P,
+    parseConnectUrl,
     restoreCredentials,
+    storeConnection,
     type P2PCredentials,
     type P2PQRPayload
 } from '@/lib/protocol/connection';
-import { createEncryption, type Cipher, type Encryption } from '@/lib/protocol/encryption';
+import { decodeBase64, encodeBase64 } from '@/lib/protocol/encoding';
+import { createEncryption, decryptBox, type Cipher, type Encryption } from '@/lib/protocol/encryption';
+import nacl from 'tweetnacl';
 import { normalizeRawMessage, type NormalizedMessage, type RawRecord } from '@/lib/protocol/messages';
 import {
     deleteMachine,
@@ -37,6 +42,9 @@ import {
 import {
     machineListAgentSessions as socketMachineListAgentSessions,
     machineListDirectory as socketMachineListDirectory,
+    machineCancelPairingRekey as socketMachineCancelPairingRekey,
+    machineRequestPairingRekey as socketMachineRequestPairingRekey,
+    machineShowPairingQr as socketMachineShowPairingQr,
     machineSpawnNewSession as socketMachineSpawnNewSession,
     machineStopSession as socketMachineStopSession,
     onSocketMessage,
@@ -48,9 +56,13 @@ import {
     socketConnect,
     socketDisconnect,
     socketEmitWithAck,
+    waitForSocketConnection,
     type DirectoryListing,
     type SpawnSessionOptions,
-    type SpawnSessionResult
+    type SpawnSessionResult,
+    type PairingRekeyCancellationResult,
+    type PairingRekeyRequest,
+    type SealedPairingQr,
 } from '@/lib/protocol/socket';
 import { useProtocolStore } from '@/lib/protocol/store';
 import {
@@ -116,10 +128,32 @@ interface MachineActivityPatch {
 }
 
 const MAX_PENDING_ACTIVITY_PATCHES = 512;
+const FIXTURE_PAIRING_QR_DATA_URL = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320"%3E%3Crect width="320" height="320" fill="%23fafafa"/%3E%3Cpath fill="%2309090b" d="M24 24h88v88H24zm16 16v56h56V40zm16 16h24v24H56zM208 24h88v88h-88zm16 16v56h56V40zm16 16h24v24h-24zM24 208h88v88H24zm16 16v56h56v-56zm16 16h24v24H56zM144 144h32v32h-32zm48 0h32v32h-32zm-48 48h32v32h-32zm48 0h80v32h-80z"/%3E%3C/svg%3E';
 
 let context: ClientContext | null = null;
 let lifecycleGeneration = 0;
 const protocolReconnectedListeners = new Set<() => void>();
+
+export interface PairingQrPresentation {
+    qrDataUrl: string;
+    payload: P2PQRPayload;
+}
+
+export interface PendingPairingRekey {
+    requestId: string;
+    approvalCode: string;
+    ticket: string;
+    expiresAt: number;
+    privateKey: Uint8Array;
+    endpoint: string;
+    fixture?: boolean;
+}
+
+export type PairingRekeyPollResult =
+    | { type: 'pending'; expiresAt: number }
+    | { type: 'ready'; pairing: PairingQrPresentation };
+
+export type { PairingRekeyCancellationResult };
 
 function isCurrentClientContext(ctx: ClientContext): boolean {
     return context === ctx && ctx.generation === lifecycleGeneration;
@@ -331,6 +365,121 @@ export async function machineStopSession(machineId: string, sessionId: string): 
         return fixtureStopSession(machineId, sessionId);
     }
     return socketMachineStopSession(machineId, sessionId);
+}
+
+function decodeSealedPairingQr(sealed: SealedPairingQr, privateKey: Uint8Array): PairingQrPresentation {
+    const decrypted = decryptBox(decodeBase64(sealed.payload), privateKey);
+    if (!decrypted) {
+        throw new Error('Pairing QR delivery could not be decrypted');
+    }
+    try {
+        const parsed = JSON.parse(new TextDecoder().decode(decrypted)) as { qrUrl?: unknown; qrDataUrl?: unknown };
+        if (typeof parsed.qrUrl !== 'string' || typeof parsed.qrDataUrl !== 'string') {
+            throw new Error('Pairing QR delivery has an invalid payload');
+        }
+        const payload = parseConnectUrl(parsed.qrUrl);
+        if (!payload) {
+            throw new Error('Pairing QR delivery has an invalid connection URL');
+        }
+        return { qrDataUrl: parsed.qrDataUrl, payload };
+    } catch (error) {
+        if (error instanceof Error) throw error;
+        throw new Error('Pairing QR delivery could not be decoded');
+    }
+}
+
+function fixturePairingPayload(): P2PQRPayload {
+    const key = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+    return { mode: 'p2p', host: '127.0.0.1', port: 5178, key, v: 1 };
+}
+
+/** Read the current connection QR without writing it into route/history state. */
+export async function machineShowPairingQr(machineId: string): Promise<PairingQrPresentation> {
+    if (isFixturesActive) {
+        return { qrDataUrl: FIXTURE_PAIRING_QR_DATA_URL, payload: fixturePairingPayload() };
+    }
+    const keyPair = nacl.box.keyPair();
+    const sealed = await socketMachineShowPairingQr(machineId, encodeBase64(keyPair.publicKey));
+    return decodeSealedPairingQr(sealed, keyPair.secretKey);
+}
+
+/** Create a local-host-approved rotation request and keep its private key in memory only. */
+export async function machineRequestPairingRekey(machineId: string): Promise<PendingPairingRekey> {
+    const keyPair = nacl.box.keyPair();
+    if (isFixturesActive) {
+        return {
+            requestId: 'fixture-pairing-request-0001',
+            approvalCode: 'F1A2B3C4',
+            ticket: 'fixture-pairing-ticket-0001',
+            expiresAt: Date.now() + 5 * 60 * 1000,
+            privateKey: keyPair.secretKey,
+            endpoint: 'http://127.0.0.1:5178',
+            fixture: true,
+        };
+    }
+    const request: PairingRekeyRequest = await socketMachineRequestPairingRekey(
+        machineId,
+        encodeBase64(keyPair.publicKey),
+    );
+    return {
+        ...request,
+        privateKey: keyPair.secretKey,
+        endpoint: requireContext().credentials.endpoint,
+    };
+}
+
+/** Cancel a request that has not been locally approved yet. */
+export async function machineCancelPairingRekey(
+    machineId: string,
+    pending: PendingPairingRekey,
+): Promise<PairingRekeyCancellationResult> {
+    if (pending.fixture) {
+        return { type: 'cancelled' };
+    }
+    return await socketMachineCancelPairingRekey(machineId, pending.requestId, pending.approvalCode);
+}
+
+/** Poll the opaque rekey ticket; the endpoint never returns an unsealed QR. */
+export async function pollPairingRekey(pending: PendingPairingRekey): Promise<PairingRekeyPollResult> {
+    if (pending.fixture) {
+        return {
+            type: 'ready',
+            pairing: { qrDataUrl: FIXTURE_PAIRING_QR_DATA_URL, payload: fixturePairingPayload() },
+        };
+    }
+    const response = await fetch(
+        `${pending.endpoint}/v1/pairing-rekey/${encodeURIComponent(pending.ticket)}`,
+        { cache: 'no-store', headers: { 'Cache-Control': 'no-store' } },
+    );
+    if (response.status === 202) {
+        const body = await response.json() as { status?: unknown; expiresAt?: unknown };
+        if (body.status !== 'pending' || typeof body.expiresAt !== 'number') {
+            throw new Error('Pairing rekey pending response is invalid');
+        }
+        return { type: 'pending', expiresAt: body.expiresAt };
+    }
+    if (response.status === 410) {
+        throw new Error('Pairing rekey request expired');
+    }
+    if (!response.ok) {
+        throw new Error('Pairing rekey request was not found');
+    }
+    const body = await response.json() as { status?: unknown; delivery?: unknown };
+    if (body.status !== 'ready' || !body.delivery || typeof body.delivery !== 'object') {
+        throw new Error('Pairing rekey delivery response is invalid');
+    }
+    const delivery = body.delivery as Partial<SealedPairingQr>;
+    if (
+        delivery.format !== 'nacl-box-v1'
+        || typeof delivery.payload !== 'string'
+        || typeof delivery.expiresAt !== 'number'
+    ) {
+        throw new Error('Pairing rekey delivery has an invalid envelope');
+    }
+    return {
+        type: 'ready',
+        pairing: decodeSealedPairingQr(delivery as SealedPairingQr, pending.privateKey),
+    };
 }
 
 function requireContext(): ClientContext {
@@ -997,8 +1146,12 @@ async function refreshAfterReconnect(ctx: ClientContext): Promise<void> {
     }
 }
 
-async function startWithCredentials(credentials: P2PCredentials): Promise<void> {
-    stopProtocolClient();
+async function startWithCredentials(
+    credentials: P2PCredentials,
+    preserveStore = false,
+    shouldRequireSocketAuthentication = false,
+): Promise<void> {
+    stopProtocolClient({ preserveStore });
 
     const ctx: ClientContext = {
         generation: lifecycleGeneration,
@@ -1007,7 +1160,7 @@ async function startWithCredentials(credentials: P2PCredentials): Promise<void> 
         sessionActivityPatches: new Map(),
         machineActivityPatches: new Map(),
         credentials,
-        encryption: createEncryption(credentials.secret),
+        encryption: createEncryption(credentials.contentSecret),
         sessionCiphers: new Map(),
         machineCiphers: new Map(),
         machineDataCiphers: new Map(),
@@ -1034,6 +1187,10 @@ async function startWithCredentials(credentials: P2PCredentials): Promise<void> 
         }
     );
 
+    if (shouldRequireSocketAuthentication) {
+        await waitForSocketConnection();
+    }
+
     useProtocolStore.getState().setAuthenticated(true);
 
     // Латентность соединения: GET /health раз в ~30s — пилюля HomePage («p2p · 12ms»)
@@ -1059,6 +1216,19 @@ export async function startProtocolClient(payload: P2PQRPayload): Promise<void> 
     await startWithCredentials(credentials);
 }
 
+/**
+ * Promote a sealed, host-approved pairing without navigating away or losing
+ * the visible session list. After the caller decrypts the sealed replacement,
+ * persist it before the handshake: the daemon has already revoked the old
+ * bearer, so this is the browser's recovery credential during Socket.IO retry.
+ */
+export async function replaceProtocolClient(payload: P2PQRPayload): Promise<void> {
+    if (isFixturesActive) return;
+    const credentials = createP2PCredentials(payload);
+    storeConnection({ host: payload.host, port: payload.port, key: payload.key });
+    await startWithCredentials(credentials, true, true);
+}
+
 /** Restore a persisted connection (page load). Returns false when none stored. */
 export async function restoreProtocolClient(): Promise<boolean> {
     if (isFixturesActive) return true;
@@ -1071,7 +1241,7 @@ export async function restoreProtocolClient(): Promise<boolean> {
 }
 
 /** Disconnect the socket and drop in-memory state (keeps stored credentials). */
-export function stopProtocolClient(): void {
+export function stopProtocolClient(options: { preserveStore?: boolean } = {}): void {
     if (isFixturesActive) return; // фикстуры в сторе живут до выключения режима
     lifecycleGeneration += 1;
     if (context) {
@@ -1081,7 +1251,9 @@ export function stopProtocolClient(): void {
         context = null;
     }
     socketDisconnect();
-    useProtocolStore.getState().reset();
+    if (!options.preserveStore) {
+        useProtocolStore.getState().reset();
+    }
 }
 
 /** Logout: disconnect and forget the stored connection. */

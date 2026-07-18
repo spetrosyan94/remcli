@@ -153,6 +153,8 @@ export const zhHant: Dictionary = {
     "settings.ttsOff": "已關閉",
     "settings.autoSpeak": "自動朗讀回覆",
     "settings.addMachineQr": "透過 QR 新增機器",
+    "settings.pairing.showQr": "顯示連線 QR 碼",
+    "settings.pairing.rotate": "輪換配對金鑰",
     "settings.machine.rename": "重新命名",
     "settings.machine.renameTitle": "重新命名機器",
     "settings.machine.renamePlaceholder": "機器名稱",

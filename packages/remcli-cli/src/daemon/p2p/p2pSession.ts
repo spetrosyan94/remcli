@@ -6,8 +6,9 @@
  * to get P2P connection info and creates appropriate credentials.
  */
 
-import { readDaemonState, readSettings, updateSettings, Credentials } from '@/persistence';
-import { deriveBearerToken, decodeSharedSecret } from './p2pAuth';
+import { readDaemonState, updateSettings, Credentials } from '@/persistence';
+import { deriveBearerToken } from './p2pAuth';
+import { loadPairing } from './p2pPairing';
 import { configuration } from '@/configuration';
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
@@ -32,16 +33,18 @@ export async function setupP2PForSession(): Promise<{
         );
     }
 
-    if (!daemonState.p2pPort || !daemonState.p2pSharedSecret) {
+    if (!daemonState.p2pPort) {
         throw new Error(
             'Daemon is running but P2P server info is missing. ' +
             'Try restarting the daemon: remcli daemon stop && remcli daemon start'
         );
     }
 
-    // Derive bearer token from shared secret
-    const sharedSecret = decodeSharedSecret(daemonState.p2pSharedSecret);
-    const bearerToken = deriveBearerToken(sharedSecret);
+    const pairing = loadPairing();
+    if (!pairing) {
+        throw new Error('Daemon pairing is missing or invalid. Restart the daemon and scan a new QR code.');
+    }
+    const bearerToken = deriveBearerToken(pairing.authSecret);
 
     // Configure the global server URL to point to local P2P server
     const p2pUrl = `http://127.0.0.1:${daemonState.p2pPort}`;
@@ -49,13 +52,13 @@ export async function setupP2PForSession(): Promise<{
 
     logger.debug(`[P2P-SESSION] P2P URL: ${p2pUrl}`);
 
-    // Use legacy encryption with shared secret so the mobile app can decrypt
-    // session metadata using the same shared secret from the QR code
+    // Content encryption remains stable across pairing auth-key rotations so
+    // active runner connections and their session metadata remain readable.
     const credentials: Credentials = {
         token: bearerToken,
         encryption: {
             type: 'legacy',
-            secret: sharedSecret
+            secret: pairing.contentSecret
         }
     };
 

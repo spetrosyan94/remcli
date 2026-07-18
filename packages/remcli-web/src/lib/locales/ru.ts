@@ -154,6 +154,8 @@ export const ru = {
     "settings.ttsOff": "выключен",
     "settings.autoSpeak": "Автоозвучка ответов",
     "settings.addMachineQr": "Добавить машину по QR",
+    "settings.pairing.showQr": "Показать QR-код подключения",
+    "settings.pairing.rotate": "Сменить ключ подключения",
     "settings.machine.rename": "Переименовать",
     "settings.machine.renameTitle": "Переименовать машину",
     "settings.machine.renamePlaceholder": "имя машины",

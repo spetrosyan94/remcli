@@ -22,3 +22,13 @@ provider-specific архитектура AI-агентов.
 - Демон также раздаёт сборку веб-приложения (`packages/remcli-web/dist/` или bundled `web-dist/`) как статические файлы через `@fastify/static`, с SPA-fallback для клиентского роутинга.
 - Клиентская часть живёт в web-only пакете `remcli-web` (Vite + React + PWA).
 - Примеры иллюстративны; канонический источник — код.
+
+## Quality Gates
+
+- `npm run check:dead-code` проверяет production-граф Knip: runtime files,
+  dependencies, unlisted и unresolved imports. Production entry points помечены
+  суффиксом `!` в `knip.json`.
+- `npm run check:dead-code:advisory` публикует неблокирующий отчёт по
+  `exports/types`; он не заменяет обязательный production gate.
+- `npm -w remcli-web run check:i18n` сверяет locale registry, key-set,
+  placeholders и literal `t()` calls вместе с их параметрами interpolation.

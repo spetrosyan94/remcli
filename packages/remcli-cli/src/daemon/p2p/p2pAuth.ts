@@ -8,13 +8,53 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { encodeBase64, decodeBase64 } from '@/api/encryption';
 
 const P2P_AUTH_CONTEXT = 'p2p-auth';
-const SHARED_SECRET_SIZE = 32;
+export const PAIRING_SECRET_SIZE = 32;
+const PAIRING_V1_KEY_SIZE = PAIRING_SECRET_SIZE;
+const PAIRING_V2_KEY_SIZE = PAIRING_SECRET_SIZE * 2;
+
+export interface PairingSecrets {
+    authSecret: Uint8Array;
+    contentSecret: Uint8Array;
+}
 
 /**
  * Generate a new random shared secret (32 bytes)
  */
 export function generateSharedSecret(): Uint8Array {
-    return new Uint8Array(randomBytes(SHARED_SECRET_SIZE));
+    return new Uint8Array(randomBytes(PAIRING_SECRET_SIZE));
+}
+
+/**
+ * Encode v2 QR key material. The first half rotates to revoke paired user
+ * clients; the second half stays stable so active encrypted session transport
+ * does not break during a rekey.
+ */
+export function encodePairingKey(secrets: PairingSecrets): string {
+    if (secrets.authSecret.length !== PAIRING_SECRET_SIZE || secrets.contentSecret.length !== PAIRING_SECRET_SIZE) {
+        throw new Error('Pairing secrets must be 32 bytes');
+    }
+    const key = new Uint8Array(PAIRING_V2_KEY_SIZE);
+    key.set(secrets.authSecret, 0);
+    key.set(secrets.contentSecret, PAIRING_SECRET_SIZE);
+    return encodeBase64(key);
+}
+
+/**
+ * Decode both legacy v1 QR payloads and v2 split pairing payloads. v1 maps the
+ * single secret to both roles so existing devices continue to connect.
+ */
+export function decodePairingKey(encoded: string): PairingSecrets {
+    const key = decodeBase64(encoded);
+    if (key.length === PAIRING_V1_KEY_SIZE) {
+        return { authSecret: key, contentSecret: key };
+    }
+    if (key.length === PAIRING_V2_KEY_SIZE) {
+        return {
+            authSecret: key.slice(0, PAIRING_SECRET_SIZE),
+            contentSecret: key.slice(PAIRING_SECRET_SIZE),
+        };
+    }
+    throw new Error(`Unexpected pairing key length: ${key.length}`);
 }
 
 /**
@@ -23,8 +63,8 @@ export function generateSharedSecret(): Uint8Array {
  * SHA-512 is used because libsodium-wrappers (web) only exposes crypto_hash (SHA-512),
  * and Web Crypto API (SHA-256) requires HTTPS which isn't available on LAN HTTP.
  */
-export function deriveBearerToken(sharedSecret: Uint8Array): string {
-    const hmac = createHmac('sha512', sharedSecret);
+export function deriveBearerToken(authSecret: Uint8Array): string {
+    const hmac = createHmac('sha512', authSecret);
     hmac.update(P2P_AUTH_CONTEXT);
     return hmac.digest('hex');
 }
@@ -33,8 +73,8 @@ export function deriveBearerToken(sharedSecret: Uint8Array): string {
  * Verify a bearer token against the shared secret
  * Uses timing-safe comparison to prevent timing attacks
  */
-export function verifyBearerToken(token: string, sharedSecret: Uint8Array): boolean {
-    const expected = deriveBearerToken(sharedSecret);
+export function verifyBearerToken(token: string, authSecret: Uint8Array): boolean {
+    const expected = deriveBearerToken(authSecret);
     if (token.length !== expected.length) return false;
 
     try {
@@ -58,5 +98,9 @@ export function encodeSharedSecret(secret: Uint8Array): string {
  * Decode shared secret from QR code (base64)
  */
 export function decodeSharedSecret(encoded: string): Uint8Array {
-    return decodeBase64(encoded);
+    const secret = decodeBase64(encoded);
+    if (secret.length !== PAIRING_SECRET_SIZE) {
+        throw new Error(`Unexpected shared secret length: ${secret.length}`);
+    }
+    return secret;
 }

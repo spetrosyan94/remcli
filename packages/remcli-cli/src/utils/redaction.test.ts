@@ -6,14 +6,16 @@ describe('diagnostic redaction', () => {
     it('redacts nested credential fields while preserving safe diagnostics', () => {
         expect(redactDiagnosticData({
             pid: 1234,
-            p2pSharedSecret: 'shared-secret',
+            authSecret: 'auth-secret',
+            contentSecret: 'content-secret',
             nested: {
                 apiKey: 'api-key',
                 endpoint: 'ws://127.0.0.1:45123',
             },
         })).toEqual({
             pid: 1234,
-            p2pSharedSecret: '[REDACTED]',
+            authSecret: '[REDACTED]',
+            contentSecret: '[REDACTED]',
             nested: {
                 apiKey: '[REDACTED]',
                 endpoint: 'ws://127.0.0.1:45123',

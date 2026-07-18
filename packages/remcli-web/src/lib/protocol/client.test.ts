@@ -119,9 +119,11 @@ function installReconnectMocks(options: IReconnectMockOptions): IReconnectMocks 
         clearInterval: vi.fn(),
     });
     vi.doMock('@/lib/protocol/connection', () => ({
-        connectP2P: vi.fn(() => ({ endpoint: 'http://127.0.0.1:12345', token: 'test-token', secret: 'test-secret' })),
+        connectP2P: vi.fn(() => ({ endpoint: 'http://127.0.0.1:12345', token: 'test-token', authSecret: new Uint8Array(32), contentSecret: new Uint8Array(32) })),
+        createP2PCredentials: vi.fn(() => ({ endpoint: 'http://127.0.0.1:12345', token: 'replacement-token', authSecret: new Uint8Array(32), contentSecret: new Uint8Array(32) })),
         disconnectP2P: vi.fn(),
         restoreCredentials: vi.fn(() => null),
+        storeConnection: vi.fn(),
     }));
     vi.doMock('@/lib/protocol/encryption', () => ({
         createEncryption: vi.fn(() => ({
@@ -164,6 +166,7 @@ function installReconnectMocks(options: IReconnectMockOptions): IReconnectMocks 
         socketConnect: vi.fn(),
         socketDisconnect: vi.fn(),
         socketEmitWithAck: vi.fn(),
+        waitForSocketConnection: vi.fn().mockResolvedValue(undefined),
     }));
 
     return {
@@ -271,12 +274,62 @@ describe('protocol client message meta', () => {
             sessionName: 'webapp',
         }));
     });
+
+    it('cancels a fixture pairing rekey without touching the network transport', async () => {
+        vi.resetModules();
+        installFixtureGlobals();
+
+        const { machineCancelPairingRekey, machineRequestPairingRekey } = await import('@/lib/protocol/client');
+        const pending = await machineRequestPairingRekey('fx-machine-online');
+
+        await expect(machineCancelPairingRekey('fx-machine-online', pending)).resolves.toEqual({ type: 'cancelled' });
+    });
 });
 
 describe('protocol client reconnect lifecycle', () => {
     afterEach(() => {
         vi.unstubAllGlobals();
         vi.resetModules();
+    });
+
+    it('persists a decrypted replacement pairing before the new Socket.IO handshake', async () => {
+        installReconnectMocks({ fetchSessions: async () => [] });
+        const { replaceProtocolClient, stopProtocolClient } = await import('@/lib/protocol/client');
+        const connection = await import('@/lib/protocol/connection');
+        const socket = await import('@/lib/protocol/socket');
+
+        await replaceProtocolClient({ mode: 'p2p', host: '127.0.0.1', port: 12345, key: 'replacement-key', v: 1 });
+
+        expect(socket.waitForSocketConnection).toHaveBeenCalledOnce();
+        expect(connection.storeConnection).toHaveBeenCalledWith({
+            host: '127.0.0.1',
+            port: 12345,
+            key: 'replacement-key',
+        });
+        stopProtocolClient();
+    });
+
+    it('keeps the decrypted replacement as recovery pairing when the handshake initially fails', async () => {
+        installReconnectMocks({ fetchSessions: async () => [] });
+        const { replaceProtocolClient } = await import('@/lib/protocol/client');
+        const connection = await import('@/lib/protocol/connection');
+        const socket = await import('@/lib/protocol/socket');
+        vi.mocked(socket.waitForSocketConnection).mockRejectedValueOnce(new Error('Authentication failed'));
+
+        await expect(replaceProtocolClient({
+            mode: 'p2p',
+            host: '127.0.0.1',
+            port: 12345,
+            key: 'replacement-key',
+            v: 1,
+        })).rejects.toThrow('Authentication failed');
+
+        expect(connection.storeConnection).toHaveBeenCalledWith({
+            host: '127.0.0.1',
+            port: 12345,
+            key: 'replacement-key',
+        });
+        expect(socket.socketDisconnect).toHaveBeenCalledTimes(1);
     });
 
     it('notifies ChatPage only after session refresh completes', async () => {
@@ -1526,10 +1579,12 @@ describe('protocol client reconnect lifecycle', () => {
             setInterval: vi.fn(() => 1),
             clearInterval: vi.fn(),
         });
-        vi.doMock('@/lib/protocol/connection', () => ({
-            connectP2P: vi.fn(() => ({ endpoint: 'http://127.0.0.1:12345', token: 'test-token', secret: 'test-secret' })),
+    vi.doMock('@/lib/protocol/connection', () => ({
+            connectP2P: vi.fn(() => ({ endpoint: 'http://127.0.0.1:12345', token: 'test-token', authSecret: new Uint8Array(32), contentSecret: new Uint8Array(32) })),
+            createP2PCredentials: vi.fn(() => ({ endpoint: 'http://127.0.0.1:12345', token: 'replacement-token', authSecret: new Uint8Array(32), contentSecret: new Uint8Array(32) })),
             disconnectP2P: vi.fn(),
             restoreCredentials: vi.fn(() => null),
+            storeConnection: vi.fn(),
         }));
         vi.doMock('@/lib/protocol/encryption', () => ({
             createEncryption: vi.fn(() => ({
@@ -1558,6 +1613,7 @@ describe('protocol client reconnect lifecycle', () => {
             socketConnect: vi.fn(),
             socketDisconnect: vi.fn(),
             socketEmitWithAck: vi.fn(),
+            waitForSocketConnection: vi.fn().mockResolvedValue(undefined),
         }));
 
         const { loadSessionMessages, startProtocolClient, stopProtocolClient } = await import('@/lib/protocol/client');

@@ -47,6 +47,7 @@ describe('deriveBearerToken', () => {
 
 describe('parseConnectData / parseConnectUrl', () => {
     const key = Buffer.from(new Uint8Array(32).fill(7)).toString('base64');
+    const v2Key = Buffer.from(new Uint8Array(64).fill(8)).toString('base64');
 
     it('parses the full JSON QR payload', () => {
         const payload = JSON.stringify({ mode: 'p2p', host: '192.168.1.5', port: 8005, key, v: 1 });
@@ -70,6 +71,14 @@ describe('parseConnectData / parseConnectUrl', () => {
             key,
             v: 1
         });
+    });
+
+    it('parses a v2 QR only when the version matches its split key material', () => {
+        const payload = JSON.stringify({ mode: 'p2p', host: '192.168.1.5', port: 8005, key: v2Key, v: 2 });
+        expect(parseConnectData(payload)).toEqual({ mode: 'p2p', host: '192.168.1.5', port: 8005, key: v2Key, v: 2 });
+
+        const mismatchedVersion = JSON.stringify({ mode: 'p2p', host: '192.168.1.5', port: 8005, key: v2Key, v: 1 });
+        expect(parseConnectData(mismatchedVersion)).toBeNull();
     });
 
     it('rejects invalid inputs', () => {
@@ -141,8 +150,22 @@ describe('connection persistence (localStorage)', () => {
         const credentials = connectP2P({ mode: 'p2p', host: '192.168.1.7', port: 8123, key, v: 1 });
 
         expect(credentials.endpoint).toBe('http://192.168.1.7:8123');
-        expect(credentials.secret).toEqual(secret);
+        expect(credentials.authSecret).toEqual(secret);
+        expect(credentials.contentSecret).toEqual(secret);
         expect(credentials.token).toBe(createHmac('sha512', secret).update('p2p-auth').digest('hex'));
         expect(getStoredConnection()).toEqual({ host: '192.168.1.7', port: 8123, key });
+    });
+
+    it('uses only the v2 auth half for the bearer while retaining the stable content half', () => {
+        const authSecret = new Uint8Array(32).fill(4);
+        const contentSecret = new Uint8Array(32).fill(5);
+        const key = Buffer.from(new Uint8Array([...authSecret, ...contentSecret])).toString('base64');
+
+        const credentials = connectP2P({ mode: 'p2p', host: '192.168.1.7', port: 8123, key, v: 2 });
+
+        expect(credentials.authSecret).toEqual(authSecret);
+        expect(credentials.contentSecret).toEqual(contentSecret);
+        expect(credentials.token).toBe(createHmac('sha512', authSecret).update('p2p-auth').digest('hex'));
+        expect(credentials.token).not.toBe(createHmac('sha512', contentSecret).update('p2p-auth').digest('hex'));
     });
 });

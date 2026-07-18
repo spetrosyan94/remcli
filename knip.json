@@ -1,0 +1,48 @@
+{
+    "$schema": "./node_modules/knip/schema.json",
+    "workspaces": {
+        "packages/remcli-web": {
+            "entry": [
+                "src/main.tsx!",
+                "src/test/routeErrorBoundaryHarness.tsx"
+            ],
+            "project": [
+                "src/**/*.{ts,tsx}!",
+                "e2e/**/*.{ts,tsx}",
+                "scripts/**/*.mjs"
+            ],
+            "paths": {
+                "@/*": ["./src/*"]
+            },
+            "ignoreUnresolved": [
+                "^/src/test/routeErrorBoundaryHarness\\.tsx$"
+            ],
+            "ignoreDependencies": [
+                "tailwindcss",
+                "tailwindcss-animate"
+            ]
+        },
+        "packages/remcli-cli": {
+            "entry": [
+                "src/index.ts!",
+                "src/lib.ts!",
+                "src/codex/remcliMcpStdioBridge.ts!",
+                "bin/*.mjs!",
+                "scripts/**/*.{cjs,js}!",
+                "scripts/**/*.test.ts",
+                "tests/**/*.{ts,tsx}"
+            ],
+            "project": [
+                "src/**/*.ts!",
+                "scripts/**/*.{cjs,js}!",
+                "!src/test-setup.ts",
+                "bin/*.mjs!",
+                "scripts/**/*.test.ts",
+                "tests/**/*.{ts,tsx}"
+            ],
+            "paths": {
+                "@/*": ["./src/*"]
+            }
+        }
+    }
+}

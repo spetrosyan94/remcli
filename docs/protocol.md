@@ -22,7 +22,7 @@
 Если предлагается новое поле или событие протокола, оно должно ответить на вопрос: создаёт ли это долговечный примитив синхронизации, или это можно закодировать внутри существующих зашифрованных payload без расширения поверхности API?
 
 ## Аутентификация
-API-endpoint'ы (`/v1/*`, `/v2/*`) требуют `Authorization: Bearer <token>`. Тот же токен используется и в handshake Socket.IO. Роуты статических файлов (ассеты веб-приложения) и `/health` аутентификации не требуют.
+API-endpoint'ы (`/v1/*`, `/v2/*`) требуют `Authorization: Bearer <token>`. Тот же токен используется и в handshake Socket.IO. Роуты статических файлов (ассеты веб-приложения) и `/health` аутентификации не требуют. Единственное исключение — одноразовый opaque ticket `GET /v1/pairing-rekey/:ticket`: ответ не содержит открытого ключа и зашифрован на ephemeral public key браузера.
 
 ## QR-код и раздача веб-приложения
 Демон показывает в терминале QR-код, кодирующий URL:
@@ -30,9 +30,21 @@ API-endpoint'ы (`/v1/*`, `/v2/*`) требуют `Authorization: Bearer <token>
 http://<LAN_IP>:<PORT>/terminal/connect#<base64(JSON)>                  (LAN)
 https://<subdomain>.trycloudflare.com/terminal/connect#<base64(JSON)>   (tunnel)
 ```
-Хэш-фрагмент — это компактный JSON в base64 `{k: <shared secret>, v: <version>}` — host/port выводятся из самого URL, за счёт чего QR на ~30-40% меньше. Такой QR сканирует камера любого телефона — открывается браузер, который загружает веб-приложение с самого демона (раздаётся через `@fastify/static`). Веб-приложение читает хэш, выводит `bearer token` и подключается.
+Хэш-фрагмент — компактный JSON в base64 `{k: <pairing material>, v: <version>}`; host/port выводятся из URL. v1 содержит один 32-byte secret. v2 содержит 64 bytes: `authSecret || contentSecret`. `authSecret` формирует bearer HMAC-SHA512, а `contentSecret` остаётся ключом legacy content encryption. Веб-клиент принимает только соответствующие пары длина/версия.
 
-Shared secret и порт постоянны: они сохраняются в `~/.remcli/p2p-pairing.json` (права 0600) и переживают рестарты демона, поэтому QR сканируется один раз. Секрет меняется только командой `remcli daemon rekey` (после неё все устройства должны пересканировать QR). Если сохранённый порт при старте занят, демон привязывается к новому случайному порту — тогда рескан тоже нужен. Оговорка про туннель: quick-туннель cloudflared получает новый URL при каждом старте — для подключения через туннель рескан QR нужен после каждого рестарта (ограничение бесплатных туннелей).
+Pairing хранится в `~/.remcli/p2p-pairing.json` с правами `0600`: `{ v: 2, authSecret, contentSecret, port, createdAt }`. Старый файл `{ secret, ... }` мигрируется как одинаковые auth/content secrets. Материал pairing не пишется в `daemon.state.json`, heartbeat, machine metadata или диагностические логи.
+
+### Show QR и rekey
+
+`Show QR` запрашивает QR через зашифрованный machine RPC и отображает его только в React state текущего браузера. Он не попадает в URL, `history.state`, toast или P2P event.
+
+`Rekey` создаёт короткоживущий pending request с browser ephemeral public key. Демон не меняет ключ до локального подтверждения:
+
+```text
+remcli daemon rekey approve <request-id> <code>
+```
+
+Команда обращается только к loopback control server. При подтверждении daemon записывает новый `authSecret`, отключает user/machine sockets со старым bearer и оставляет `contentSecret` прежним. Актуальный QR запечатывается `tweetnacl.box` для инициировавшего браузера; endpoint ticket отдаёт только sealed payload с `Cache-Control: no-store`. Закрытие pending dialog посылает cancel с request ID и approval code; coordinator повторно сверяет TTL/state перед самой ротацией. После расшифровки replacement browser сохраняет его как recovery credential до Socket.IO handshake: старый bearer уже отозван, а Socket.IO продолжает reconnect. ACK-capable session runner может продолжить или переподключиться только с валидным daemon-issued `runnerCredential`. Если сохранённый порт занят при запуске, daemon выбирает новый случайный порт и новый QR всё равно требуется. Quick-tunnel cloudflared меняет URL после каждого старта, поэтому tunnel QR пересканируется после рестарта.
 
 ## WebSocket-соединение
 ### Handshake

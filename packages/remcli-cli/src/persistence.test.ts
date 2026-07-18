@@ -43,7 +43,6 @@ describe('daemon state persistence', () => {
             httpPort: 50097,
             p2pPort: 23456,
             p2pHost: '127.0.0.1',
-            p2pSharedSecret: 'test-secret',
             startTime: '2026-07-04T00:00:00.000Z',
             startedWithCliVersion: '0.0.1',
             lastHeartbeat: '2026-07-04T00:00:01.000Z',

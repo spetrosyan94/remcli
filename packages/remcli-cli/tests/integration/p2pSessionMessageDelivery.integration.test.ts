@@ -258,7 +258,7 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
             runnerCredentialStore,
         });
@@ -306,7 +306,7 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
             runnerCredentialStore,
         });
@@ -368,7 +368,7 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
             runnerCredentialStore,
         });
@@ -446,7 +446,7 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
             runnerCredentialStore,
         });
@@ -517,7 +517,7 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
             runnerCredentialStore,
         });
@@ -620,7 +620,7 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
             runnerCredentialStore,
         });
@@ -690,7 +690,7 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
         });
 
@@ -735,7 +735,7 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
             runnerCredentialStore,
         });
@@ -797,7 +797,7 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
             runnerCredentialStore,
         });
@@ -837,7 +837,7 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
             runnerCredentialStore,
         });
@@ -877,7 +877,7 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
             runnerCredentialStore,
         });
@@ -913,7 +913,7 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
             runnerCredentialStore,
         });
@@ -944,7 +944,7 @@ describe('P2P session message delivery on reconnect', { timeout: 15_000 }, () =>
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
             runnerCredentialStore,
         });

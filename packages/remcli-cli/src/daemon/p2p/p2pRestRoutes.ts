@@ -19,6 +19,7 @@ import { synthesize as ttsSynthesize, getTtsStatus } from '../tts/ttsService';
 import { probeConcierge, chatWithConcierge } from '../concierge/conciergeService';
 import { ConciergeDeps } from '../concierge/types';
 import { readSetupConfig } from '@/persistence';
+import type { PairingRekeyDeliveryResult } from './pairingRekey';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -58,19 +59,29 @@ function machineToResponse(m: ReturnType<P2PStore['getMachine']>) {
     };
 }
 
+export interface PairingRekeyDeliveryReader {
+    getDelivery(ticket: string): PairingRekeyDeliveryResult;
+}
+
 // ─── Register Routes ─────────────────────────────────────────────
 
 export function registerP2PRestRoutes(
     app: FastifyInstance,
     store: P2PStore,
     router: P2PEventRouter,
-    sharedSecret: Uint8Array,
-    conciergeDeps?: ConciergeDeps
+    getAuthSecret: () => Uint8Array,
+    conciergeDeps?: ConciergeDeps,
+    pairingRekeyDeliveryReader?: PairingRekeyDeliveryReader,
 ): void {
     const typed = app.withTypeProvider<ZodTypeProvider>();
 
     // ─── Auth middleware ──────────────────────────────────────────
     app.addHook('onRequest', async (request, reply) => {
+        // The delivery ticket is an opaque 192-bit value and its response is
+        // additionally sealed to the requesting browser public key. It must
+        // remain readable after the old bearer has been revoked by rekey.
+        if (request.url.startsWith('/v1/pairing-rekey/')) return;
+
         // Skip auth for health check
         if (request.url === '/health') return;
 
@@ -84,9 +95,38 @@ export function registerP2PRestRoutes(
         }
 
         const token = authHeader.slice(7);
-        if (!verifyBearerToken(token, sharedSecret)) {
+        if (!verifyBearerToken(token, getAuthSecret())) {
             reply.code(401).send({ error: 'Invalid token' });
             return;
+        }
+    });
+
+    typed.get('/v1/pairing-rekey/:ticket', {
+        schema: {
+            params: z.object({ ticket: z.string().min(16).max(128) }),
+        },
+    }, async (request, reply) => {
+        reply.header('Cache-Control', 'no-store');
+        reply.header('Pragma', 'no-cache');
+        reply.header('X-Content-Type-Options', 'nosniff');
+        if (!pairingRekeyDeliveryReader) {
+            reply.code(404);
+            return { status: 'not-found' as const };
+        }
+
+        const delivery = pairingRekeyDeliveryReader.getDelivery(request.params.ticket);
+        switch (delivery.type) {
+            case 'ready':
+                return { status: 'ready' as const, delivery: delivery.delivery };
+            case 'pending':
+                reply.code(202);
+                return { status: 'pending' as const, expiresAt: delivery.expiresAt };
+            case 'expired':
+                reply.code(410);
+                return { status: 'expired' as const };
+            case 'not-found':
+                reply.code(404);
+                return { status: 'not-found' as const };
         }
     });
 

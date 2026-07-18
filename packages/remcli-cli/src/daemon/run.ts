@@ -20,8 +20,8 @@ import { startP2PServer, P2PServer } from './p2p/p2pServer';
 import { P2PRunnerCredentialStore } from './p2p/p2pRunnerCredentials';
 import { publishSessionActivity } from './p2p/p2pSessionLifecycle';
 import { createStoppedSessionLifecycleHandler } from './sessionLifecycle';
-import { encodeSharedSecret, deriveBearerToken } from './p2p/p2pAuth';
-import { loadOrCreatePairing, updatePairingPort } from './p2p/p2pPairing';
+import { deriveBearerToken } from './p2p/p2pAuth';
+import { loadOrCreatePairing, replacePairing, updatePairingPort } from './p2p/p2pPairing';
 import { getLanIPAddress } from './p2p/networkUtils';
 import { buildP2PConnectionInfo, buildP2PQRUrl, displayP2PQRCode, displayP2PConnectionStatus } from './p2p/p2pQRCode';
 import { startCloudflaredTunnel, isCloudflaredAvailable } from './p2p/tunnel';
@@ -32,6 +32,8 @@ import { ConciergeDeps } from './concierge/types';
 import { bootstrapMachineSocket } from './machineSocket';
 import { startHeartbeatLoop } from './heartbeat';
 import { startCodexAppServerHost, type CodexAppServerHostHandle } from '@/codex/codexAppServerHost';
+import { PairingRekeyCoordinator } from './p2p/pairingRekey';
+import QRCode from 'qrcode';
 
 // Prepare initial metadata
 export const initialMachineMetadata: MachineMetadata = {
@@ -203,12 +205,10 @@ export async function startDaemon(): Promise<void> {
       logger.debug('[DAEMON RUN] Sleep prevention enabled');
     }
 
-    // Load persistent P2P pairing (shared secret + preferred port) — survives daemon restarts,
-    // so phones paired via QR keep working without a rescan
-    const pairing = loadOrCreatePairing();
-    const sharedSecret = pairing.secret;
-    const bearerToken = deriveBearerToken(sharedSecret);
-    logger.debug('[DAEMON RUN] P2P pairing loaded (persistent shared secret)');
+    // Pairing v2 separates revocable connection auth from stable content
+    // encryption. Rotating a QR therefore does not break active agent runners.
+    let pairing = loadOrCreatePairing();
+    logger.debug('[DAEMON RUN] P2P pairing loaded (persistent split secrets)');
 
     const p2pStore = new P2PStore();
     logger.debug('[DAEMON RUN] P2P store initialized (in-memory, persistent pairing secret)');
@@ -228,6 +228,64 @@ export async function startDaemon(): Promise<void> {
         onSessionStopped: handleSessionStopped,
     });
 
+    let p2pServer: P2PServer | null = null;
+    let machineSocketHandle: ReturnType<typeof bootstrapMachineSocket> | null = null;
+    let machineId = '';
+    let tunnelStop: (() => void) | null = null;
+    let tunnelUrl: string | undefined;
+
+    const pairingRekeyCoordinator = new PairingRekeyCoordinator({
+      currentSecrets: () => ({
+        authSecret: pairing.authSecret,
+        contentSecret: pairing.contentSecret,
+      }),
+      createQrPayload: async (secrets) => {
+        if (!p2pServer) {
+          throw new Error('P2P server is not ready');
+        }
+        const info = tunnelUrl
+          ? buildP2PConnectionInfo(tunnelUrl.replace(/\/$/, ''), 0, secrets)
+          : buildP2PConnectionInfo(getLanIPAddress() || '0.0.0.0', p2pServer.port, secrets);
+        const qrUrl = buildP2PQRUrl(info, tunnelUrl);
+        return {
+          qrUrl,
+          qrDataUrl: await QRCode.toDataURL(qrUrl, {
+            errorCorrectionLevel: 'L',
+            margin: 1,
+            width: 320,
+          }),
+        };
+      },
+      rotateAuthSecret: async (nextAuthSecret) => {
+        if (!p2pServer) {
+          throw new Error('P2P server is not ready');
+        }
+        const nextPairing = replacePairing({
+          ...pairing,
+          authSecret: nextAuthSecret,
+        });
+        p2pServer.rotateAuthSecret(nextPairing.authSecret);
+        pairing = nextPairing;
+
+        // The daemon's self-machine is intentionally reconnected with the new
+        // bearer; session runners retain their stable content secret and lease.
+        setTimeout(() => {
+          if (!p2pServer || !machineId) return;
+          machineSocketHandle?.close();
+          machineSocketHandle = bootstrapMachineSocket({
+            p2pPort: p2pServer.port,
+            machineId,
+            bearerToken: deriveBearerToken(pairing.authSecret),
+            contentSecret: pairing.contentSecret,
+            pairingRekeyCoordinator,
+            spawnSession: sessionManager.spawnSession,
+            stopSession: sessionManager.stopSession,
+            requestShutdown: () => requestShutdown('remcli-web'),
+          });
+        }, 0);
+      },
+    });
+
     // Start control server
     const { port: controlPort, stop: stopControlServer } = await startDaemonControlServer({
       getChildren: sessionManager.getChildren,
@@ -239,6 +297,7 @@ export async function startDaemon(): Promise<void> {
       verifySessionRunnerCredential: (sessionId, credential) => runnerCredentialStore.verify(sessionId, credential),
       bindNativeCodexThread: sessionManager.bindNativeCodexThread,
       openCodexRemoteTui: sessionManager.openCodexRemoteTui,
+      approvePairingRekey: (requestId, approvalCode) => pairingRekeyCoordinator.approve(requestId, approvalCode),
     });
 
     // Write initial daemon state (no lock needed for state file)
@@ -299,16 +358,17 @@ export async function startDaemon(): Promise<void> {
 
     // Start P2P server — prefer the persisted port so QR codes stay valid across restarts
     // (pairing.port is 0 on first run → random available port)
-    let p2pServer: P2PServer;
+    let startedP2PServer: P2PServer;
     try {
-        p2pServer = await startP2PServer({
+        startedP2PServer = await startP2PServer({
             port: pairing.port,
             host: '0.0.0.0',
-            sharedSecret,
+            authSecret: pairing.authSecret,
             store: p2pStore,
             runnerCredentialStore,
             webAppDir,
-            conciergeDeps
+            conciergeDeps,
+            pairingRekeyDeliveryReader: pairingRekeyCoordinator,
         });
     } catch (error) {
         const isPortTaken = pairing.port !== 0 && (error as NodeJS.ErrnoException)?.code === 'EADDRINUSE';
@@ -318,16 +378,18 @@ export async function startDaemon(): Promise<void> {
         }
         logger.debug(`[DAEMON RUN] Saved P2P port ${pairing.port} is busy, falling back to a random port`);
         console.log(`  Warning: saved P2P port ${pairing.port} is busy — bound a new random port. Phones must rescan the QR code.`);
-        p2pServer = await startP2PServer({
+        startedP2PServer = await startP2PServer({
             port: 0,  // Random available port
             host: '0.0.0.0',
-            sharedSecret,
+            authSecret: pairing.authSecret,
             store: p2pStore,
             runnerCredentialStore,
             webAppDir,
-            conciergeDeps
+            conciergeDeps,
+            pairingRekeyDeliveryReader: pairingRekeyCoordinator,
         });
     }
+    p2pServer = startedP2PServer;
     logger.debug(`[DAEMON RUN] P2P server started on port ${p2pServer.port}`);
     publishStoppedSessionInactive = (sessionId: string) => {
         const result = publishSessionActivity(p2pStore, p2pServer.router, {
@@ -340,7 +402,7 @@ export async function startDaemon(): Promise<void> {
         }
     };
     if (p2pServer.port !== pairing.port) {
-        updatePairingPort(pairing, p2pServer.port);
+        pairing = updatePairingPort(pairing, p2pServer.port);
     }
 
     // Initialize TTS provider (non-fatal — daemon works without TTS)
@@ -354,12 +416,11 @@ export async function startDaemon(): Promise<void> {
     // Update daemon state with P2P info
     fileState.p2pPort = p2pServer.port;
     fileState.p2pHost = lanIP;
-    fileState.p2pSharedSecret = encodeSharedSecret(sharedSecret);
     writeDaemonState(fileState);
     logger.debug('[DAEMON RUN] Daemon state updated with P2P info');
 
     // Register machine in P2P store
-    const machineId = `machine-${process.pid}-${Date.now()}`;
+    machineId = `machine-${process.pid}-${Date.now()}`;
     p2pStore.getOrCreateMachine(
         machineId,
         JSON.stringify(initialMachineMetadata),
@@ -369,11 +430,12 @@ export async function startDaemon(): Promise<void> {
     logger.debug(`[DAEMON RUN] Machine registered in P2P store: ${machineId}`);
 
     // ─── Self-connect as machine client for RPC handling ────────────
-    const machineSocketHandle = bootstrapMachineSocket({
+    machineSocketHandle = bootstrapMachineSocket({
         p2pPort: p2pServer.port,
         machineId,
-        bearerToken,
-        sharedSecret,
+        bearerToken: deriveBearerToken(pairing.authSecret),
+        contentSecret: pairing.contentSecret,
+        pairingRekeyCoordinator,
         spawnSession: sessionManager.spawnSession,
         stopSession: sessionManager.stopSession,
         requestShutdown: () => requestShutdown('remcli-web')
@@ -381,9 +443,6 @@ export async function startDaemon(): Promise<void> {
 
     // Optionally start cloudflared tunnel for remote access
     const useTunnel = process.argv.includes('--tunnel') || process.env.REMCLI_TUNNEL === 'true';
-    let tunnelStop: (() => void) | null = null;
-    let tunnelUrl: string | undefined;
-
     if (useTunnel) {
         console.log('  Starting cloudflared tunnel for remote access...');
         const tunnel = await startCloudflaredTunnel(p2pServer.port);
@@ -395,20 +454,20 @@ export async function startDaemon(): Promise<void> {
             logger.debug(`[DAEMON RUN] Tunnel started: ${tunnelUrl}`);
 
             // Show QR with tunnel URL (accessible from anywhere)
-            const tunnelConnectionInfo = buildP2PConnectionInfo(tunnelUrl.replace(/\/$/, ''), 0, sharedSecret);
+            const tunnelConnectionInfo = buildP2PConnectionInfo(tunnelUrl.replace(/\/$/, ''), 0, pairing);
             const tunnelQRUrl = buildP2PQRUrl(tunnelConnectionInfo, tunnelUrl);
             await displayP2PQRCode(tunnelQRUrl);
             displayP2PConnectionStatus(lanIP, p2pServer.port, tunnelUrl);
         } else {
             console.log('  Failed to start tunnel, using LAN only');
-            const connectionInfo = buildP2PConnectionInfo(lanIP, p2pServer.port, sharedSecret);
+            const connectionInfo = buildP2PConnectionInfo(lanIP, p2pServer.port, pairing);
             const qrUrl = buildP2PQRUrl(connectionInfo);
             await displayP2PQRCode(qrUrl);
             displayP2PConnectionStatus(lanIP, p2pServer.port);
         }
     } else {
         // LAN only - show QR with LAN IP
-        const connectionInfo = buildP2PConnectionInfo(lanIP, p2pServer.port, sharedSecret);
+        const connectionInfo = buildP2PConnectionInfo(lanIP, p2pServer.port, pairing);
         const qrUrl = buildP2PQRUrl(connectionInfo);
         await displayP2PQRCode(qrUrl);
         displayP2PConnectionStatus(lanIP, p2pServer.port);
@@ -427,7 +486,6 @@ export async function startDaemon(): Promise<void> {
         controlPort,
         p2pPort: p2pServer.port,
         lanIP,
-        sharedSecret,
         startTime: fileState.startTime,
         daemonLogPath: fileState.daemonLogPath,
         tunnelUrl,
@@ -453,7 +511,7 @@ export async function startDaemon(): Promise<void> {
 
       // Disconnect machine RPC socket
       try {
-        machineSocketHandle.close();
+        machineSocketHandle?.close();
         logger.debug('[DAEMON RUN] Machine RPC socket closed');
       } catch (error) {
         logger.debug('[DAEMON RUN] Failed to close machine RPC socket:', error);

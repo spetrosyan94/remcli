@@ -291,8 +291,15 @@ sequenceDiagram
 - `/spawn-session`
 - `/stop` (остановка демона)
 - `/session-started` (самоотчёт сессии)
+- `/pairing-rekey/approve` (только локальное подтверждение pending pairing rekey)
 
 CLI общается с этим сервером через `controlClient.ts`, используя порт из `daemon.state.json`.
+
+### Pairing QR и rekey
+
+`p2pPairing.ts` хранит v2 pairing отдельно от daemon state: revocable `authSecret`, стабильный `contentSecret`, порт и дату. `PairingRekeyCoordinator` живёт только в памяти daemon и связывает browser request, TTL, host approval и sealed delivery. `machineSocket.ts` обслуживает `show-pairing-qr`, `request-pairing-rekey` и cancel pending request; подтверждение невозможно вызвать через P2P RPC и выполняется CLI-командой `remcli daemon rekey approve <request-id> <code>` через loopback control server. Перед commit coordinator повторно проверяет TTL/state, чтобы async QR generation не отозвала bearer после истечения ticket.
+
+После успешной записи pairing файла `run.ts` переключает P2P auth secret, закрывает old user/machine sockets и заново подключает собственный machine socket. Content key и ACK runner credential не ротируются, поэтому активная Codex session не перезапускается. Полный wire contract — в [protocol.md](protocol.md) и [encryption.md](encryption.md).
 
 ### Запуск сессий
 

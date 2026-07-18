@@ -379,6 +379,39 @@ test("command palette opens above the current fixture route without layout regre
     expect(pageIssues).toEqual([]);
 });
 
+test("pairing rekey closes its approval dialog before it presents the replacement QR", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await openFixtureRoute(page, "/settings?fixtures=1");
+    await page.evaluate(() => {
+        const dialogCounts: number[] = [document.querySelectorAll('[role="dialog"]').length];
+        const observer = new MutationObserver(() => {
+            dialogCounts.push(document.querySelectorAll('[role="dialog"]').length);
+        });
+        observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] });
+        (globalThis as typeof globalThis & { rekeyDialogObserver?: MutationObserver; rekeyDialogCounts?: number[] }).rekeyDialogObserver = observer;
+        (globalThis as typeof globalThis & { rekeyDialogObserver?: MutationObserver; rekeyDialogCounts?: number[] }).rekeyDialogCounts = dialogCounts;
+    });
+
+    await page.getByRole("button", { name: "Rotate pairing key", exact: true }).click();
+    const qrDialog = page.getByRole("dialog", { name: "Show connection QR", exact: true });
+    await expect(qrDialog).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(1);
+
+    const maximumDialogCount = await page.evaluate(() => {
+        const state = globalThis as typeof globalThis & { rekeyDialogObserver?: MutationObserver; rekeyDialogCounts?: number[] };
+        state.rekeyDialogObserver?.disconnect();
+        return Math.max(...(state.rekeyDialogCounts ?? [0]));
+    });
+    expect(maximumDialogCount).toBeLessThanOrEqual(1);
+    await assertNoHorizontalOverflow(page);
+    if (isMobileProject(testInfo)) {
+        await assertMobileTouchTargets(page);
+    }
+
+    expect(pageIssues).toEqual([]);
+});
+
 test("Connect fixture states preserve usable controls and labelled manual inputs", async ({ page }, testInfo) => {
     test.skip(!isMobileProject(testInfo), "Mobile connection-state regression.");
     const pageIssues = collectPageIssues(page);

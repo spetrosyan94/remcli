@@ -18,6 +18,7 @@ import type {
   TrackedSession,
 } from './types';
 import type { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
+import type { PairingRekeyApprovalResult } from './p2p/pairingRekey';
 
 const nativeCodexThreadBindingSchema = z.object({
   agent: z.literal('codex'),
@@ -98,6 +99,19 @@ const sessionWebhookRejectedResponseSchema = z.object({
   error: z.literal(SESSION_WEBHOOK_REJECTED_ERROR),
 });
 
+const pairingRekeyApprovalRequestSchema = z.object({
+  requestId: z.string().min(16).max(128),
+  approvalCode: z.string().regex(/^[A-F0-9]{8}$/),
+});
+
+const pairingRekeyApprovalResultSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('approved'), expiresAt: z.number().int().positive() }),
+  z.object({ type: z.literal('not-found') }),
+  z.object({ type: z.literal('expired') }),
+  z.object({ type: z.literal('already-approved') }),
+  z.object({ type: z.literal('invalid-code') }),
+]);
+
 const nativeCodexThreadBindingResultSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('bound'), wrapper: nativeCodexThreadWrapperSchema }),
   z.object({ type: z.literal('already-bound'), wrapper: nativeCodexThreadWrapperSchema }),
@@ -150,6 +164,7 @@ export function startDaemonControlServer({
   verifySessionRunnerCredential,
   bindNativeCodexThread,
   openCodexRemoteTui,
+  approvePairingRekey,
 }: {
   getChildren: () => TrackedSession[];
   stopSession: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
@@ -160,6 +175,7 @@ export function startDaemonControlServer({
   verifySessionRunnerCredential: (sessionId: string, credential: string) => boolean;
   bindNativeCodexThread: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
   openCodexRemoteTui: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
+  approvePairingRekey: (requestId: string, approvalCode: string) => Promise<PairingRekeyApprovalResult>;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
   return new Promise((resolve) => {
     const app = fastify({
@@ -258,6 +274,17 @@ export function startDaemonControlServer({
       const result = await openCodexRemoteTui(remoteTuiRequest);
       logger.debug(`[CONTROL SERVER] Codex remote TUI open for ${remcliSessionId}: ${result.type}`);
       return result;
+    });
+
+    // Loopback-only approval boundary for pairing-key rotation. A remote P2P
+    // client can create a pending request but cannot promote it by itself.
+    typed.post('/pairing-rekey/approve', {
+      schema: {
+        body: pairingRekeyApprovalRequestSchema,
+        response: { 200: pairingRekeyApprovalResultSchema },
+      },
+    }, async (request) => {
+      return await approvePairingRekey(request.body.requestId, request.body.approvalCode);
     });
 
     // List all tracked sessions

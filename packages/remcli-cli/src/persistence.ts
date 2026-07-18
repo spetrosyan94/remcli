@@ -263,7 +263,6 @@ export interface DaemonLocallyPersistedState {
   daemonLogPath?: string;
   p2pPort?: number;
   p2pHost?: string;
-  p2pSharedSecret?: string;
   tunnelUrl?: string;
   codexAppServerEndpoint?: string;
   codexAppServerPid?: number;

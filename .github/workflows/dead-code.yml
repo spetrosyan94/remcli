@@ -1,0 +1,78 @@
+name: Dead Code and Translation Checks
+
+on:
+    pull_request:
+        paths:
+            - 'packages/remcli-web/**'
+            - 'packages/remcli-cli/**'
+            - 'package.json'
+            - 'package-lock.json'
+            - 'knip.json'
+            - '.github/workflows/dead-code.yml'
+    push:
+        branches:
+            - main
+        paths:
+            - 'packages/remcli-web/**'
+            - 'packages/remcli-cli/**'
+            - 'package.json'
+            - 'package-lock.json'
+            - 'knip.json'
+            - '.github/workflows/dead-code.yml'
+
+jobs:
+    translation-check:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 20.19.0
+                  cache: npm
+            - run: npm ci
+            - run: npm -w remcli-web run test -- --run scripts/check-translations.test.mjs
+            - run: npm -w remcli-web run check:i18n
+
+    dead-code:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 20.19.0
+                  cache: npm
+            - run: npm ci
+            - run: npm run check:dead-code
+
+    dead-code-advisory:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 20.19.0
+                  cache: npm
+            - run: npm ci
+            # Advisory findings are uploaded for triage; they intentionally do not fail the required production gate.
+            - run: npm run --silent check:dead-code:advisory > knip-advisory.json
+            - name: Summarize advisory findings
+              run: |
+                  node --input-type=module -e '
+                    import { readFileSync } from "node:fs";
+                    const report = JSON.parse(readFileSync("knip-advisory.json", "utf8"));
+                    const count = report.issues.length;
+                    const exports = report.issues.reduce((total, issue) => total + issue.exports.length, 0);
+                    const types = report.issues.reduce((total, issue) => total + issue.types.length, 0);
+                    const summary = `## Knip advisory report\n\n- Issues: ${count}\n- Unused exports: ${exports}\n- Unused types: ${types}\n\nThis report is non-blocking until exports/types are triaged.`;
+                    console.log(summary);
+                    const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+                    if (summaryPath) await import("node:fs/promises").then(({ appendFile }) => appendFile(summaryPath, `${summary}\n`));
+                  '
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: knip-advisory
+                  path: knip-advisory.json
+                  if-no-files-found: error

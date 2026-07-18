@@ -20,8 +20,6 @@ import { writeDaemonState, readDaemonState, DaemonLocallyPersistedState } from '
 import { isCodexAppServerStateUsable } from '@/codex/codexAppServerHost';
 import packageJson from '../../package.json';
 
-import { encodeSharedSecret } from './p2p/p2pAuth';
-
 type ShutdownRequester = (
     source: 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception',
     errorMessage?: string
@@ -31,7 +29,6 @@ export interface HeartbeatDeps {
     controlPort: number;
     p2pPort: number;
     lanIP: string;
-    sharedSecret: Uint8Array;
     startTime: string;
     daemonLogPath: string | undefined;
     tunnelUrl: string | undefined;
@@ -48,7 +45,6 @@ export function startHeartbeatLoop(deps: HeartbeatDeps): NodeJS.Timeout {
         controlPort,
         p2pPort,
         lanIP,
-        sharedSecret,
         startTime,
         daemonLogPath,
         tunnelUrl,
@@ -126,7 +122,6 @@ export function startHeartbeatLoop(deps: HeartbeatDeps): NodeJS.Timeout {
                 daemonLogPath,
                 p2pPort,
                 p2pHost: lanIP,
-                p2pSharedSecret: encodeSharedSecret(sharedSecret),
                 tunnelUrl,
                 codexAppServerEndpoint: codexAppServerIsUsable ? daemonState?.codexAppServerEndpoint : undefined,
                 codexAppServerPid: codexAppServerIsUsable ? daemonState?.codexAppServerPid : undefined

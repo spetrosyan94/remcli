@@ -9,6 +9,8 @@ import { Caret, Logo } from "@/components/kit";
 import { t } from "@/lib/i18n";
 import {
     logoutProtocolClient,
+    decodePairingKey,
+    getStoredConnection,
     parseConnectData,
     parseConnectUrl,
     parseManualInput,
@@ -21,6 +23,7 @@ type ConnectState = "idle" | "scanning" | "connecting" | "error" | "manual";
 
 const CONNECT_TIMEOUT_MS = 15_000;
 const SCAN_INTERVAL_MS = 350;
+const TIMEOUT_ADDRESS_PLACEHOLDER = "{address}";
 const FIXTURE_CONNECT_STATES = new Set<ConnectState>(["scanning", "error", "manual"]);
 const FIXTURE_ERROR_PAYLOAD: P2PQRPayload = {
     mode: "p2p",
@@ -87,9 +90,25 @@ export function ConnectPage() {
     const location = useLocation();
     const connectionStatus = useConnectionStatus();
     const fixtureState = readFixtureConnectState(location.search);
-    // Упавший restore (LaunchSplash): приходим сразу в состояние error с payload
-    // сохранённого подключения — кнопка «повторить» переподключается к нему.
-    const failedPayload = (location.state as { failedPayload?: P2PQRPayload | null } | null)?.failedPayload ?? null;
+    // Упавший restore приходит без pairing key в history.state. Повтор использует
+    // только локально сохранённый credential, который уже принадлежит устройству.
+    const restoreFailed = (location.state as { restoreFailed?: boolean } | null)?.restoreFailed === true;
+    const failedPayload = React.useMemo(() => {
+        if (!restoreFailed) return null;
+        const stored = getStoredConnection();
+        if (!stored) return null;
+        try {
+            return {
+                mode: "p2p" as const,
+                host: stored.host,
+                port: stored.port,
+                key: stored.key,
+                v: decodePairingKey(stored.key).version,
+            };
+        } catch {
+            return null;
+        }
+    }, [restoreFailed]);
     const [state, setState] = React.useState<ConnectState>(fixtureState ?? (failedPayload ? "error" : "idle"));
     const [payload, setPayload] = React.useState<P2PQRPayload | null>(failedPayload ?? (fixtureState === "error" ? FIXTURE_ERROR_PAYLOAD : null));
     const [address, setAddress] = React.useState("");
@@ -99,7 +118,7 @@ export function ConnectPage() {
     const videoRef = React.useRef<HTMLVideoElement | null>(null);
 
     const target = payload ? payloadTarget(payload) : address;
-    const timeoutMessage = splitTimeoutMessage(t("connect.error.timeout"));
+    const timeoutMessage = splitTimeoutMessage(t("connect.error.timeout", { address: TIMEOUT_ADDRESS_PLACEHOLDER }));
 
     const beginConnect = React.useCallback((next: P2PQRPayload) => {
         setPayload(next);

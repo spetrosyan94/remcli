@@ -153,6 +153,8 @@ export const en: Dictionary = {
     "settings.ttsOff": "off",
     "settings.autoSpeak": "Auto-speak replies",
     "settings.addMachineQr": "Add machine via QR",
+    "settings.pairing.showQr": "Show connection QR",
+    "settings.pairing.rotate": "Rotate pairing key",
     "settings.machine.rename": "Rename",
     "settings.machine.renameTitle": "Rename machine",
     "settings.machine.renamePlaceholder": "machine name",

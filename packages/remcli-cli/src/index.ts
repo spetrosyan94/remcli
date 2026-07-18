@@ -463,35 +463,73 @@ async function ensureDaemonRunning(): Promise<void> {
       // Re-display P2P QR code from daemon state
       const { readDaemonState } = await import('./persistence');
       const { buildP2PConnectionInfo, buildP2PQRUrl, displayP2PQRCode, displayP2PConnectionStatus } = await import('./daemon/p2p/p2pQRCode');
-      const { decodeSharedSecret } = await import('./daemon/p2p/p2pAuth');
+      const { loadPairing } = await import('./daemon/p2p/p2pPairing');
 
       const state = await readDaemonState();
-      if (!state || !state.p2pPort || !state.p2pSharedSecret) {
+      const pairing = loadPairing();
+      if (!state || !state.p2pPort || !pairing) {
         console.log('Daemon is not running or P2P is not configured.');
         console.log('Start the daemon first: remcli daemon start');
         process.exit(1);
       }
 
-      const secret = decodeSharedSecret(state.p2pSharedSecret);
       if (state.tunnelUrl) {
-        const info = buildP2PConnectionInfo(state.tunnelUrl.replace(/^https?:\/\//, ''), 0, secret);
+        const info = buildP2PConnectionInfo(state.tunnelUrl.replace(/^https?:\/\//, ''), 0, pairing);
         const qrUrl = buildP2PQRUrl(info, state.tunnelUrl);
         await displayP2PQRCode(qrUrl);
         displayP2PConnectionStatus(state.p2pHost || '0.0.0.0', state.p2pPort, state.tunnelUrl);
       } else {
-        const info = buildP2PConnectionInfo(state.p2pHost || '0.0.0.0', state.p2pPort, secret);
+        const info = buildP2PConnectionInfo(state.p2pHost || '0.0.0.0', state.p2pPort, pairing);
         const qrUrl = buildP2PQRUrl(info);
         await displayP2PQRCode(qrUrl);
         displayP2PConnectionStatus(state.p2pHost || '0.0.0.0', state.p2pPort);
       }
       process.exit(0)
     } else if (daemonSubcommand === 'rekey') {
+      if (args[2] === 'approve') {
+        const requestId = args[3];
+        const approvalCode = args[4];
+        if (!requestId || !approvalCode) {
+          console.error('Usage: remcli daemon rekey approve <request-id> <code>');
+          process.exit(1);
+        }
+
+        const { approveDaemonPairingRekey } = await import('./daemon/controlClient');
+        const result = await approveDaemonPairingRekey(requestId, approvalCode);
+        if (!result.ok) {
+          console.error(`Pairing rekey approval failed: ${result.error}`);
+          process.exit(1);
+        }
+        switch (result.data.type) {
+          case 'approved':
+            console.log('Pairing key rotated. The requesting browser is reconnecting with the new QR.');
+            break;
+          case 'invalid-code':
+            console.error('Pairing rekey approval code is invalid.');
+            process.exit(1);
+          case 'expired':
+            console.error('Pairing rekey request expired. Create a new request from Remcli.');
+            process.exit(1);
+          case 'not-found':
+            console.error('Pairing rekey request was not found.');
+            process.exit(1);
+          case 'already-approved':
+            console.error('Pairing rekey request was already approved.');
+            process.exit(1);
+        }
+        process.exit(0);
+      }
+
       // Reset the persistent pairing secret: delete the pairing file and restart the daemon
       const { clearPairing } = await import('./daemon/p2p/p2pPairing');
 
       const wasRunning = await checkIfDaemonRunningAndCleanupStaleState();
       if (wasRunning) {
         await stopDaemon();
+        if (await checkIfDaemonRunningAndCleanupStaleState()) {
+          console.error('Daemon is still running; refusing to replace the active pairing key.');
+          process.exit(1);
+        }
       }
 
       const removed = clearPairing();
@@ -561,6 +599,8 @@ ${chalk.bold('Usage:')}
   remcli daemon status             Show daemon status
   remcli daemon qr                 Show P2P connection QR code
   remcli daemon rekey              Reset pairing secret (all devices must rescan QR)
+  remcli daemon rekey approve <request-id> <code>
+                                     Approve a pending UI pairing-key rotation locally
   remcli daemon list               List active sessions
 
   If you want to kill all remcli related processes run 

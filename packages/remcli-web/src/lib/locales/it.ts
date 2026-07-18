@@ -153,6 +153,8 @@ export const it: Dictionary = {
     "settings.ttsOff": "spento",
     "settings.autoSpeak": "Leggi le risposte ad alta voce",
     "settings.addMachineQr": "Aggiungi macchina via QR",
+    "settings.pairing.showQr": "Mostra QR di connessione",
+    "settings.pairing.rotate": "Ruota chiave di abbinamento",
     "settings.machine.rename": "Rinomina",
     "settings.machine.renameTitle": "Rinomina macchina",
     "settings.machine.renamePlaceholder": "nome della macchina",

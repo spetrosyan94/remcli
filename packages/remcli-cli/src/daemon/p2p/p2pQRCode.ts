@@ -7,7 +7,7 @@
  */
 
 import QRCode from 'qrcode';
-import { encodeSharedSecret } from './p2pAuth';
+import { encodePairingKey, type PairingSecrets } from './p2pAuth';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ export interface P2PConnectionInfo {
     host: string;      // LAN IP (e.g. "192.168.1.5") or full tunnel URL (e.g. "https://xxx.trycloudflare.com")
     port: number;       // Socket.IO server port (0 when using tunnel)
     key: string;        // Base64-encoded shared secret
-    v: 1;               // Protocol version
+    v: 2;               // Protocol version
 }
 
 /** Compact hash payload — only the shared secret key and protocol version */
@@ -33,14 +33,14 @@ interface CompactHashPayload {
 export function buildP2PConnectionInfo(
     host: string,
     port: number,
-    sharedSecret: Uint8Array
+    secrets: PairingSecrets,
 ): P2PConnectionInfo {
     return {
         mode: 'p2p',
         host,
         port,
-        key: encodeSharedSecret(sharedSecret),
-        v: 1
+        key: encodePairingKey(secrets),
+        v: 2
     };
 }
 

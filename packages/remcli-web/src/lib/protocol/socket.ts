@@ -38,6 +38,7 @@ const reconnectedListeners = new Set<() => void>();
 const statusListeners = new Set<(status: ConnectionStatus) => void>();
 let currentStatus: ConnectionStatus = 'disconnected';
 let hasCompletedInitialConnection = false;
+const INITIAL_CONNECTION_TIMEOUT_MS = 10_000;
 
 function updateStatus(status: ConnectionStatus): void {
     if (currentStatus !== status) {
@@ -103,6 +104,44 @@ export function socketDisconnect(): void {
 
 export function getSocketStatus(): ConnectionStatus {
     return currentStatus;
+}
+
+/** Resolve only after the current Socket.IO handshake is authenticated. */
+export function waitForSocketConnection(timeoutMs = INITIAL_CONNECTION_TIMEOUT_MS): Promise<void> {
+    if (!socket) {
+        return Promise.reject(new Error('Socket is not connected'));
+    }
+    if (currentStatus === 'connected') {
+        return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+        let didSettle = false;
+        let unsubscribe = () => {};
+        const timeout = setTimeout(() => {
+            finish(new Error('Timed out waiting for Socket.IO authentication'));
+        }, timeoutMs);
+        const finish = (error?: Error): void => {
+            if (didSettle) return;
+            didSettle = true;
+            clearTimeout(timeout);
+            unsubscribe();
+            if (error) {
+                reject(error);
+            } else {
+                resolve();
+            }
+        };
+
+        unsubscribe = onSocketStatusChange((status) => {
+            if (status === 'connected') {
+                finish();
+            } else if (status === 'error') {
+                finish(new Error('Socket.IO authentication failed'));
+            }
+        });
+        if (didSettle) unsubscribe();
+    });
 }
 
 // ─── Listener Management ─────────────────────────────────────────
@@ -241,6 +280,26 @@ interface AgentSessionListResponse {
     sessions: AgentSessionInfo[];
 }
 
+export interface SealedPairingQr {
+    format: 'nacl-box-v1';
+    payload: string;
+    expiresAt: number;
+}
+
+export interface PairingRekeyRequest {
+    requestId: string;
+    approvalCode: string;
+    ticket: string;
+    expiresAt: number;
+}
+
+export type PairingRekeyCancellationResult =
+    | { type: 'cancelled' }
+    | { type: 'not-found' }
+    | { type: 'expired' }
+    | { type: 'already-approved' }
+    | { type: 'invalid-code' };
+
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
 }
@@ -312,6 +371,32 @@ function isAgentSessionInfo(value: unknown): value is AgentSessionInfo {
 
 function isAgentSessionListResponse(value: unknown): value is AgentSessionListResponse {
     return isRecord(value) && Array.isArray(value.sessions) && value.sessions.every(isAgentSessionInfo);
+}
+
+function isSealedPairingQr(value: unknown): value is SealedPairingQr {
+    return isRecord(value)
+        && value.format === 'nacl-box-v1'
+        && typeof value.payload === 'string'
+        && typeof value.expiresAt === 'number'
+        && Number.isSafeInteger(value.expiresAt);
+}
+
+function isPairingRekeyRequest(value: unknown): value is PairingRekeyRequest {
+    return isRecord(value)
+        && typeof value.requestId === 'string'
+        && typeof value.approvalCode === 'string'
+        && typeof value.ticket === 'string'
+        && typeof value.expiresAt === 'number'
+        && Number.isSafeInteger(value.expiresAt);
+}
+
+function isPairingRekeyCancellationResult(value: unknown): value is PairingRekeyCancellationResult {
+    return isRecord(value)
+        && (value.type === 'cancelled'
+            || value.type === 'not-found'
+            || value.type === 'expired'
+            || value.type === 'already-approved'
+            || value.type === 'invalid-code');
 }
 
 /** Spawn a new agent session on a machine (daemon RPC `spawn-remcli-session`). */
@@ -389,6 +474,49 @@ export async function machineStopSession(machineId: string, sessionId: string): 
 /** Request daemon shutdown on a machine (RPC `stop-daemon`). */
 export async function machineStopDaemon(machineId: string): Promise<{ message: string }> {
     return machineRpc<{ message: string }, Record<string, never>>(machineId, 'stop-daemon', {});
+}
+
+/** Fetch a QR sealed to the ephemeral browser public key. */
+export async function machineShowPairingQr(machineId: string, clientPublicKey: string): Promise<SealedPairingQr> {
+    const result = await machineRpc<unknown, { clientPublicKey: string }>(
+        machineId,
+        'show-pairing-qr',
+        { clientPublicKey },
+    );
+    if (!isSealedPairingQr(result)) {
+        throw new Error('Pairing QR RPC returned invalid response');
+    }
+    return result;
+}
+
+/** Create a host-approved, expiring pairing key rotation request. */
+export async function machineRequestPairingRekey(machineId: string, clientPublicKey: string): Promise<PairingRekeyRequest> {
+    const result = await machineRpc<unknown, { clientPublicKey: string }>(
+        machineId,
+        'request-pairing-rekey',
+        { clientPublicKey },
+    );
+    if (!isPairingRekeyRequest(result)) {
+        throw new Error('Pairing rekey RPC returned invalid response');
+    }
+    return result;
+}
+
+/** Cancel a pending rekey before the local host approves it. */
+export async function machineCancelPairingRekey(
+    machineId: string,
+    requestId: string,
+    approvalCode: string,
+): Promise<PairingRekeyCancellationResult> {
+    const result = await machineRpc<unknown, { requestId: string; approvalCode: string }>(
+        machineId,
+        'cancel-pairing-rekey',
+        { requestId, approvalCode },
+    );
+    if (!isPairingRekeyCancellationResult(result)) {
+        throw new Error('Pairing rekey cancellation RPC returned invalid response');
+    }
+    return result;
 }
 
 // Session-scoped operations

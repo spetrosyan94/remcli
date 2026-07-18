@@ -21,17 +21,19 @@ import { verifyBearerToken } from './p2pAuth';
 import { P2PRunnerCredentialStore, SESSION_MESSAGE_ACK_VERSION } from './p2pRunnerCredentials';
 import { ConciergeDeps } from '../concierge/types';
 import { logger } from '@/ui/logger';
+import type { PairingRekeyDeliveryReader } from './p2pRestRoutes';
 
 // ─── Types ───────────────────────────────────────────────────────
 
 export interface P2PServerConfig {
     port: number;              // 0 for random
     host: string;              // '0.0.0.0' for LAN
-    sharedSecret: Uint8Array;  // 32 bytes from QR code
+    authSecret: Uint8Array;    // 32 bytes from the pairing QR code
     store: P2PStore;
     webAppDir?: string;        // Path to web app build (static files)
     conciergeDeps?: ConciergeDeps; // Optional local concierge capabilities
     runnerCredentialStore?: P2PRunnerCredentialStore;
+    pairingRekeyDeliveryReader?: PairingRekeyDeliveryReader;
 }
 
 export interface P2PServer {
@@ -39,6 +41,7 @@ export interface P2PServer {
     host: string;
     store: P2PStore;
     router: P2PEventRouter;
+    rotateAuthSecret: (authSecret: Uint8Array) => void;
     stop: () => Promise<void>;
 }
 
@@ -129,8 +132,10 @@ export function isWebStaticAssetRequest(requestUrl: string): boolean {
 // ─── Server ──────────────────────────────────────────────────────
 
 export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer> {
-    const { port, host, sharedSecret, store } = config;
+    const { port, host, authSecret, store } = config;
     const runnerCredentialStore = config.runnerCredentialStore ?? new P2PRunnerCredentialStore();
+    let currentAuthSecret = authSecret;
+    const retiredRunnerAuthSecrets: Uint8Array[] = [];
 
     const router = new P2PEventRouter();
 
@@ -165,7 +170,14 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
     });
 
     // Register REST routes
-    registerP2PRestRoutes(app, store, router, sharedSecret, config.conciergeDeps);
+    registerP2PRestRoutes(
+        app,
+        store,
+        router,
+        () => currentAuthSecret,
+        config.conciergeDeps,
+        config.pairingRekeyDeliveryReader,
+    );
 
     // Serve web app static files if available
     if (config.webAppDir && existsSync(config.webAppDir)) {
@@ -213,18 +225,31 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
         pingInterval: 15000
     });
 
+    function isAcknowledgedRunner(auth: unknown): boolean {
+        if (getConnectionType(auth) !== 'session-scoped') return false;
+        const sessionId = readString(auth, 'sessionId');
+        const runnerCredential = readString(auth, 'runnerCredential');
+        return sessionId !== undefined
+            && getMessageAckVersion(auth) === SESSION_MESSAGE_ACK_VERSION
+            && runnerCredentialStore.verify(sessionId, runnerCredential);
+    }
+
     // Socket.IO authentication middleware
     io.use((socket, next) => {
         const auth = socket.handshake.auth as unknown;
         const token = readString(auth, 'token');
-        if (!token || !verifyBearerToken(token, sharedSecret)) {
+        const isCurrentAuth = token !== undefined && verifyBearerToken(token, currentAuthSecret);
+        const isRetiredRunner = token !== undefined
+            && isAcknowledgedRunner(auth)
+            && retiredRunnerAuthSecrets.some((secret) => verifyBearerToken(token, secret));
+        if (!isCurrentAuth && !isRetiredRunner) {
             logger.debug('[P2P SERVER] Socket.IO auth failed');
             next(new Error('Authentication failed'));
             return;
         }
 
         const connectionType = getConnectionType(auth);
-        if (connectionType === 'session-scoped') {
+        if (connectionType === 'session-scoped' && isCurrentAuth) {
             const sessionId = readString(auth, 'sessionId');
             const runnerCredential = readString(auth, 'runnerCredential');
             const messageAckVersion = getMessageAckVersion(auth);
@@ -492,6 +517,21 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
                 host,
                 store,
                 router,
+                rotateAuthSecret: (nextAuthSecret: Uint8Array) => {
+                    if (nextAuthSecret.length !== 32) {
+                        throw new Error(`Unexpected P2P auth secret length: ${nextAuthSecret.length}`);
+                    }
+                    retiredRunnerAuthSecrets.push(currentAuthSecret);
+                    currentAuthSecret = nextAuthSecret;
+
+                    for (const socket of io.sockets.sockets.values()) {
+                        const auth = socket.handshake.auth as unknown;
+                        if (!isAcknowledgedRunner(auth)) {
+                            socket.disconnect(true);
+                        }
+                    }
+                    logger.debug('[P2P SERVER] Pairing auth secret rotated; stale user and machine sockets disconnected');
+                },
                 stop: async () => {
                     logger.debug('[P2P SERVER] Stopping...');
                     unsubscribeRunnerLeaseActivation();

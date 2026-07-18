@@ -20,12 +20,14 @@ import type {
 } from '@/daemon/directoryBrowser/types';
 import { listAllAgentSessions } from '@/daemon/sessions/listAgentSessions';
 import type { StopSessionResult } from '@/daemon/types';
+import type { PairingRekeyCoordinator } from './p2p/pairingRekey';
 
 export interface MachineSocketDeps {
     p2pPort: number;
     machineId: string;
     bearerToken: string;
-    sharedSecret: Uint8Array;
+    contentSecret: Uint8Array;
+    pairingRekeyCoordinator: PairingRekeyCoordinator;
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
     stopSession: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
     requestShutdown: () => void;
@@ -37,7 +39,16 @@ export interface MachineSocketHandle {
 }
 
 export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHandle {
-    const { p2pPort, machineId, bearerToken, sharedSecret, spawnSession, stopSession, requestShutdown } = deps;
+    const {
+        p2pPort,
+        machineId,
+        bearerToken,
+        contentSecret,
+        pairingRekeyCoordinator,
+        spawnSession,
+        stopSession,
+        requestShutdown,
+    } = deps;
 
     const machineSocket: ClientSocket = ioClient(`http://127.0.0.1:${p2pPort}`, {
         transports: ['websocket'],
@@ -54,7 +65,7 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
 
     const machineRpcManager = new RpcHandlerManager({
         scopePrefix: machineId,
-        encryptionKey: sharedSecret,
+        encryptionKey: contentSecret,
         encryptionVariant: 'legacy',
         logger: (msg, data) => logger.debug(msg, data)
     });
@@ -124,6 +135,27 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
 
     machineRpcManager.registerHandler<ListDirectoryParams, ListDirectoryResponse>('list-directory', async (params) => {
         return await listDirectoryForBrowser(params);
+    });
+
+    machineRpcManager.registerHandler('show-pairing-qr', async (params: { clientPublicKey?: string }) => {
+        if (!params?.clientPublicKey) {
+            throw new Error('Pairing QR public key is required');
+        }
+        return await pairingRekeyCoordinator.showQr(params.clientPublicKey);
+    });
+
+    machineRpcManager.registerHandler('request-pairing-rekey', (params: { clientPublicKey?: string }) => {
+        if (!params?.clientPublicKey) {
+            throw new Error('Pairing rekey public key is required');
+        }
+        return pairingRekeyCoordinator.requestRekey(params.clientPublicKey);
+    });
+
+    machineRpcManager.registerHandler('cancel-pairing-rekey', (params: { requestId?: string; approvalCode?: string }) => {
+        if (!params?.requestId || !params.approvalCode) {
+            throw new Error('Pairing rekey request ID and approval code are required');
+        }
+        return pairingRekeyCoordinator.cancel(params.requestId, params.approvalCode);
     });
 
     machineSocket.on('connect', () => {

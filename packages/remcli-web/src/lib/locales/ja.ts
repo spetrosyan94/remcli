@@ -153,6 +153,8 @@ export const ja: Dictionary = {
     "settings.ttsOff": "オフ",
     "settings.autoSpeak": "返答の自動読み上げ",
     "settings.addMachineQr": "QR でマシンを追加",
+    "settings.pairing.showQr": "接続 QR を表示",
+    "settings.pairing.rotate": "ペアリングキーを更新",
     "settings.machine.rename": "名前を変更",
     "settings.machine.renameTitle": "マシン名を変更",
     "settings.machine.renamePlaceholder": "マシン名",

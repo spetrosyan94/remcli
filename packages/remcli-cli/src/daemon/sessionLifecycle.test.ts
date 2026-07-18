@@ -219,7 +219,7 @@ describe('createStoppedSessionLifecycleHandler', { timeout: 15_000 }, () => {
         p2pServer = await startP2PServer({
             port: 0,
             host: '127.0.0.1',
-            sharedSecret,
+            authSecret: sharedSecret,
             store,
             runnerCredentialStore,
         });
