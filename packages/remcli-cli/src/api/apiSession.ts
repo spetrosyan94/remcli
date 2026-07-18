@@ -53,6 +53,18 @@ export type SessionEvent = {
 const TERMINAL_LIFECYCLE_STATE = 'archived';
 const P2P_DELIVERY_ID_PREFIX = 'p2p';
 
+export interface MetadataUpdateOptions {
+    maxAttempts?: number;
+    timeoutMs?: number;
+}
+
+class MetadataUpdateRejectedError extends Error {
+    public constructor() {
+        super('Session metadata update was rejected by the server');
+        this.name = 'MetadataUpdateRejectedError';
+    }
+}
+
 interface PendingUserMessage {
     message: DeliveredUserMessage;
     sequence: number;
@@ -60,6 +72,28 @@ interface PendingUserMessage {
 
 function isRetryableUserMessageDeliveryError(error: unknown): error is RetryableUserMessageDeliveryError {
     return error instanceof RetryableUserMessageDeliveryError;
+}
+
+function withTimeout<T>(operation: Promise<T>, timeoutMs?: number): Promise<T> {
+    if (!timeoutMs) {
+        return operation;
+    }
+
+    return new Promise<T>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            reject(new Error(`Metadata update timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+        void operation.then(
+            (value) => {
+                clearTimeout(timeout);
+                resolve(value);
+            },
+            (error: unknown) => {
+                clearTimeout(timeout);
+                reject(error);
+            },
+        );
+    });
 }
 
 export class ApiSessionClient extends EventEmitter {
@@ -677,23 +711,37 @@ export class ApiSessionClient extends EventEmitter {
      * Update session metadata
      * @param handler - Handler function that returns the updated metadata
      */
-    updateMetadata(handler: (metadata: Metadata) => Metadata): Promise<void> {
-        return this.metadataLock.inLock(async () => {
-            await backoff(async () => {
+    updateMetadata(
+        handler: (metadata: Metadata) => Metadata,
+        options?: MetadataUpdateOptions,
+    ): Promise<void> {
+        const maxAttempts = options?.maxAttempts === undefined
+            ? undefined
+            : Math.max(options.maxAttempts, 1);
+        const operation = this.metadataLock.inLock(async () => {
+            const update = async (): Promise<boolean> => {
                 const currentMetadata = this.metadata;
                 if (!currentMetadata) {
-                    return;
+                    return true;
                 }
 
                 const updated = handler(currentMetadata);
                 if (updated === currentMetadata) {
-                    return;
+                    return true;
                 }
 
-                const answer = await this.socket.emitWithAck('update-metadata', { sid: this.sessionId, expectedVersion: this.metadataVersion, metadata: encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, updated)) });
+                const answer = await withTimeout(
+                    this.socket.emitWithAck('update-metadata', {
+                        sid: this.sessionId,
+                        expectedVersion: this.metadataVersion,
+                        metadata: encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, updated)),
+                    }),
+                    options?.timeoutMs,
+                );
                 if (answer.result === 'success') {
                     this.metadata = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.metadata));
                     this.metadataVersion = answer.version;
+                    return true;
                 } else if (answer.result === 'version-mismatch') {
                     if (answer.version > this.metadataVersion) {
                         this.metadataVersion = answer.version;
@@ -701,10 +749,43 @@ export class ApiSessionClient extends EventEmitter {
                     }
                     throw new Error('Metadata version mismatch');
                 } else if (answer.result === 'error') {
-                    // Hard error - ignore
+                    return false;
                 }
-            });
+
+                return false;
+            };
+
+            if (maxAttempts === undefined) {
+                const wasAccepted = await backoff(update);
+                if (!wasAccepted) {
+                    throw new MetadataUpdateRejectedError();
+                }
+                return;
+            }
+
+            let lastError: unknown;
+            for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+                try {
+                    const wasAccepted = await update();
+                    if (!wasAccepted) {
+                        throw new MetadataUpdateRejectedError();
+                    }
+                    return;
+                } catch (error) {
+                    if (error instanceof MetadataUpdateRejectedError) {
+                        throw error;
+                    }
+                    lastError = error;
+                }
+            }
+
+            throw lastError;
         });
+
+        const totalTimeoutMs = maxAttempts && options?.timeoutMs
+            ? maxAttempts * options.timeoutMs
+            : undefined;
+        return withTimeout(operation, totalTimeoutMs);
     }
 
     /**

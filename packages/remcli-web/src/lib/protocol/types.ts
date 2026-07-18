@@ -182,6 +182,7 @@ export const MetadataSchema = z.object({
     codexSessionId: z.string().optional(),
     cursorSessionId: z.string().optional(),
     geminiSessionId: z.string().optional(),
+    resumedFromRemcliSessionId: z.string().min(1).optional(),
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),
     homeDir: z.string().optional(),

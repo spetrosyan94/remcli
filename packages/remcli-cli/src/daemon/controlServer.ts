@@ -11,9 +11,13 @@ import type { Metadata } from '@/api/types';
 import type {
   CodexRemoteTuiOpenRequest,
   CodexRemoteTuiOpenResult,
+  CursorRunnerPreflightRequest,
+  CursorRunnerPreflightResult,
   DaemonSessionWebhookResult,
   NativeCodexThreadBinding,
   NativeCodexThreadBindingResult,
+  NativeCursorSessionBinding,
+  NativeCursorSessionBindingResult,
   StopSessionResult,
   TrackedSession,
 } from './types';
@@ -32,6 +36,30 @@ const nativeCodexThreadWrapperSchema = nativeCodexThreadBindingSchema;
 
 const protectedNativeCodexThreadBindingSchema = nativeCodexThreadBindingSchema.extend({
   runnerCredential: runnerCredentialSchema,
+});
+
+const nativeCursorSessionBindingSchema = z.object({
+  agent: z.literal('cursor'),
+  nativeSessionId: z.string().min(1),
+  remcliSessionId: z.string().min(1),
+});
+
+const nativeCursorSessionWrapperSchema = nativeCursorSessionBindingSchema;
+
+const protectedNativeCursorSessionBindingSchema = nativeCursorSessionBindingSchema.extend({
+  runnerCredential: runnerCredentialSchema,
+});
+
+const cursorRunnerPreflightRequestSchema = z.object({
+  agent: z.enum(['claude', 'codex', 'cursor', 'gemini']),
+  nativeResumeSessionId: z.string().min(1).optional(),
+  pid: z.number().int().positive(),
+  runnerToken: z.string().min(1),
+});
+
+const cursorRunnerPreflightResponseSchema = z.object({
+  type: z.literal('verified'),
+  parentRemcliSessionId: z.string().min(1).optional(),
 });
 
 const codexRemoteTuiOpenRequestSchema = nativeCodexThreadBindingSchema.extend({
@@ -99,6 +127,12 @@ const sessionWebhookRejectedResponseSchema = z.object({
   error: z.literal(SESSION_WEBHOOK_REJECTED_ERROR),
 });
 
+const CURSOR_RUNNER_PREFLIGHT_REJECTED_ERROR = 'cursor-runner-preflight-rejected';
+
+const cursorRunnerPreflightRejectedResponseSchema = z.object({
+  error: z.literal(CURSOR_RUNNER_PREFLIGHT_REJECTED_ERROR),
+});
+
 const pairingRekeyApprovalRequestSchema = z.object({
   requestId: z.string().min(16).max(128),
   approvalCode: z.string().regex(/^[A-F0-9]{8}$/),
@@ -120,6 +154,18 @@ const nativeCodexThreadBindingResultSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('agent-mismatch'),
     binding: nativeCodexThreadBindingSchema,
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini']),
+  }),
+]);
+
+const nativeCursorSessionBindingResultSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('bound'), wrapper: nativeCursorSessionWrapperSchema }),
+  z.object({ type: z.literal('already-bound'), wrapper: nativeCursorSessionWrapperSchema }),
+  z.object({ type: z.literal('reuse-active-wrapper'), wrapper: nativeCursorSessionWrapperSchema }),
+  z.object({ type: z.literal('wrapper-not-tracked'), binding: nativeCursorSessionBindingSchema }),
+  z.object({
+    type: z.literal('agent-mismatch'),
+    binding: nativeCursorSessionBindingSchema,
     trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini']),
   }),
 ]);
@@ -163,6 +209,8 @@ export function startDaemonControlServer({
   issueSessionRunnerCredential,
   verifySessionRunnerCredential,
   bindNativeCodexThread,
+  bindNativeCursorSession,
+  preflightCursorRunner,
   openCodexRemoteTui,
   approvePairingRekey,
 }: {
@@ -174,6 +222,8 @@ export function startDaemonControlServer({
   issueSessionRunnerCredential: (sessionId: string, owner: string) => string | undefined;
   verifySessionRunnerCredential: (sessionId: string, credential: string) => boolean;
   bindNativeCodexThread: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
+  bindNativeCursorSession: (binding: NativeCursorSessionBinding) => Promise<NativeCursorSessionBindingResult>;
+  preflightCursorRunner: (request: CursorRunnerPreflightRequest) => Promise<CursorRunnerPreflightResult>;
   openCodexRemoteTui: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
   approvePairingRekey: (requestId: string, approvalCode: string) => Promise<PairingRekeyApprovalResult>;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
@@ -227,6 +277,26 @@ export function startDaemonControlServer({
       return { status: 'ok' as const, runnerCredential };
     });
 
+    // A runner proves its daemon-created wrapper before it creates any P2P
+    // metadata. Keep this endpoint free of capability and lineage logging.
+    typed.post('/cursor-runner-preflight', {
+      schema: {
+        body: cursorRunnerPreflightRequestSchema,
+        response: {
+          200: cursorRunnerPreflightResponseSchema,
+          403: cursorRunnerPreflightRejectedResponseSchema,
+        },
+      },
+    }, async (request, reply) => {
+      const result = await preflightCursorRunner(request.body);
+      if (result.type === 'rejected') {
+        reply.code(403);
+        return { error: CURSOR_RUNNER_PREFLIGHT_REJECTED_ERROR } as const;
+      }
+
+      return result;
+    });
+
     typed.post('/codex-thread-bound', {
       schema: {
         body: protectedNativeCodexThreadBindingSchema,
@@ -245,6 +315,27 @@ export function startDaemonControlServer({
       const binding: NativeCodexThreadBinding = { agent, nativeThreadId, remcliSessionId };
       const result = await bindNativeCodexThread(binding);
       logger.debug(`[CONTROL SERVER] Codex thread ${nativeThreadId} binding result: ${result.type}`);
+      return result;
+    });
+
+    typed.post('/cursor-session-bound', {
+      schema: {
+        body: protectedNativeCursorSessionBindingSchema,
+        response: {
+          200: nativeCursorSessionBindingResultSchema,
+          403: runnerCredentialDeniedResponseSchema,
+        },
+      },
+    }, async (request, reply) => {
+      const { agent, nativeSessionId, remcliSessionId, runnerCredential } = request.body;
+      if (!runnerCredential || !verifySessionRunnerCredential(remcliSessionId, runnerCredential)) {
+        reply.code(403);
+        return { error: INVALID_SESSION_RUNNER_CREDENTIAL_ERROR } as const;
+      }
+
+      const binding: NativeCursorSessionBinding = { agent, nativeSessionId, remcliSessionId };
+      const result = await bindNativeCursorSession(binding);
+      logger.debug(`[CONTROL SERVER] Cursor session ${nativeSessionId} binding result: ${result.type}`);
       return result;
     });
 

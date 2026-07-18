@@ -45,6 +45,7 @@ export const ca: Dictionary = {
     "chat.resumeFailed": "no s'ha pogut reprendre la sessió",
     "chat.sendFailed": "no s'ha pogut enviar el missatge",
     "chat.executionError": "l'última operació ha acabat amb un error",
+    "chat.lineageUnavailable": "l'historial anterior no està disponible · la sessió actual continua",
 
     "tts.listen": "escolta",
     "tts.synth": "sintetitzant…",

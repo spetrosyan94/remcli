@@ -296,6 +296,8 @@ export async function startDaemon(): Promise<void> {
       issueSessionRunnerCredential: (sessionId, owner) => runnerCredentialStore.issue(sessionId, owner),
       verifySessionRunnerCredential: (sessionId, credential) => runnerCredentialStore.verify(sessionId, credential),
       bindNativeCodexThread: sessionManager.bindNativeCodexThread,
+      bindNativeCursorSession: sessionManager.bindNativeCursorSession,
+      preflightCursorRunner: sessionManager.preflightCursorRunner,
       openCodexRemoteTui: sessionManager.openCodexRemoteTui,
       approvePairingRekey: (requestId, approvalCode) => pairingRekeyCoordinator.approve(requestId, approvalCode),
     });

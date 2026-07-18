@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Metadata } from '@/api/types';
 import {
     bindDaemonCodexThread,
+    bindDaemonCursorSession,
     openDaemonCodexRemoteTui,
 } from './controlClient';
 import { startDaemonControlServer } from './controlServer';
@@ -9,8 +10,12 @@ import { forgetSessionRunnerCredential, P2PRunnerCredentialStore } from './p2p/p
 import type {
     CodexRemoteTuiOpenRequest,
     CodexRemoteTuiOpenResult,
+    CursorRunnerPreflightRequest,
+    CursorRunnerPreflightResult,
     NativeCodexThreadBinding,
     NativeCodexThreadBindingResult,
+    NativeCursorSessionBinding,
+    NativeCursorSessionBindingResult,
     StopSessionResult,
 } from './types';
 import type { PairingRekeyApprovalResult } from './p2p/pairingRekey';
@@ -38,6 +43,10 @@ interface ControlServerTestOptions {
     issueSessionRunnerCredential?: (sessionId: string, owner: string) => string | undefined;
     verifySessionRunnerCredential?: (sessionId: string, credential: string) => boolean;
     bindNativeCodexThread?: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
+    bindNativeCursorSession?: (binding: NativeCursorSessionBinding) => Promise<NativeCursorSessionBindingResult>;
+    preflightCursorRunner?: (
+        request: CursorRunnerPreflightRequest,
+    ) => Promise<CursorRunnerPreflightResult>;
     openCodexRemoteTui?: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
     approvePairingRekey?: (requestId: string, approvalCode: string) => Promise<PairingRekeyApprovalResult>;
 }
@@ -73,6 +82,11 @@ async function startControlServerForTest(options: ControlServerTestOptions = {})
             type: 'wrapper-not-tracked',
             binding,
         })),
+        bindNativeCursorSession: options.bindNativeCursorSession ?? (async (binding) => ({
+            type: 'wrapper-not-tracked',
+            binding,
+        })),
+        preflightCursorRunner: options.preflightCursorRunner ?? (async () => ({ type: 'rejected' })),
         openCodexRemoteTui: options.openCodexRemoteTui ?? (async (request) => ({
             type: 'wrapper-not-tracked',
             request,
@@ -142,6 +156,70 @@ describe('startDaemonControlServer', () => {
         expect(approvePairingRekey).toHaveBeenCalledWith('request-0000000001', 'A1B2C3D4');
         expect(malformed.status).toBe(400);
         expect(approvePairingRekey).toHaveBeenCalledOnce();
+    });
+
+    it('returns verified Cursor runner data only after the session manager accepts the preflight', async () => {
+        const parentRemcliSessionId = 'trusted-parent-remcli-session';
+        const preflightCursorRunner = vi.fn(async (request: CursorRunnerPreflightRequest) => {
+            if (request.runnerToken !== 'valid-runner-token') {
+                return { type: 'rejected' } as const;
+            }
+            if (!request.nativeResumeSessionId) {
+                return { type: 'verified' } as const;
+            }
+            return {
+                type: 'verified' as const,
+                parentRemcliSessionId,
+            };
+        });
+        const controlServer = await startControlServerForTest({ preflightCursorRunner });
+        stopServer = controlServer.stop;
+
+        const request = {
+            agent: 'cursor',
+            nativeResumeSessionId: 'cursor-native-session',
+            pid: process.pid,
+        } as const;
+        const acceptedResponse = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-runner-preflight`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...request, runnerToken: 'valid-runner-token' }),
+        });
+        const freshResponse = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-runner-preflight`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent: 'cursor', pid: process.pid, runnerToken: 'valid-runner-token' }),
+        });
+        const rejectedResponse = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-runner-preflight`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...request, runnerToken: 'forged-runner-token' }),
+        });
+
+        expect(acceptedResponse.status).toBe(200);
+        await expect(acceptedResponse.json()).resolves.toEqual({
+            type: 'verified',
+            parentRemcliSessionId,
+        });
+        expect(preflightCursorRunner).toHaveBeenNthCalledWith(1, {
+            ...request,
+            runnerToken: 'valid-runner-token',
+        });
+        expect(freshResponse.status).toBe(200);
+        await expect(freshResponse.json()).resolves.toEqual({ type: 'verified' });
+        expect(preflightCursorRunner).toHaveBeenNthCalledWith(2, {
+            agent: 'cursor',
+            pid: process.pid,
+            runnerToken: 'valid-runner-token',
+        });
+        expect(rejectedResponse.status).toBe(403);
+        await expect(rejectedResponse.json()).resolves.toEqual({
+            error: 'cursor-runner-preflight-rejected',
+        });
+        expect(preflightCursorRunner).toHaveBeenNthCalledWith(3, {
+            ...request,
+            runnerToken: 'forged-runner-token',
+        });
     });
 
     it('issues a daemon-owned runner credential and verifies it before binding a Codex thread', async () => {
@@ -214,6 +292,56 @@ describe('startDaemonControlServer', () => {
         await expect(bindingResponse.json()).resolves.toEqual(bindingResult);
         expect(verifySessionRunnerCredential).toHaveBeenCalledWith('remcli-123', runnerCredential);
         expect(bindNativeCodexThread).toHaveBeenCalledWith(binding);
+    });
+
+    it('binds a Cursor native session only after the daemon-issued runner credential verifies', async () => {
+        const credentialStore = new P2PRunnerCredentialStore();
+        const bindingResult = {
+            type: 'bound',
+            wrapper: {
+                agent: 'cursor',
+                nativeSessionId: 'cursor-native-123',
+                remcliSessionId: 'remcli-123',
+            },
+        } as const;
+        const bindNativeCursorSession = vi.fn(async () => bindingResult);
+        const controlServer = await startControlServerForTest({
+            onRemcliSessionWebhook: () => ({
+                accepted: true,
+                daemonOwned: true,
+                runnerCredentialOwner: 'runner-owner-cursor',
+            }),
+            issueSessionRunnerCredential: (sessionId, owner) => credentialStore.issue(sessionId, owner),
+            verifySessionRunnerCredential: (sessionId, credential) => credentialStore.verify(sessionId, credential),
+            bindNativeCursorSession,
+        });
+        stopServer = controlServer.stop;
+
+        const sessionStartedResponse = await fetch(`http://127.0.0.1:${controlServer.port}/session-started`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: 'remcli-123', metadata: sessionMetadata, runnerToken: 'daemon-token' }),
+        });
+        const sessionStartedBody = await sessionStartedResponse.json() as { runnerCredential?: string };
+        if (!sessionStartedBody.runnerCredential) {
+            throw new Error('Expected daemon-owned runner credential.');
+        }
+
+        const binding: NativeCursorSessionBinding = {
+            agent: 'cursor',
+            nativeSessionId: 'cursor-native-123',
+            remcliSessionId: 'remcli-123',
+        };
+        const bindingResponse = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-session-bound`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...binding, runnerCredential: sessionStartedBody.runnerCredential }),
+        });
+
+        expect(sessionStartedResponse.status).toBe(200);
+        expect(bindingResponse.status).toBe(200);
+        await expect(bindingResponse.json()).resolves.toEqual(bindingResult);
+        expect(bindNativeCursorSession).toHaveBeenCalledWith(binding);
     });
 
     it('does not issue a credential for an accepted manual session', async () => {
@@ -486,6 +614,41 @@ describe('startDaemonControlServer', () => {
         expect(bindNativeCodexThread).not.toHaveBeenCalled();
     });
 
+    it('rejects missing and wrong credentials before binding a Cursor native session', async () => {
+        const bindNativeCursorSession = vi.fn();
+        const verifySessionRunnerCredential = vi.fn((sessionId: string, credential: string) => {
+            return sessionId === 'remcli-123' && credential === 'valid-credential';
+        });
+        const controlServer = await startControlServerForTest({
+            verifySessionRunnerCredential,
+            bindNativeCursorSession,
+        });
+        stopServer = controlServer.stop;
+
+        const binding: NativeCursorSessionBinding = {
+            agent: 'cursor',
+            nativeSessionId: 'cursor-native-123',
+            remcliSessionId: 'remcli-123',
+        };
+        const missingCredentialResponse = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-session-bound`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(binding),
+        });
+        const wrongCredentialResponse = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-session-bound`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...binding, runnerCredential: 'wrong-credential' }),
+        });
+
+        expect(missingCredentialResponse.status).toBe(403);
+        await expect(missingCredentialResponse.json()).resolves.toEqual({ error: 'invalid-runner-credential' });
+        expect(wrongCredentialResponse.status).toBe(403);
+        await expect(wrongCredentialResponse.json()).resolves.toEqual({ error: 'invalid-runner-credential' });
+        expect(verifySessionRunnerCredential).toHaveBeenCalledWith('remcli-123', 'wrong-credential');
+        expect(bindNativeCursorSession).not.toHaveBeenCalled();
+    });
+
     it('rejects missing and wrong credentials before opening a remote TUI', async () => {
         const openCodexRemoteTui = vi.fn();
         const verifySessionRunnerCredential = vi.fn((sessionId: string, credential: string) => {
@@ -565,6 +728,12 @@ describe('startDaemonControlServer', () => {
         });
 
         expect(bindingResult).toEqual({ ok: false, error: 'Missing session runner credential' });
+        const cursorBindingResult = await bindDaemonCursorSession({
+            agent: 'cursor',
+            nativeSessionId: 'cursor-native-123',
+            remcliSessionId: sessionId,
+        });
+        expect(cursorBindingResult).toEqual({ ok: false, error: 'Missing session runner credential' });
         expect(remoteTuiResult).toEqual({ ok: false, error: 'Missing session runner credential' });
     });
 });

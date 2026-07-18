@@ -7,8 +7,9 @@
 
 /** A single event from cursor's stream-json output */
 export interface CursorStreamEvent {
-    type: 'system' | 'user' | 'assistant' | 'tool_call' | 'result' | 'thinking';
-    subtype?: 'init' | 'started' | 'completed' | 'success' | 'delta';
+    /** Cursor may add stream event types between CLI releases. */
+    type: string;
+    subtype?: string;
     session_id?: string;
     model?: string;
     permissionMode?: string;

@@ -11,6 +11,9 @@ import {
     fixtureListAgentSessions,
     fixtureListDirectory,
     fixtureLoadSessionMessages,
+    fixtureRecordProtocolReconnect,
+    fixtureRecordSentSession,
+    fixtureRefreshSessions,
     fixtureRestConfig,
     fixtureSpawnNewSession,
     fixtureStopSession,
@@ -133,6 +136,12 @@ const FIXTURE_PAIRING_QR_DATA_URL = 'data:image/svg+xml,%3Csvg xmlns="http://www
 let context: ClientContext | null = null;
 let lifecycleGeneration = 0;
 const protocolReconnectedListeners = new Set<() => void>();
+
+export interface IProtocolReconnectOperations {
+    refreshMachines: () => Promise<void>;
+    refreshSessions: () => Promise<void>;
+    notifyReconnected: () => void;
+}
 
 export interface PairingQrPresentation {
     qrDataUrl: string;
@@ -321,6 +330,41 @@ export function onProtocolReconnected(listener: () => void): () => void {
     return () => {
         protocolReconnectedListeners.delete(listener);
     };
+}
+
+function notifyProtocolReconnected(canNotify: () => boolean = () => true): void {
+    for (const listener of protocolReconnectedListeners) {
+        if (!canNotify()) break;
+        listener();
+    }
+}
+
+/** Runs the single reconnect sequence shared by the Socket.IO lifecycle and fixture tests. */
+export async function runProtocolReconnect(operations: IProtocolReconnectOperations): Promise<void> {
+    const machinesRefresh = operations.refreshMachines().catch(() => undefined);
+    try {
+        await operations.refreshSessions();
+    } finally {
+        operations.notifyReconnected();
+        await machinesRefresh;
+    }
+}
+
+/** Runs the production reconnect sequence against fixture-backed refresh operations. */
+export async function runFixtureProtocolReconnect(): Promise<void> {
+    if (!isFixturesActive) {
+        throw new Error('Fixture protocol reconnect is available only in fixture mode');
+    }
+    await runProtocolReconnect({
+        refreshMachines: async () => undefined,
+        refreshSessions: async () => {
+            fixtureRefreshSessions();
+        },
+        notifyReconnected: () => {
+            fixtureRecordProtocolReconnect();
+            notifyProtocolReconnected();
+        }
+    });
 }
 
 /** REST config for direct API calls (TTS, Whisper, concierge). Null when not connected. */
@@ -638,7 +682,10 @@ async function refreshSessionsForContext(ctx: ClientContext): Promise<void> {
 }
 
 export async function refreshSessions(): Promise<void> {
-    if (isFixturesActive) return;
+    if (isFixturesActive) {
+        fixtureRefreshSessions();
+        return;
+    }
     await refreshSessionsForContext(requireContext());
 }
 
@@ -748,6 +795,7 @@ export async function sendSessionMessage(
 
     // Fixture-режим: только локальное эхо, без шифрования и сети
     if (isFixturesActive) {
+        fixtureRecordSentSession(sessionId);
         const normalized = normalizeRawMessage(localId, localId, null, Date.now(), record);
         if (normalized) {
             useProtocolStore.getState().applyMessages(sessionId, [normalized]);
@@ -1134,16 +1182,11 @@ function handleEphemeral(ctx: ClientContext, data: unknown): void {
 const LATENCY_PING_INTERVAL_MS = 30_000;
 
 async function refreshAfterReconnect(ctx: ClientContext): Promise<void> {
-    const machinesRefresh = refreshMachinesForContext(ctx).catch(() => undefined);
-    try {
-        await refreshSessionsForContext(ctx);
-    } finally {
-        for (const listener of protocolReconnectedListeners) {
-            if (!isCurrentClientContext(ctx)) break;
-            listener();
-        }
-        await machinesRefresh;
-    }
+    await runProtocolReconnect({
+        refreshMachines: () => refreshMachinesForContext(ctx),
+        refreshSessions: () => refreshSessionsForContext(ctx),
+        notifyReconnected: () => notifyProtocolReconnected(() => isCurrentClientContext(ctx))
+    });
 }
 
 async function startWithCredentials(

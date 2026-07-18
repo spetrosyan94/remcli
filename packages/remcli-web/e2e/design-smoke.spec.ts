@@ -412,6 +412,47 @@ test("pairing rekey closes its approval dialog before it presents the replacemen
     expect(pageIssues).toEqual([]);
 });
 
+test("dialog controls keep their full mobile hit area during enter and exit motion", async ({ page }, testInfo) => {
+    test.skip(!isMobileProject(testInfo), "Dialog motion touch-target gate only runs on the mobile project.");
+
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await openFixtureRoute(page, "/settings?fixtures=1");
+    await page.getByRole("button", { name: "Rotate pairing key", exact: true }).click();
+
+    const dialog = page.getByRole("dialog", { name: "Rotate pairing key", exact: true });
+    await expect(dialog).toBeVisible();
+
+    const measureControls = async (scope: Locator) => scope.evaluate((element) => {
+        const controls = [
+            element.querySelector<HTMLElement>('[data-slot="dialog-close"]'),
+            ...Array.from(element.querySelectorAll<HTMLElement>('[data-slot="dialog-footer"] button')),
+        ];
+
+        return controls.map((control) => {
+            const rect = control?.getBoundingClientRect();
+            return {
+                width: rect?.width ?? 0,
+                height: rect?.height ?? 0,
+            };
+        });
+    });
+
+    const assertFullHitAreas = (controls: Array<{ width: number; height: number }>) => {
+        expect(controls).toHaveLength(2);
+        for (const control of controls) {
+            expect(control.width).toBeGreaterThanOrEqual(MOBILE_TOUCH_TARGET_MIN_PX);
+            expect(control.height).toBeGreaterThanOrEqual(MOBILE_TOUCH_TARGET_MIN_PX);
+        }
+    };
+
+    assertFullHitAreas(await measureControls(dialog));
+
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    const closingDialog = page.locator('[data-slot="dialog-content"][data-state="closed"]');
+    await expect(closingDialog).toHaveCount(1);
+    assertFullHitAreas(await measureControls(closingDialog));
+});
+
 test("Connect fixture states preserve usable controls and labelled manual inputs", async ({ page }, testInfo) => {
     test.skip(!isMobileProject(testInfo), "Mobile connection-state regression.");
     const pageIssues = collectPageIssues(page);

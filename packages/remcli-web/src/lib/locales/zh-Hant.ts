@@ -45,6 +45,7 @@ export const zhHant: Dictionary = {
     "chat.resumeFailed": "無法恢復工作階段",
     "chat.sendFailed": "訊息傳送失敗",
     "chat.executionError": "上一次操作因錯誤而結束",
+    "chat.lineageUnavailable": "先前的歷史記錄無法使用 · 目前工作階段將繼續",
 
     "tts.listen": "收聽",
     "tts.synth": "合成中…",

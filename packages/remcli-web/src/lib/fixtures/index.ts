@@ -22,6 +22,13 @@ import {
     FIXTURE_CONCIERGE_CHAT_RESPONSE,
     FIXTURE_CONCIERGE_FEED,
     FIXTURE_CONCIERGE_STATUS,
+    FIXTURE_LINEAGE_CHILD_MESSAGES,
+    FIXTURE_LINEAGE_CHILD_SESSION_ID,
+    FIXTURE_LINEAGE_FOREIGN_PARENT_MESSAGES,
+    FIXTURE_LINEAGE_FOREIGN_PARENT_SESSIONS,
+    FIXTURE_LINEAGE_PARENT_MESSAGES,
+    FIXTURE_LINEAGE_PARENT_SESSION_ID,
+    FIXTURE_LINEAGE_SESSIONS,
     FIXTURE_MACHINES,
     FIXTURE_SESSIONS,
     FIXTURE_ZEN_TASKS,
@@ -77,6 +84,15 @@ let zenTasksVersion = 1;
 let spawnedSessionCounter = 0;
 let fixtureResumeRetryAttempts = 0;
 
+interface FixtureLineageMetricsState {
+    refreshSessionsCalls: number;
+    reconnects: number;
+    parentHistoryLoads: number;
+    sentSessionIds: string[];
+}
+
+let fixtureLineageMetricsState: FixtureLineageMetricsState | null = null;
+
 const FIXTURE_RESUME_RESPONSE_DELAY_MS = 1_000;
 const FIXTURE_LONG_RESUME_ROW_COUNT = 24;
 const FIXTURE_LONG_CHAT_PATH = `/Users/dev/projects/remcli/${'nested-directory/'.repeat(36)}calculate.js:195`;
@@ -87,8 +103,52 @@ function fixtureQueryParameter(name: string): string | null {
     return new URLSearchParams(window.location.search).get(name);
 }
 
+type LineageFixtureScenario = 'recovery' | 'reconnect-callback' | 'stable-parent' | 'unavailable' | 'foreign-parent';
+
+function lineageFixtureScenario(): LineageFixtureScenario | null {
+    const value = fixtureQueryParameter('lineageFixture');
+    return value === 'recovery'
+        || value === 'reconnect-callback'
+        || value === 'stable-parent'
+        || value === 'unavailable'
+        || value === 'foreign-parent'
+        ? value
+        : null;
+}
+
+function getFixtureLineageMetricsState(): FixtureLineageMetricsState | null {
+    if (!readFixtureFlag() || !lineageFixtureScenario()) return null;
+    if (fixtureLineageMetricsState) return fixtureLineageMetricsState;
+
+    fixtureLineageMetricsState = {
+        refreshSessionsCalls: 0,
+        reconnects: 0,
+        parentHistoryLoads: 0,
+        sentSessionIds: []
+    };
+    return fixtureLineageMetricsState;
+}
+
 function waitForFixtureResumeResponse(): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, FIXTURE_RESUME_RESPONSE_DELAY_MS));
+}
+
+function lineageSessionsForScenario(scenario: LineageFixtureScenario): readonly Session[] {
+    return scenario === 'foreign-parent'
+        ? FIXTURE_LINEAGE_FOREIGN_PARENT_SESSIONS
+        : FIXTURE_LINEAGE_SESSIONS;
+}
+
+function fixtureSessionSnapshot(
+    scenario: LineageFixtureScenario,
+    refreshSessionsCalls: number,
+): Session[] {
+    const shouldReturnChildOnlySnapshot = scenario === 'recovery'
+        || (scenario === 'reconnect-callback' && refreshSessionsCalls < 2);
+    const lineageSessions = lineageSessionsForScenario(scenario)
+        .filter((session) => !shouldReturnChildOnlySnapshot || session.id === FIXTURE_LINEAGE_CHILD_SESSION_ID);
+
+    return [...FIXTURE_SESSIONS, ...lineageSessions].map((session) => structuredClone(session));
 }
 
 const FIXTURE_UNKNOWN_RESUME_HISTORY: readonly NormalizedMessage[] = [{
@@ -320,14 +380,82 @@ export function initFixturesIfEnabled(): boolean {
     if (!readFixtureFlag()) return false;
     installFetchInterceptor();
     fixtureResumeRetryAttempts = 0;
+    getFixtureLineageMetricsState();
     const store = useProtocolStore.getState();
     store.applyMachines(FIXTURE_MACHINES);
     store.applySessions(FIXTURE_SESSIONS);
     store.applyMessages(FIXTURE_CHAT_SESSION_ID, fixtureChatMessages(), { markLoaded: true });
+    const lineageScenario = lineageFixtureScenario();
+    if (lineageScenario === 'recovery') {
+        // Start with a stale but trusted parent snapshot. The mounted ChatPage
+        // refresh must replace it with the child-only snapshot before recovery
+        // can reveal the parent again.
+        store.applySessions(FIXTURE_LINEAGE_SESSIONS.slice());
+        store.applyMessages(FIXTURE_LINEAGE_PARENT_SESSION_ID, FIXTURE_LINEAGE_PARENT_MESSAGES, { markLoaded: true });
+        store.applyMessages(FIXTURE_LINEAGE_CHILD_SESSION_ID, FIXTURE_LINEAGE_CHILD_MESSAGES, { markLoaded: true });
+    } else if (lineageScenario === 'reconnect-callback') {
+        store.applySessions(FIXTURE_LINEAGE_SESSIONS.filter((session) => session.id === FIXTURE_LINEAGE_CHILD_SESSION_ID));
+        store.applyMessages(FIXTURE_LINEAGE_CHILD_SESSION_ID, FIXTURE_LINEAGE_CHILD_MESSAGES, { markLoaded: true });
+    } else if (lineageScenario === 'stable-parent' || lineageScenario === 'unavailable') {
+        store.applySessions(lineageSessionsForScenario(lineageScenario).slice());
+        store.applyMessages(FIXTURE_LINEAGE_CHILD_SESSION_ID, FIXTURE_LINEAGE_CHILD_MESSAGES, { markLoaded: true });
+    } else if (lineageScenario === 'foreign-parent') {
+        store.applySessions(lineageSessionsForScenario(lineageScenario).slice());
+        store.applyMessages(FIXTURE_LINEAGE_CHILD_SESSION_ID, FIXTURE_LINEAGE_CHILD_MESSAGES, { markLoaded: true });
+        store.applyMessages(FIXTURE_LINEAGE_PARENT_SESSION_ID, FIXTURE_LINEAGE_FOREIGN_PARENT_MESSAGES);
+    }
     store.setConnectionStatus('connected');
     store.setAuthenticated(true);
     store.setLatency(FIXTURE_LATENCY_MS);
     return true;
+}
+
+export interface FixtureLineageMetrics {
+    refreshSessionsCalls: number;
+    reconnects: number;
+    parentHistoryLoads: number;
+    sentSessionIds: string[];
+}
+
+export function fixtureLineageMetrics(): FixtureLineageMetrics {
+    const state = getFixtureLineageMetricsState();
+    return {
+        refreshSessionsCalls: state?.refreshSessionsCalls ?? 0,
+        reconnects: state?.reconnects ?? 0,
+        parentHistoryLoads: state?.parentHistoryLoads ?? 0,
+        sentSessionIds: state ? [...state.sentSessionIds] : [],
+    };
+}
+
+/** Record a fixture-mode session-list refresh for browser assertions. */
+export function fixtureRefreshSessions(): void {
+    const scenario = lineageFixtureScenario();
+    const state = getFixtureLineageMetricsState();
+    if (!scenario || !state) return;
+    state.refreshSessionsCalls += 1;
+    useProtocolStore.getState().replaceSessions(fixtureSessionSnapshot(scenario, state.refreshSessionsCalls));
+}
+
+/** Reveal the trusted parent in the recovery fixture without marking its history loaded. */
+export function fixtureRevealLineageParent(): void {
+    const state = getFixtureLineageMetricsState();
+    if (lineageFixtureScenario() !== 'recovery' || !state) return;
+    const store = useProtocolStore.getState();
+    const parentSession = FIXTURE_LINEAGE_SESSIONS.find((session) => session.id === FIXTURE_LINEAGE_PARENT_SESSION_ID);
+    if (!parentSession) return;
+    store.applySessions([parentSession]);
+    store.applyMessages(FIXTURE_LINEAGE_PARENT_SESSION_ID, FIXTURE_LINEAGE_PARENT_MESSAGES);
+}
+
+/** Record a fixture-mode reconnect event before notifying ChatPage listeners. */
+export function fixtureRecordProtocolReconnect(): void {
+    const state = getFixtureLineageMetricsState();
+    if (state) state.reconnects += 1;
+}
+
+export function fixtureRecordSentSession(sessionId: string): void {
+    const state = getFixtureLineageMetricsState();
+    if (state) state.sentSessionIds.push(sessionId);
 }
 
 /** REST-конфиг fixture-режима: все запросы уйдут в fetch-перехватчик. */
@@ -346,10 +474,22 @@ export function fixtureConciergeFeed(): FixtureConciergeFeedEntry[] {
     }));
 }
 
-/** «Загрузка» истории: сообщения уже в сторе — только пометить isLoaded. */
+/** Fixture history loader exposes the recovered parent only after its central session snapshot arrives. */
 export function fixtureLoadSessionMessages(sessionId: string): { total: number; hasMore: boolean } {
+    const scenario = lineageFixtureScenario();
+    const state = getFixtureLineageMetricsState();
+    if (sessionId === FIXTURE_LINEAGE_PARENT_SESSION_ID && scenario && state) {
+        state.parentHistoryLoads += 1;
+        if (scenario === 'unavailable') {
+            throw new Error('Fixture parent history unavailable');
+        }
+    }
     const store = useProtocolStore.getState();
-    store.applyMessages(sessionId, [], { markLoaded: true });
+    const messages = sessionId === FIXTURE_LINEAGE_PARENT_SESSION_ID
+        && (scenario === 'reconnect-callback' || scenario === 'stable-parent')
+        ? FIXTURE_LINEAGE_PARENT_MESSAGES
+        : [];
+    store.applyMessages(sessionId, messages, { markLoaded: true });
     return {
         total: store.sessionMessages[sessionId]?.messages.length ?? 0,
         hasMore: false

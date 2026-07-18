@@ -188,6 +188,27 @@ describe('protocol client message meta', () => {
         vi.resetModules();
     });
 
+    it('runs one central session refresh before notifying reconnect listeners', async () => {
+        const { runProtocolReconnect } = await import('@/lib/protocol/client');
+        const events: string[] = [];
+        const refreshMachines = vi.fn(async () => {
+            events.push('machines');
+        });
+        const refreshSessions = vi.fn(async () => {
+            events.push('sessions');
+        });
+        const notifyReconnected = vi.fn(() => {
+            events.push('listeners');
+        });
+
+        await runProtocolReconnect({ refreshMachines, refreshSessions, notifyReconnected });
+
+        expect(refreshMachines).toHaveBeenCalledOnce();
+        expect(refreshSessions).toHaveBeenCalledOnce();
+        expect(notifyReconnected).toHaveBeenCalledOnce();
+        expect(events.indexOf('sessions')).toBeLessThan(events.indexOf('listeners'));
+    });
+
     it('does not send a model reset unless a model override is explicit', async () => {
         vi.resetModules();
         installFixtureGlobals();

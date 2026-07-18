@@ -1,6 +1,7 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync, type Stats } from 'node:fs';
 import { basename, join, sep } from 'node:path';
 import * as os from 'node:os';
+import { createHash } from 'node:crypto';
 import { getProjectPath } from '@/claude/utils/path';
 import { logger } from '@/ui/logger';
 
@@ -854,17 +855,24 @@ export function listCodexSessions(): AgentSessionInfo[] {
 
 /**
  * List Cursor sessions from ~/.cursor/chats/<workspace-id>/<session-id>/store.db.
- * Minimal support: just ID + date (no SQLite parsing).
+ * Cursor stores the workspace as the MD5 digest of the raw absolute directory.
+ * When a directory is supplied, do not expose unrelated workspaces to the
+ * resume picker. Store.db remains an index only; its content is never parsed.
  */
-export function listCursorSessions(): AgentSessionInfo[] {
+export function listCursorSessions(directory?: string): AgentSessionInfo[] {
     const sessions: AgentSessionInfo[] = [];
 
     try {
         const chatsDir = join(os.homedir(), '.cursor', 'chats');
         if (!existsSync(chatsDir)) return sessions;
 
-        for (const workspaceId of listSubdirs(chatsDir)) {
+        const workspaceIds = directory
+            ? [createHash('md5').update(directory).digest('hex')]
+            : listSubdirs(chatsDir);
+
+        for (const workspaceId of workspaceIds) {
             const workspaceDir = join(chatsDir, workspaceId);
+            if (!existsSync(workspaceDir)) continue;
 
             for (const sessionDir of listSubdirs(workspaceDir)) {
                 if (!UUID_RE.test(sessionDir)) continue;
@@ -882,7 +890,7 @@ export function listCursorSessions(): AgentSessionInfo[] {
                 sessions.push({
                     sessionId: sessionDir,
                     agent: 'cursor',
-                    projectPath: '',
+                    projectPath: directory ?? '',
                     lastModified: st.mtimeMs,
                     firstMessage: null,
                     messageCount: 0,
@@ -1001,7 +1009,7 @@ export function listGeminiSessions(): AgentSessionInfo[] {
  * List sessions across all (or a specific) AI agent.
  *
  * @param agent  - Filter by agent name ('claude' | 'codex' | 'cursor' | 'gemini')
- * @param directory - Filter Claude sessions by working directory
+ * @param directory - Filter provider histories by working directory when supported
  * @param limit - Max sessions to return (default 50), sorted by lastModified desc
  */
 export function listAllAgentSessions(
@@ -1020,7 +1028,7 @@ export function listAllAgentSessions(
         all.push(...listCodexSessions());
     }
     if (shouldInclude('cursor')) {
-        all.push(...listCursorSessions());
+        all.push(...listCursorSessions(directory));
     }
     if (shouldInclude('gemini')) {
         all.push(...listGeminiSessions());

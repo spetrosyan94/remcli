@@ -17,6 +17,44 @@ export interface NativeCodexThreadWrapper {
   remcliSessionId: string;
 }
 
+/** A daemon-owned Cursor wrapper may bind one currently active native session. */
+export interface NativeCursorSessionBinding {
+  agent: 'cursor';
+  nativeSessionId: string;
+  remcliSessionId: string;
+}
+
+export interface NativeCursorSessionWrapper {
+  agent: 'cursor';
+  nativeSessionId: string;
+  remcliSessionId: string;
+}
+
+/** Capability-bound request made by a daemon-spawned Cursor runner before it creates P2P metadata. */
+export interface CursorRunnerPreflightRequest {
+  agent: 'claude' | 'codex' | 'cursor' | 'gemini';
+  nativeResumeSessionId?: string;
+  pid: number;
+  runnerToken: string;
+}
+
+/** Public loopback response after a valid daemon runner preflight. */
+export interface CursorRunnerPreflightResponse {
+  type: 'verified';
+  parentRemcliSessionId?: string;
+}
+
+/** Internal result; rejected requests must not receive private daemon data. */
+export type CursorRunnerPreflightResult =
+  | CursorRunnerPreflightResponse
+  | { type: 'rejected' };
+
+/** Parent relation captured only after daemon-owned native Cursor binding and workspace validation. */
+export interface CursorResumeLineage {
+  nativeResumeSessionId: string;
+  parentRemcliSessionId: string;
+}
+
 export interface CodexRemoteTuiOpenRequest {
   agent: 'codex';
   nativeThreadId: string;
@@ -43,6 +81,17 @@ export type NativeCodexThreadBindingResult =
   | {
     type: 'agent-mismatch';
     binding: NativeCodexThreadBinding;
+    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini';
+  };
+
+export type NativeCursorSessionBindingResult =
+  | { type: 'bound'; wrapper: NativeCursorSessionWrapper }
+  | { type: 'already-bound'; wrapper: NativeCursorSessionWrapper }
+  | { type: 'reuse-active-wrapper'; wrapper: NativeCursorSessionWrapper }
+  | { type: 'wrapper-not-tracked'; binding: NativeCursorSessionBinding }
+  | {
+    type: 'agent-mismatch';
+    binding: NativeCursorSessionBinding;
     trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini';
   };
 
@@ -94,7 +143,12 @@ export interface TrackedSession {
   expectedAgent?: 'claude' | 'codex' | 'cursor' | 'gemini';
   expectedResumeSessionId?: string;
   expectedResumeKey?: string;
+  /** Daemon-selected working directory before the runner has published metadata. */
+  expectedDirectory?: string;
+  /** In-memory resume relation eligible only for a capability-bound Cursor preflight. */
+  cursorResumeLineage?: CursorResumeLineage;
   nativeCodexThreadId?: string;
+  nativeCursorSessionId?: string;
   runnerControlToken?: string;
   runnerControlTokenSessionId?: string;
   /** Immutable ownership proof for the daemon-created wrapper process. */

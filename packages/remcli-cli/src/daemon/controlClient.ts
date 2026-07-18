@@ -13,8 +13,12 @@ import { configuration } from '@/configuration';
 import {
   type CodexRemoteTuiOpenRequest,
   type CodexRemoteTuiOpenResult,
+  type CursorRunnerPreflightRequest,
+  type CursorRunnerPreflightResponse,
   type NativeCodexThreadBinding,
   type NativeCodexThreadBindingResult,
+  type NativeCursorSessionBinding,
+  type NativeCursorSessionBindingResult,
   type TrackedSession,
 } from './types';
 import { getSessionRunnerCredential, rememberSessionRunnerCredential } from './p2p/p2pRunnerCredentials';
@@ -42,6 +46,7 @@ interface SessionStartedResponse {
 }
 
 const MISSING_SESSION_RUNNER_CREDENTIAL_ERROR = 'Missing session runner credential';
+const MISSING_DAEMON_RUNNER_CAPABILITY_ERROR = 'Missing daemon runner capability';
 
 async function daemonPost<T = unknown>(path: string, body?: unknown): Promise<DaemonResponse<T>> {
   const state = await readDaemonState();
@@ -110,6 +115,34 @@ export async function bindDaemonCodexThread(
   return daemonPost<NativeCodexThreadBindingResult>('/codex-thread-bound', {
     ...binding,
     runnerCredential,
+  });
+}
+
+export async function bindDaemonCursorSession(
+  binding: NativeCursorSessionBinding,
+): Promise<DaemonResponse<NativeCursorSessionBindingResult>> {
+  const runnerCredential = getSessionRunnerCredential(binding.remcliSessionId);
+  if (!runnerCredential) {
+    return { ok: false, error: MISSING_SESSION_RUNNER_CREDENTIAL_ERROR };
+  }
+
+  return daemonPost<NativeCursorSessionBindingResult>('/cursor-session-bound', {
+    ...binding,
+    runnerCredential,
+  });
+}
+
+export async function preflightDaemonCursorRunner(
+  request: Omit<CursorRunnerPreflightRequest, 'runnerToken'>,
+): Promise<DaemonResponse<CursorRunnerPreflightResponse>> {
+  const runnerToken = process.env.REMCLI_DAEMON_RUNNER_TOKEN;
+  if (!runnerToken) {
+    return { ok: false, error: MISSING_DAEMON_RUNNER_CAPABILITY_ERROR };
+  }
+
+  return daemonPost<CursorRunnerPreflightResponse>('/cursor-runner-preflight', {
+    ...request,
+    runnerToken,
   });
 }
 

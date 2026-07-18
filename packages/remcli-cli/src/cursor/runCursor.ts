@@ -18,7 +18,6 @@ import { Credentials, readSettings } from '@/persistence';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
-import { startRemcliServer } from '@/claude/utils/startRemcliServer';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { CodexDisplay } from '@/ui/ink/CodexDisplay';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
@@ -29,12 +28,35 @@ import {
     acquireDaemonRunnerCredential,
     reportTerminalSessionStarted,
 } from '@/utils/daemonRunnerCredentialBootstrap';
+import { redactDiagnosticData } from '@/utils/redaction';
+import {
+    bindDaemonCursorSession,
+    preflightDaemonCursorRunner,
+} from '@/daemon/controlClient';
 import type { ApiSessionClient } from '@/api/apiSession';
-import type { CursorPermissionMode, PermissionMode } from '@/api/types';
+import type { CursorPermissionMode, Metadata, PermissionMode } from '@/api/types';
 
 import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
-import { cursorQuery } from './cursorQuery';
-import type { CursorMode, CursorStreamEvent } from './types';
+import {
+    CursorTurnError,
+    isCursorTurnAbortError,
+    runCursorTurn,
+    type CursorTurnOutcome,
+} from './cursorQuery';
+import { type CursorMode, type CursorStreamEvent } from './types';
+
+const LIFECYCLE_METADATA_UPDATE_OPTIONS = {
+    maxAttempts: 2,
+    timeoutMs: 1_000,
+} as const;
+
+const MAX_PROVISIONAL_PARENT_ROLLBACK_UPDATES = 2;
+
+function withoutResumedFromRemcliSessionId(metadata: Metadata): Metadata {
+    const updatedMetadata = { ...metadata };
+    delete updatedMetadata.resumedFromRemcliSessionId;
+    return updatedMetadata;
+}
 
 function isCursorPermissionMode(mode: PermissionMode): mode is CursorPermissionMode {
     return mode === 'agent'
@@ -56,7 +78,6 @@ export async function runCursor(opts: {
     startedBy?: 'daemon' | 'terminal';
     resumeSessionId?: string;
 }): Promise<void> {
-    //
     // Define session
     //
 
@@ -64,12 +85,6 @@ export async function runCursor(opts: {
 
     // Set backend for offline warnings
     connectionState.setBackend('Cursor');
-
-    const api = await ApiClient.create(opts.credentials);
-
-    //
-    // Machine
-    //
 
     const settings = await readSettings();
     const machineId = settings?.machineId;
@@ -79,51 +94,91 @@ export async function runCursor(opts: {
     }
     logger.debug(`Using machineId: ${machineId}`);
 
+    let trustedStartedBy: 'daemon' | 'terminal' | undefined;
+    let resumedFromRemcliSessionId: string | undefined;
+    if (opts.startedBy === 'daemon') {
+        try {
+            const runnerPreflight = await preflightDaemonCursorRunner({
+                agent: 'cursor',
+                nativeResumeSessionId: opts.resumeSessionId,
+                pid: process.pid,
+            });
+            if (!runnerPreflight.ok || runnerPreflight.data.type !== 'verified') {
+                logger.debug('[Cursor] Daemon runner preflight rejected.');
+                return;
+            }
+            trustedStartedBy = 'daemon';
+            resumedFromRemcliSessionId = runnerPreflight.data.parentRemcliSessionId;
+        } catch {
+            logger.debug('[Cursor] Daemon runner preflight failed.');
+            return;
+        }
+    } else {
+        trustedStartedBy = opts.startedBy;
+    }
+
     //
     // Create session
     //
 
-    const { state, metadata } = createSessionMetadata({
+    const { state, metadata: baseMetadata } = createSessionMetadata({
         flavor: 'cursor',
         machineId,
-        startedBy: opts.startedBy,
+        startedBy: trustedStartedBy,
     });
-    if (opts.resumeSessionId) {
-        metadata.agentSessionId = opts.resumeSessionId;
-        metadata.cursorSessionId = opts.resumeSessionId;
-    }
-    const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+    // The daemon returns a parent only after it verified the runner capability,
+    // native Cursor lineage, and workspace. Publish that verified relation with
+    // the child session so the P2P client can load the parent history before
+    // Cursor receives its first child prompt and emits system/init.
+    const initialMetadata: Metadata = resumedFromRemcliSessionId
+        ? { ...baseMetadata, resumedFromRemcliSessionId }
+        : baseMetadata;
+    // `getOrCreateSession` publishes this exact first snapshot. Reconnection
+    // needs its own mutable template so a failed native resume cannot mutate
+    // the already-published request object while still preventing future swaps
+    // from recreating a provisional parent relation.
+    const reconnectMetadata: Metadata = { ...initialMetadata };
+    const api = await ApiClient.create(opts.credentials);
+    const response = await api.getOrCreateSession({ tag: sessionTag, metadata: initialMetadata, state });
 
-    if (opts.startedBy === 'daemon') {
+    if (trustedStartedBy === 'daemon') {
         if (!response) {
             logger.warn('[Cursor] Daemon-owned runner cannot start without a P2P session for credential handoff.');
             return;
         }
-        if (!await acquireDaemonRunnerCredential({ agentName: 'Cursor', sessionId: response.id, metadata })) {
+        if (!await acquireDaemonRunnerCredential({ agentName: 'Cursor', sessionId: response.id, metadata: initialMetadata })) {
             return;
         }
     } else if (response) {
-        await reportTerminalSessionStarted({ agentName: 'Cursor', sessionId: response.id, metadata });
+        await reportTerminalSessionStarted({ agentName: 'Cursor', sessionId: response.id, metadata: initialMetadata });
     }
 
     // Handle server unreachable — create offline stub with hot reconnection
     let session: ApiSessionClient;
+    let bindSessionHandlers: ((target: ApiSessionClient) => void) | null = null;
+    let scheduleParentRelationRollbackForSession: ((target: ApiSessionClient) => Promise<void>) | null = null;
 
     const { session: initialSession, reconnectionHandle } = setupOfflineReconnection({
         api,
         sessionTag,
-        metadata,
+        metadata: reconnectMetadata,
         state,
         response,
-        canCreateReconnectedSessionConsumer: opts.startedBy === 'daemon'
+        canCreateReconnectedSessionConsumer: trustedStartedBy === 'daemon'
             ? async (reconnectedSession) => acquireDaemonRunnerCredential({
                 agentName: 'Cursor',
                 sessionId: reconnectedSession.id,
-                metadata,
+                metadata: reconnectMetadata,
             })
             : undefined,
         onSessionSwap: (newSession) => {
             session = newSession;
+            bindSessionHandlers?.(newSession);
+            // A reconnect may have begun before the local metadata template was
+            // sanitized. Queue a bounded cleanup for that replacement session.
+            void scheduleParentRelationRollbackForSession?.(newSession).catch((error) => {
+                logger.debug('[Cursor] Error while rolling back parent lineage after reconnect:', redactDiagnosticData(error));
+            });
         },
     });
     session = initialSession;
@@ -137,7 +192,7 @@ export async function runCursor(opts: {
     let currentPermissionMode: CursorPermissionMode | undefined = undefined;
     let currentModel: string | undefined = undefined;
 
-    session.onUserMessage((message) => {
+    const createUserMessageHandler = (target: ApiSessionClient) => (message: Parameters<ApiSessionClient['onUserMessage']>[0] extends (value: infer T) => unknown ? T : never) => {
         let messagePermissionMode = currentPermissionMode;
         if (message.meta?.permissionMode) {
             const requestedMode = message.meta.permissionMode as PermissionMode;
@@ -148,7 +203,7 @@ export async function runCursor(opts: {
             } else {
                 const errorText = formatUnsupportedCursorPermissionMessage(requestedMode);
                 logger.warn(`[Cursor] ${errorText}`);
-                session.sendSessionEvent({ type: 'message', message: errorText, isError: true });
+                target.sendSessionEvent({ type: 'message', message: errorText, isError: true });
                 return;
             }
         }
@@ -165,7 +220,7 @@ export async function runCursor(opts: {
             model: messageModel,
         };
         messageQueue.push(message.content.text, mode);
-    });
+    };
 
     let thinking = false;
     session.keepAlive(thinking, 'remote');
@@ -183,57 +238,260 @@ export async function runCursor(opts: {
 
     let abortController = new AbortController();
     let shouldExit = false;
-    // Seed with the resume target so the first cursorQuery is spawned with --resume.
-    // Cursor rewrites the session id via the `init` system event, updating this afterwards.
-    let cursorSessionId: string | null = opts.resumeSessionId ?? null;
-    if (cursorSessionId) {
-        logger.debug(`[Cursor] Resuming session: ${cursorSessionId}`);
+    let activeTurn: Promise<CursorTurnOutcome> | null = null;
+    // The daemon-verified parent is visible immediately. Cursor still has to
+    // confirm the requested native resume before its native ID is promoted.
+    let cursorSessionId: string | null = null;
+    let requestedResumeSessionId = opts.resumeSessionId;
+    let initialParentRelationState: 'none' | 'pending' | 'confirmed' | 'rolled-back' = (
+        resumedFromRemcliSessionId ? 'pending' : 'none'
+    );
+    if (requestedResumeSessionId) {
+        logger.debug(`[Cursor] Resume requested for session: ${requestedResumeSessionId}`);
     }
 
-    async function handleAbort() {
+    const shouldPublishParentRelation = (): boolean => (
+        initialParentRelationState === 'confirmed'
+    );
+
+    let parentRelationRollbackPromise: Promise<void> = Promise.resolve();
+    let parentRelationRollbackTarget: ApiSessionClient | null = null;
+    let parentRelationRollbackUpdateCount = 0;
+
+    const queueParentRelationRollback = (targetSession: ApiSessionClient): Promise<void> => {
+        if (parentRelationRollbackTarget === targetSession
+            || parentRelationRollbackUpdateCount >= MAX_PROVISIONAL_PARENT_ROLLBACK_UPDATES) {
+            return parentRelationRollbackPromise;
+        }
+
+        parentRelationRollbackTarget = targetSession;
+        parentRelationRollbackUpdateCount += 1;
+        parentRelationRollbackPromise = parentRelationRollbackPromise
+            .catch((error) => {
+                logger.debug('[Cursor] Previous parent lineage rollback failed:', redactDiagnosticData(error));
+            })
+            .then(() => targetSession.updateMetadata(
+                withoutResumedFromRemcliSessionId,
+                LIFECYCLE_METADATA_UPDATE_OPTIONS,
+            ));
+
+        return parentRelationRollbackPromise;
+    };
+
+    const awaitQueuedParentRelationRollback = async (): Promise<void> => {
+        for (let attempt = 0; attempt < MAX_PROVISIONAL_PARENT_ROLLBACK_UPDATES; attempt += 1) {
+            const queuedRollback = parentRelationRollbackPromise;
+            await queuedRollback;
+            if (queuedRollback === parentRelationRollbackPromise) {
+                return;
+            }
+        }
+    };
+
+    scheduleParentRelationRollbackForSession = (targetSession) => {
+        if (initialParentRelationState !== 'rolled-back') {
+            return Promise.resolve();
+        }
+        return queueParentRelationRollback(targetSession);
+    };
+
+    const confirmInitialParentRelation = (nativeSessionId: string): void => {
+        // A shutdown that has already begun must win over a late init event.
+        if (shouldExit || initialParentRelationState !== 'pending') {
+            return;
+        }
+
+        if (nativeSessionId !== requestedResumeSessionId) {
+            throw new CursorTurnError(
+                'resume-mismatch',
+                'Cursor resumed a different native session. The existing session was not changed.',
+            );
+        }
+
+        initialParentRelationState = 'confirmed';
+    };
+
+    const abandonUnverifiedResume = async (): Promise<void> => {
+        if (initialParentRelationState !== 'pending') {
+            requestedResumeSessionId = undefined;
+            await awaitQueuedParentRelationRollback();
+            return;
+        }
+
+        initialParentRelationState = 'rolled-back';
+        requestedResumeSessionId = undefined;
+        // setupOfflineReconnection closes over this object. Sanitizing it keeps
+        // a late reconnect from recreating the provisional parent relation.
+        delete reconnectMetadata.resumedFromRemcliSessionId;
+        queueParentRelationRollback(session);
+        await awaitQueuedParentRelationRollback();
+    };
+
+    const bindNativeCursorSession = async (nativeSessionId: string): Promise<void> => {
+        if (trustedStartedBy !== 'daemon') {
+            return;
+        }
+
+        const bindingResult = await bindDaemonCursorSession({
+            agent: 'cursor',
+            nativeSessionId,
+            remcliSessionId: session.sessionId,
+        });
+        if (!bindingResult.ok) {
+            throw new CursorTurnError(
+                'native',
+                `Cursor native session binding failed: ${bindingResult.error}`,
+            );
+        }
+
+        switch (bindingResult.data.type) {
+            case 'bound':
+            case 'already-bound':
+                return;
+            case 'reuse-active-wrapper':
+                throw new CursorTurnError(
+                    'native',
+                    `Cursor native session is already owned by active wrapper ${bindingResult.data.wrapper.remcliSessionId}.`,
+                );
+            case 'wrapper-not-tracked':
+                throw new CursorTurnError(
+                    'native',
+                    'Cursor native session binding was rejected because this daemon wrapper is no longer tracked.',
+                );
+            case 'agent-mismatch':
+                throw new CursorTurnError(
+                    'native',
+                    `Cursor native session binding was rejected because this wrapper belongs to ${bindingResult.data.trackedAgent}.`,
+                );
+        }
+    };
+
+    async function handleAbort(): Promise<void> {
         logger.debug('[Cursor] Abort requested');
+        const parentRelationRollback = abandonUnverifiedResume();
         try {
             abortController.abort();
-            logger.debug('[Cursor] Abort completed');
         } catch (error) {
             logger.debug('[Cursor] Error during abort:', error);
         } finally {
-            abortController = new AbortController();
+            logger.debug('[Cursor] Abort completed');
+        }
+        try {
+            await parentRelationRollback;
+        } catch (error) {
+            // Continuing would leave a fresh native turn attached to a child
+            // that still renders the wrong parent transcript.
+            shouldExit = true;
+            // The loop may already have replaced the controller after the
+            // first abort. Wake that replacement too so it cannot wait for a
+            // new prompt after a failed lineage rollback.
+            abortController.abort();
+            throw error;
         }
     }
 
-    const handleKillSession = async () => {
-        logger.debug('[Cursor] Kill session requested');
-        await handleAbort();
+    let cleanupPromise: Promise<void> | null = null;
 
-        try {
-            if (session) {
-                session.updateMetadata((currentMetadata) => ({
-                    ...currentMetadata,
+    const cleanupSession = (): Promise<void> => {
+        if (cleanupPromise) {
+            return cleanupPromise;
+        }
+
+        cleanupPromise = (async () => {
+            shouldExit = true;
+            try {
+                reconnectionHandle?.cancel();
+            } catch (error) {
+                logger.debug('[Cursor] Error while cancelling reconnection:', redactDiagnosticData(error));
+            }
+
+            try {
+                await handleAbort();
+            } catch (error) {
+                logger.debug('[Cursor] Error while rolling back parent lineage during cleanup:', redactDiagnosticData(error));
+            }
+            if (activeTurn) {
+                await activeTurn.catch(() => undefined);
+            }
+
+            const targetSession = session;
+            try {
+                await targetSession.updateMetadata((currentMetadata) => ({
+                    ...(initialParentRelationState === 'rolled-back'
+                        ? withoutResumedFromRemcliSessionId(currentMetadata)
+                        : currentMetadata),
                     lifecycleState: 'archived',
                     lifecycleStateSince: Date.now(),
                     archivedBy: 'cli',
                     archiveReason: 'User terminated',
-                }));
-
-                session.sendSessionDeath();
-                await session.flush();
-                await session.close();
+                }), LIFECYCLE_METADATA_UPDATE_OPTIONS);
+            } catch (error) {
+                logger.debug('[Cursor] Error while archiving session metadata:', redactDiagnosticData(error));
             }
 
-            stopCaffeinate();
-            remcliServer.stop();
+            try {
+                targetSession.sendSessionDeath();
+            } catch (error) {
+                logger.debug('[Cursor] Error while sending session death:', redactDiagnosticData(error));
+            }
+
+            try {
+                await targetSession.flush();
+            } catch (error) {
+                logger.debug('[Cursor] Error while flushing session:', redactDiagnosticData(error));
+            }
+
+            try {
+                await targetSession.close();
+            } catch (error) {
+                logger.debug('[Cursor] Error while closing session:', redactDiagnosticData(error));
+            }
+
+            try {
+                await stopCaffeinate();
+            } catch (error) {
+                logger.debug('[Cursor] Error while stopping caffeinate:', redactDiagnosticData(error));
+            }
+        })();
+
+        return cleanupPromise;
+    };
+
+    const canExitProcess = process.env.NODE_ENV !== 'test' && !process.env.VITEST;
+
+    const handleKillSession = async () => {
+        logger.debug('[Cursor] Kill session requested');
+        try {
+            await cleanupSession();
 
             logger.debug('[Cursor] Session termination complete, exiting');
-            process.exit(0);
+            if (canExitProcess) process.exit(0);
         } catch (error) {
-            logger.debug('[Cursor] Error during session termination:', error);
-            process.exit(1);
+            logger.debug('[Cursor] Error during session termination:', redactDiagnosticData(error));
+            if (canExitProcess) process.exit(1);
         }
     };
 
-    session.rpcHandlerManager.registerHandler('abort', handleAbort);
-    registerKillSessionHandler(session.rpcHandlerManager, handleKillSession);
+    const attachedSessions = new WeakSet<ApiSessionClient>();
+    bindSessionHandlers = (target) => {
+        if (attachedSessions.has(target)) return;
+        attachedSessions.add(target);
+        target.onUserMessage(createUserMessageHandler(target));
+        target.rpcHandlerManager.registerHandler('abort', handleAbort);
+        registerKillSessionHandler(target.rpcHandlerManager, handleKillSession);
+    };
+    bindSessionHandlers(session);
+
+    const terminationSignals = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
+    const handleTerminationSignal = () => {
+        logger.debug('[Cursor] Received termination signal, starting graceful cleanup');
+        void cleanupSession().catch((error: unknown) => {
+            logger.debug('[Cursor] Error during signal cleanup:', redactDiagnosticData(error));
+        });
+    };
+    for (const signal of terminationSignals) {
+        process.on(signal, handleTerminationSignal);
+    }
 
     //
     // Initialize Ink UI (reuse CodexDisplay)
@@ -268,17 +526,10 @@ export async function runCursor(opts: {
         process.stdin.setEncoding('utf8');
     }
 
-    //
-    // Start Remcli MCP server (for RPC tools)
-    // Note: Cursor auto-discovers MCP from .cursor/mcp.json — change_title not available
-    //
-
-    const remcliServer = await startRemcliServer(session);
-
     try {
         let currentModeHash: string | null = null;
         let pending: { message: string; mode: CursorMode; isolate: boolean; hash: string } | null = null;
-        const autoSetTitle = createAutoTitleSetter(session);
+        const autoSetTitle = createAutoTitleSetter(() => session);
 
         while (!shouldExit) {
             let message: { message: string; mode: CursorMode; isolate: boolean; hash: string } | null = pending;
@@ -289,6 +540,19 @@ export async function runCursor(opts: {
                 const batch = await messageQueue.waitForMessagesAndGetAsString(waitSignal);
                 if (!batch) {
                     if (waitSignal.aborted && !shouldExit) {
+                        try {
+                            // An abort RPC starts its lineage cleanup before
+                            // signalling this wait. Do not accept a fresh
+                            // prompt until that metadata update is settled.
+                            await awaitQueuedParentRelationRollback();
+                        } catch (error) {
+                            logger.debug('[Cursor] Parent lineage rollback failed while idle:', redactDiagnosticData(error));
+                            shouldExit = true;
+                            break;
+                        }
+                        if (shouldExit) {
+                            break;
+                        }
                         logger.debug('[cursor] Wait aborted while idle, resetting abort controller and continuing');
                         abortController = new AbortController();
                         continue;
@@ -305,6 +569,18 @@ export async function runCursor(opts: {
                 logger.debug('[Cursor] Mode changed – resetting session');
                 messageBuffer.addMessage('═'.repeat(40), 'status');
                 messageBuffer.addMessage('Starting new Cursor session (mode changed)...', 'status');
+                try {
+                    await abandonUnverifiedResume();
+                } catch (error) {
+                    logger.debug('[Cursor] Could not safely reset the native Cursor resume:', redactDiagnosticData(error));
+                    session.sendAgentMessage('cursor', {
+                        type: 'message',
+                        message: 'Cursor session stopped because the previous resume history could not be cleared safely.',
+                        isError: true,
+                    });
+                    shouldExit = true;
+                    break;
+                }
                 cursorSessionId = null;
             }
 
@@ -339,8 +615,6 @@ export async function runCursor(opts: {
                 messageBuffer.addMessage(`Mode: ${modeLabel}`, 'system');
                 logger.debug(`[Cursor] Spawning with mode=${cursorMode} force=${cursorForce} autoReview=${cursorAutoReview} permissionMode=${message.mode.permissionMode}`);
 
-                const extraEnv: Record<string, string> = {};
-
                 // Send task_started
                 session.sendAgentMessage('cursor', {
                     type: 'task_started',
@@ -349,58 +623,71 @@ export async function runCursor(opts: {
                 thinking = true;
                 session.keepAlive(thinking, 'remote');
 
-                // Iterate NDJSON events from cursor agent
-                let accumulatedResponse = '';
+                // Cursor has one canonical terminal result. Streaming events feed
+                // the terminal UI, while the result text is sent to the phone once.
                 isStreamingAssistant = false;
-
-                for await (const event of cursorQuery({
+                const runningTurn = runCursorTurn({
                     prompt,
                     cwd: process.cwd(),
                     model: message.mode.model,
-                    resumeSessionId: cursorSessionId || undefined,
+                    resumeSessionId: cursorSessionId ?? requestedResumeSessionId,
                     abort: abortController.signal,
-                    env: extraEnv,
                     mode: cursorMode,
                     force: cursorForce,
                     autoReview: cursorAutoReview,
-                })) {
+                }, async (event) => {
                     // Debug: log every event type for diagnosis
                     logger.debug(`[Cursor] Event: type=${event.type} subtype=${event.subtype ?? '-'} hasContent=${!!event.message?.content} hasTextDelta=${!!event.text_delta} hasText=${!!event.text}`);
 
+                    if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
+                        await bindNativeCursorSession(event.session_id);
+                        confirmInitialParentRelation(event.session_id);
+                    }
+
                     handleCursorEvent(event, messageBuffer);
 
-                    // Accumulate text ONLY from assistant events (not thinking — user doesn't want reasoning)
-                    if (event.type === 'assistant' && event.message?.content) {
-                        for (const part of event.message.content) {
-                            if (part.type === 'text') {
-                                accumulatedResponse += part.text;
-                            }
-                        }
-                    }
-                    if (event.type === 'assistant' && event.text_delta) {
-                        accumulatedResponse += event.text_delta;
-                    }
-                    if (event.type === 'assistant' && event.text) {
-                        accumulatedResponse += event.text;
-                    }
-
-                    // Capture session ID
+                    // Commit the native ID only after Cursor has confirmed it and,
+                    // for daemon runners, the daemon has claimed its ownership.
                     if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
                         cursorSessionId = event.session_id;
+                        requestedResumeSessionId = undefined;
                         logger.debug(`[Cursor] Session ID: ${cursorSessionId}`);
-                        session.updateMetadata((currentMetadata) => ({
-                            ...currentMetadata,
-                            agentSessionId: cursorSessionId ?? undefined,
-                            cursorSessionId: cursorSessionId ?? undefined,
-                        }));
+                        const targetSession = session;
+                        const updatedMetadata = {
+                            ...baseMetadata,
+                            agentSessionId: cursorSessionId,
+                            cursorSessionId: cursorSessionId,
+                            ...(shouldPublishParentRelation() ? { resumedFromRemcliSessionId } : {}),
+                        };
+                        await targetSession.updateMetadata((currentMetadata) => {
+                            const nativeMetadata = {
+                                ...currentMetadata,
+                                agentSessionId: cursorSessionId ?? undefined,
+                                cursorSessionId: cursorSessionId ?? undefined,
+                            };
+                            if (shouldPublishParentRelation()) {
+                                return { ...nativeMetadata, resumedFromRemcliSessionId };
+                            }
+                            return withoutResumedFromRemcliSessionId(nativeMetadata);
+                        }, LIFECYCLE_METADATA_UPDATE_OPTIONS);
+                        if (trustedStartedBy !== 'daemon') {
+                            await reportTerminalSessionStarted({
+                                agentName: 'Cursor',
+                                sessionId: targetSession.sessionId,
+                                metadata: updatedMetadata,
+                            });
+                        }
                     }
+                });
+                activeTurn = runningTurn;
+                const turn = await runningTurn;
+                if (activeTurn === runningTurn) {
+                    activeTurn = null;
                 }
-
-                // Send accumulated message to mobile
-                if (accumulatedResponse.trim()) {
+                if (turn.response.trim()) {
                     session.sendAgentMessage('cursor', {
                         type: 'message',
-                        message: accumulatedResponse,
+                        message: turn.response,
                         isError: false,
                     });
                 }
@@ -416,32 +703,35 @@ export async function runCursor(opts: {
                 autoSetTitle(message.message);
 
             } catch (error) {
-                logger.debug('[cursor] Error in cursor session:', error);
-                const isAbortError = error instanceof Error && error.name === 'AbortError';
+                logger.debug('[cursor] Error in cursor session:', redactDiagnosticData(error));
+                const isAbortError = isCursorTurnAbortError(error);
+                try {
+                    await abandonUnverifiedResume();
+                } catch (rollbackError) {
+                    logger.debug('[Cursor] Could not safely roll back parent lineage after turn failure:', redactDiagnosticData(rollbackError));
+                    shouldExit = true;
+                }
 
                 if (isAbortError) {
                     messageBuffer.addMessage('Aborted by user', 'status');
-                    session.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+                    session.sendAgentMessage('cursor', {
+                        type: 'turn_aborted',
+                        id: randomUUID(),
+                    });
                 } else {
-                    const errorMsg = error instanceof Error ? error.message : String(error);
-
-                    // Check for command not found
-                    if (errorMsg.includes('ENOENT') || errorMsg.includes('not found')) {
-                        messageBuffer.addMessage(
-                            'Cursor CLI ("agent") not found. Make sure it is installed and in your PATH.',
-                            'status',
-                        );
-                    } else {
-                        messageBuffer.addMessage(`Error: ${errorMsg}`, 'status');
-                    }
+                    const errorMsg = error instanceof Error
+                        ? error.message
+                        : 'Cursor CLI could not complete this turn. Check the local Cursor terminal and retry.';
+                    messageBuffer.addMessage(`Error: ${errorMsg}`, 'status');
 
                     session.sendAgentMessage('cursor', {
                         type: 'message',
-                        message: `Error: ${errorMsg}`,
+                        message: errorMsg,
                         isError: true,
                     });
                 }
             } finally {
+                activeTurn = null;
                 thinking = false;
                 session.keepAlive(thinking, 'remote');
                 sendReady();
@@ -450,19 +740,11 @@ export async function runCursor(opts: {
     } finally {
         logger.debug('[cursor]: Final cleanup start');
 
-        if (reconnectionHandle) {
-            reconnectionHandle.cancel();
+        for (const signal of terminationSignals) {
+            process.off(signal, handleTerminationSignal);
         }
 
-        try {
-            session.sendSessionDeath();
-            await session.flush();
-            await session.close();
-        } catch (e) {
-            logger.debug('[cursor]: Error while closing session', e);
-        }
-
-        remcliServer.stop();
+        await cleanupSession();
 
         if (process.stdin.isTTY) {
             try { process.stdin.setRawMode(false); } catch { /* ignore */ }
@@ -570,7 +852,9 @@ function handleCursorEvent(
                 messageBuffer.addMessage(`${name}${summary ? ' ' + summary : ''}`, 'tool');
             } else if (event.subtype === 'completed' && event.tool_call) {
                 const toolData = Object.values(event.tool_call)[0] as Record<string, unknown> | undefined;
-                logger.debug(`[Cursor] Tool completed: ${JSON.stringify(toolData?.result).substring(0, 200)}`);
+                const toolName = Object.keys(event.tool_call)[0] ?? 'unknown';
+                const hasResult = Boolean(toolData && Object.hasOwn(toolData, 'result'));
+                logger.debug(`[Cursor] Tool completed: name=${toolName} hasResult=${hasResult}`);
             }
             // No tool-call/tool-result sent to mobile — Cursor's tool details are too verbose
             // and not useful on a phone screen. The final assistant message is enough.

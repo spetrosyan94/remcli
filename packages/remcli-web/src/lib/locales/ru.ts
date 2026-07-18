@@ -46,6 +46,7 @@ export const ru = {
     "chat.resumeFailed": "не удалось продолжить сессию",
     "chat.sendFailed": "не удалось отправить сообщение",
     "chat.executionError": "последняя операция завершилась с ошибкой",
+    "chat.lineageUnavailable": "предыдущая история недоступна · текущая сессия продолжается",
 
     "tts.listen": "слушать",
     "tts.synth": "синтез…",

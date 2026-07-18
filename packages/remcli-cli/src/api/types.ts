@@ -354,6 +354,8 @@ export type Metadata = {
   codexSessionId?: string, // Codex thread ID
   cursorSessionId?: string, // Cursor agent session ID
   geminiSessionId?: string, // Gemini ACP session ID
+  /** Trusted daemon-lifetime P2P parent for a Cursor native resume. */
+  resumedFromRemcliSessionId?: string,
   tools?: string[],
   slashCommands?: string[],
   homeDir: string,

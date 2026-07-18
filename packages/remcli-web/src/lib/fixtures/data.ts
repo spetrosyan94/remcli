@@ -15,6 +15,9 @@ const T = FIXTURE_BASE_TIME;
 /** Сессия «полного покрытия» чата: все состояния ленты на одном экране. */
 export const FIXTURE_CHAT_SESSION_ID = 'fx-chat';
 
+export const FIXTURE_LINEAGE_PARENT_SESSION_ID = 'fx-lineage-parent';
+export const FIXTURE_LINEAGE_CHILD_SESSION_ID = 'fx-lineage-child';
+
 export interface FixtureConciergeFeedEntry {
     id: string;
     role: 'user' | 'assistant';
@@ -134,6 +137,7 @@ interface SessionSeed {
     activeAt: number;
     thinking?: boolean;
     summary?: string;
+    resumedFromRemcliSessionId?: string;
     executionOutcome?: NonNullable<Session['metadata']>['executionOutcome'];
     requests?: NonNullable<NonNullable<Session['agentState']>['requests']>;
 }
@@ -155,6 +159,7 @@ function makeSession(seed: SessionSeed): Session {
             flavor: seed.flavor ?? null,
             name: seed.path.split('/').pop(),
             claudeSessionId: `${seed.id}-agent`,
+            resumedFromRemcliSessionId: seed.resumedFromRemcliSessionId,
             summary: seed.summary ? { text: seed.summary, updatedAt: seed.activeAt } : undefined,
             executionOutcome: seed.executionOutcome,
         },
@@ -266,6 +271,128 @@ export const FIXTURE_SESSIONS: Session[] = [
         active: false,
         activeAt: T - 3 * HOUR
     })
+];
+
+export const FIXTURE_LINEAGE_SESSIONS: Session[] = [
+    makeSession({
+        id: FIXTURE_LINEAGE_PARENT_SESSION_ID,
+        seq: 20,
+        path: '/Users/dev/projects/remcli',
+        flavor: 'cursor',
+        startedBy: 'daemon',
+        machineId: 'fx-machine-online',
+        host: 'macbook-pro.local',
+        homeDir: '/Users/dev',
+        active: true,
+        activeAt: T - 2 * MINUTE,
+        summary: 'Parent Cursor session',
+    }),
+    makeSession({
+        id: FIXTURE_LINEAGE_CHILD_SESSION_ID,
+        seq: 21,
+        path: '/Users/dev/projects/remcli',
+        flavor: 'cursor',
+        startedBy: 'daemon',
+        machineId: 'fx-machine-online',
+        host: 'macbook-pro.local',
+        homeDir: '/Users/dev',
+        active: true,
+        activeAt: T - MINUTE,
+        summary: 'Child Cursor session',
+        resumedFromRemcliSessionId: FIXTURE_LINEAGE_PARENT_SESSION_ID,
+    }),
+];
+
+export const FIXTURE_LINEAGE_FOREIGN_PARENT_SESSIONS: Session[] = FIXTURE_LINEAGE_SESSIONS.map((session) => {
+    if (session.id !== FIXTURE_LINEAGE_PARENT_SESSION_ID || !session.metadata) return session;
+
+    return {
+        ...session,
+        metadata: {
+            ...session.metadata,
+            machineId: 'fx-machine-foreign',
+            host: 'foreign-machine.local',
+            homeDir: '/Users/foreign',
+            path: '/Users/foreign/projects/remcli',
+        },
+    };
+});
+
+export const FIXTURE_LINEAGE_PARENT_MESSAGES: NormalizedMessage[] = [
+    {
+        id: 'fx-lineage-parent-prompt',
+        localId: null,
+        seq: 1,
+        createdAt: T - 90_000,
+        isSidechain: false,
+        role: 'user',
+        content: { type: 'text', text: 'Parent prompt' },
+    },
+    {
+        id: 'fx-lineage-parent-answer',
+        localId: null,
+        seq: 2,
+        createdAt: T - 80_000,
+        isSidechain: false,
+        role: 'agent',
+        content: [{ type: 'text', text: 'Parent answer', uuid: 'fx-lineage-parent-answer', parentUUID: null }],
+    },
+];
+
+export const FIXTURE_LINEAGE_CHILD_MESSAGES: NormalizedMessage[] = [
+    {
+        id: 'fx-lineage-child-prompt',
+        localId: null,
+        seq: 1,
+        createdAt: T - 60_000,
+        isSidechain: false,
+        role: 'user',
+        content: { type: 'text', text: 'Child prompt' },
+    },
+    {
+        id: 'fx-lineage-parent-answer',
+        localId: null,
+        seq: 2,
+        createdAt: T - 50_000,
+        isSidechain: false,
+        role: 'agent',
+        content: [{ type: 'text', text: 'Parent answer', uuid: 'fx-lineage-parent-answer', parentUUID: null }],
+    },
+    {
+        id: 'fx-lineage-child-answer',
+        localId: null,
+        seq: 3,
+        createdAt: T - 40_000,
+        isSidechain: false,
+        role: 'agent',
+        content: [{ type: 'text', text: 'Child answer', uuid: 'fx-lineage-child-answer', parentUUID: null }],
+    },
+];
+
+export const FIXTURE_LINEAGE_FOREIGN_PARENT_MESSAGES: NormalizedMessage[] = [
+    {
+        id: 'fx-lineage-foreign-parent-prompt',
+        localId: null,
+        seq: 1,
+        createdAt: T - 90_000,
+        isSidechain: false,
+        role: 'user',
+        content: { type: 'text', text: 'Foreign parent prompt' },
+    },
+    {
+        id: 'fx-lineage-foreign-parent-answer',
+        localId: null,
+        seq: 2,
+        createdAt: T - 80_000,
+        isSidechain: false,
+        role: 'agent',
+        content: [{
+            type: 'text',
+            text: 'Foreign parent answer',
+            uuid: 'fx-lineage-foreign-parent-answer',
+            parentUUID: null,
+        }],
+    },
 ];
 
 // ─── Чат «полного покрытия» (fx-chat) ────────────────────────────

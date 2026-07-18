@@ -64,6 +64,10 @@ export function modelOverrideState(model: string, hasExplicitModelSelection: boo
     return hasExplicitModelSelection ? { model: getModelOverride(model) } : {};
 }
 
+export function getResumeDirectory(projectPath: string | undefined, activeDirectory: string): string {
+    return projectPath || activeDirectory;
+}
+
 /* ---------- Хелперы ---------- */
 
 function formatRelativeTime(timestamp: number): string {
@@ -284,7 +288,7 @@ export function NewSessionPage() {
         let isStale = false;
         setResumeItems(null);
         setResumeError(null);
-        void machineListAgentSessions(activeMachineId, agent, undefined, RESUME_LIST_LIMIT)
+        void machineListAgentSessions(activeMachineId, agent, activeDir || undefined, RESUME_LIST_LIMIT)
             .then((items) => {
                 if (!isStale) setResumeItems(items);
             })
@@ -293,7 +297,7 @@ export function NewSessionPage() {
                 setResumeError(formatResumeError(error));
             });
         return () => { isStale = true; };
-    }, [activeMachineId, agent, resumeReloadKey, sheet]);
+    }, [activeDir, activeMachineId, agent, resumeReloadKey, sheet]);
 
     // directory-picker: RPC list-directory, stale responses ignored when user navigates fast.
     React.useEffect(() => {
@@ -381,8 +385,11 @@ export function NewSessionPage() {
 
     const spawn = async (resume?: AgentSessionInfo) => {
         if (!machine || isSpawning) return;
-        const directory = resume?.projectPath ?? activeDir;
-        if (directory === "") return;
+        const directory = getResumeDirectory(resume?.projectPath, activeDir);
+        if (directory === "") {
+            openDirectoryPicker();
+            return;
+        }
         setIsSpawning(true);
         try {
             const options: SpawnSessionOptions = {

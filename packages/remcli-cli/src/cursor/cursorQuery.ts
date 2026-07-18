@@ -1,144 +1,330 @@
 /**
- * Cursor CLI Query
+ * Cursor CLI turn runner.
  *
- * Spawns the `agent` CLI process with `--output-format stream-json` and parses
- * the NDJSON events. Similar to `claude/sdk/query.ts` but simplified — Cursor
- * does not support bidirectional stdin protocol.
+ * Runs one native Cursor headless turn, validates its stream-json lifecycle,
+ * and exposes only a safe typed result to the Remcli session runner.
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
 import { logger } from '@/ui/logger';
+import { buildCursorTurnArguments, resolveCursorExecutable } from './cursorCli';
 import type { CursorStreamEvent } from './types';
 
+const FORCE_KILL_TIMEOUT_MS = 1_000;
+const MAX_STDERR_BYTES = 8 * 1024;
+
+export type CursorTurnFailureKind = 'aborted' | 'cli-not-found' | 'native' | 'protocol' | 'resume-mismatch';
+
 export interface CursorQueryOptions {
-    /** The user prompt to send */
+    /** The user prompt to send. It is never logged. */
     prompt: string;
-    /** Working directory */
+    /** Working directory. */
     cwd?: string;
-    /** Model override */
+    /** Model override. */
     model?: string;
-    /** Resume session by ID */
+    /** Resume session by confirmed native Cursor ID. */
     resumeSessionId?: string;
-    /** API key for authentication */
-    apiKey?: string;
-    /** Abort signal */
+    /** Abort signal for the native turn. */
     abort?: AbortSignal;
-    /** Extra environment variables */
+    /** Extra environment variables inherited by the native process. */
     env?: Record<string, string>;
-    /** Path to agent executable (default: "agent") */
+    /** Path to Cursor Agent executable, used by focused tests. */
     executable?: string;
-    /** Cursor agent mode: agent (default), plan (read-only planning), ask (Q&A) */
+    /** Cursor agent mode: agent, plan or ask. */
     mode?: 'agent' | 'plan' | 'ask';
-    /** Force allow all commands without prompting (maps to --force / -f) */
+    /** Map the explicit Remcli force permission to Cursor --force. */
     force?: boolean;
-    /** Enable Cursor's auto-review mode when supported by the local CLI */
+    /** Map the explicit Remcli auto-review permission to Cursor --auto-review. */
     autoReview?: boolean;
 }
 
+export interface CursorTurnOutcome {
+    sessionId: string;
+    response: string;
+    exitCode: number;
+}
+
+export class CursorTurnError extends Error {
+    public constructor(
+        public readonly kind: CursorTurnFailureKind,
+        message: string,
+    ) {
+        super(message);
+        this.name = 'CursorTurnError';
+    }
+}
+
+interface CursorChildCloseResult {
+    exitCode: number | null;
+    signal: NodeJS.Signals | null;
+    error: Error | null;
+}
+
+/** True only for errors that represent a user/daemon interrupt. */
+export function isCursorTurnAbortError(error: unknown): error is CursorTurnError {
+    return error instanceof CursorTurnError && error.kind === 'aborted';
+}
+
 /**
- * Spawn `agent` CLI and yield NDJSON events.
+ * Run a single Cursor turn and require a complete native lifecycle.
  *
- * Usage:
- * ```ts
- * for await (const event of cursorQuery({ prompt: 'hello', abort: controller.signal })) {
- *     console.log(event.type, event.subtype);
- * }
- * ```
+ * A successful process exit alone is insufficient: Cursor must emit a valid
+ * `system/init` identity and a terminal `result` success event.
  */
-export async function* cursorQuery(options: CursorQueryOptions): AsyncGenerator<CursorStreamEvent> {
-    const {
-        prompt,
-        cwd = process.cwd(),
-        model,
-        resumeSessionId,
-        apiKey,
-        abort,
-        env,
-        executable = 'agent',
-        mode,
-        force,
-        autoReview,
-    } = options;
+export async function runCursorTurn(
+    options: CursorQueryOptions,
+    onEvent: (event: CursorStreamEvent) => void | Promise<void>,
+): Promise<CursorTurnOutcome> {
+    const executable = options.executable ?? resolveCursorExecutable();
+    if (!executable) {
+        throw new CursorTurnError(
+            'cli-not-found',
+            'Cursor Agent CLI was not found. Install Cursor CLI (`agent`) and restart the daemon.',
+        );
+    }
 
-    // Build arguments
-    // `-p` = `--print` (headless/non-interactive mode)
-    // Prompt is passed as positional argument: `agent -p "prompt" --output-format stream-json`
-    // MCP servers are auto-discovered from .cursor/mcp.json — no inline config flag
-    // `--trust` trusts the current workspace without prompting. In headless mode an
-    // untrusted-workspace prompt would hang forever; the user already launched remcli
-    // in this directory, so trusting it is safe and intentional.
-    const args = ['-p', prompt, '--output-format', 'stream-json', '--trust'];
+    const args = buildCursorTurnArguments(options);
+    const spawnEnv = { ...process.env, ...options.env };
+    const startedAt = Date.now();
 
-    if (model) args.push('--model', model);
-    if (resumeSessionId) args.push('--resume', resumeSessionId);
-    if (apiKey) args.push('--api-key', apiKey);
-    if (mode && mode !== 'agent') args.push('--mode', mode);
-    if (force) args.push('--force');
-    if (autoReview) args.push('--auto-review');
+    logger.debug(
+        `[cursor] Starting native turn executable=${executable} mode=${options.mode ?? 'agent'} hasResume=${Boolean(options.resumeSessionId)} hasModel=${Boolean(options.model)}`,
+    );
 
-    logger.debug(`[cursor] Spawning: ${executable} ${args.map(a => a.length > 100 ? a.substring(0, 100) + '...' : a).join(' ')}`);
+    let child: ChildProcess;
+    try {
+        child = spawn(executable, args, {
+            cwd: options.cwd ?? process.cwd(),
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: spawnEnv,
+            detached: process.platform !== 'win32',
+            shell: false,
+        });
+    } catch {
+        throw new CursorTurnError(
+            'cli-not-found',
+            'Cursor Agent CLI could not be started. Check that `agent` is installed and available to the daemon.',
+        );
+    }
 
-    const spawnEnv = { ...process.env, ...env };
-    const child: ChildProcessWithoutNullStreams = spawn(executable, args, {
-        cwd,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: spawnEnv,
-        shell: process.platform === 'win32',
+    if (!child.stdout || !child.stderr) {
+        throw new CursorTurnError('protocol', 'Cursor CLI did not expose a readable response stream.');
+    }
+
+    const readline = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    let stderr = '';
+    let wasAborted = options.abort?.aborted ?? false;
+    let forceKillTimer: NodeJS.Timeout | null = null;
+    let closeResult: CursorChildCloseResult | null = null;
+    let resolveClose: ((result: CursorChildCloseResult) => void) | null = null;
+    const closed = new Promise<CursorChildCloseResult>((resolve) => {
+        resolveClose = resolve;
     });
 
-    // Close stdin — prompt is passed as positional argument
-    child.stdin.end();
+    const settleClose = (result: CursorChildCloseResult) => {
+        if (closeResult) return;
+        closeResult = result;
+        resolveClose?.(result);
+    };
 
-    // Stderr logging
-    child.stderr.on('data', (data: Buffer) => {
-        const text = data.toString().trim();
-        if (text) {
-            logger.debug(`[cursor stderr] ${text}`);
-        }
+    child.once('error', (error) => {
+        readline.close();
+        settleClose({ exitCode: null, signal: null, error });
+    });
+    child.once('close', (exitCode, signal) => {
+        settleClose({ exitCode, signal, error: null });
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+        if (stderr.length >= MAX_STDERR_BYTES) return;
+        stderr += chunk.toString().slice(0, MAX_STDERR_BYTES - stderr.length);
     });
 
-    // Abort handling
-    const cleanup = () => {
-        if (!child.killed) {
-            child.kill('SIGTERM');
+    const terminate = (signal: NodeJS.Signals) => {
+        if (closeResult || !child.pid) return;
+
+        try {
+            if (process.platform !== 'win32') {
+                process.kill(-child.pid, signal);
+            } else {
+                child.kill(signal);
+            }
+        } catch {
+            try {
+                child.kill(signal);
+            } catch {
+                // The process has already exited between the checks above.
+            }
         }
     };
-    abort?.addEventListener('abort', cleanup);
-    process.on('exit', cleanup);
 
-    // Parse NDJSON from stdout
-    const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    const terminateWithFallback = () => {
+        terminate('SIGTERM');
+        if (!forceKillTimer) {
+            forceKillTimer = setTimeout(() => terminate('SIGKILL'), FORCE_KILL_TIMEOUT_MS);
+            forceKillTimer.unref();
+        }
+    };
+
+    const handleAbort = () => {
+        wasAborted = true;
+        terminateWithFallback();
+    };
+
+    options.abort?.addEventListener('abort', handleAbort, { once: true });
+    if (wasAborted) handleAbort();
+
+    let initEvent: CursorStreamEvent | null = null;
+    let resultEvent: CursorStreamEvent | null = null;
+    let lifecycleStage: 'awaiting-init' | 'awaiting-result' = 'awaiting-init';
+    let protocolError: CursorTurnError | null = null;
 
     try {
-        for await (const line of rl) {
-            if (abort?.aborted) break;
+        for await (const line of readline) {
+            if (wasAborted) break;
 
             const trimmed = line.trim();
             if (!trimmed) continue;
 
+            let event: CursorStreamEvent;
             try {
-                const event = JSON.parse(trimmed) as CursorStreamEvent;
-                yield event;
-            } catch (parseError) {
-                logger.debug(`[cursor] Failed to parse NDJSON line: ${trimmed.substring(0, 200)}`);
+                event = parseCursorStreamEvent(trimmed);
+            } catch {
+                protocolError = new CursorTurnError(
+                    'protocol',
+                    'Cursor CLI returned an invalid response stream. Start a new Cursor session and try again.',
+                );
+                terminateWithFallback();
+                break;
+            }
+
+            if (event.type === 'system' && event.subtype === 'init' && typeof event.session_id === 'string') {
+                if (options.resumeSessionId && event.session_id !== options.resumeSessionId) {
+                    protocolError = new CursorTurnError(
+                        'resume-mismatch',
+                        'Cursor resumed a different native session. The existing session was not changed.',
+                    );
+                    terminateWithFallback();
+                    break;
+                }
+                initEvent = event;
+                lifecycleStage = 'awaiting-result';
+            }
+
+            if (event.type === 'result') {
+                if (lifecycleStage !== 'awaiting-result') {
+                    protocolError = new CursorTurnError(
+                        'protocol',
+                        'Cursor CLI reported a terminal result before confirming a native session ID.',
+                    );
+                    terminateWithFallback();
+                    break;
+                }
+                resultEvent = event;
+            }
+
+            try {
+                await onEvent(event);
+            } catch (error) {
+                protocolError = error instanceof CursorTurnError
+                    ? error
+                    : new CursorTurnError(
+                        'native',
+                        'Cursor CLI response could not be delivered to this session. Retry the turn.',
+                    );
+                terminateWithFallback();
+                break;
             }
         }
     } finally {
-        rl.close();
-        abort?.removeEventListener('abort', cleanup);
+        readline.close();
+        options.abort?.removeEventListener('abort', handleAbort);
+        if (wasAborted || protocolError) {
+            terminateWithFallback();
+        }
 
-        // Wait for process to exit
-        if (!child.killed) {
-            await new Promise<void>((resolve) => {
-                child.on('close', () => resolve());
-                // Give it a moment to exit naturally
-                setTimeout(() => {
-                    if (!child.killed) child.kill('SIGTERM');
-                    resolve();
-                }, 3000);
-            });
+        const result = await closed;
+        if (forceKillTimer) clearTimeout(forceKillTimer);
+        if (options.abort?.aborted) {
+            wasAborted = true;
+        }
+
+        const durationMs = Date.now() - startedAt;
+        logger.debug(
+            `[cursor] Native turn closed exitCode=${result.exitCode ?? 'null'} signal=${result.signal ?? 'none'} durationMs=${durationMs}`,
+        );
+
+        if (result.error && !wasAborted && !protocolError) {
+            throw toCursorTurnError(result.error, stderr);
         }
     }
+
+    if (wasAborted) {
+        throw new CursorTurnError('aborted', 'Cursor turn was aborted.');
+    }
+    if (protocolError) throw protocolError;
+
+    const finalResult = await closed;
+    if (finalResult.exitCode !== 0) {
+        throw toCursorTurnError(null, stderr);
+    }
+    if (!initEvent?.session_id) {
+        throw new CursorTurnError('protocol', 'Cursor CLI did not confirm a native session ID.');
+    }
+    if (!resultEvent || resultEvent.subtype !== 'success' || resultEvent.is_error === true) {
+        throw toCursorTurnError(null, stderr);
+    }
+    if (resultEvent.session_id && resultEvent.session_id !== initEvent.session_id) {
+        throw new CursorTurnError(
+            'resume-mismatch',
+            'Cursor reported inconsistent native session IDs. The existing session was not changed.',
+        );
+    }
+
+    return {
+        sessionId: initEvent.session_id,
+        response: typeof resultEvent.result === 'string' ? resultEvent.result : '',
+        exitCode: finalResult.exitCode,
+    };
+}
+
+function parseCursorStreamEvent(line: string): CursorStreamEvent {
+    const value: unknown = JSON.parse(line);
+    if (!isRecord(value) || typeof value.type !== 'string') {
+        throw new Error('Invalid Cursor stream event.');
+    }
+
+    return value as unknown as CursorStreamEvent;
+}
+
+function toCursorTurnError(processError: Error | null, stderr: string): CursorTurnError {
+    if (processError && (processError as NodeJS.ErrnoException).code === 'ENOENT') {
+        return new CursorTurnError(
+            'cli-not-found',
+            'Cursor Agent CLI was not found. Install Cursor CLI (`agent`) and restart the daemon.',
+        );
+    }
+
+    if (/auth|login|unauthori[sz]ed|api[ _-]?key/i.test(stderr)) {
+        return new CursorTurnError(
+            'native',
+            'Cursor CLI authentication failed. Run `agent login` on this machine, then retry.',
+        );
+    }
+    if (/session|chat/i.test(stderr) && /not found|unknown|invalid/i.test(stderr)) {
+        return new CursorTurnError(
+            'native',
+            'Cursor session could not be resumed. It may no longer exist in this workspace.',
+        );
+    }
+
+    return new CursorTurnError(
+        'native',
+        'Cursor CLI could not complete this turn. Check the local Cursor terminal and retry.',
+    );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

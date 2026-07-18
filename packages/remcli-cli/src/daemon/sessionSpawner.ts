@@ -16,10 +16,15 @@ import {
     CodexThreadResumeResult,
     CodexRemoteTuiOpenRequest,
     CodexRemoteTuiOpenResult,
+    CursorRunnerPreflightRequest,
+    CursorRunnerPreflightResult,
     DaemonSessionWebhookResult,
     NativeCodexThreadBinding,
     NativeCodexThreadBindingResult,
     NativeCodexThreadWrapper,
+    NativeCursorSessionBinding,
+    NativeCursorSessionBindingResult,
+    NativeCursorSessionWrapper,
     StopSessionResult,
     TrackedSession,
     TmuxPaneOwnership,
@@ -38,15 +43,18 @@ import { buildCodexRemoteTuiCommand } from '@/codex/codexAppServerHost';
 const DAEMON_SHUTDOWN_CANCELLATION_MESSAGE = 'Daemon shut down before session process registration.';
 const CODEX_RESUME_SHUTDOWN_CANCELLATION_MESSAGE = 'Daemon shut down before Codex resume process registration.';
 const DAEMON_SHUTTING_DOWN_SPAWN_ERROR_MESSAGE = 'Daemon is shutting down and cannot start a new session.';
+const CURSOR_RESUME_OWNERSHIP_UNCONFIRMED_ERROR = 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.';
 const RUNNER_CONTROL_TOKEN_BYTES = 32;
 
 interface SessionSpawnAwaiter {
+    session: TrackedSession;
     complete: (session: TrackedSession) => void;
     fail: (errorMessage: string) => void;
 }
 
 interface PendingSpawnTask {
     nativeThreadId?: string;
+    resumeKey?: string;
     promise: Promise<SpawnSessionResult>;
     taskCompletion: Promise<Error | undefined>;
     cancel: (errorMessage: string) => void;
@@ -62,6 +70,42 @@ interface DaemonTmuxRunner {
 
 type OwnedPaneStatus = 'exists' | 'missing' | 'mismatch' | 'unknown';
 type TrackedSessionStatus = OwnedPaneStatus;
+
+interface BoundNativeCursorSessionLookup {
+    type: 'found' | 'not-found' | 'unavailable';
+    session?: TrackedSession;
+}
+
+interface NativeCursorSessionMapping {
+    pid: number;
+    session: TrackedSession;
+}
+
+interface NativeCodexThreadMapping {
+    pid: number;
+    session: TrackedSession;
+}
+
+interface PendingCodexThreadResume {
+    session: TrackedSession;
+    task: PendingSpawnTask;
+}
+
+interface PendingSpawnTaskRegistration {
+    session: TrackedSession;
+    task: PendingSpawnTask;
+}
+
+interface RunnerSessionMapping {
+    pid: number;
+    session: TrackedSession;
+}
+
+/** Trusted only after the daemon has credential-bound the native Cursor ID. */
+interface CursorSessionLineage {
+    parentRemcliSessionId: string;
+    directory: string;
+}
 
 function createPendingSpawnTask(nativeThreadId?: string): PendingSpawnTask {
     let cancellationResult: SpawnSessionResult | undefined;
@@ -111,6 +155,12 @@ export interface SessionManager {
     getChildren: () => TrackedSession[];
     /** Bind a native Codex thread to its already-created Remcli wrapper session. */
     bindNativeCodexThread: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
+    /** Bind a native Cursor session to its already-created Remcli wrapper session. */
+    bindNativeCursorSession: (binding: NativeCursorSessionBinding) => Promise<NativeCursorSessionBindingResult>;
+    /** Validate a daemon-owned Cursor runner before it creates P2P metadata. */
+    preflightCursorRunner: (
+        request: CursorRunnerPreflightRequest,
+    ) => Promise<CursorRunnerPreflightResult>;
     /** Open one daemon-owned tmux window for a bound Codex remote TUI. */
     openCodexRemoteTui: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
     /** Resolve whether a Codex thread already has an active wrapper session. */
@@ -179,7 +229,17 @@ export function resolveSpawnAuthEnvironment(options: Pick<SpawnSessionOptions, '
         return {};
     }
 
+    if (options.agent === 'cursor') {
+        // Cursor accepts its API key only through the environment. Never put a
+        // provider credential in a native process argument where it is visible.
+        return { CURSOR_API_KEY: options.token };
+    }
+
     return { CLAUDE_CODE_OAUTH_TOKEN: options.token };
+}
+
+function shellQuote(value: string): string {
+    return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function createRunnerControlToken(): string {
@@ -218,21 +278,30 @@ function buildCodexRemoteTuiWindowName(nativeThreadId: string): string {
 }
 
 export function createSessionManager(options: SessionManagerOptions = {}): SessionManager {
-    // State - key by PID
+    // PID indexes only the currently active session in a process slot. A session
+    // displaced by PID reuse remains separately tracked until its immutable
+    // cleanup is confirmed.
     const pidToTrackedSession = new Map<number, TrackedSession>();
+    const displacedTrackedSessionPids = new Map<TrackedSession, number>();
     const resumeSpawnPromises = new Map<string, Promise<SpawnSessionResult>>();
     const codexThreadResumeSpawnPromises = new Map<string, PendingSpawnTask>();
-    const nativeCodexThreadIdToPid = new Map<string, number>();
-    const runnerSessionIdToPid = new Map<string, number>();
+    const nativeCodexThreadIdToTrackedSession = new Map<string, NativeCodexThreadMapping>();
+    const nativeCursorSessionIdToTrackedSession = new Map<string, NativeCursorSessionMapping>();
+    const nativeCursorSessionBindingPromises = new Map<string, Promise<NativeCursorSessionBindingResult>>();
+    const cursorSessionLineageByNativeSessionId = new Map<string, CursorSessionLineage>();
+    const runnerSessionIdToTrackedSession = new Map<string, RunnerSessionMapping>();
     const codexRemoteTuiOpenPromises = new Map<string, Promise<CodexRemoteTuiOpenResult>>();
     const orphanedCodexRemoteTuiPanes = new Map<string, TmuxPaneOwnership>();
-    const stoppingSessionPids = new Map<number, number>();
+    const sessionCleanupPromises = new Map<TrackedSession, Promise<boolean>>();
+    const sessionCleanupFailureReasons = new Map<TrackedSession, string>();
     let codexRemoteTuiHostPromise: Promise<{ ok: true } | { ok: false; error: string }> | null = null;
 
     // Session spawning awaiter system
     const pidToAwaiter = new Map<number, SessionSpawnAwaiter>();
-    const pidToPendingCodexThreadResume = new Map<number, PendingSpawnTask>();
+    const pidToPendingCodexThreadResume = new Map<number, PendingCodexThreadResume>();
+    const pidToPendingSpawnTask = new Map<number, PendingSpawnTaskRegistration>();
     const inFlightSpawnTasks = new Set<PendingSpawnTask>();
+    const stoppedSessionIds = new Set<string>();
 
     // Track tmux session names created by this daemon for cleanup
     const daemonTmuxRunners = new Map<string, DaemonTmuxRunner>();
@@ -244,35 +313,196 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     let isShuttingDown = false;
     let shutdownDrain: Promise<void> | null = null;
 
-    const getChildren = () => Array.from(pidToTrackedSession.values());
+    const getTrackedSessionEntries = (): Array<[number, TrackedSession]> => [
+        ...pidToTrackedSession.entries(),
+        ...Array.from(displacedTrackedSessionPids.entries(), ([session, pid]) => [pid, session] as [number, TrackedSession]),
+    ];
 
-    const acquireStoppingSessionGuard = (pid: number): (() => void) => {
-        stoppingSessionPids.set(pid, (stoppingSessionPids.get(pid) ?? 0) + 1);
+    const getChildren = () => getTrackedSessionEntries().map(([, session]) => session);
 
-        let hasReleased = false;
-        return () => {
-            if (hasReleased) {
-                return;
-            }
-            hasReleased = true;
-
-            const guardCount = stoppingSessionPids.get(pid);
-            if (!guardCount || guardCount === 1) {
-                stoppingSessionPids.delete(pid);
-                return;
-            }
-            stoppingSessionPids.set(pid, guardCount - 1);
-        };
-    };
-
-    const withStoppingSessionGuard = async <T>(pid: number, action: () => Promise<T>): Promise<T> => {
-        const releaseGuard = acquireStoppingSessionGuard(pid);
-        try {
-            return await action();
-        } finally {
-            releaseGuard();
+    const retireDaemonTmuxRunner = (session: TrackedSession): void => {
+        const ownership = session.tmuxRunner;
+        if (ownership) {
+            daemonTmuxRunners.delete(ownership.sessionName);
         }
     };
+
+    const getSessionStoppedBeforeReportingError = (pid: number): string => (
+        `Session process ${pid} stopped before reporting its Remcli session.`
+    );
+
+    const publishSessionStopped = (session: TrackedSession): void => {
+        const sessionId = session.remcliSessionId;
+        if (!sessionId || stoppedSessionIds.has(sessionId)) {
+            return;
+        }
+
+        stoppedSessionIds.add(sessionId);
+        try {
+            options.onSessionStopped?.(sessionId);
+        } catch (error) {
+            logger.warn(`[DAEMON RUN] Failed to publish stopped session ${sessionId}:`, error);
+        }
+    };
+
+    const detachNativeCodexThreadMapping = (session: TrackedSession): void => {
+        const nativeThreadId = session.nativeCodexThreadId;
+        if (!nativeThreadId) {
+            return;
+        }
+
+        const mapping = nativeCodexThreadIdToTrackedSession.get(nativeThreadId);
+        if (mapping?.session === session) {
+            nativeCodexThreadIdToTrackedSession.delete(nativeThreadId);
+        }
+    };
+
+    const detachNativeCursorSessionMapping = (session: TrackedSession): void => {
+        const nativeSessionId = session.nativeCursorSessionId;
+        if (!nativeSessionId) {
+            return;
+        }
+
+        const mapping = nativeCursorSessionIdToTrackedSession.get(nativeSessionId);
+        if (mapping?.session === session) {
+            nativeCursorSessionIdToTrackedSession.delete(nativeSessionId);
+        }
+    };
+
+    const detachRunnerSessionMapping = (session: TrackedSession): void => {
+        const remcliSessionId = session.runnerControlTokenSessionId;
+        if (!remcliSessionId) {
+            return;
+        }
+
+        const mapping = runnerSessionIdToTrackedSession.get(remcliSessionId);
+        if (mapping?.session === session) {
+            runnerSessionIdToTrackedSession.delete(remcliSessionId);
+        }
+    };
+
+    const settleTrackedSessionSpawn = (pid: number, session: TrackedSession): void => {
+        const errorMessage = getSessionStoppedBeforeReportingError(pid);
+        const pendingCodexThreadResume = pidToPendingCodexThreadResume.get(pid);
+        if (pendingCodexThreadResume?.session === session) {
+            pidToPendingCodexThreadResume.delete(pid);
+            if (
+                pendingCodexThreadResume.task.nativeThreadId
+                && codexThreadResumeSpawnPromises.get(pendingCodexThreadResume.task.nativeThreadId) === pendingCodexThreadResume.task
+            ) {
+                codexThreadResumeSpawnPromises.delete(pendingCodexThreadResume.task.nativeThreadId);
+            }
+            pendingCodexThreadResume.task.cancel(errorMessage);
+        }
+
+        const pendingSpawnTask = pidToPendingSpawnTask.get(pid);
+        if (pendingSpawnTask?.session === session) {
+            pidToPendingSpawnTask.delete(pid);
+            if (
+                pendingSpawnTask.task.resumeKey
+                && resumeSpawnPromises.get(pendingSpawnTask.task.resumeKey) === pendingSpawnTask.task.promise
+            ) {
+                resumeSpawnPromises.delete(pendingSpawnTask.task.resumeKey);
+            }
+            pendingSpawnTask.task.cancel(errorMessage);
+        }
+
+        const awaiter = pidToAwaiter.get(pid);
+        if (awaiter?.session === session) {
+            awaiter.fail(errorMessage);
+        }
+    };
+
+    const clearTrackedSessionRuntimeState = (pid: number, session: TrackedSession): void => {
+        settleTrackedSessionSpawn(pid, session);
+
+        detachNativeCodexThreadMapping(session);
+        detachNativeCursorSessionMapping(session);
+        detachRunnerSessionMapping(session);
+    };
+
+    const displaceTrackedSessionRuntimeState = (pid: number, session: TrackedSession): void => {
+        // A later PID owner cannot complete A's spawn. Its waiters must settle,
+        // but A's native and runner ownership remains intact for cleanup retry.
+        settleTrackedSessionSpawn(pid, session);
+    };
+
+    const isDisplacedTrackedSession = (pid: number, session: TrackedSession): boolean => (
+        displacedTrackedSessionPids.get(session) === pid
+    );
+
+    const isTrackedSessionIdentity = (pid: number, session: TrackedSession): boolean => (
+        pidToTrackedSession.get(pid) === session || isDisplacedTrackedSession(pid, session)
+    );
+
+    const replaceTrackedSession = (pid: number, session: TrackedSession): void => {
+        const replacedSession = pidToTrackedSession.get(pid);
+        if (replacedSession && replacedSession !== session) {
+            displaceTrackedSessionRuntimeState(pid, replacedSession);
+            pidToTrackedSession.delete(pid);
+            displacedTrackedSessionPids.set(replacedSession, pid);
+        }
+
+        pidToTrackedSession.set(pid, session);
+
+        if (replacedSession && replacedSession !== session) {
+            scheduleDisplacedTrackedSessionCleanup(pid, replacedSession);
+        }
+    };
+
+    const isCurrentTrackedSession = (pid: number, session: TrackedSession): boolean => (
+        pidToTrackedSession.get(pid) === session
+    );
+
+    const isStoppingSession = (session: TrackedSession): boolean => (
+        sessionCleanupPromises.has(session)
+    );
+
+    const isReadyTrackedSession = (pid: number, session: TrackedSession): boolean => (
+        isCurrentTrackedSession(pid, session) && !isStoppingSession(session)
+    );
+
+    const isExactTrackedSession = (pid: number, session: TrackedSession): boolean => (
+        pidToTrackedSession.get(pid) === session
+    );
+
+    const createSessionSpawnAwaiter = (
+        pid: number,
+        session: TrackedSession,
+    ): Promise<SpawnSessionResult> => new Promise((resolve) => {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const settle = (result: SpawnSessionResult): void => {
+            if (timeout) {
+                clearTimeout(timeout);
+            }
+            if (pidToAwaiter.get(pid)?.session === session) {
+                pidToAwaiter.delete(pid);
+            }
+            resolve(result);
+        };
+        const awaiter: SessionSpawnAwaiter = {
+            session,
+            complete: (completedSession) => {
+                logger.debug(`[DAEMON RUN] Session ${completedSession.remcliSessionId} fully spawned with webhook (tmux)`);
+                settle({
+                    type: 'success',
+                    sessionId: completedSession.remcliSessionId!,
+                });
+            },
+            fail: (errorMessage) => {
+                settle({ type: 'error', errorMessage });
+            },
+        };
+        timeout = setTimeout(() => {
+            if (pidToAwaiter.get(pid)?.session !== session) {
+                return;
+            }
+            logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${pid} (tmux)`);
+            awaiter.fail(`Session webhook timeout for PID ${pid} (tmux)`);
+        }, 15_000);
+
+        pidToAwaiter.set(pid, awaiter);
+    });
 
     const getOwnedPaneStatus = async (ownership: TmuxPaneOwnership): Promise<OwnedPaneStatus> => {
         try {
@@ -311,6 +541,10 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
         const didRelease = await releaseOwnedPane(ownership);
         if (!didRelease) {
+            sessionCleanupFailureReasons.set(
+                session,
+                `Could not confirm cleanup of managed Codex remote TUI for session ${session.remcliSessionId ?? session.pid}.`,
+            );
             logger.warn(`[DAEMON RUN] Could not confirm cleanup of managed Codex remote TUI pane ${ownership.paneId}; preserving tracking for retry.`);
             return false;
         }
@@ -326,6 +560,10 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
         const ownership = session.tmuxRunner;
         if (!ownership) {
+            sessionCleanupFailureReasons.set(
+                session,
+                `Cannot safely clean up daemon tmux runner ${session.remcliSessionId ?? session.pid}: immutable pane ownership is missing.`,
+            );
             logger.warn(`[DAEMON RUN] Could not confirm cleanup of daemon session ${session.remcliSessionId ?? session.pid}: immutable tmux runner ownership is missing.`);
             return false;
         }
@@ -337,7 +575,11 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
         const reason = releaseResult === 'mismatch'
             ? 'ownership no longer matches the original runner'
-            : 'immutable tmux runner target is unknown';
+            : 'immutable pane target is unknown';
+        sessionCleanupFailureReasons.set(
+            session,
+            `Cannot safely clean up daemon tmux runner ${ownership.sessionName}: ${reason}.`,
+        );
         logger.warn(`[DAEMON RUN] Could not confirm cleanup of daemon session ${session.remcliSessionId ?? session.pid}: ${reason}.`);
         return false;
     };
@@ -357,50 +599,22 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         return true;
     };
 
-    const retireDaemonTmuxRunner = (session: TrackedSession): void => {
-        const ownership = session.tmuxRunner;
-        if (ownership) {
-            daemonTmuxRunners.delete(ownership.sessionName);
-        }
-    };
+    const retireTrackedSession = (
+        pid: number,
+        expectedSession: TrackedSession,
+        shouldPublishStopped = true,
+    ): void => {
+        clearTrackedSessionRuntimeState(pid, expectedSession);
 
-    const removeTrackedSession = (pid: number, shouldPublishStopped = true): void => {
-        const trackedSession = pidToTrackedSession.get(pid);
-        const stoppedSessionId = trackedSession?.remcliSessionId;
-        const pendingCodexThreadResume = pidToPendingCodexThreadResume.get(pid);
-        const errorMessage = `Session process ${pid} stopped before reporting its Remcli session.`;
+        if (pidToTrackedSession.get(pid) === expectedSession) {
+            pidToTrackedSession.delete(pid);
+        }
+        displacedTrackedSessionPids.delete(expectedSession);
 
-        pidToPendingCodexThreadResume.delete(pid);
-        if (
-            pendingCodexThreadResume?.nativeThreadId
-            && codexThreadResumeSpawnPromises.get(pendingCodexThreadResume.nativeThreadId) === pendingCodexThreadResume
-        ) {
-            codexThreadResumeSpawnPromises.delete(pendingCodexThreadResume.nativeThreadId);
-        }
-        pendingCodexThreadResume?.cancel(errorMessage);
+        retireDaemonTmuxRunner(expectedSession);
 
-        if (trackedSession?.nativeCodexThreadId && nativeCodexThreadIdToPid.get(trackedSession.nativeCodexThreadId) === pid) {
-            nativeCodexThreadIdToPid.delete(trackedSession.nativeCodexThreadId);
-        }
-        if (
-            trackedSession?.runnerControlTokenSessionId
-            && runnerSessionIdToPid.get(trackedSession.runnerControlTokenSessionId) === pid
-        ) {
-            runnerSessionIdToPid.delete(trackedSession.runnerControlTokenSessionId);
-        }
-        pidToAwaiter.get(pid)?.fail(errorMessage);
-        pidToTrackedSession.delete(pid);
-        stoppingSessionPids.delete(pid);
-        if (trackedSession) {
-            retireDaemonTmuxRunner(trackedSession);
-        }
-
-        if (shouldPublishStopped && stoppedSessionId) {
-            try {
-                options.onSessionStopped?.(stoppedSessionId);
-            } catch (error) {
-                logger.warn(`[DAEMON RUN] Failed to publish stopped session ${stoppedSessionId}:`, error);
-            }
+        if (shouldPublishStopped) {
+            publishSessionStopped(expectedSession);
         }
     };
 
@@ -421,18 +635,29 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
     const releaseAndRemoveTrackedSession = async (
         pid: number,
+        trackedSession: TrackedSession,
         shouldAwaitRemoteTuiOpening = true,
+        shouldPublishStopped = true,
     ): Promise<boolean> => {
-        const trackedSession = pidToTrackedSession.get(pid);
-        if (!trackedSession) {
-            return true;
+        const inFlightCleanup = sessionCleanupPromises.get(trackedSession);
+        if (inFlightCleanup) {
+            return inFlightCleanup;
         }
-        return withStoppingSessionGuard(pid, async () => {
+
+        sessionCleanupFailureReasons.delete(trackedSession);
+        const cleanupPromise = (async (): Promise<boolean> => {
+            if (!isTrackedSessionIdentity(pid, trackedSession)) {
+                return true;
+            }
             if (
                 shouldAwaitRemoteTuiOpening
                 && trackedSession.remcliSessionId
                 && !await waitForCodexRemoteTuiOpening(trackedSession.remcliSessionId)
             ) {
+                sessionCleanupFailureReasons.set(
+                    trackedSession,
+                    `Could not wait for managed Codex remote TUI cleanup for session ${trackedSession.remcliSessionId}.`,
+                );
                 return false;
             }
             if (!await releaseManagedCodexRemoteTuiWindow(trackedSession)) {
@@ -441,9 +666,43 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             if (!await releaseDaemonTmuxRunner(trackedSession)) {
                 return false;
             }
-            removeTrackedSession(pid);
+            retireTrackedSession(
+                pid,
+                trackedSession,
+                shouldPublishStopped && (!isShuttingDown || trackedSession.startedBy === 'daemon'),
+            );
             return true;
-        });
+        })();
+        sessionCleanupPromises.set(trackedSession, cleanupPromise);
+        void cleanupPromise.then(
+            (didRemove) => {
+                if (sessionCleanupPromises.get(trackedSession) === cleanupPromise) {
+                    sessionCleanupPromises.delete(trackedSession);
+                }
+                if (didRemove) {
+                    sessionCleanupFailureReasons.delete(trackedSession);
+                }
+            },
+            () => {
+                if (sessionCleanupPromises.get(trackedSession) === cleanupPromise) {
+                    sessionCleanupPromises.delete(trackedSession);
+                }
+            },
+        );
+        return cleanupPromise;
+    };
+
+    const scheduleDisplacedTrackedSessionCleanup = (pid: number, session: TrackedSession): void => {
+        void releaseAndRemoveTrackedSession(pid, session).then(
+            (didRemove) => {
+                if (!didRemove) {
+                    logger.warn(`[DAEMON RUN] Keeping displaced session ${session.remcliSessionId ?? pid} tracked because immutable cleanup was not confirmed.`);
+                }
+            },
+            (error) => {
+                logger.warn(`[DAEMON RUN] Failed to clean up displaced session ${session.remcliSessionId ?? pid}:`, error);
+            },
+        );
     };
 
     const isProcessAlive = (pid: number): boolean => {
@@ -497,9 +756,38 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         return session.expectedAgent;
     };
 
+    const getTrackedSessionDirectory = (session: TrackedSession): string | undefined => (
+        session.remcliSessionMetadataFromLocalWebhook?.path ?? session.expectedDirectory
+    );
+
+    const recordCursorSessionLineage = (nativeSessionId: string, session: TrackedSession): void => {
+        if (session.startedBy !== 'daemon' || !session.remcliSessionId) {
+            return;
+        }
+
+        const directory = getTrackedSessionDirectory(session);
+        if (!directory) {
+            return;
+        }
+
+        cursorSessionLineageByNativeSessionId.set(nativeSessionId, {
+            parentRemcliSessionId: session.remcliSessionId,
+            directory,
+        });
+    };
+
     const toNativeCodexThreadWrapper = (remcliSessionId: string, nativeThreadId: string): NativeCodexThreadWrapper => ({
         agent: 'codex',
         nativeThreadId,
+        remcliSessionId,
+    });
+
+    const toNativeCursorSessionWrapper = (
+        remcliSessionId: string,
+        nativeSessionId: string,
+    ): NativeCursorSessionWrapper => ({
+        agent: 'cursor',
+        nativeSessionId,
         remcliSessionId,
     });
 
@@ -531,13 +819,20 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         session: TrackedSession;
         status: 'exists' | 'unknown';
     } | null> => {
-        for (const [pid, session] of pidToTrackedSession.entries()) {
+        for (const [pid, session] of getTrackedSessionEntries()) {
             if (session.expectedAgent !== 'codex' || session.expectedResumeSessionId !== nativeThreadId) {
                 continue;
             }
+
+            if (!isReadyTrackedSession(pid, session)) {
+                return { session, status: 'unknown' };
+            }
             const status = await getTrackedSessionStatus(pid, session);
+            if (!isReadyTrackedSession(pid, session)) {
+                return { session, status: 'unknown' };
+            }
             if (status === 'missing') {
-                if (!await releaseAndRemoveTrackedSession(pid)) {
+                if (!await releaseAndRemoveTrackedSession(pid, session)) {
                     return { session, status: 'unknown' };
                 }
                 continue;
@@ -548,19 +843,28 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     };
 
     const resolveCodexThreadResume = async (nativeThreadId: string): Promise<CodexThreadResumeResult> => {
-        const pid = nativeCodexThreadIdToPid.get(nativeThreadId);
-        if (pid !== undefined) {
-            const session = pidToTrackedSession.get(pid);
-            if (!session || session.nativeCodexThreadId !== nativeThreadId) {
-                nativeCodexThreadIdToPid.delete(nativeThreadId);
-                if (session) {
-                    await releaseAndRemoveTrackedSession(pid);
+        const mapping = nativeCodexThreadIdToTrackedSession.get(nativeThreadId);
+        if (mapping) {
+            const { pid, session } = mapping;
+            if (
+                !isTrackedSessionIdentity(pid, session)
+                || session.nativeCodexThreadId !== nativeThreadId
+            ) {
+                // A PID can be reused after the original Codex wrapper exits.
+                // The native map is valid only for the captured session object,
+                // never for a later session sharing its PID.
+                if (nativeCodexThreadIdToTrackedSession.get(nativeThreadId) === mapping) {
+                    nativeCodexThreadIdToTrackedSession.delete(nativeThreadId);
                 }
+            } else if (!isReadyTrackedSession(pid, session)) {
+                return { type: 'wrapper-starting', nativeThreadId };
             } else {
                 const status = await getTrackedSessionStatus(pid, session);
+                if (!isReadyTrackedSession(pid, session)) {
+                    return { type: 'wrapper-starting', nativeThreadId };
+                }
                 if (status === 'missing') {
-                    nativeCodexThreadIdToPid.delete(nativeThreadId);
-                    if (!await releaseAndRemoveTrackedSession(pid)) {
+                    if (!await releaseAndRemoveTrackedSession(pid, session)) {
                         return { type: 'wrapper-starting', nativeThreadId };
                     }
                 } else if (status === 'exists' && session.remcliSessionId) {
@@ -585,19 +889,25 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     const bindNativeCodexThread = async (
         binding: NativeCodexThreadBinding
     ): Promise<NativeCodexThreadBindingResult> => {
-        const existingPid = nativeCodexThreadIdToPid.get(binding.nativeThreadId);
-        if (existingPid !== undefined) {
-            const existingSession = pidToTrackedSession.get(existingPid);
-            if (!existingSession || existingSession.nativeCodexThreadId !== binding.nativeThreadId) {
-                nativeCodexThreadIdToPid.delete(binding.nativeThreadId);
-                if (existingSession) {
-                    await releaseAndRemoveTrackedSession(existingPid);
+        const existingMapping = nativeCodexThreadIdToTrackedSession.get(binding.nativeThreadId);
+        if (existingMapping) {
+            const { pid: existingPid, session: existingSession } = existingMapping;
+            if (
+                !isTrackedSessionIdentity(existingPid, existingSession)
+                || existingSession.nativeCodexThreadId !== binding.nativeThreadId
+            ) {
+                if (nativeCodexThreadIdToTrackedSession.get(binding.nativeThreadId) === existingMapping) {
+                    nativeCodexThreadIdToTrackedSession.delete(binding.nativeThreadId);
                 }
+            } else if (!isReadyTrackedSession(existingPid, existingSession)) {
+                return { type: 'wrapper-not-tracked', binding };
             } else {
                 const status = await getTrackedSessionStatus(existingPid, existingSession);
+                if (!isReadyTrackedSession(existingPid, existingSession)) {
+                    return { type: 'wrapper-not-tracked', binding };
+                }
                 if (status === 'missing') {
-                    nativeCodexThreadIdToPid.delete(binding.nativeThreadId);
-                    await releaseAndRemoveTrackedSession(existingPid);
+                    await releaseAndRemoveTrackedSession(existingPid, existingSession);
                     return { type: 'wrapper-not-tracked', binding };
                 } else if (status !== 'exists') {
                     return { type: 'wrapper-not-tracked', binding };
@@ -623,9 +933,16 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             if (session.remcliSessionId !== binding.remcliSessionId) {
                 continue;
             }
+
+            if (!isReadyTrackedSession(pid, session)) {
+                return { type: 'wrapper-not-tracked', binding };
+            }
             const status = await getTrackedSessionStatus(pid, session);
+            if (!isReadyTrackedSession(pid, session)) {
+                return { type: 'wrapper-not-tracked', binding };
+            }
             if (status === 'missing') {
-                await releaseAndRemoveTrackedSession(pid);
+                await releaseAndRemoveTrackedSession(pid, session);
                 break;
             }
             if (status !== 'exists') {
@@ -646,14 +963,261 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         }
 
         if (trackedSession.nativeCodexThreadId && trackedSession.nativeCodexThreadId !== binding.nativeThreadId) {
-            nativeCodexThreadIdToPid.delete(trackedSession.nativeCodexThreadId);
+            const previousMapping = nativeCodexThreadIdToTrackedSession.get(trackedSession.nativeCodexThreadId);
+            if (previousMapping?.pid === trackedPid && previousMapping.session === trackedSession) {
+                nativeCodexThreadIdToTrackedSession.delete(trackedSession.nativeCodexThreadId);
+            }
         }
         trackedSession.nativeCodexThreadId = binding.nativeThreadId;
-        nativeCodexThreadIdToPid.set(binding.nativeThreadId, trackedPid);
+        nativeCodexThreadIdToTrackedSession.set(binding.nativeThreadId, {
+            pid: trackedPid,
+            session: trackedSession,
+        });
 
         return {
             type: 'bound',
             wrapper: toNativeCodexThreadWrapper(binding.remcliSessionId, binding.nativeThreadId),
+        };
+    };
+
+    const bindNativeCursorSessionInternal = async (
+        binding: NativeCursorSessionBinding,
+    ): Promise<NativeCursorSessionBindingResult> => {
+        const existingMapping = nativeCursorSessionIdToTrackedSession.get(binding.nativeSessionId);
+        if (existingMapping) {
+            const { pid: existingPid, session: existingSession } = existingMapping;
+            if (
+                !isTrackedSessionIdentity(existingPid, existingSession)
+                || existingSession.nativeCursorSessionId !== binding.nativeSessionId
+            ) {
+                // A PID can be reused after the original Cursor wrapper exits.
+                // The mapping proves only the captured session object, never a
+                // later session that happens to have the same PID.
+                nativeCursorSessionIdToTrackedSession.delete(binding.nativeSessionId);
+            } else {
+                if (!isReadyTrackedSession(existingPid, existingSession)) {
+                    return { type: 'wrapper-not-tracked', binding };
+                }
+                const status = await getTrackedSessionStatus(existingPid, existingSession);
+                if (!isReadyTrackedSession(existingPid, existingSession)) {
+                    return { type: 'wrapper-not-tracked', binding };
+                }
+                if (status === 'missing') {
+                    await releaseAndRemoveTrackedSession(existingPid, existingSession);
+                    return { type: 'wrapper-not-tracked', binding };
+                }
+                if (status !== 'exists' || !existingSession.remcliSessionId) {
+                    return { type: 'wrapper-not-tracked', binding };
+                }
+                if (existingSession.remcliSessionId === binding.remcliSessionId) {
+                    recordCursorSessionLineage(binding.nativeSessionId, existingSession);
+                    return {
+                        type: 'already-bound',
+                        wrapper: toNativeCursorSessionWrapper(binding.remcliSessionId, binding.nativeSessionId),
+                    };
+                }
+                return {
+                    type: 'reuse-active-wrapper',
+                    wrapper: toNativeCursorSessionWrapper(existingSession.remcliSessionId, binding.nativeSessionId),
+                };
+            }
+        }
+
+        let trackedSession: TrackedSession | undefined;
+        let trackedPid: number | undefined;
+        for (const [pid, session] of pidToTrackedSession.entries()) {
+            if (session.remcliSessionId !== binding.remcliSessionId) {
+                continue;
+            }
+            if (!isReadyTrackedSession(pid, session)) {
+                return { type: 'wrapper-not-tracked', binding };
+            }
+            const status = await getTrackedSessionStatus(pid, session);
+            if (!isReadyTrackedSession(pid, session)) {
+                return { type: 'wrapper-not-tracked', binding };
+            }
+            if (status === 'missing') {
+                await releaseAndRemoveTrackedSession(pid, session);
+                break;
+            }
+            if (status !== 'exists') {
+                return { type: 'wrapper-not-tracked', binding };
+            }
+            trackedSession = session;
+            trackedPid = pid;
+            break;
+        }
+
+        if (!trackedSession || trackedPid === undefined) {
+            return { type: 'wrapper-not-tracked', binding };
+        }
+
+        const trackedAgent = getTrackedAgent(trackedSession);
+        if (trackedAgent && trackedAgent !== 'cursor') {
+            return { type: 'agent-mismatch', binding, trackedAgent };
+        }
+
+        if (
+            trackedSession.nativeCursorSessionId
+            && trackedSession.nativeCursorSessionId !== binding.nativeSessionId
+            && nativeCursorSessionIdToTrackedSession.get(trackedSession.nativeCursorSessionId)?.pid === trackedPid
+            && nativeCursorSessionIdToTrackedSession.get(trackedSession.nativeCursorSessionId)?.session === trackedSession
+        ) {
+            nativeCursorSessionIdToTrackedSession.delete(trackedSession.nativeCursorSessionId);
+        }
+        trackedSession.nativeCursorSessionId = binding.nativeSessionId;
+        nativeCursorSessionIdToTrackedSession.set(binding.nativeSessionId, {
+            pid: trackedPid,
+            session: trackedSession,
+        });
+        recordCursorSessionLineage(binding.nativeSessionId, trackedSession);
+
+        return {
+            type: 'bound',
+            wrapper: toNativeCursorSessionWrapper(binding.remcliSessionId, binding.nativeSessionId),
+        };
+    };
+
+    const bindNativeCursorSession = async (
+        binding: NativeCursorSessionBinding,
+    ): Promise<NativeCursorSessionBindingResult> => {
+        const inFlightBinding = nativeCursorSessionBindingPromises.get(binding.nativeSessionId);
+        if (inFlightBinding) {
+            await inFlightBinding;
+            return bindNativeCursorSession(binding);
+        }
+
+        const bindingPromise = bindNativeCursorSessionInternal(binding);
+        nativeCursorSessionBindingPromises.set(binding.nativeSessionId, bindingPromise);
+        try {
+            return await bindingPromise;
+        } finally {
+            if (nativeCursorSessionBindingPromises.get(binding.nativeSessionId) === bindingPromise) {
+                nativeCursorSessionBindingPromises.delete(binding.nativeSessionId);
+            }
+        }
+    };
+
+    const findBoundNativeCursorSession = async (
+        nativeSessionId: string,
+    ): Promise<BoundNativeCursorSessionLookup> => {
+        const inFlightBinding = nativeCursorSessionBindingPromises.get(nativeSessionId);
+        if (inFlightBinding) {
+            await inFlightBinding;
+        }
+
+        const mapping = nativeCursorSessionIdToTrackedSession.get(nativeSessionId);
+        if (!mapping) {
+            return { type: 'not-found' };
+        }
+        const { pid, session } = mapping;
+        if (
+            !isTrackedSessionIdentity(pid, session)
+            || session.nativeCursorSessionId !== nativeSessionId
+        ) {
+            nativeCursorSessionIdToTrackedSession.delete(nativeSessionId);
+            return { type: 'not-found' };
+        }
+        if (!isReadyTrackedSession(pid, session)) {
+            return { type: 'unavailable' };
+        }
+
+        const status = await getTrackedSessionStatus(pid, session);
+        if (!isReadyTrackedSession(pid, session)) {
+            return { type: 'unavailable' };
+        }
+        if (status === 'missing') {
+            return await releaseAndRemoveTrackedSession(pid, session)
+                ? { type: 'not-found' }
+                : { type: 'unavailable' };
+        }
+        if (status !== 'exists') {
+            return { type: 'unavailable' };
+        }
+
+        return { type: 'found', session };
+    };
+
+    const findTrackedCursorResumeSession = async (
+        resumeSessionId: string,
+    ): Promise<BoundNativeCursorSessionLookup> => {
+        for (const [pid, session] of pidToTrackedSession.entries()) {
+            const reportedNativeSessionId = getNativeSessionId(
+                session.remcliSessionMetadataFromLocalWebhook,
+                'cursor',
+            );
+            if (
+                getTrackedAgent(session) !== 'cursor'
+                || (reportedNativeSessionId ?? session.expectedResumeSessionId) !== resumeSessionId
+            ) {
+                continue;
+            }
+
+            if (
+                !isReadyTrackedSession(pid, session)
+                || session.startedBy !== 'daemon'
+                || !session.tmuxRunner
+                || !session.remcliSessionId
+                || (
+                    session.nativeCursorSessionId
+                    && session.nativeCursorSessionId !== resumeSessionId
+                )
+            ) {
+                return { type: 'unavailable' };
+            }
+
+            // Cursor can report its wrapper before native system/init and before
+            // the native binding map is populated. That pre-init resume can only
+            // reuse the wrapper after the immutable daemon-owned pane has been
+            // checked, never from PID liveness.
+            const status = await getDaemonTmuxRunnerStatus(session);
+            if (!isReadyTrackedSession(pid, session) || status !== 'exists') {
+                return { type: 'unavailable' };
+            }
+
+            return { type: 'found', session };
+        }
+
+        return { type: 'not-found' };
+    };
+
+    const preflightCursorRunner = async (
+        request: CursorRunnerPreflightRequest,
+    ): Promise<CursorRunnerPreflightResult> => {
+        if (request.agent !== 'cursor') {
+            return { type: 'rejected' };
+        }
+
+        const session = pidToTrackedSession.get(request.pid);
+        if (
+            !session
+            || !isReadyTrackedSession(request.pid, session)
+            || session.startedBy !== 'daemon'
+            || !session.tmuxRunner
+            || session.expectedAgent !== 'cursor'
+            || session.expectedResumeSessionId !== request.nativeResumeSessionId
+            || !hasMatchingRunnerControlToken(session.runnerControlToken, request.runnerToken)
+        ) {
+            return { type: 'rejected' };
+        }
+
+        const status = await getDaemonTmuxRunnerStatus(session);
+        if (!isReadyTrackedSession(request.pid, session) || status !== 'exists') {
+            return { type: 'rejected' };
+        }
+
+        const lineage = session.cursorResumeLineage;
+        if (
+            !request.nativeResumeSessionId
+            || !lineage
+            || lineage.nativeResumeSessionId !== request.nativeResumeSessionId
+        ) {
+            return { type: 'verified' };
+        }
+
+        return {
+            type: 'verified',
+            parentRemcliSessionId: lineage.parentRemcliSessionId,
         };
     };
 
@@ -747,7 +1311,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             }
             const status = await getTrackedSessionStatus(pid, session);
             if (status === 'missing') {
-                await releaseAndRemoveTrackedSession(pid, false);
+                await releaseAndRemoveTrackedSession(pid, session, false);
                 break;
             }
             if (status !== 'exists') {
@@ -769,7 +1333,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         if (trackedSession.startedBy !== 'daemon') {
             return { type: 'wrapper-not-daemon-owned', request };
         }
-        if (stoppingSessionPids.has(trackedPid)) {
+        if (isStoppingSession(trackedSession)) {
             return { type: 'wrapper-not-tracked', request };
         }
         if (trackedSession.nativeCodexThreadId !== request.nativeThreadId) {
@@ -853,7 +1417,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         }
 
         trackedSession.managedCodexRemoteTui = createdOwnership;
-        if (isShuttingDown || stoppingSessionPids.has(trackedPid)) {
+        if (isShuttingDown || isStoppingSession(trackedSession)) {
             return { type: 'wrapper-not-tracked', request };
         }
 
@@ -877,19 +1441,23 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         return openingPromise;
     };
 
-    const findTrackedResumeSession = (agent: 'claude' | 'codex' | 'cursor' | 'gemini', resumeSessionId: string): TrackedSession | null => {
+    const findTrackedResumeSession = (agent: 'claude' | 'codex' | 'gemini', resumeSessionId: string): TrackedSession | null => {
         for (const [pid, session] of pidToTrackedSession.entries()) {
             const reportedAgent = session.remcliSessionMetadataFromLocalWebhook?.flavor;
             const trackedAgent = reportedAgent ?? session.expectedAgent;
             if (trackedAgent !== agent) continue;
-            const trackedResumeSessionId = session.remcliSessionMetadataFromLocalWebhook
+            const reportedNativeSessionId = session.remcliSessionMetadataFromLocalWebhook
                 ? getNativeSessionId(session.remcliSessionMetadataFromLocalWebhook, agent)
-                : session.expectedResumeSessionId;
+                : undefined;
+            const trackedResumeSessionId = reportedNativeSessionId ?? session.expectedResumeSessionId;
             if (trackedResumeSessionId === resumeSessionId) {
+                if (!isReadyTrackedSession(pid, session)) {
+                    continue;
+                }
                 try {
                     process.kill(pid, 0);
                 } catch {
-                    void releaseAndRemoveTrackedSession(pid);
+                    void releaseAndRemoveTrackedSession(pid, session);
                     continue;
                 }
                 return session;
@@ -904,7 +1472,9 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         sessionMetadata: Metadata,
         runnerToken?: string,
     ): DaemonSessionWebhookResult => {
-        logger.debugLargeJson(`[DAEMON RUN] Session reported`, sessionMetadata);
+        const diagnosticSessionMetadata = { ...sessionMetadata };
+        delete diagnosticSessionMetadata.resumedFromRemcliSessionId;
+        logger.debugLargeJson(`[DAEMON RUN] Session reported`, diagnosticSessionMetadata);
 
         const pid = sessionMetadata.hostPid;
         if (!pid) {
@@ -930,8 +1500,11 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                     logger.warn(`[DAEMON RUN] Rejected daemon session webhook for PID ${pid}: runner capability already bound`);
                     return { accepted: false, daemonOwned: false, error: 'runner-capability-already-bound' };
                 }
-                const ownerPid = runnerSessionIdToPid.get(sessionId);
-                if (ownerPid !== undefined && ownerPid !== pid) {
+                const ownerMapping = runnerSessionIdToTrackedSession.get(sessionId);
+                if (
+                    ownerMapping
+                    && (ownerMapping.pid !== pid || ownerMapping.session !== existingSession)
+                ) {
                     logger.warn(`[DAEMON RUN] Rejected daemon session webhook for PID ${pid}: Remcli session is already owned by another runner`);
                     return { accepted: false, daemonOwned: false, error: 'runner-session-already-owned' };
                 }
@@ -940,7 +1513,10 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                     return { accepted: false, daemonOwned: false, error: 'runner-capability-mismatch' };
                 }
                 existingSession.runnerControlTokenSessionId = sessionId;
-                runnerSessionIdToPid.set(sessionId, pid);
+                runnerSessionIdToTrackedSession.set(sessionId, {
+                    pid,
+                    session: existingSession,
+                });
             } else if (runnerToken) {
                 logger.warn(`[DAEMON RUN] Rejected external session webhook for PID ${pid}: unexpected runner capability`);
                 return { accepted: false, daemonOwned: false, error: 'unexpected-runner-capability' };
@@ -951,9 +1527,11 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             logger.debug(`[DAEMON RUN] Updated tracked session ${sessionId} with metadata`);
 
             // Resolve any awaiter for this PID
-            pidToPendingCodexThreadResume.delete(pid);
+            if (pidToPendingCodexThreadResume.get(pid)?.session === existingSession) {
+                pidToPendingCodexThreadResume.delete(pid);
+            }
             const awaiter = pidToAwaiter.get(pid);
-            if (awaiter) {
+            if (awaiter?.session === existingSession) {
                 awaiter.complete(existingSession);
                 logger.debug(`[DAEMON RUN] Resolved session awaiter for PID ${pid}`);
             }
@@ -980,7 +1558,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             remcliSessionMetadataFromLocalWebhook: sessionMetadata,
             pid,
         };
-        pidToTrackedSession.set(pid, trackedSession);
+        replaceTrackedSession(pid, trackedSession);
         logger.debug(`[DAEMON RUN] Registered externally-started session ${sessionId}`);
         return { accepted: true, daemonOwned: false };
     };
@@ -988,7 +1566,8 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     // Spawn a new session (sessionId reserved for future --resume functionality)
     const spawnSessionWithoutResumeDedup = async (
         options: SpawnSessionOptions,
-        pendingSpawnTask?: PendingSpawnTask
+        pendingSpawnTask?: PendingSpawnTask,
+        cursorSessionLineage?: CursorSessionLineage,
     ): Promise<SpawnSessionResult> => {
         logger.debugLargeJson('[DAEMON RUN] Spawning session', buildSafeSpawnSessionLogPayload(options));
         let cancelledTmuxCleanupError: Error | undefined;
@@ -1131,7 +1710,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
             // Fail-fast validation: Check that any auth variables present are fully expanded
             // Only validate variables that are actually set (different agents need different auth)
-            const potentialAuthVars = ['ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'OPENAI_API_KEY', 'CODEX_HOME', 'AZURE_OPENAI_API_KEY', 'TOGETHER_API_KEY'];
+            const potentialAuthVars = ['ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CURSOR_API_KEY', 'OPENAI_API_KEY', 'CODEX_HOME', 'AZURE_OPENAI_API_KEY', 'TOGETHER_API_KEY'];
             const unexpandedAuthVars = potentialAuthVars.filter(varName => {
                 const value = extraEnv[varName];
                 // Only fail if variable IS SET and contains unexpanded ${VAR} references
@@ -1180,8 +1759,8 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
             // Construct command for the CLI
             const cliPath = join(projectPath(), 'dist', 'index.mjs');
-            const resumeArg = options.resumeSessionId ? ` --resume ${options.resumeSessionId}` : '';
-            const fullCommand = `node --no-warnings --no-deprecation ${cliPath} ${agent} --remcli-starting-mode remote --started-by daemon${resumeArg}`;
+            const resumeArg = options.resumeSessionId ? ` --resume ${shellQuote(options.resumeSessionId)}` : '';
+            const fullCommand = `node --no-warnings --no-deprecation ${shellQuote(cliPath)} ${shellQuote(agent)} --remcli-starting-mode remote --started-by daemon${resumeArg}`;
 
             // Spawn in tmux with environment variables
             const tmuxEnv: Record<string, string> = {};
@@ -1253,6 +1832,15 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                     expectedAgent: agent,
                     expectedResumeSessionId: options.resumeSessionId,
                     expectedResumeKey: resumeKeyOf(agent, options.resumeSessionId) ?? undefined,
+                    expectedDirectory: directory,
+                    ...(agent === 'cursor' && cursorSessionLineage && options.resumeSessionId
+                        ? {
+                            cursorResumeLineage: {
+                                nativeResumeSessionId: options.resumeSessionId,
+                                parentRemcliSessionId: cursorSessionLineage.parentRemcliSessionId,
+                            },
+                        }
+                        : {}),
                     runnerControlToken,
                     directoryCreated,
                     message: directoryCreated
@@ -1260,9 +1848,22 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                         : `Spawned new session in tmux '${tmuxSessionName}'.`
                 };
 
-                pidToTrackedSession.set(tmuxResult.ownership.panePid, trackedSession);
+                replaceTrackedSession(tmuxResult.ownership.panePid, trackedSession);
+                const sessionSpawnAwaiter = createSessionSpawnAwaiter(
+                    tmuxResult.ownership.panePid,
+                    trackedSession,
+                );
+                if (pendingSpawnTask) {
+                    pidToPendingSpawnTask.set(tmuxResult.ownership.panePid, {
+                        session: trackedSession,
+                        task: pendingSpawnTask,
+                    });
+                }
                 if (pendingSpawnTask?.nativeThreadId) {
-                    pidToPendingCodexThreadResume.set(tmuxResult.ownership.panePid, pendingSpawnTask);
+                    pidToPendingCodexThreadResume.set(tmuxResult.ownership.panePid, {
+                        session: trackedSession,
+                        task: pendingSpawnTask,
+                    });
                 }
 
                 if (agent === 'codex') {
@@ -1283,6 +1884,13 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                     }
                 }
 
+                if (!isExactTrackedSession(tmuxResult.ownership.panePid, trackedSession)) {
+                    return getCancellationResult() ?? {
+                        type: 'error',
+                        errorMessage: getSessionStoppedBeforeReportingError(tmuxResult.ownership.panePid),
+                    };
+                }
+
                 const beforeAwaiterCancellationResult = getCancellationResult();
                 if (beforeAwaiterCancellationResult) {
                     if (isShuttingDown) {
@@ -1297,42 +1905,13 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                             : new Error(`Failed to clean up cancelled tmux session ${tmuxSessionName}: ${String(error)}`);
                         throw cancelledTmuxCleanupError;
                     }
-                    removeTrackedSession(tmuxResult.ownership.panePid);
+                    retireTrackedSession(tmuxResult.ownership.panePid, trackedSession);
                     return beforeAwaiterCancellationResult;
                 }
 
                 // Wait for webhook to populate session with remcliSessionId (exact same as regular flow)
                 logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${tmuxResult.ownership.panePid} (tmux)`);
-
-                return new Promise((resolve) => {
-                    // Set timeout for webhook (same as regular flow)
-                    const timeout = setTimeout(() => {
-                        const awaiter = pidToAwaiter.get(tmuxResult.ownership.panePid);
-                        if (!awaiter) {
-                            return;
-                        }
-                        logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${tmuxResult.ownership.panePid} (tmux)`);
-                        awaiter.fail(`Session webhook timeout for PID ${tmuxResult.ownership.panePid} (tmux)`);
-                    }, 15_000); // Same timeout as regular sessions
-
-                    // Register awaiter for tmux session (exact same as regular flow)
-                    pidToAwaiter.set(tmuxResult.ownership.panePid, {
-                        complete: (completedSession) => {
-                            clearTimeout(timeout);
-                            pidToAwaiter.delete(tmuxResult.ownership.panePid);
-                            logger.debug(`[DAEMON RUN] Session ${completedSession.remcliSessionId} fully spawned with webhook (tmux)`);
-                            resolve({
-                                type: 'success',
-                                sessionId: completedSession.remcliSessionId!
-                            });
-                        },
-                        fail: (errorMessage) => {
-                            clearTimeout(timeout);
-                            pidToAwaiter.delete(tmuxResult.ownership.panePid);
-                            resolve({ type: 'error', errorMessage });
-                        },
-                    });
-                });
+                return sessionSpawnAwaiter;
             } else {
                 return {
                     type: 'error',
@@ -1352,11 +1931,17 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         }
     };
 
-    const startSpawnTask = (options: SpawnSessionOptions, nativeThreadId?: string): PendingSpawnTask => {
+    const startSpawnTask = (
+        options: SpawnSessionOptions,
+        nativeThreadId?: string,
+        cursorSessionLineage?: CursorSessionLineage,
+        resumeKey?: string,
+    ): PendingSpawnTask => {
         const pendingSpawnTask = createPendingSpawnTask(nativeThreadId);
+        pendingSpawnTask.resumeKey = resumeKey;
         inFlightSpawnTasks.add(pendingSpawnTask);
 
-        void spawnSessionWithoutResumeDedup(options, pendingSpawnTask).then(
+        void spawnSessionWithoutResumeDedup(options, pendingSpawnTask, cursorSessionLineage).then(
             (result) => pendingSpawnTask.resolve(result),
             (error) => {
                 const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1366,6 +1951,11 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         ).finally(() => {
             pendingSpawnTask.completeTask();
             inFlightSpawnTasks.delete(pendingSpawnTask);
+            for (const [pid, pendingSpawnTaskRegistration] of pidToPendingSpawnTask.entries()) {
+                if (pendingSpawnTaskRegistration.task === pendingSpawnTask) {
+                    pidToPendingSpawnTask.delete(pid);
+                }
+            }
         });
 
         return pendingSpawnTask;
@@ -1424,7 +2014,45 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             return startSpawnTask(options).promise;
         }
 
-        const existing = findTrackedResumeSession(agent, options.resumeSessionId);
+        let cursorResumeSession: BoundNativeCursorSessionLookup | null = null;
+        if (agent === 'cursor') {
+            const boundCursorSession = await findBoundNativeCursorSession(options.resumeSessionId);
+            cursorResumeSession = boundCursorSession.type === 'not-found'
+                ? await findTrackedCursorResumeSession(options.resumeSessionId)
+                : boundCursorSession;
+            if (isShuttingDown) {
+                return {
+                    type: 'error',
+                    errorMessage: DAEMON_SHUTTING_DOWN_SPAWN_ERROR_MESSAGE,
+                };
+            }
+        }
+        const cursorSessionLineage = agent === 'cursor'
+            ? cursorSessionLineageByNativeSessionId.get(options.resumeSessionId)
+            : undefined;
+        if (cursorResumeSession?.type === 'unavailable') {
+            logger.warn('[DAEMON RUN] Refusing Cursor resume because tmux runner ownership could not be confirmed.');
+            return { type: 'error', errorMessage: CURSOR_RESUME_OWNERSHIP_UNCONFIRMED_ERROR };
+        }
+        const existing = agent === 'cursor'
+            ? cursorResumeSession?.type === 'found'
+                ? cursorResumeSession.session
+                : null
+            : findTrackedResumeSession(agent, options.resumeSessionId);
+        if (agent === 'cursor' && existing && !isReadyTrackedSession(existing.pid, existing)) {
+            logger.warn('[DAEMON RUN] Refusing Cursor resume because its wrapper was removed during ownership lookup.');
+            return { type: 'error', errorMessage: CURSOR_RESUME_OWNERSHIP_UNCONFIRMED_ERROR };
+        }
+        if (agent === 'cursor' && (existing || cursorSessionLineage)) {
+            const existingDirectory = existing
+                ? getTrackedSessionDirectory(existing)
+                : cursorSessionLineage?.directory;
+            if (!existingDirectory || existingDirectory !== options.directory) {
+                const errorMessage = 'Cursor session belongs to a different working directory. Select its original workspace before resuming.';
+                logger.warn(`[DAEMON RUN] Refusing Cursor resume across workspaces for ${options.resumeSessionId}`);
+                return { type: 'error', errorMessage };
+            }
+        }
         if (existing?.remcliSessionId) {
             logger.debug(`[DAEMON RUN] Reusing active ${agent} session ${existing.remcliSessionId} for resume ${options.resumeSessionId}`);
             return { type: 'success', sessionId: existing.remcliSessionId };
@@ -1442,7 +2070,14 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             return { type: 'error', errorMessage };
         }
 
-        const spawnPromise = startSpawnTask(options).promise
+        if (isShuttingDown) {
+            return {
+                type: 'error',
+                errorMessage: DAEMON_SHUTTING_DOWN_SPAWN_ERROR_MESSAGE,
+            };
+        }
+
+        const spawnPromise = startSpawnTask(options, undefined, cursorSessionLineage, resumeKey).promise
             .finally(() => {
                 resumeSpawnPromises.delete(resumeKey);
             });
@@ -1454,10 +2089,17 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     const stopSession = async (sessionId: string): Promise<StopSessionResult> => {
         logger.debug(`[DAEMON RUN] Attempting to stop session ${sessionId}`);
 
-        // Try to find by sessionId first
-        for (const [pid, session] of pidToTrackedSession.entries()) {
-            if (session.remcliSessionId === sessionId ||
-                (sessionId.startsWith('PID-') && pid === parseInt(sessionId.replace('PID-', '')))) {
+        const requestedPid = sessionId.startsWith('PID-')
+            ? Number.parseInt(sessionId.slice('PID-'.length), 10)
+            : undefined;
+
+        // A PID fallback addresses only the active PID index. A displaced
+        // identity must be addressed by its immutable Remcli session id.
+        for (const [pid, session] of getTrackedSessionEntries()) {
+            const matchesCurrentPid = requestedPid !== undefined
+                && pid === requestedPid
+                && isCurrentTrackedSession(pid, session);
+            if (session.remcliSessionId === sessionId || matchesCurrentPid) {
 
                 if (session.startedBy !== 'daemon' || !session.tmuxRunner) {
                     logger.warn(`[DAEMON RUN] Refused to signal unverified session ${sessionId}; only daemon-owned immutable tmux targets are stoppable.`);
@@ -1465,20 +2107,8 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 }
                 const tmuxRunner = session.tmuxRunner;
 
-                return withStoppingSessionGuard(pid, async () => {
-                    if (
-                        session.remcliSessionId
-                        && !await waitForCodexRemoteTuiOpening(session.remcliSessionId)
-                    ) {
-                        logger.warn(`[DAEMON RUN] Could not stop session ${sessionId} because its in-flight managed remote TUI opener did not settle.`);
-                        return { success: false };
-                    }
-
-                    if (!await releaseManagedCodexRemoteTuiWindow(session)) {
-                        logger.warn(`[DAEMON RUN] Could not stop session ${sessionId} because its managed remote TUI cleanup was not confirmed.`);
-                        return { success: false };
-                    }
-
+                const inFlightCleanup = sessionCleanupPromises.get(session);
+                if (!inFlightCleanup) {
                     const paneStatus = await getOwnedPaneStatus(tmuxRunner);
                     if (paneStatus === 'unknown') {
                         logger.warn(`[DAEMON RUN] Could not verify immutable tmux target for session ${sessionId}; keeping it tracked.`);
@@ -1488,18 +2118,18 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                         logger.warn(`[DAEMON RUN] Refused to stop stale tmux pane for session ${sessionId}; ownership no longer matches the original runner.`);
                         return { success: false };
                     }
-                    if (paneStatus === 'exists' && !await releaseOwnedPane(tmuxRunner)) {
-                        logger.warn(`[DAEMON RUN] Failed to stop verified tmux pane for session ${sessionId}; keeping it tracked.`);
-                        return { success: false };
-                    }
+                }
 
-                    removeTrackedSession(pid);
+                if (await releaseAndRemoveTrackedSession(pid, session)) {
                     logger.debug(`[DAEMON RUN] Removed session ${sessionId} from tracking`);
                     return {
                         success: true,
                         stoppedSessionId: session.remcliSessionId ?? sessionId
                     };
-                });
+                }
+
+                logger.warn(`[DAEMON RUN] Failed to stop verified tmux pane for session ${sessionId}; keeping it tracked.`);
+                return { success: false };
             }
         }
 
@@ -1519,10 +2149,20 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
     // Remove sessions whose process is no longer alive
     const pruneDeadSessions = () => {
-        for (const [pid, session] of pidToTrackedSession.entries()) {
+        for (const [pid, session] of getTrackedSessionEntries()) {
+            if (isStoppingSession(session)) {
+                void releaseAndRemoveTrackedSession(pid, session);
+                continue;
+            }
+
+            if (isDisplacedTrackedSession(pid, session)) {
+                scheduleDisplacedTrackedSessionCleanup(pid, session);
+                continue;
+            }
+
             if (!isProcessAlive(pid)) {
                 logger.debug(`[DAEMON RUN] Removing stale session with PID ${pid} (process no longer exists)`);
-                void releaseAndRemoveTrackedSession(pid).then((didRemove) => {
+                void releaseAndRemoveTrackedSession(pid, session).then((didRemove) => {
                     if (!didRemove) {
                         logger.warn(`[DAEMON RUN] Keeping stale session ${session.remcliSessionId ?? pid} tracked because remote TUI cleanup was not confirmed.`);
                     }
@@ -1535,12 +2175,12 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             }
 
             void getOwnedPaneStatus(session.tmuxRunner).then((paneStatus) => {
-                if (pidToTrackedSession.get(pid) !== session || paneStatus === 'unknown') {
+                if (!isCurrentTrackedSession(pid, session) || paneStatus === 'unknown') {
                     return;
                 }
                 if (paneStatus === 'missing') {
                     logger.debug(`[DAEMON RUN] Removing stale daemon session ${session.remcliSessionId ?? pid}: immutable tmux target is gone.`);
-                    void releaseAndRemoveTrackedSession(pid).then((didRemove) => {
+                    void releaseAndRemoveTrackedSession(pid, session).then((didRemove) => {
                         if (!didRemove) {
                             logger.warn(`[DAEMON RUN] Keeping stale daemon session ${session.remcliSessionId ?? pid} tracked because remote TUI cleanup was not confirmed.`);
                         }
@@ -1577,10 +2217,15 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         isShuttingDown = true;
         const pendingSpawnTasks = Array.from(inFlightSpawnTasks);
         const daemonTmuxRunnerSnapshot = Array.from(daemonTmuxRunners.values());
-        const trackedSessionSnapshot = Array.from(pidToTrackedSession.entries());
-        for (const [pid] of trackedSessionSnapshot) {
-            acquireStoppingSessionGuard(pid);
-        }
+        const trackedSessionSnapshot = getTrackedSessionEntries();
+        const trackedDaemonTmuxRunnerSessionNames = new Set(
+            trackedSessionSnapshot.flatMap(([, session]) => (
+                session.tmuxRunner ? [session.tmuxRunner.sessionName] : []
+            )),
+        );
+        const orphanedDaemonTmuxRunnerSnapshot = daemonTmuxRunnerSnapshot.filter((runner) => (
+            !trackedDaemonTmuxRunnerSessionNames.has(runner.ownership.sessionName)
+        ));
 
         shutdownDrain = (async () => {
             for (const pendingSpawnTask of pendingSpawnTasks) {
@@ -1606,9 +2251,12 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             }
 
             const cleanupResults = await Promise.allSettled([
-                ...trackedSessionSnapshot.map(async ([, session]) => {
-                    if (!await releaseManagedCodexRemoteTuiWindow(session)) {
-                        throw new Error(`Could not confirm cleanup of managed Codex remote TUI for session ${session.remcliSessionId ?? session.pid}.`);
+                ...trackedSessionSnapshot.map(async ([pid, session]) => {
+                    if (!await releaseAndRemoveTrackedSession(pid, session, true, session.startedBy === 'daemon')) {
+                        throw new Error(
+                            sessionCleanupFailureReasons.get(session)
+                                ?? `Could not confirm cleanup of tracked session ${session.remcliSessionId ?? session.pid}.`,
+                        );
                     }
                 }),
                 ...Array.from(orphanedCodexRemoteTuiPanes.keys()).map(async (sessionId) => {
@@ -1616,7 +2264,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                         throw new Error(`Could not confirm cleanup of orphaned Codex remote TUI for session ${sessionId}.`);
                     }
                 }),
-                ...daemonTmuxRunnerSnapshot.map((runner) => cleanupDaemonTmuxRunner(runner)),
+                ...orphanedDaemonTmuxRunnerSnapshot.map((runner) => cleanupDaemonTmuxRunner(runner)),
             ]);
             for (const result of cleanupResults) {
                 if (result.status === 'rejected') {
@@ -1638,18 +2286,19 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 throw new Error(`Daemon session cleanup could not be confirmed: ${cleanupErrors.map((error) => error.message).join('; ')}`);
             }
 
-            for (const [pid, trackedSession] of trackedSessionSnapshot) {
-                if (pidToTrackedSession.get(pid) === trackedSession) {
-                    removeTrackedSession(pid, trackedSession.startedBy === 'daemon');
-                }
-            }
-            nativeCodexThreadIdToPid.clear();
+            nativeCodexThreadIdToTrackedSession.clear();
+            nativeCursorSessionIdToTrackedSession.clear();
+            cursorSessionLineageByNativeSessionId.clear();
             pidToAwaiter.clear();
             pidToPendingCodexThreadResume.clear();
+            pidToPendingSpawnTask.clear();
             codexThreadResumeSpawnPromises.clear();
             codexRemoteTuiOpenPromises.clear();
             orphanedCodexRemoteTuiPanes.clear();
+            displacedTrackedSessionPids.clear();
             daemonTmuxRunners.clear();
+            sessionCleanupPromises.clear();
+            sessionCleanupFailureReasons.clear();
         })().catch((error: unknown) => {
             shutdownDrain = null;
             throw error;
@@ -1661,6 +2310,8 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     return {
         getChildren,
         bindNativeCodexThread,
+        bindNativeCursorSession,
+        preflightCursorRunner,
         openCodexRemoteTui,
         resolveCodexThreadResume,
         spawnSession,

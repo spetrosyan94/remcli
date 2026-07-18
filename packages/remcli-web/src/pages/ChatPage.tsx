@@ -24,7 +24,7 @@ import {
     fetchWhisperStatus, getRestConfig, isClientStarted, loadSessionMessages,
     machineSpawnNewSession, refreshSessions, restoreProtocolClient, sendSessionMessage,
     sessionAllow, sessionDeny, useConnectionStatus, useMachines, useProtocolStore,
-    useSession, useSessionMessages, useSessionMessagesLoaded,
+    useSession, useSessionMessages, useSessionMessagesLoaded, useSessions,
     type NormalizedMessage, type PermissionMode, type Session,
 } from "@/lib/protocol";
 import { onProtocolReconnected, type SessionMessagesPage } from "@/lib/protocol/client";
@@ -572,6 +572,166 @@ export function buildFeed(messages: NormalizedMessage[], agent: AgentId): FeedIt
     return feed;
 }
 
+interface LineageParentResolution {
+    parentId: string | null;
+    parentSession: Session | null;
+    isKnown: boolean;
+}
+
+interface LineageRefreshAttemptGate {
+    consumeInitialAttempt(candidateId: string | null, isKnown: boolean): boolean;
+}
+
+export interface LineageHistoryScope {
+    sessionId: string;
+    parentSessionId: string | null;
+}
+
+export interface LineageHistoryScopeTransition {
+    scope: LineageHistoryScope;
+    shouldReset: boolean;
+}
+
+/**
+ * Keep the initial missing-parent fallback bounded to one attempt per candidate.
+ * Reconnect listeners already receive a refreshed session snapshot from the protocol client.
+ */
+export function createLineageRefreshAttemptGate(): LineageRefreshAttemptGate {
+    const observedCandidateIds = new Set<string>();
+
+    return {
+        consumeInitialAttempt(candidateId, isKnown) {
+            if (!candidateId || observedCandidateIds.has(candidateId)) return false;
+            // Remember a known first snapshot too: reconnect can legitimately replace it with missing metadata.
+            observedCandidateIds.add(candidateId);
+            return !isKnown;
+        },
+    };
+}
+
+/** Keep the last trusted parent while a refreshed session snapshot temporarily omits it. */
+export function getLineageHistoryScopeTransition(
+    currentScope: LineageHistoryScope | null,
+    sessionId: string,
+    parentSessionId: string | null,
+): LineageHistoryScopeTransition {
+    if (!currentScope || currentScope.sessionId !== sessionId) {
+        return {
+            scope: { sessionId, parentSessionId },
+            shouldReset: true,
+        };
+    }
+    if (!parentSessionId || currentScope.parentSessionId === parentSessionId) {
+        return { scope: currentScope, shouldReset: false };
+    }
+    return {
+        scope: { sessionId, parentSessionId },
+        shouldReset: true,
+    };
+}
+
+export function getLineageHistoryRequestIdentity(
+    sessionId: string,
+    parentSessionId: string | null,
+): string | null {
+    return parentSessionId ? JSON.stringify([sessionId, parentSessionId]) : null;
+}
+
+/**
+ * A lineage link is display-only and must still prove the provider/workspace
+ * boundary from the decrypted session snapshots before it can address a cipher.
+ */
+export function resolveLineageParent(
+    session: Session | null,
+    sessions: readonly Session[],
+): LineageParentResolution {
+    const parentId = session?.metadata?.resumedFromRemcliSessionId ?? null;
+    if (!session || !parentId || parentId === session.id) {
+        return { parentId: null, parentSession: null, isKnown: Boolean(parentId) };
+    }
+
+    const parentSession = sessions.find((candidate) => candidate.id === parentId) ?? null;
+    if (!parentSession || !session.metadata || !parentSession.metadata) {
+        return { parentId: null, parentSession: null, isKnown: Boolean(parentSession) };
+    }
+
+    const currentMetadata = session.metadata;
+    const parentMetadata = parentSession.metadata;
+    const hasTrustedWorkspace = Boolean(currentMetadata.machineId)
+        && currentMetadata.machineId === parentMetadata.machineId
+        && Boolean(currentMetadata.path)
+        && currentMetadata.path === parentMetadata.path
+        && (!currentMetadata.remcliHomeDir || !parentMetadata.remcliHomeDir
+            || currentMetadata.remcliHomeDir === parentMetadata.remcliHomeDir);
+    const hasTrustedAgent = agentOf(session) === "cursor" && agentOf(parentSession) === "cursor";
+
+    if (!hasTrustedWorkspace || !hasTrustedAgent) {
+        return { parentId: null, parentSession: null, isKnown: true };
+    }
+
+    return { parentId, parentSession, isKnown: true };
+}
+
+/** Keep the parent segment before the child segment while removing boundary duplicates. */
+export function mergeLineageMessages(
+    parentMessages: NormalizedMessage[],
+    childMessages: NormalizedMessage[],
+): { parentMessages: NormalizedMessage[]; childMessages: NormalizedMessage[] } {
+    const seenIds = new Set<string>();
+    const seenLocalIds = new Set<string>();
+    const remember = (message: NormalizedMessage): void => {
+        seenIds.add(message.id);
+        if (message.localId) seenLocalIds.add(message.localId);
+    };
+
+    const uniqueParentMessages = parentMessages.filter((message) => {
+        if (seenIds.has(message.id) || (message.localId && seenLocalIds.has(message.localId))) return false;
+        remember(message);
+        return true;
+    });
+
+    const uniqueChildMessages = childMessages.filter((message) => {
+        if (seenIds.has(message.id) || (message.localId && seenLocalIds.has(message.localId))) return false;
+        remember(message);
+        return true;
+    });
+
+    return { parentMessages: uniqueParentMessages, childMessages: uniqueChildMessages };
+}
+
+export async function requestLineageParentHistory(
+    parentSessionId: string,
+    requestMessages: (sessionId: string) => Promise<SessionMessagesPage> = loadSessionMessages,
+): Promise<SessionMessagesPage> {
+    return requestMessages(parentSessionId);
+}
+
+type ChatMessageSender = (
+    sessionId: string,
+    text: string,
+    options?: Parameters<typeof sendSessionMessage>[2],
+) => Promise<void>;
+
+/** Bind outbound chat messages to the visible child route, never to its lineage parent. */
+export function createChatMessageSender(
+    childSessionId: string,
+    sendMessage: ChatMessageSender = sendSessionMessage,
+): (text: string, options?: Parameters<typeof sendSessionMessage>[2]) => Promise<void> {
+    return (text, options) => sendMessage(childSessionId, text, options);
+}
+
+/**
+ * The message store only exposes an isLoaded flag, not the page total/offset.
+ * Always fetch the first page once per lineage route so older-history metadata
+ * remains available when the parent messages were cached by an earlier visit.
+ */
+export function shouldRequestLineageParentInitialPage(
+    parentSessionId: string | null,
+    requestedParentSessionId: string | null,
+): boolean {
+    return Boolean(parentSessionId) && parentSessionId !== requestedParentSessionId;
+}
+
 type MessageLoadKind = "initial" | "older" | "refresh";
 
 interface MessagePaginationState {
@@ -589,6 +749,24 @@ interface MessageLoadScope {
     sessionId: string;
     generation: number;
     queue: MessageLoadQueue;
+}
+
+type LineageHistoryState = "idle" | "loading" | "loaded" | "unavailable";
+export type LineageDisplayState = LineageHistoryState | "none" | "missing-parent";
+
+export function LineageHistoryNotice({ state }: { state: LineageDisplayState }): React.ReactElement | null {
+    if (state !== "missing-parent" && state !== "unavailable") return null;
+    return (
+        <div
+            role="status"
+            aria-live="polite"
+            data-lineage-notice={state}
+            className="flex min-w-0 items-start gap-2 px-1 py-1 font-mono text-[10.5px] leading-relaxed text-muted-foreground"
+        >
+            <StatusDot status="offline" className="mt-1 size-1.5 shrink-0" />
+            <span className="min-w-0 break-words [overflow-wrap:anywhere]">{t("chat.lineageUnavailable")}</span>
+        </div>
+    );
 }
 
 interface ScrollRestore {
@@ -721,8 +899,18 @@ export function ChatPage() {
     const [navState] = React.useState(() => parseNavState(location.state));
 
     const session = useSession(sessionId);
+    const sessions = useSessions();
     const messages = useSessionMessages(sessionId);
     const messagesLoaded = useSessionMessagesLoaded(sessionId);
+    const lineageResolution = React.useMemo(
+        () => resolveLineageParent(session, sessions),
+        [session, sessions],
+    );
+    const lineageCandidateId = session?.metadata?.resumedFromRemcliSessionId ?? null;
+    const lineageParentId = lineageResolution.parentId;
+    const lineageHistoryIdentity = getLineageHistoryRequestIdentity(sessionId, lineageParentId);
+    const lineageParentMessages = useSessionMessages(lineageParentId);
+    const lineageParentMessagesLoaded = useSessionMessagesLoaded(lineageParentId);
     const connectionStatus = useConnectionStatus();
     const machines = useMachines();
     const agent = agentOf(session);
@@ -740,11 +928,23 @@ export function ChatPage() {
     const [hasDetachedAutoscroll, setHasDetachedAutoscroll] = React.useState(false);
     const [isPermissionSheetOpen, setIsPermissionSheetOpen] = React.useState(false);
     const [stopTarget, setStopTarget] = React.useState<StopTarget | null>(null);
+    const [lineageHistoryState, setLineageHistoryState] = React.useState<LineageHistoryState>("idle");
     const feedRef = React.useRef<HTMLElement>(null);
     const hadConnectedRef = React.useRef(false);
     const hasDetachedAutoscrollRef = React.useRef(false);
 
-    const feed = React.useMemo(() => buildFeed(messages, agent), [messages, agent]);
+    const lineageMessageGroups = React.useMemo(
+        () => mergeLineageMessages(lineageParentMessages, messages),
+        [lineageParentMessages, messages],
+    );
+    const feed = React.useMemo(
+        () => buildFeed(lineageMessageGroups.childMessages, agent),
+        [agent, lineageMessageGroups.childMessages],
+    );
+    const parentFeed = React.useMemo(
+        () => buildFeed(lineageMessageGroups.parentMessages, agent),
+        [agent, lineageMessageGroups.parentMessages],
+    );
     const pendingPermissions = React.useMemo(() => pendingPermissionsOf(session), [session]);
     const status = session ? sessionStatus(session) : "offline";
     const hasVisibleErrorMessage = feed.some((item) => item.kind === "agent-group" && item.tone === "error");
@@ -771,9 +971,23 @@ export function ChatPage() {
     /** Автоскролл к низу — только если пользователь у низа ленты (не сбивать чтение истории). */
     const isNearBottomRef = React.useRef(true);
     const paginationRef = React.useRef<MessagePaginationState>({ offset: 0, total: 0, hasMore: false });
+    const lineagePaginationRef = React.useRef<MessagePaginationState>({ offset: 0, total: 0, hasMore: false });
+    const [lineageParentHasMore, setLineageParentHasMore] = React.useState(false);
     const [messageLoadScope, setMessageLoadScope] = React.useState<MessageLoadScope>(() =>
         getMessageLoadScope(null, sessionId)
     );
+    const lineageLoadQueue = React.useMemo(() => createMessageLoadQueue(), [sessionId]);
+    const lineageHistoryScopeRef = React.useRef<LineageHistoryScope | null>(null);
+    const lineageRequestedHistoryIdentityRef = React.useRef<string | null>(null);
+    const lineageInitialLoadIdentityRef = React.useRef<string | null>(null);
+    const lineageCurrentHistoryIdentityRef = React.useRef<string | null>(lineageHistoryIdentity);
+    const lineageMountedRef = React.useRef(false);
+    const lineageHasMessagesRef = React.useRef(false);
+    const lineageRefreshAttemptGateRef = React.useRef<LineageRefreshAttemptGate | null>(null);
+    const lineageRefreshAttemptGate = lineageRefreshAttemptGateRef.current
+        ?? (lineageRefreshAttemptGateRef.current = createLineageRefreshAttemptGate());
+    lineageCurrentHistoryIdentityRef.current = lineageHistoryIdentity;
+    lineageHasMessagesRef.current = lineageParentMessages.length > 0;
     const activeMessageLoadScopeRef = React.useRef<MessageLoadScope | null>(null);
     const [scrollRestoreVersion, setScrollRestoreVersion] = React.useState(0);
 
@@ -786,6 +1000,12 @@ export function ChatPage() {
         const pagination = mergeMessagePagination(paginationRef.current, page, kind);
         paginationRef.current = pagination;
         setHasMore(pagination.hasMore);
+    }, []);
+
+    const updateLineagePagination = React.useCallback((page: SessionMessagesPage, kind: MessageLoadKind) => {
+        const pagination = mergeMessagePagination(lineagePaginationRef.current, page, kind);
+        lineagePaginationRef.current = pagination;
+        setLineageParentHasMore(pagination.hasMore);
     }, []);
 
     const clearScrollRestore = React.useCallback((generation?: number) => {
@@ -854,6 +1074,68 @@ export function ChatPage() {
         };
     }, [clearScrollRestore, messageLoadScope, sessionId, updatePagination]);
 
+    React.useEffect(() => {
+        lineageMountedRef.current = true;
+        return () => {
+            lineageMountedRef.current = false;
+        };
+    }, []);
+
+    React.useEffect(() => {
+        const transition = getLineageHistoryScopeTransition(
+            lineageHistoryScopeRef.current,
+            sessionId,
+            lineageParentId,
+        );
+        lineageHistoryScopeRef.current = transition.scope;
+        if (!transition.shouldReset) return;
+
+        lineagePaginationRef.current = { offset: 0, total: 0, hasMore: false };
+        lineageRequestedHistoryIdentityRef.current = null;
+        setLineageParentHasMore(false);
+        setLineageHistoryState(lineageParentId ? "loading" : "idle");
+    }, [lineageParentId, sessionId]);
+
+    const refreshInitialMissingLineageParent = React.useCallback(() => {
+        if (!lineageRefreshAttemptGate.consumeInitialAttempt(lineageCandidateId, lineageResolution.isKnown)) return;
+        void refreshSessions().catch(() => undefined);
+    }, [lineageCandidateId, lineageRefreshAttemptGate, lineageResolution.isKnown]);
+
+    // Parent history uses the same protocol client/cipher, but never enters the child store.
+    React.useEffect(() => {
+        if (!lineageParentId || !lineageHistoryIdentity) return;
+        if (!shouldRequestLineageParentInitialPage(
+            lineageHistoryIdentity,
+            lineageRequestedHistoryIdentityRef.current,
+        )) return;
+
+        lineageRequestedHistoryIdentityRef.current = lineageHistoryIdentity;
+        lineageInitialLoadIdentityRef.current = lineageHistoryIdentity;
+        void lineageLoadQueue.enqueue(async () => {
+            try {
+                const page = await requestLineageParentHistory(lineageParentId);
+                if (!lineageMountedRef.current
+                    || lineageCurrentHistoryIdentityRef.current !== lineageHistoryIdentity) return;
+                updateLineagePagination(page, "initial");
+                setLineageHistoryState("loaded");
+            } catch {
+                if (lineageMountedRef.current
+                    && lineageCurrentHistoryIdentityRef.current === lineageHistoryIdentity) {
+                    setLineageHistoryState("unavailable");
+                }
+            } finally {
+                if (lineageInitialLoadIdentityRef.current === lineageHistoryIdentity) {
+                    lineageInitialLoadIdentityRef.current = null;
+                }
+            }
+        });
+    }, [lineageHistoryIdentity, lineageLoadQueue, lineageParentId, updateLineagePagination]);
+
+    React.useEffect(() => {
+        // A first route snapshot can contain the child metadata before its parent session.
+        refreshInitialMissingLineageParent();
+    }, [refreshInitialMissingLineageParent]);
+
     // Сообщения текущего чата запрашиваются после reconnect через общую очередь с пагинацией.
     // Burst reconnect даёт ровно один REST refresh до завершения уже поставленной задачи.
     React.useEffect(() => {
@@ -881,25 +1163,65 @@ export function ChatPage() {
         };
     }, [messageLoadScope, sessionId, updatePagination]);
 
+    React.useEffect(() => {
+        if (!lineageParentId || !lineageHistoryIdentity) return;
+        let isActive = true;
+        const refreshLineageHistory = () => {
+            if (lineageInitialLoadIdentityRef.current === lineageHistoryIdentity) return;
+            void lineageLoadQueue.enqueueReconnect(async () => {
+                if (!isActive
+                    || lineageInitialLoadIdentityRef.current === lineageHistoryIdentity
+                    || lineageCurrentHistoryIdentityRef.current !== lineageHistoryIdentity) return;
+                setLineageHistoryState("loading");
+                try {
+                    const page = await requestLineageParentHistory(lineageParentId);
+                    if (!isActive || lineageCurrentHistoryIdentityRef.current !== lineageHistoryIdentity) return;
+                    updateLineagePagination(page, "refresh");
+                    setLineageHistoryState("loaded");
+                } catch {
+                    if (isActive
+                        && lineageCurrentHistoryIdentityRef.current === lineageHistoryIdentity
+                        && !lineageHasMessagesRef.current) {
+                        setLineageHistoryState("unavailable");
+                    }
+                }
+            });
+        };
+        const unsubscribe = onProtocolReconnected(refreshLineageHistory);
+        return () => {
+            isActive = false;
+            unsubscribe();
+        };
+    }, [lineageHistoryIdentity, lineageLoadQueue, lineageParentId, updateLineagePagination]);
+
     const loadOlder = React.useCallback(() => {
-        if (loadingOlderRef.current || !hasMore) return;
+        const hasOlderLineage = Boolean(lineageParentId && lineageParentHasMore);
+        if (loadingOlderRef.current || (!hasMore && !hasOlderLineage)) return;
         if (activeMessageLoadScopeRef.current !== messageLoadScope) return;
         const { generation, queue } = messageLoadScope;
         loadingOlderRef.current = true;
         setIsLoadingOlder(true);
         void queue.enqueue(async () => {
             try {
-                if (activeMessageLoadScopeRef.current !== messageLoadScope || !paginationRef.current.hasMore) return;
+                const shouldLoadParent = Boolean(lineageParentId && lineagePaginationRef.current.hasMore);
+                if (activeMessageLoadScopeRef.current !== messageLoadScope
+                    || (!paginationRef.current.hasMore && !shouldLoadParent)) return;
                 const node = feedRef.current;
                 scrollRestoreRef.current = node
                     ? { generation, height: node.scrollHeight, top: node.scrollTop }
                     : null;
-                const page = await loadSessionMessages(sessionId, { offset: paginationRef.current.offset });
+                const targetSessionId = shouldLoadParent ? lineageParentId : sessionId;
+                const targetOffset = shouldLoadParent
+                    ? lineagePaginationRef.current.offset
+                    : paginationRef.current.offset;
+                if (!targetSessionId) return;
+                const page = await loadSessionMessages(targetSessionId, { offset: targetOffset });
                 if (activeMessageLoadScopeRef.current !== messageLoadScope) {
                     clearScrollRestore(generation);
                     return;
                 }
-                updatePagination(page, "older");
+                if (shouldLoadParent) updateLineagePagination(page, "older");
+                else updatePagination(page, "older");
                 await waitForScrollRestore(generation);
             } catch {
                 clearScrollRestore(generation); // тихий фейл — не блокируем UI
@@ -910,7 +1232,7 @@ export function ChatPage() {
                 }
             }
         });
-    }, [clearScrollRestore, hasMore, messageLoadScope, sessionId, updatePagination, waitForScrollRestore]);
+    }, [clearScrollRestore, hasMore, lineageParentHasMore, lineageParentId, messageLoadScope, sessionId, updateLineagePagination, updatePagination, waitForScrollRestore]);
 
     // Восстановление позиции скролла после prepend старых сообщений (до отрисовки кадра,
     // мгновенно — обходим css scroll-behavior:smooth ленты)
@@ -942,7 +1264,7 @@ export function ChatPage() {
             hasDetachedAutoscrollRef.current = isDetached;
             setHasDetachedAutoscroll(isDetached);
         }
-        if (node.scrollTop < 60 && hasMore && !loadingOlderRef.current) void loadOlder();
+        if (node.scrollTop < 60 && (hasMore || lineageParentHasMore) && !loadingOlderRef.current) void loadOlder();
     };
 
     const scrollToBottom = () => {
@@ -995,7 +1317,7 @@ export function ChatPage() {
     React.useEffect(() => {
         const node = feedRef.current;
         if (node && isNearBottomRef.current) node.scrollTop = node.scrollHeight;
-    }, [feed.length, pendingPermissions.length, session?.thinking, messagesLoaded]);
+    }, [feed.length, lineageParentMessages.length, pendingPermissions.length, session?.thinking, messagesLoaded]);
 
     // ── TTS: хук useTts (@/lib/voice) — generation counter, AbortController, lang, LRU-кэш ──
     const { ttsState, activeId: ttsActiveId, synthesize: ttsSynthesize, stop: stopTts } = useTts();
@@ -1007,6 +1329,84 @@ export function ChatPage() {
         }
         if (!text.trim()) return;
         void ttsSynthesize(text, groupId).catch(() => undefined);
+    };
+
+    const lineageDisplayState = !lineageCandidateId
+        ? "none"
+        : !lineageParentId
+            ? "missing-parent"
+            : lineageHistoryState;
+    const isLineageHistoryReady = Boolean(
+        lineageParentId && (lineageParentMessagesLoaded || lineageHistoryState === "loaded"),
+    );
+
+    const renderFeedItem = (item: FeedItem): React.ReactElement => {
+        if (item.kind === "user") {
+            return (
+                <div key={item.id} className="flex min-w-0 max-w-full justify-end">
+                    <UserMessage>
+                        <span className="block min-w-0 max-w-full break-words [overflow-wrap:anywhere]">{item.text}</span>
+                    </UserMessage>
+                </div>
+            );
+        }
+
+        const groupText = item.texts.join("\n\n");
+        const listenState: "idle" | "synth" | "playing" =
+            ttsActiveId === item.id && ttsState !== "idle"
+                ? (ttsState === "synthesizing" ? "synth" : "playing")
+                : "idle";
+        return (
+            <div key={item.id} className="flex min-w-0 max-w-full flex-col gap-2">
+                {item.texts.length > 0 && (
+                    <>
+                        <AgentMeta agent={agent}>{item.timeLabel}</AgentMeta>
+                        {item.texts.map((text, index) => (
+                            <MarkdownMessage key={index} text={text} tone={item.tone} />
+                        ))}
+                    </>
+                )}
+                {item.items.map((entry) => {
+                    if (entry.kind === "diff") {
+                        return (
+                            <DiffView key={entry.id}
+                                file={entry.file} added={entry.added} removed={entry.removed} lines={entry.lines} />
+                        );
+                    }
+                    const expandedByDefault = entry.state === "error" || entry.state === "running";
+                    const isExpanded = expandedTools[entry.id] ?? expandedByDefault;
+                    return (
+                        <ToolCallCard
+                            key={entry.id}
+                            tool={entry.tool}
+                            arg={entry.arg}
+                            state={entry.state}
+                            expanded={isExpanded && entry.outputLines.length > 0}
+                            errorText={entry.errorText}
+                            onToggle={entry.outputLines.length > 0
+                                ? () => toggleToolExpanded(entry.id, expandedByDefault)
+                                : undefined}
+                        >
+                            {entry.outputLines.map((line, index) => (
+                                <ToolOutputLine key={index} line={line}
+                                    hasCaret={entry.state === "running" && index === entry.outputLines.length - 1} />
+                            ))}
+                        </ToolCallCard>
+                    );
+                })}
+                {item.texts.length > 0 && (
+                    <div className="flex gap-2">
+                        {isTtsAvailable && (
+                            <ListenButton state={listenState} onClick={() => toggleListen(item.id, groupText)} />
+                        )}
+                        <button type="button" onClick={() => void copyText(groupText)}
+                            className="h-11 cursor-pointer rounded-[7px] px-3 font-mono text-[10.5px] text-muted-foreground transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-7 lg:px-2.5">
+                            {t("chat.copy")}
+                        </button>
+                    </div>
+                )}
+            </div>
+        );
     };
 
     // ── Диктовка: хук useVoiceRecorder (@/lib/voice) — MediaRecorder → Whisper ──
@@ -1134,7 +1534,7 @@ export function ChatPage() {
         const options = navState.hasModelOverride
             ? { permissionMode: activePermissionMode, model: navState.model ?? null }
             : { permissionMode: activePermissionMode };
-        void sendSessionMessage(sessionId, text, options)
+        void createChatMessageSender(sessionId)(text, options)
             .catch((error: unknown) => {
                 const message = error instanceof Error ? error.message : String(error);
                 toast.error(t("chat.sendFailed"), { description: message });
@@ -1237,7 +1637,7 @@ export function ChatPage() {
                     )}
 
                     {/* пагинация истории: автоподгрузка при скролле вверх + явная кнопка */}
-                    {messagesLoaded && hasMore && (
+                    {messagesLoaded && (hasMore || lineageParentHasMore) && (
                         <div className="flex justify-center pb-1">
                             <button onClick={() => void loadOlder()} disabled={isLoadingOlder}
                                 className="flex h-11 items-center gap-2 rounded-[9px] border border-border px-3 font-mono text-[10.5px] text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96] disabled:opacity-60 lg:h-8">
@@ -1254,76 +1654,22 @@ export function ChatPage() {
                         </div>
                     )}
 
-                    {feed.map((item) => {
-                        if (item.kind === "user") {
-                            return (
-                                <div key={item.id} className="flex min-w-0 max-w-full justify-end">
-                                    <UserMessage>
-                                        <span className="block min-w-0 max-w-full break-words [overflow-wrap:anywhere]">{item.text}</span>
-                                    </UserMessage>
-                                </div>
-                            );
-                        }
-
-                        const groupText = item.texts.join("\n\n");
-                        const listenState: "idle" | "synth" | "playing" =
-                            ttsActiveId === item.id && ttsState !== "idle"
-                                ? (ttsState === "synthesizing" ? "synth" : "playing")
-                                : "idle";
-                        return (
-                            <div key={item.id} className="flex min-w-0 max-w-full flex-col gap-2">
-                                {item.texts.length > 0 && (
-                                    <>
-                                        <AgentMeta agent={agent}>{item.timeLabel}</AgentMeta>
-                                        {item.texts.map((text, index) => {
-                                            return (
-                                                <MarkdownMessage key={index} text={text} tone={item.tone} />
-                                            );
-                                        })}
-                                    </>
-                                )}
-                                {item.items.map((entry) => {
-                                    if (entry.kind === "diff") {
-                                        return (
-                                            <DiffView key={entry.id}
-                                                file={entry.file} added={entry.added} removed={entry.removed} lines={entry.lines} />
-                                        );
-                                    }
-                                    const expandedByDefault = entry.state === "error" || entry.state === "running";
-                                    const isExpanded = expandedTools[entry.id] ?? expandedByDefault;
-                                    return (
-                                        <ToolCallCard
-                                            key={entry.id}
-                                            tool={entry.tool}
-                                            arg={entry.arg}
-                                            state={entry.state}
-                                            expanded={isExpanded && entry.outputLines.length > 0}
-                                            errorText={entry.errorText}
-                                            onToggle={entry.outputLines.length > 0
-                                                ? () => toggleToolExpanded(entry.id, expandedByDefault)
-                                                : undefined}
-                                        >
-                                            {entry.outputLines.map((line, index) => (
-                                                <ToolOutputLine key={index} line={line}
-                                                    hasCaret={entry.state === "running" && index === entry.outputLines.length - 1} />
-                                            ))}
-                                        </ToolCallCard>
-                                    );
-                                })}
-                                {item.texts.length > 0 && (
-                                    <div className="flex gap-2">
-                                        {isTtsAvailable && (
-                                            <ListenButton state={listenState} onClick={() => toggleListen(item.id, groupText)} />
-                                        )}
-                                        <button type="button" onClick={() => void copyText(groupText)}
-                                            className="h-11 cursor-pointer rounded-[7px] px-3 font-mono text-[10.5px] text-muted-foreground transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-7 lg:px-2.5">
-                                            {t("chat.copy")}
-                                        </button>
-                                    </div>
-                                )}
+                    <div data-lineage-status={lineageDisplayState}>
+                        {lineageDisplayState === "loading" && (
+                            <div className="flex justify-center py-2" aria-busy="true">
+                                <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
                             </div>
-                        );
-                    })}
+                        )}
+                        <LineageHistoryNotice state={lineageDisplayState} />
+                        {isLineageHistoryReady && lineageMessageGroups.parentMessages.length > 0 && (
+                            <>
+                                {parentFeed.map(renderFeedItem)}
+                                <div className="my-1 border-t border-dashed border-border/70" aria-hidden="true" />
+                            </>
+                        )}
+                    </div>
+
+                    {feed.map(renderFeedItem)}
 
                     {/* живые permission-запросы из agentState.requests (вход: MOTION.md §6) */}
                     {pendingPermissions.map((permission) => (

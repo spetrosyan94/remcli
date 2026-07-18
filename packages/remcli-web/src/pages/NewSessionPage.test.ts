@@ -182,6 +182,9 @@ let getModelOverride = (_model: string): string | null => {
 let modelOverrideState = (_model: string, _hasExplicitModelSelection: boolean): { model?: string | null } => {
     throw new Error('NewSessionPage module was not loaded');
 };
+let getResumeDirectory = (_projectPath: string | undefined, _activeDirectory: string): string => {
+    throw new Error('NewSessionPage module was not loaded');
+};
 let NewSessionPage: typeof import('@/pages/NewSessionPage').NewSessionPage;
 let ResumeSheetContent: typeof import('@/pages/NewSessionPage').ResumeSheetContent;
 let directorySheetContentClass = '';
@@ -203,6 +206,7 @@ beforeAll(async () => {
     agentOptions = pageModule.AGENT_OPTIONS;
     getModelOverride = pageModule.getModelOverride;
     modelOverrideState = pageModule.modelOverrideState;
+    getResumeDirectory = pageModule.getResumeDirectory;
     NewSessionPage = pageModule.NewSessionPage;
     ResumeSheetContent = pageModule.ResumeSheetContent;
     directorySheetContentClass = pageModule.DIRECTORY_SHEET_CONTENT_CLASS;
@@ -330,6 +334,11 @@ describe('NewSessionPage model navigation state', () => {
 });
 
 describe('NewSessionPage directory and resume sheets', () => {
+    it('falls back to the selected directory for a legacy empty Cursor project path', () => {
+        expect(getResumeDirectory('', '/workspace/remcli')).toBe('/workspace/remcli');
+        expect(getResumeDirectory('/workspace/cursor', '/workspace/remcli')).toBe('/workspace/cursor');
+    });
+
     it('left-aligns a long recent directory path inside its row', () => {
         const path = '/Users/solidhard1/Projects/pet-projects/remcli/packages/remcli-web/src/pages';
         protocolSessions.current = [{

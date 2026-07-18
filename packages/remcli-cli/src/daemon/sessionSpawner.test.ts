@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Metadata } from '@/api/types';
 
 const tmuxMocks = vi.hoisted(() => ({
@@ -30,13 +33,15 @@ const openTerminalMocks = vi.hoisted(() => ({
     openTerminalWithCommand: vi.fn(async () => true),
 }));
 
+const loggerMocks = vi.hoisted(() => ({
+    debug: vi.fn(),
+    debugLargeJson: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+}));
+
 vi.mock('@/ui/logger', () => ({
-    logger: {
-        debug: () => {},
-        debugLargeJson: () => {},
-        info: () => {},
-        warn: () => {},
-    },
+    logger: loggerMocks,
 }));
 
 vi.mock('@/persistence', () => ({
@@ -319,6 +324,15 @@ describe('resolveSpawnAuthEnvironment', () => {
             token: 'claude-token',
         })).toEqual({
             CLAUDE_CODE_OAUTH_TOKEN: 'claude-token',
+        });
+    });
+
+    it('maps an explicit Cursor token only to the native Cursor environment key', () => {
+        expect(resolveSpawnAuthEnvironment({
+            agent: 'cursor',
+            token: 'cursor-token',
+        })).toEqual({
+            CURSOR_API_KEY: 'cursor-token',
         });
     });
 
@@ -716,6 +730,48 @@ describe('createSessionManager resume deduplication', () => {
         await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-resumed-after-prune' });
     });
 
+    it('settles a displaced pre-webhook Codex resume before allowing a fresh replacement', async () => {
+        const reusedPid = 10_009;
+        const options = {
+            directory: process.cwd(),
+            agent: 'codex' as const,
+            resumeSessionId: 'codex-thread-replaced-before-webhook',
+        };
+        tmuxMocks.spawnInTmux
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-codex-replaced-a', windowId: '@109', paneId: '%109', pid: reusedPid })
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-codex-replaced-b', windowId: '@110', paneId: '%110', pid: reusedPid })
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-codex-replaced-resume', windowId: '@111', paneId: '%111', pid: reusedPid + 1 });
+
+        const manager = createSessionManager();
+        const firstResume = manager.spawnSession(options);
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(1));
+
+        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+
+        await expect(firstResume).resolves.toEqual({
+            type: 'error',
+            errorMessage: `Session process ${reusedPid} stopped before reporting its Remcli session.`,
+        });
+
+        manager.onRemcliSessionWebhook('remcli-codex-replaced-b', createSessionMetadata(reusedPid, {
+            startedBy: 'daemon',
+            flavor: 'codex',
+        }), getDaemonRunnerToken(1));
+        await expect(replacementSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-codex-replaced-b' });
+
+        const recoveredResume = manager.spawnSession(options);
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(3));
+        manager.onRemcliSessionWebhook('remcli-codex-replaced-resume', createSessionMetadata(reusedPid + 1, {
+            startedBy: 'daemon',
+            flavor: 'codex',
+            agentSessionId: options.resumeSessionId,
+            codexSessionId: options.resumeSessionId,
+        }), getDaemonRunnerToken(2));
+
+        await expect(recoveredResume).resolves.toEqual({ type: 'success', sessionId: 'remcli-codex-replaced-resume' });
+    });
+
     it('binds a late native Codex thread and reuses its active wrapper on resume', async () => {
         tmuxMocks.spawnInTmux.mockResolvedValueOnce({
             success: true,
@@ -781,6 +837,82 @@ describe('createSessionManager resume deduplication', () => {
 
         expect(resumed).toEqual({ type: 'success', sessionId: 'remcli-session-2' });
         expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a displaced Codex native binding unavailable until immutable cleanup confirms retirement', async () => {
+        const reusedPid = 10_041;
+        const nativeThreadId = 'codex-thread-reused-pid';
+        const onSessionStopped = vi.fn();
+        tmuxMocks.spawnInTmux
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-codex-reused-a', windowId: '@401', paneId: '%401', pid: reusedPid })
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-codex-reused-b', windowId: '@402', paneId: '%402', pid: reusedPid });
+
+        const manager = createSessionManager({ onSessionStopped });
+        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook('remcli-codex-reused-a', createSessionMetadata(reusedPid, {
+            startedBy: 'daemon',
+            flavor: 'codex',
+        }), getDaemonRunnerToken());
+        await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-codex-reused-a' });
+        await expect(bindTrackedCodexThread(manager, {
+            agent: 'codex',
+            remcliSessionId: 'remcli-codex-reused-a',
+            nativeThreadId,
+        })).resolves.toMatchObject({ type: 'bound' });
+
+        let resolveDisplacedRelease: (result: 'released') => void = () => {};
+        tmuxMocks.releaseOwnedPane.mockImplementationOnce(() => new Promise<'released'>((resolve) => {
+            resolveDisplacedRelease = resolve;
+        }));
+        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+        manager.onRemcliSessionWebhook('remcli-codex-reused-b', createSessionMetadata(reusedPid, {
+            startedBy: 'daemon',
+            flavor: 'codex',
+        }), getDaemonRunnerToken(1));
+        await expect(replacementSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-codex-reused-b' });
+        const replacementRunner = manager.getChildren().find((session) => session.remcliSessionId === 'remcli-codex-reused-b')?.tmuxRunner;
+        expect(replacementRunner).toBeDefined();
+
+        await expect(manager.resolveCodexThreadResume(nativeThreadId)).resolves.toEqual({
+            type: 'wrapper-starting',
+            nativeThreadId,
+        });
+        await expect(manager.bindNativeCodexThread({
+            agent: 'codex',
+            remcliSessionId: 'remcli-codex-reused-a',
+            nativeThreadId,
+        })).resolves.toEqual({
+            type: 'wrapper-not-tracked',
+            binding: {
+                agent: 'codex',
+                remcliSessionId: 'remcli-codex-reused-a',
+                nativeThreadId,
+            },
+        });
+        await expect(manager.bindNativeCodexThread({
+            agent: 'codex',
+            remcliSessionId: 'remcli-codex-reused-b',
+            nativeThreadId: 'codex-thread-reused-b',
+        })).resolves.toMatchObject({
+            type: 'bound',
+            wrapper: { remcliSessionId: 'remcli-codex-reused-b', nativeThreadId: 'codex-thread-reused-b' },
+        });
+
+        resolveDisplacedRelease('released');
+        await vi.waitFor(() => expect(onSessionStopped).toHaveBeenCalledWith('remcli-codex-reused-a'));
+        await expect(manager.resolveCodexThreadResume(nativeThreadId)).resolves.toEqual({
+            type: 'spawn-new-wrapper',
+            nativeThreadId,
+        });
+
+        expect(manager.getChildren()).toContainEqual(expect.objectContaining({
+            pid: reusedPid,
+            remcliSessionId: 'remcli-codex-reused-b',
+        }));
+        expect(tmuxMocks.releaseOwnedPane).not.toHaveBeenCalledWith(replacementRunner);
+        expect(onSessionStopped).toHaveBeenCalledOnce();
     });
 
     it('opens one daemon-owned remote TUI tmux window and releases exactly it on stop', async () => {
@@ -1677,6 +1809,1098 @@ describe('createSessionManager resume deduplication', () => {
         }
     });
 
+    it('reuses a Cursor wrapper after its webhook while native init is still pending', async () => {
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-cursor-resume',
+            pid: process.pid,
+        });
+
+        const manager = createSessionManager();
+        const options = {
+            directory: process.cwd(),
+            agent: 'cursor' as const,
+            resumeSessionId: 'cursor-native-resume',
+        };
+        const first = manager.spawnSession(options);
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook('remcli-cursor-resume', createSessionMetadata(process.pid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+
+        await expect(first).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-resume' });
+        await expect(manager.spawnSession(options)).resolves.toEqual({
+            type: 'success',
+            sessionId: 'remcli-cursor-resume',
+        });
+        expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+    });
+
+    it('does not spawn a Cursor resume after shutdown completes during async ownership lookup', async () => {
+        const runnerPid = 21_040;
+        const nativeSessionId = 'cursor-native-shutdown-race';
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-cursor-shutdown-race',
+            pid: runnerPid,
+        });
+
+        const manager = createSessionManager();
+        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook('remcli-cursor-shutdown-race', createSessionMetadata(runnerPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+        await expect(initialSpawn).resolves.toEqual({
+            type: 'success',
+            sessionId: 'remcli-cursor-shutdown-race',
+        });
+        await expect(manager.bindNativeCursorSession({
+            agent: 'cursor',
+            nativeSessionId,
+            remcliSessionId: 'remcli-cursor-shutdown-race',
+        })).resolves.toMatchObject({ type: 'bound' });
+
+        let releaseLookup: () => void = () => {};
+        tmuxMocks.getPaneInfo.mockClear();
+        tmuxMocks.getPaneInfo.mockImplementationOnce(() => new Promise<void>((resolve) => {
+            releaseLookup = resolve;
+        }));
+        tmuxMocks.spawnInTmux.mockClear();
+
+        const resume = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId: nativeSessionId,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.getPaneInfo).toHaveBeenCalledOnce());
+
+        const shutdownDrain = manager.killAllSessions();
+        await expect(shutdownDrain).resolves.toBeUndefined();
+        expect(manager.getChildren()).toHaveLength(0);
+
+        releaseLookup();
+
+        await expect(resume).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Daemon is shutting down and cannot start a new session.',
+        });
+        expect(tmuxMocks.spawnInTmux).not.toHaveBeenCalled();
+        expect(manager.getChildren()).toHaveLength(0);
+    });
+
+    it('reuses a fresh Cursor wrapper only after its authenticated repeat webhook confirms the native session ID', async () => {
+        const workspace = await mkdtemp(join(tmpdir(), 'remcli-cursor-workspace-'));
+        const otherWorkspace = await mkdtemp(join(tmpdir(), 'remcli-cursor-other-workspace-'));
+
+        try {
+            tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+                success: true,
+                sessionId: 'tmux-cursor-fresh',
+                pid: process.pid,
+            });
+
+            const manager = createSessionManager();
+            const spawning = manager.spawnSession({ directory: workspace, agent: 'cursor' });
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+
+            const runnerToken = getDaemonRunnerToken();
+            manager.onRemcliSessionWebhook('remcli-cursor-fresh', createSessionMetadata(process.pid, {
+                path: workspace,
+                startedBy: 'daemon',
+                flavor: 'cursor',
+            }), runnerToken);
+            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-fresh' });
+
+            const nativeCursorSessionId = 'cursor-native-fresh';
+            expect(manager.onRemcliSessionWebhook('remcli-cursor-fresh', createSessionMetadata(process.pid, {
+                path: workspace,
+                startedBy: 'daemon',
+                flavor: 'cursor',
+                agentSessionId: nativeCursorSessionId,
+                cursorSessionId: nativeCursorSessionId,
+            }), 'forged-runner-token')).toMatchObject({
+                accepted: false,
+                error: 'runner-capability-mismatch',
+            });
+            expect(manager.getChildren()).toContainEqual(expect.objectContaining({
+                remcliSessionId: 'remcli-cursor-fresh',
+                remcliSessionMetadataFromLocalWebhook: expect.not.objectContaining({ cursorSessionId: nativeCursorSessionId }),
+            }));
+
+            expect(manager.onRemcliSessionWebhook('remcli-cursor-fresh', createSessionMetadata(process.pid, {
+                path: workspace,
+                startedBy: 'daemon',
+                flavor: 'cursor',
+                agentSessionId: nativeCursorSessionId,
+                cursorSessionId: nativeCursorSessionId,
+            }), runnerToken)).toMatchObject({ accepted: true, daemonOwned: true });
+            expect(manager.getChildren()).toContainEqual(expect.objectContaining({
+                remcliSessionId: 'remcli-cursor-fresh',
+                remcliSessionMetadataFromLocalWebhook: expect.objectContaining({ cursorSessionId: nativeCursorSessionId }),
+            }));
+
+            await expect(manager.spawnSession({
+                directory: workspace,
+                agent: 'cursor',
+                resumeSessionId: nativeCursorSessionId,
+            })).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-fresh' });
+
+            await expect(manager.spawnSession({
+                directory: otherWorkspace,
+                agent: 'cursor',
+                resumeSessionId: nativeCursorSessionId,
+            })).resolves.toEqual({
+                type: 'error',
+                errorMessage: 'Cursor session belongs to a different working directory. Select its original workspace before resuming.',
+            });
+            expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+        } finally {
+            await Promise.all([
+                rm(workspace, { recursive: true, force: true }),
+                rm(otherWorkspace, { recursive: true, force: true }),
+            ]);
+        }
+    });
+
+    it('refuses to reuse a Cursor native session across working directories', async () => {
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-cursor-workspace',
+            pid: process.pid,
+        });
+
+        const manager = createSessionManager();
+        const first = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId: 'cursor-native-workspace',
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook('remcli-cursor-workspace', createSessionMetadata(process.pid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+        await expect(first).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-workspace' });
+
+        await expect(manager.spawnSession({
+            directory: tmpdir(),
+            agent: 'cursor',
+            resumeSessionId: 'cursor-native-workspace',
+        })).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Cursor session belongs to a different working directory. Select its original workspace before resuming.',
+        });
+        expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+    });
+
+    it('does not create Cursor lineage from a webhook before the native session is bound', async () => {
+        const workspace = await mkdtemp(join(tmpdir(), 'remcli-cursor-unbound-lineage-'));
+
+        try {
+            tmuxMocks.spawnInTmux
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-unbound-parent', pid: 21_020 })
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-unbound-resume', pid: 21_021 });
+
+            const manager = createSessionManager();
+            const nativeSessionId = 'cursor-native-unbound-lineage';
+            const firstSpawn = manager.spawnSession({ directory: workspace, agent: 'cursor' });
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+            manager.onRemcliSessionWebhook('remcli-cursor-unbound-parent', createSessionMetadata(21_020, {
+                path: workspace,
+                startedBy: 'daemon',
+                flavor: 'cursor',
+                agentSessionId: nativeSessionId,
+                cursorSessionId: nativeSessionId,
+            }), getDaemonRunnerToken());
+            await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-unbound-parent' });
+
+            await expect(manager.stopSession('remcli-cursor-unbound-parent')).resolves.toEqual({
+                success: true,
+                stoppedSessionId: 'remcli-cursor-unbound-parent',
+            });
+
+            const resumed = manager.spawnSession({
+                directory: workspace,
+                agent: 'cursor',
+                resumeSessionId: nativeSessionId,
+            });
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+            await expect(manager.preflightCursorRunner({
+                agent: 'cursor',
+                nativeResumeSessionId: nativeSessionId,
+                pid: 21_021,
+                runnerToken: getDaemonRunnerToken(1),
+            })).resolves.toEqual({ type: 'verified' });
+
+            manager.onRemcliSessionWebhook('remcli-cursor-unbound-resume', createSessionMetadata(21_021, {
+                path: workspace,
+                startedBy: 'daemon',
+                flavor: 'cursor',
+            }), getDaemonRunnerToken(1));
+            await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-unbound-resume' });
+        } finally {
+            await rm(workspace, { recursive: true, force: true });
+        }
+    });
+
+    it('does not carry Cursor lineage into a restarted daemon', async () => {
+        const workspace = await mkdtemp(join(tmpdir(), 'remcli-cursor-restarted-daemon-'));
+
+        try {
+            tmuxMocks.spawnInTmux
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-before-restart', pid: 21_025 })
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-after-restart', pid: 21_026 });
+
+            const nativeSessionId = 'cursor-native-restarted-daemon';
+            const firstManager = createSessionManager();
+            const firstSpawn = firstManager.spawnSession({ directory: workspace, agent: 'cursor' });
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+            firstManager.onRemcliSessionWebhook('remcli-cursor-before-restart', createSessionMetadata(21_025, {
+                path: workspace,
+                startedBy: 'daemon',
+                flavor: 'cursor',
+            }), getDaemonRunnerToken());
+            await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-before-restart' });
+            await expect(firstManager.bindNativeCursorSession({
+                agent: 'cursor',
+                nativeSessionId,
+                remcliSessionId: 'remcli-cursor-before-restart',
+            })).resolves.toMatchObject({ type: 'bound' });
+            await expect(firstManager.stopSession('remcli-cursor-before-restart')).resolves.toEqual({
+                success: true,
+                stoppedSessionId: 'remcli-cursor-before-restart',
+            });
+
+            const restartedManager = createSessionManager();
+            const resumed = restartedManager.spawnSession({
+                directory: workspace,
+                agent: 'cursor',
+                resumeSessionId: nativeSessionId,
+            });
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+            await expect(restartedManager.preflightCursorRunner({
+                agent: 'cursor',
+                nativeResumeSessionId: nativeSessionId,
+                pid: 21_026,
+                runnerToken: getDaemonRunnerToken(1),
+            })).resolves.toEqual({ type: 'verified' });
+
+            restartedManager.onRemcliSessionWebhook('remcli-cursor-after-restart', createSessionMetadata(21_026, {
+                path: workspace,
+                startedBy: 'daemon',
+                flavor: 'cursor',
+            }), getDaemonRunnerToken(1));
+            await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-after-restart' });
+        } finally {
+            await rm(workspace, { recursive: true, force: true });
+        }
+    });
+
+    it('carries trusted Cursor lineage after stop only into a same-workspace native resume', async () => {
+        const workspace = await mkdtemp(join(tmpdir(), 'remcli-cursor-lineage-'));
+        const otherWorkspace = await mkdtemp(join(tmpdir(), 'remcli-cursor-lineage-other-'));
+
+        try {
+            tmuxMocks.spawnInTmux
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-lineage-parent', pid: 21_030 })
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-lineage-resume', pid: 21_031 });
+
+            const manager = createSessionManager();
+            const nativeSessionId = 'cursor-native-lineage';
+            const parentSessionId = 'remcli-cursor-lineage-parent';
+            const firstSpawn = manager.spawnSession({ directory: workspace, agent: 'cursor' });
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+            manager.onRemcliSessionWebhook(parentSessionId, createSessionMetadata(21_030, {
+                path: workspace,
+                startedBy: 'daemon',
+                flavor: 'cursor',
+            }), getDaemonRunnerToken());
+            await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: parentSessionId });
+            await expect(manager.bindNativeCursorSession({
+                agent: 'cursor',
+                nativeSessionId,
+                remcliSessionId: parentSessionId,
+            })).resolves.toMatchObject({ type: 'bound' });
+
+            await expect(manager.stopSession(parentSessionId)).resolves.toEqual({
+                success: true,
+                stoppedSessionId: parentSessionId,
+            });
+
+            await expect(manager.spawnSession({
+                directory: otherWorkspace,
+                agent: 'cursor',
+                resumeSessionId: nativeSessionId,
+            })).resolves.toEqual({
+                type: 'error',
+                errorMessage: 'Cursor session belongs to a different working directory. Select its original workspace before resuming.',
+            });
+            expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+
+            const resumed = manager.spawnSession({
+                directory: workspace,
+                agent: 'cursor',
+                resumeSessionId: nativeSessionId,
+            });
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+            const preflightRequest = {
+                agent: 'cursor' as const,
+                nativeResumeSessionId: nativeSessionId,
+                pid: 21_031,
+                runnerToken: getDaemonRunnerToken(1),
+            };
+            await expect(manager.preflightCursorRunner(preflightRequest)).resolves.toEqual({
+                type: 'verified',
+                parentRemcliSessionId: parentSessionId,
+            });
+            await expect(manager.preflightCursorRunner({
+                ...preflightRequest,
+                runnerToken: 'wrong-runner-token',
+            })).resolves.toEqual({ type: 'rejected' });
+            await expect(manager.preflightCursorRunner({
+                ...preflightRequest,
+                pid: 99_999,
+            })).resolves.toEqual({ type: 'rejected' });
+            await expect(manager.preflightCursorRunner({
+                ...preflightRequest,
+                agent: 'codex',
+            })).resolves.toEqual({ type: 'rejected' });
+            await expect(manager.preflightCursorRunner({
+                ...preflightRequest,
+                nativeResumeSessionId: 'cursor-native-wrong-resume',
+            })).resolves.toEqual({ type: 'rejected' });
+
+            manager.onRemcliSessionWebhook('remcli-cursor-lineage-resume', createSessionMetadata(21_031, {
+                path: workspace,
+                startedBy: 'daemon',
+                flavor: 'cursor',
+            }), getDaemonRunnerToken(1));
+            await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-lineage-resume' });
+        } finally {
+            await Promise.all([
+                rm(workspace, { recursive: true, force: true }),
+                rm(otherWorkspace, { recursive: true, force: true }),
+            ]);
+        }
+    });
+
+    it('verifies a fresh tracked Cursor runner only when it does not claim a native resume', async () => {
+        const runnerPid = 21_033;
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-cursor-fresh-preflight',
+            pid: runnerPid,
+        });
+
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        const runnerToken = getDaemonRunnerToken();
+
+        await expect(manager.preflightCursorRunner({
+            agent: 'cursor',
+            pid: runnerPid,
+            runnerToken,
+        })).resolves.toEqual({ type: 'verified' });
+        await expect(manager.preflightCursorRunner({
+            agent: 'cursor',
+            nativeResumeSessionId: 'forged-native-resume',
+            pid: runnerPid,
+            runnerToken,
+        })).resolves.toEqual({ type: 'rejected' });
+
+        manager.onRemcliSessionWebhook('remcli-cursor-fresh-preflight', createSessionMetadata(runnerPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), runnerToken);
+        await expect(spawning).resolves.toEqual({
+            type: 'success',
+            sessionId: 'remcli-cursor-fresh-preflight',
+        });
+    });
+
+    it('redacts a Cursor parent relation from webhook diagnostics without changing tracked metadata', async () => {
+        const runnerPid = 21_032;
+        const parentRemcliSessionId = 'parent-remcli-session-must-not-be-logged';
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-cursor-diagnostic-redaction',
+            pid: runnerPid,
+        });
+
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        const runnerToken = getDaemonRunnerToken();
+        const sessionMetadata = createSessionMetadata(runnerPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+            resumedFromRemcliSessionId: parentRemcliSessionId,
+        });
+        loggerMocks.debugLargeJson.mockClear();
+
+        expect(manager.onRemcliSessionWebhook(
+            'remcli-cursor-diagnostic-redaction',
+            sessionMetadata,
+            runnerToken,
+        )).toMatchObject({ accepted: true, daemonOwned: true });
+        await expect(spawning).resolves.toEqual({
+            type: 'success',
+            sessionId: 'remcli-cursor-diagnostic-redaction',
+        });
+
+        expect(loggerMocks.debugLargeJson).toHaveBeenCalledOnce();
+        const diagnosticSessionMetadata = loggerMocks.debugLargeJson.mock.calls[0]?.[1] as Record<string, unknown>;
+        expect(diagnosticSessionMetadata).toMatchObject({ hostPid: runnerPid, flavor: 'cursor' });
+        expect(diagnosticSessionMetadata).not.toBe(sessionMetadata);
+        expect(diagnosticSessionMetadata).not.toHaveProperty('resumedFromRemcliSessionId');
+        expect(JSON.stringify(diagnosticSessionMetadata)).not.toContain(parentRemcliSessionId);
+        expect(JSON.stringify(diagnosticSessionMetadata)).not.toContain(runnerToken);
+
+        const trackedSession = manager.getChildren().find((session) => (
+            session.remcliSessionId === 'remcli-cursor-diagnostic-redaction'
+        ));
+        expect(trackedSession?.remcliSessionMetadataFromLocalWebhook).toBe(sessionMetadata);
+        expect(trackedSession?.remcliSessionMetadataFromLocalWebhook).toMatchObject({
+            resumedFromRemcliSessionId: parentRemcliSessionId,
+        });
+    });
+
+    it('atomically owns one Cursor native session, reuses its wrapper, and releases ownership on cleanup', async () => {
+        const workspace = await mkdtemp(join(tmpdir(), 'remcli-cursor-binding-workspace-'));
+        const otherWorkspace = await mkdtemp(join(tmpdir(), 'remcli-cursor-binding-other-workspace-'));
+
+        try {
+            tmuxMocks.spawnInTmux
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-owner-a', pid: 21_001 })
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-owner-b', pid: 21_002 });
+
+            const manager = createSessionManager();
+            const firstSpawn = manager.spawnSession({ directory: workspace, agent: 'cursor' });
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(1));
+            const secondSpawn = manager.spawnSession({ directory: workspace, agent: 'cursor' });
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+
+            manager.onRemcliSessionWebhook('remcli-cursor-owner-a', createSessionMetadata(21_001, {
+                path: workspace,
+                startedBy: 'daemon',
+                flavor: 'cursor',
+            }), getDaemonRunnerToken(0));
+            manager.onRemcliSessionWebhook('remcli-cursor-owner-b', createSessionMetadata(21_002, {
+                path: workspace,
+                startedBy: 'daemon',
+                flavor: 'cursor',
+            }), getDaemonRunnerToken(1));
+            await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-owner-a' });
+            await expect(secondSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-owner-b' });
+
+            const nativeSessionId = 'cursor-native-atomic-owner';
+            const firstBinding = manager.bindNativeCursorSession({
+                agent: 'cursor',
+                nativeSessionId,
+                remcliSessionId: 'remcli-cursor-owner-a',
+            });
+            const concurrentResume = manager.spawnSession({
+                directory: workspace,
+                agent: 'cursor',
+                resumeSessionId: nativeSessionId,
+            });
+            const competingBinding = manager.bindNativeCursorSession({
+                agent: 'cursor',
+                nativeSessionId,
+                remcliSessionId: 'remcli-cursor-owner-b',
+            });
+
+            await expect(firstBinding).resolves.toMatchObject({
+                type: 'bound',
+                wrapper: { remcliSessionId: 'remcli-cursor-owner-a', nativeSessionId },
+            });
+            await expect(competingBinding).resolves.toMatchObject({
+                type: 'reuse-active-wrapper',
+                wrapper: { remcliSessionId: 'remcli-cursor-owner-a', nativeSessionId },
+            });
+            await expect(concurrentResume).resolves.toEqual({
+                type: 'success',
+                sessionId: 'remcli-cursor-owner-a',
+            });
+            expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2);
+
+            await expect(manager.spawnSession({
+                directory: otherWorkspace,
+                agent: 'cursor',
+                resumeSessionId: nativeSessionId,
+            })).resolves.toEqual({
+                type: 'error',
+                errorMessage: 'Cursor session belongs to a different working directory. Select its original workspace before resuming.',
+            });
+
+            await expect(manager.stopSession('remcli-cursor-owner-a')).resolves.toEqual({
+                success: true,
+                stoppedSessionId: 'remcli-cursor-owner-a',
+            });
+            await expect(manager.bindNativeCursorSession({
+                agent: 'cursor',
+                nativeSessionId,
+                remcliSessionId: 'remcli-cursor-owner-b',
+            })).resolves.toMatchObject({
+                type: 'bound',
+                wrapper: { remcliSessionId: 'remcli-cursor-owner-b', nativeSessionId },
+            });
+        } finally {
+            await Promise.all([
+                rm(workspace, { recursive: true, force: true }),
+                rm(otherWorkspace, { recursive: true, force: true }),
+            ]);
+        }
+    });
+
+    it.each(['unknown', 'mismatch'] as const)('keeps a displaced Cursor identity retryable when immutable cleanup reports %s', async (releaseResult) => {
+        const reusedPid = 21_009;
+        const nativeSessionId = 'cursor-native-reused-pid';
+        const onSessionStopped = vi.fn();
+        tmuxMocks.spawnInTmux
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-reused-a', windowId: '@409', paneId: '%409', pid: reusedPid })
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-reused-b', windowId: '@410', paneId: '%410', pid: reusedPid })
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-reused-resume', pid: reusedPid + 1 });
+
+        const manager = createSessionManager({ onSessionStopped });
+        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook('remcli-cursor-reused-a', createSessionMetadata(reusedPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+        await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-reused-a' });
+        await expect(manager.bindNativeCursorSession({
+            agent: 'cursor',
+            nativeSessionId,
+            remcliSessionId: 'remcli-cursor-reused-a',
+        })).resolves.toMatchObject({ type: 'bound' });
+
+        let resolveFirstPaneRelease: (result: typeof releaseResult) => void = () => {};
+        tmuxMocks.releaseOwnedPane.mockImplementationOnce(() => new Promise<typeof releaseResult>((resolve) => {
+            resolveFirstPaneRelease = resolve;
+        }));
+        const stoppingFirst = manager.stopSession('remcli-cursor-reused-a');
+        await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledOnce());
+
+        const secondSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+        manager.onRemcliSessionWebhook('remcli-cursor-reused-b', createSessionMetadata(reusedPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken(1));
+        await expect(secondSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-reused-b' });
+        await expect(manager.bindNativeCursorSession({
+            agent: 'cursor',
+            nativeSessionId: 'cursor-native-reused-b',
+            remcliSessionId: 'remcli-cursor-reused-b',
+        })).resolves.toMatchObject({
+            type: 'bound',
+            wrapper: { remcliSessionId: 'remcli-cursor-reused-b', nativeSessionId: 'cursor-native-reused-b' },
+        });
+        await expect(manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId: nativeSessionId,
+        })).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.',
+        });
+
+        resolveFirstPaneRelease(releaseResult);
+        await expect(stoppingFirst).resolves.toEqual({ success: false });
+        expect(onSessionStopped).not.toHaveBeenCalled();
+        const secondWrapper = manager.getChildren().find((session) => (
+            session.pid === reusedPid && session.remcliSessionId === 'remcli-cursor-reused-b'
+        ));
+        expect(secondWrapper).toMatchObject({
+            pid: reusedPid,
+            remcliSessionId: 'remcli-cursor-reused-b',
+        });
+        expect(manager.getChildren()).toContainEqual(expect.objectContaining({
+            pid: reusedPid,
+            remcliSessionId: 'remcli-cursor-reused-a',
+        }));
+        expect(tmuxMocks.releaseOwnedPane).not.toHaveBeenCalledWith(secondWrapper?.tmuxRunner);
+
+        await expect(manager.stopSession('remcli-cursor-reused-a')).resolves.toEqual({
+            success: true,
+            stoppedSessionId: 'remcli-cursor-reused-a',
+        });
+        expect(onSessionStopped).toHaveBeenCalledOnce();
+        expect(onSessionStopped).toHaveBeenCalledWith('remcli-cursor-reused-a');
+        expect(manager.getChildren()).toEqual([
+            expect.objectContaining({ pid: reusedPid, remcliSessionId: 'remcli-cursor-reused-b' }),
+        ]);
+
+        const resumed = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId: nativeSessionId,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(3));
+        manager.onRemcliSessionWebhook('remcli-cursor-reused-resume', createSessionMetadata(reusedPid + 1, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken(2));
+        await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-reused-resume' });
+
+        await expect(manager.bindNativeCursorSession({
+            agent: 'cursor',
+            nativeSessionId,
+            remcliSessionId: 'remcli-cursor-reused-resume',
+        })).resolves.toMatchObject({ type: 'bound' });
+        expect(manager.getChildren()).toContainEqual(expect.objectContaining({
+            pid: reusedPid,
+            remcliSessionId: 'remcli-cursor-reused-b',
+        }));
+        expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(['released', 'missing'] as const)('retires the stopped Cursor identity without touching its PID replacement when cleanup reports %s', async (releaseResult) => {
+        const reusedPid = 21_013;
+        const onSessionStopped = vi.fn();
+        const firstNativeSessionId = 'cursor-native-stop-race-a';
+        tmuxMocks.spawnInTmux
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-stop-race-a', windowId: '@413', paneId: '%413', pid: reusedPid })
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-stop-race-b', windowId: '@414', paneId: '%414', pid: reusedPid })
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-stop-race-lineage', windowId: '@417', paneId: '%417', pid: reusedPid + 1 });
+
+        const manager = createSessionManager({ onSessionStopped });
+        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook('remcli-cursor-stop-race-a', createSessionMetadata(reusedPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+        await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-stop-race-a' });
+        await expect(manager.bindNativeCursorSession({
+            agent: 'cursor',
+            nativeSessionId: firstNativeSessionId,
+            remcliSessionId: 'remcli-cursor-stop-race-a',
+        })).resolves.toMatchObject({ type: 'bound' });
+        const firstRunner = manager.getChildren()[0]?.tmuxRunner;
+        expect(firstRunner).toBeDefined();
+
+        let releaseFirstPane: (result: typeof releaseResult) => void = () => {};
+        tmuxMocks.releaseOwnedPane.mockImplementationOnce(() => new Promise<typeof releaseResult>((resolve) => {
+            releaseFirstPane = resolve;
+        }));
+
+        const stoppingFirst = manager.stopSession('remcli-cursor-stop-race-a');
+        await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(firstRunner));
+
+        const secondSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+        manager.onRemcliSessionWebhook('remcli-cursor-stop-race-b', createSessionMetadata(reusedPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken(1));
+        await expect(secondSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-stop-race-b' });
+        const secondRunner = manager.getChildren()[0]?.tmuxRunner;
+        expect(secondRunner).toBeDefined();
+        await expect(manager.bindNativeCursorSession({
+            agent: 'cursor',
+            nativeSessionId: 'cursor-native-stop-race-b',
+            remcliSessionId: 'remcli-cursor-stop-race-b',
+        })).resolves.toMatchObject({
+            type: 'bound',
+            wrapper: { remcliSessionId: 'remcli-cursor-stop-race-b', nativeSessionId: 'cursor-native-stop-race-b' },
+        });
+
+        releaseFirstPane(releaseResult);
+        await expect(stoppingFirst).resolves.toEqual({
+            success: true,
+            stoppedSessionId: 'remcli-cursor-stop-race-a',
+        });
+
+        expect(manager.getChildren()).toHaveLength(1);
+        expect(manager.getChildren()[0]).toMatchObject({
+            pid: reusedPid,
+            remcliSessionId: 'remcli-cursor-stop-race-b',
+        });
+        expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledTimes(1);
+        expect(tmuxMocks.releaseOwnedPane).not.toHaveBeenCalledWith(secondRunner);
+        expect(onSessionStopped).toHaveBeenCalledOnce();
+        expect(onSessionStopped).toHaveBeenCalledWith('remcli-cursor-stop-race-a');
+
+        const lineageResume = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId: firstNativeSessionId,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(3));
+        await expect(manager.preflightCursorRunner({
+            agent: 'cursor',
+            nativeResumeSessionId: firstNativeSessionId,
+            pid: reusedPid + 1,
+            runnerToken: getDaemonRunnerToken(2),
+        })).resolves.toEqual({
+            type: 'verified',
+            parentRemcliSessionId: 'remcli-cursor-stop-race-a',
+        });
+        manager.onRemcliSessionWebhook('remcli-cursor-stop-race-lineage', createSessionMetadata(reusedPid + 1, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken(2));
+        await expect(lineageResume).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-stop-race-lineage' });
+
+        await expect(manager.bindNativeCursorSession({
+            agent: 'cursor',
+            nativeSessionId: 'cursor-native-stop-race-b',
+            remcliSessionId: 'remcli-cursor-stop-race-b',
+        })).resolves.toMatchObject({ type: 'already-bound' });
+        await expect(manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId: 'cursor-native-stop-race-b',
+        })).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-stop-race-b' });
+        expect(onSessionStopped).toHaveBeenCalledOnce();
+        expect(onSessionStopped).toHaveBeenCalledWith('remcli-cursor-stop-race-a');
+    });
+
+    it.each(['released', 'missing'] as const)('retires a pruned Cursor identity without touching its PID replacement when cleanup reports %s', async (releaseResult) => {
+        const reusedPid = 21_014;
+        const onSessionStopped = vi.fn();
+        const firstNativeSessionId = 'cursor-native-prune-race-a';
+        let isFirstRunnerAlive = true;
+        vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+            if (pid === reusedPid && signal === 0 && !isFirstRunnerAlive) {
+                throw new Error('process is not running');
+            }
+            return true;
+        });
+        tmuxMocks.spawnInTmux
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-prune-race-a', windowId: '@415', paneId: '%415', pid: reusedPid })
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-prune-race-b', windowId: '@416', paneId: '%416', pid: reusedPid })
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-prune-race-lineage', windowId: '@418', paneId: '%418', pid: reusedPid + 1 });
+
+        const manager = createSessionManager({ onSessionStopped });
+        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook('remcli-cursor-prune-race-a', createSessionMetadata(reusedPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+        await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-prune-race-a' });
+        await expect(manager.bindNativeCursorSession({
+            agent: 'cursor',
+            nativeSessionId: firstNativeSessionId,
+            remcliSessionId: 'remcli-cursor-prune-race-a',
+        })).resolves.toMatchObject({ type: 'bound' });
+        const firstRunner = manager.getChildren()[0]?.tmuxRunner;
+        expect(firstRunner).toBeDefined();
+
+        let releaseFirstPane: (result: typeof releaseResult) => void = () => {};
+        tmuxMocks.releaseOwnedPane.mockImplementationOnce(() => new Promise<typeof releaseResult>((resolve) => {
+            releaseFirstPane = resolve;
+        }));
+        isFirstRunnerAlive = false;
+        manager.pruneDeadSessions();
+        await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(firstRunner));
+
+        const secondSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+        manager.onRemcliSessionWebhook('remcli-cursor-prune-race-b', createSessionMetadata(reusedPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken(1));
+        await expect(secondSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-prune-race-b' });
+        const secondRunner = manager.getChildren()[0]?.tmuxRunner;
+        expect(secondRunner).toBeDefined();
+
+        releaseFirstPane(releaseResult);
+        await vi.waitFor(() => {
+            expect(onSessionStopped).toHaveBeenCalledOnce();
+            expect(onSessionStopped).toHaveBeenCalledWith('remcli-cursor-prune-race-a');
+        });
+        await vi.waitFor(() => expect(manager.getChildren()).toContainEqual(expect.objectContaining({
+            pid: reusedPid,
+            remcliSessionId: 'remcli-cursor-prune-race-b',
+        })));
+
+        await vi.waitFor(async () => {
+            await expect(manager.bindNativeCursorSession({
+                agent: 'cursor',
+                nativeSessionId: 'cursor-native-prune-race-b',
+                remcliSessionId: 'remcli-cursor-prune-race-b',
+            })).resolves.toMatchObject({ type: 'bound' });
+        });
+        await expect(manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId: 'cursor-native-prune-race-b',
+        })).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-prune-race-b' });
+        expect(onSessionStopped).toHaveBeenCalledOnce();
+        expect(onSessionStopped).toHaveBeenCalledWith('remcli-cursor-prune-race-a');
+
+        const lineageResume = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId: firstNativeSessionId,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(3));
+        await expect(manager.preflightCursorRunner({
+            agent: 'cursor',
+            nativeResumeSessionId: firstNativeSessionId,
+            pid: reusedPid + 1,
+            runnerToken: getDaemonRunnerToken(2),
+        })).resolves.toEqual({
+            type: 'verified',
+            parentRemcliSessionId: 'remcli-cursor-prune-race-a',
+        });
+        manager.onRemcliSessionWebhook('remcli-cursor-prune-race-lineage', createSessionMetadata(reusedPid + 1, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken(2));
+        await expect(lineageResume).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-prune-race-lineage' });
+
+        await expect(manager.stopSession('remcli-cursor-prune-race-b')).resolves.toEqual({
+            success: true,
+            stoppedSessionId: 'remcli-cursor-prune-race-b',
+        });
+        expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledTimes(2);
+        expect(tmuxMocks.releaseOwnedPane).toHaveBeenLastCalledWith(secondRunner);
+        expect(onSessionStopped).toHaveBeenCalledTimes(2);
+        expect(onSessionStopped).toHaveBeenNthCalledWith(1, 'remcli-cursor-prune-race-a');
+        expect(onSessionStopped).toHaveBeenNthCalledWith(2, 'remcli-cursor-prune-race-b');
+    });
+
+    it('fails closed instead of reusing a Cursor session by PID when its owned tmux pane is unknown', async () => {
+        const runnerPid = 21_010;
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-cursor-unknown-pane',
+            pid: runnerPid,
+        });
+
+        const manager = createSessionManager();
+        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook('remcli-cursor-unknown-pane', createSessionMetadata(runnerPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+        await expect(initialSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-unknown-pane' });
+
+        const nativeSessionId = 'cursor-native-unknown-pane';
+        await expect(manager.bindNativeCursorSession({
+            agent: 'cursor',
+            nativeSessionId,
+            remcliSessionId: 'remcli-cursor-unknown-pane',
+        })).resolves.toMatchObject({ type: 'bound' });
+
+        const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+        tmuxMocks.getPaneInfo.mockResolvedValue({ status: 'unknown' });
+
+        await expect(manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId: nativeSessionId,
+        })).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.',
+        });
+
+        expect(processKill).not.toHaveBeenCalledWith(runnerPid, 0);
+        expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+        expect(manager.getChildren()).toContainEqual(expect.objectContaining({
+            nativeCursorSessionId: nativeSessionId,
+        }));
+    });
+
+    it('does not bind a Cursor native session when stale ownership lookup resolves after full stop cleanup', async () => {
+        const runnerPid = 21_011;
+        const nativeSessionId = 'cursor-native-binding-stop-race';
+        const remcliSessionId = 'remcli-cursor-binding-stop-race';
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-cursor-binding-stop-race',
+            pid: runnerPid,
+        });
+
+        const manager = createSessionManager();
+        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook(remcliSessionId, createSessionMetadata(runnerPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+        await expect(initialSpawn).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+        await expect(manager.bindNativeCursorSession({
+            agent: 'cursor',
+            nativeSessionId,
+            remcliSessionId,
+        })).resolves.toMatchObject({ type: 'bound' });
+
+        let resolveBindingPaneLookup: () => void = () => {};
+        tmuxMocks.getPaneInfo.mockImplementationOnce(async (paneId: string) => {
+            const stalePane = tmuxMocks.ownedPanes.get(paneId);
+            await new Promise<void>((resolve) => {
+                resolveBindingPaneLookup = resolve;
+            });
+            return stalePane ? { status: 'exists', pane: stalePane } : { status: 'missing' };
+        });
+
+        const binding = manager.bindNativeCursorSession({
+            agent: 'cursor',
+            nativeSessionId,
+            remcliSessionId: 'remcli-cursor-competing-wrapper',
+        });
+        await vi.waitFor(() => expect(tmuxMocks.getPaneInfo).toHaveBeenCalledTimes(2));
+
+        const stopping = manager.stopSession(remcliSessionId);
+        await expect(stopping).resolves.toEqual({
+            success: true,
+            stoppedSessionId: remcliSessionId,
+        });
+
+        resolveBindingPaneLookup();
+        await expect(binding).resolves.toEqual({
+            type: 'wrapper-not-tracked',
+            binding: {
+                agent: 'cursor',
+                nativeSessionId,
+                remcliSessionId: 'remcli-cursor-competing-wrapper',
+            },
+        });
+        expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+    });
+
+    it('fails closed instead of reusing a Cursor wrapper while its stop is releasing the pane', async () => {
+        const runnerPid = 21_011;
+        const nativeSessionId = 'cursor-native-stopping-pane';
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-cursor-stopping-pane',
+            pid: runnerPid,
+        });
+
+        const manager = createSessionManager();
+        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook('remcli-cursor-stopping-pane', createSessionMetadata(runnerPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+        await expect(initialSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-stopping-pane' });
+        await expect(manager.bindNativeCursorSession({
+            agent: 'cursor',
+            nativeSessionId,
+            remcliSessionId: 'remcli-cursor-stopping-pane',
+        })).resolves.toMatchObject({ type: 'bound' });
+
+        let resolvePaneRelease: (result: 'released') => void = () => {};
+        tmuxMocks.releaseOwnedPane.mockImplementationOnce(() => new Promise<'released'>((resolve) => {
+            resolvePaneRelease = resolve;
+        }));
+
+        const stopping = manager.stopSession('remcli-cursor-stopping-pane');
+        await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledOnce());
+
+        await expect(manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId: nativeSessionId,
+        })).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.',
+        });
+        expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+
+        resolvePaneRelease('released');
+        await expect(stopping).resolves.toEqual({
+            success: true,
+            stoppedSessionId: 'remcli-cursor-stopping-pane',
+        });
+    });
+
+    it('does not reuse a pre-init Cursor wrapper when stale ownership lookup resolves after full stop cleanup', async () => {
+        const runnerPid = 21_012;
+        const resumeSessionId = 'cursor-pre-init-stopping-pane';
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-cursor-pre-init-stopping-pane',
+            pid: runnerPid,
+        });
+
+        const manager = createSessionManager();
+        const initialSpawn = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook('remcli-cursor-pre-init-stopping-pane', createSessionMetadata(runnerPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+        await expect(initialSpawn).resolves.toEqual({
+            type: 'success',
+            sessionId: 'remcli-cursor-pre-init-stopping-pane',
+        });
+
+        let resolveResumePaneLookup: () => void = () => {};
+        tmuxMocks.getPaneInfo.mockImplementationOnce(async (paneId: string) => {
+            const stalePane = tmuxMocks.ownedPanes.get(paneId);
+            await new Promise<void>((resolve) => {
+                resolveResumePaneLookup = resolve;
+            });
+            return stalePane ? { status: 'exists', pane: stalePane } : { status: 'missing' };
+        });
+
+        const resuming = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.getPaneInfo).toHaveBeenCalledOnce());
+
+        const stopping = manager.stopSession('remcli-cursor-pre-init-stopping-pane');
+        await expect(stopping).resolves.toEqual({
+            success: true,
+            stoppedSessionId: 'remcli-cursor-pre-init-stopping-pane',
+        });
+
+        resolveResumePaneLookup();
+        await expect(resuming).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.',
+        });
+        expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+    });
+
+    it('shell-quotes a Cursor resume id before placing it in a tmux command', async () => {
+        const unsafeResumeId = "cursor' ; touch /tmp/remcli-injection #";
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-cursor-quote',
+            pid: process.pid,
+        });
+
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId: unsafeResumeId,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+
+        const command = tmuxMocks.spawnInTmux.mock.calls[0]?.[0]?.[0] as string;
+        expect(command).toContain("--resume 'cursor'\\'' ; touch /tmp/remcli-injection #'");
+        expect(command).not.toContain(`--resume ${unsafeResumeId}`);
+
+        manager.onRemcliSessionWebhook('remcli-cursor-quote', createSessionMetadata(process.pid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-quote' });
+    });
+
     it('refreshes a terminal-started tracked session when its webhook arrives again', () => {
         const manager = createSessionManager();
 
@@ -2009,6 +3233,53 @@ describe('createSessionManager resume deduplication', () => {
         expect(onSessionStopped).toHaveBeenCalledWith('remcli-terminal-pruned');
     });
 
+    it('does not publish a terminal-started session when shutdown joins its deferred prune cleanup', async () => {
+        const terminalPid = 10_069;
+        const onSessionStopped = vi.fn();
+        const activePids = new Set([terminalPid]);
+        vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+            if (pid === terminalPid && signal === 0 && !activePids.has(pid)) {
+                throw new Error('process is not running');
+            }
+            return true;
+        });
+
+        const manager = createSessionManager({ onSessionStopped });
+        manager.onRemcliSessionWebhook(
+            'remcli-terminal-prune-shutdown',
+            createSessionMetadata(terminalPid, { startedBy: 'terminal', flavor: 'codex' }),
+        );
+        const terminalSession = manager.getChildren()[0];
+        expect(terminalSession).toBeDefined();
+        const managedPane = {
+            sessionName: 'tmux-terminal-prune-shutdown',
+            windowId: '@470',
+            paneId: '%470',
+            panePid: terminalPid,
+            ownerMarker: '00000000-0000-4000-8000-000000000470',
+        };
+        terminalSession!.managedCodexRemoteTui = managedPane;
+        tmuxMocks.ownedPanes.set(managedPane.paneId, managedPane);
+
+        let resolvePaneRelease: (result: 'released') => void = () => {};
+        tmuxMocks.releaseOwnedPane.mockImplementationOnce(() => new Promise<'released'>((resolve) => {
+            resolvePaneRelease = resolve;
+        }));
+
+        activePids.delete(terminalPid);
+        manager.pruneDeadSessions();
+        await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(managedPane));
+        const shutdown = manager.killAllSessions();
+
+        expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledTimes(1);
+        resolvePaneRelease('released');
+
+        await expect(shutdown).resolves.toBeUndefined();
+        expect(manager.getChildren()).toHaveLength(0);
+        expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledTimes(1);
+        expect(onSessionStopped).not.toHaveBeenCalled();
+    });
+
     it('clears terminal-started sessions on daemon shutdown without signalling or publishing them inactive', async () => {
         const terminalPid = 10_047;
         const onSessionStopped = vi.fn();
@@ -2053,6 +3324,194 @@ describe('createSessionManager resume deduplication', () => {
 
         expect(onSessionStopped).toHaveBeenCalledOnce();
         expect(onSessionStopped).toHaveBeenCalledWith('remcli-session-stopped-runner');
+    });
+
+    it('coalesces two concurrent stop requests for the same daemon runner', async () => {
+        const runnerPid = 10_064;
+        const onSessionStopped = vi.fn();
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-concurrent-stops:main',
+            windowId: '@464',
+            paneId: '%464',
+            pid: runnerPid,
+        });
+
+        const manager = createSessionManager({ onSessionStopped });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
+        const runner = manager.getChildren()[0]?.tmuxRunner;
+        expect(runner).toBeDefined();
+        manager.onRemcliSessionWebhook(
+            'remcli-concurrent-stops',
+            createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
+            getDaemonRunnerToken(),
+        );
+        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-concurrent-stops' });
+
+        let resolvePaneRelease: (result: 'released') => void = () => {};
+        tmuxMocks.releaseOwnedPane.mockImplementationOnce(() => new Promise<'released'>((resolve) => {
+            resolvePaneRelease = resolve;
+        }));
+
+        const firstStop = manager.stopSession('remcli-concurrent-stops');
+        await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(runner));
+        const secondStop = manager.stopSession('remcli-concurrent-stops');
+
+        expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledTimes(1);
+        resolvePaneRelease('released');
+
+        await expect(firstStop).resolves.toEqual({
+            success: true,
+            stoppedSessionId: 'remcli-concurrent-stops',
+        });
+        await expect(secondStop).resolves.toEqual({
+            success: true,
+            stoppedSessionId: 'remcli-concurrent-stops',
+        });
+        expect(manager.getChildren()).toHaveLength(0);
+        expect(onSessionStopped).toHaveBeenCalledOnce();
+    });
+
+    it('coalesces a concurrent stop request and shutdown cleanup for the same daemon runner', async () => {
+        const runnerPid = 10_065;
+        const onSessionStopped = vi.fn();
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-stop-shutdown:main',
+            windowId: '@465',
+            paneId: '%465',
+            pid: runnerPid,
+        });
+
+        const manager = createSessionManager({ onSessionStopped });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
+        const runner = manager.getChildren()[0]?.tmuxRunner;
+        expect(runner).toBeDefined();
+        manager.onRemcliSessionWebhook(
+            'remcli-stop-shutdown',
+            createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
+            getDaemonRunnerToken(),
+        );
+        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-stop-shutdown' });
+
+        let resolvePaneRelease: (result: 'released') => void = () => {};
+        tmuxMocks.releaseOwnedPane.mockImplementationOnce(() => new Promise<'released'>((resolve) => {
+            resolvePaneRelease = resolve;
+        }));
+
+        const stopping = manager.stopSession('remcli-stop-shutdown');
+        await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(runner));
+        const shutdown = manager.killAllSessions();
+
+        expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledTimes(1);
+        resolvePaneRelease('released');
+
+        await expect(stopping).resolves.toEqual({
+            success: true,
+            stoppedSessionId: 'remcli-stop-shutdown',
+        });
+        await expect(shutdown).resolves.toBeUndefined();
+        expect(manager.getChildren()).toHaveLength(0);
+        expect(onSessionStopped).toHaveBeenCalledOnce();
+    });
+
+    it.each(['unknown', 'mismatch'] as const)(
+        'allows retrying cleanup after a daemon runner release is %s',
+        async (releaseResult) => {
+            const runnerPid = releaseResult === 'unknown' ? 10_066 : 10_067;
+            const remcliSessionId = `remcli-retry-${releaseResult}`;
+            tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+                success: true,
+                sessionId: `tmux-retry-${releaseResult}:main`,
+                windowId: releaseResult === 'unknown' ? '@466' : '@467',
+                paneId: releaseResult === 'unknown' ? '%466' : '%467',
+                pid: runnerPid,
+            });
+            tmuxMocks.releaseOwnedPane
+                .mockResolvedValueOnce(releaseResult)
+                .mockResolvedValueOnce('released');
+
+            const manager = createSessionManager();
+            const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+            await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
+            manager.onRemcliSessionWebhook(
+                remcliSessionId,
+                createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
+                getDaemonRunnerToken(),
+            );
+            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+
+            await expect(manager.stopSession(remcliSessionId)).resolves.toEqual({ success: false });
+            expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledTimes(1);
+
+            await expect(manager.stopSession(remcliSessionId)).resolves.toEqual({
+                success: true,
+                stoppedSessionId: remcliSessionId,
+            });
+            expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledTimes(2);
+            expect(manager.getChildren()).toHaveLength(0);
+        },
+    );
+
+    it('keeps a PID replacement bindable while cleanup of the displaced daemon runner is in flight', async () => {
+        const reusedPid = 10_068;
+        const onSessionStopped = vi.fn();
+        tmuxMocks.spawnInTmux
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-displaced-cleanup-a:main', windowId: '@468', paneId: '%468', pid: reusedPid })
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-displaced-cleanup-b:main', windowId: '@469', paneId: '%469', pid: reusedPid });
+
+        const manager = createSessionManager({ onSessionStopped });
+        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook(
+            'remcli-displaced-cleanup-a',
+            createSessionMetadata(reusedPid, { startedBy: 'daemon', flavor: 'codex' }),
+            getDaemonRunnerToken(),
+        );
+        await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-displaced-cleanup-a' });
+        const displacedRunner = manager.getChildren()[0]?.tmuxRunner;
+        expect(displacedRunner).toBeDefined();
+
+        let resolveDisplacedPaneRelease: (result: 'released') => void = () => {};
+        tmuxMocks.releaseOwnedPane.mockImplementationOnce(() => new Promise<'released'>((resolve) => {
+            resolveDisplacedPaneRelease = resolve;
+        }));
+
+        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(displacedRunner));
+        const replacementRunner = manager.getChildren().find((session) => session.tmuxRunner?.paneId === '%469')?.tmuxRunner;
+        expect(replacementRunner).toBeDefined();
+
+        manager.onRemcliSessionWebhook(
+            'remcli-displaced-cleanup-b',
+            createSessionMetadata(reusedPid, { startedBy: 'daemon', flavor: 'codex' }),
+            getDaemonRunnerToken(1),
+        );
+        await expect(replacementSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-displaced-cleanup-b' });
+        await expect(bindTrackedCodexThread(manager, {
+            agent: 'codex',
+            remcliSessionId: 'remcli-displaced-cleanup-b',
+            nativeThreadId: 'codex-thread-displaced-cleanup-b',
+        })).resolves.toMatchObject({ type: 'bound' });
+
+        const stoppingDisplaced = manager.stopSession('remcli-displaced-cleanup-a');
+        expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledTimes(1);
+        resolveDisplacedPaneRelease('released');
+
+        await expect(stoppingDisplaced).resolves.toEqual({
+            success: true,
+            stoppedSessionId: 'remcli-displaced-cleanup-a',
+        });
+        expect(tmuxMocks.releaseOwnedPane).not.toHaveBeenCalledWith(replacementRunner);
+        expect(manager.getChildren()).toContainEqual(expect.objectContaining({
+            pid: reusedPid,
+            remcliSessionId: 'remcli-displaced-cleanup-b',
+            nativeCodexThreadId: 'codex-thread-displaced-cleanup-b',
+        }));
+        expect(onSessionStopped).toHaveBeenCalledOnce();
     });
 
     it('refuses to stop a session with a reused PID when its immutable tmux pane no longer matches', async () => {
@@ -2301,6 +3760,131 @@ describe('createSessionManager resume deduplication', () => {
             expect(onSessionStopped).toHaveBeenCalledWith(remcliSessionId);
         },
     );
+
+    it('asynchronously retires the displaced daemon identity once without stopping its PID replacement', async () => {
+        const reusedPid = 10_060;
+        const onSessionStopped = vi.fn();
+        tmuxMocks.spawnInTmux
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-replaced-a:main', windowId: '@460', paneId: '%460', pid: reusedPid })
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-replaced-b:main', windowId: '@461', paneId: '%461', pid: reusedPid });
+
+        const manager = createSessionManager({ onSessionStopped });
+        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook(
+            'remcli-replaced-a',
+            createSessionMetadata(reusedPid, { startedBy: 'daemon', flavor: 'codex' }),
+            getDaemonRunnerToken(),
+        );
+        await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-replaced-a' });
+        await expect(bindTrackedCodexThread(manager, {
+            agent: 'codex',
+            remcliSessionId: 'remcli-replaced-a',
+            nativeThreadId: 'codex-thread-replaced-a',
+        })).resolves.toMatchObject({ type: 'bound' });
+        const displacedRunner = manager.getChildren()[0]?.tmuxRunner;
+        expect(displacedRunner).toBeDefined();
+
+        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+        const replacementRunner = manager.getChildren()[0]?.tmuxRunner;
+        expect(replacementRunner).toBeDefined();
+        expect(replacementRunner).not.toEqual(displacedRunner);
+
+        await vi.waitFor(() => expect(onSessionStopped).toHaveBeenCalledWith('remcli-replaced-a'));
+        await expect(manager.resolveCodexThreadResume('codex-thread-replaced-a')).resolves.toEqual({
+            type: 'spawn-new-wrapper',
+            nativeThreadId: 'codex-thread-replaced-a',
+        });
+        expect(tmuxMocks.releaseOwnedPane).not.toHaveBeenCalledWith(replacementRunner);
+
+        manager.onRemcliSessionWebhook(
+            'remcli-replaced-b',
+            createSessionMetadata(reusedPid, { startedBy: 'daemon', flavor: 'codex' }),
+            getDaemonRunnerToken(1),
+        );
+        await expect(replacementSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-replaced-b' });
+        expect(manager.getChildren()).toContainEqual(expect.objectContaining({
+            pid: reusedPid,
+            remcliSessionId: 'remcli-replaced-b',
+        }));
+        expect(onSessionStopped).toHaveBeenCalledOnce();
+    });
+
+    it.each(['cursor', 'gemini'] as const)(
+        'keeps the %s webhook received during terminal attach',
+        async (agent) => {
+            const runnerPid = agent === 'cursor' ? 10_061 : 10_062;
+            let resolveTerminalAttach: (result: boolean) => void = () => {};
+            openTerminalMocks.openTerminalWithCommand.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+                resolveTerminalAttach = resolve;
+            }));
+            tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+                success: true,
+                sessionId: `tmux-${agent}-early-webhook:main`,
+                pid: runnerPid,
+            });
+
+            const manager = createSessionManager();
+            const spawning = manager.spawnSession({ directory: process.cwd(), agent });
+            await vi.waitFor(() => expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledOnce());
+
+            manager.onRemcliSessionWebhook(
+                `remcli-${agent}-early-webhook`,
+                createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: agent }),
+                getDaemonRunnerToken(),
+            );
+
+            resolveTerminalAttach(true);
+            await expect(spawning).resolves.toEqual({
+                type: 'success',
+                sessionId: `remcli-${agent}-early-webhook`,
+            });
+        },
+    );
+
+    it('settles a Cursor spawn displaced during terminal attach while its PID replacement resolves independently', async () => {
+        const reusedPid = 10_063;
+        let resolveFirstTerminalAttach: (result: boolean) => void = () => {};
+        openTerminalMocks.openTerminalWithCommand
+            .mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+                resolveFirstTerminalAttach = resolve;
+            }))
+            .mockResolvedValueOnce(true);
+        tmuxMocks.spawnInTmux
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-displaced:main', windowId: '@463', paneId: '%463', pid: reusedPid })
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-gemini-replacement:main', windowId: '@464', paneId: '%464', pid: reusedPid });
+
+        const manager = createSessionManager();
+        const displacedSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        await vi.waitFor(() => expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledOnce());
+
+        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'gemini' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+        await expect(displacedSpawn).resolves.toEqual({
+            type: 'error',
+            errorMessage: `Session process ${reusedPid} stopped before reporting its Remcli session.`,
+        });
+
+        manager.onRemcliSessionWebhook(
+            'remcli-gemini-replacement',
+            createSessionMetadata(reusedPid, { startedBy: 'daemon', flavor: 'gemini' }),
+            getDaemonRunnerToken(1),
+        );
+        await expect(replacementSpawn).resolves.toEqual({
+            type: 'success',
+            sessionId: 'remcli-gemini-replacement',
+        });
+
+        resolveFirstTerminalAttach(true);
+        await Promise.resolve();
+        expect(manager.getChildren()).toEqual([
+            expect.objectContaining({
+                pid: reusedPid,
+                remcliSessionId: 'remcli-gemini-replacement',
+            }),
+        ]);
+    });
 
     it('keeps opening a tmux terminal attach for non-Codex agents', async () => {
         tmuxMocks.spawnInTmux.mockResolvedValueOnce({

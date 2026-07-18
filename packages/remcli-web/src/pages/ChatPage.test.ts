@@ -12,6 +12,15 @@ let createMessageLoadQueue: typeof import('@/pages/ChatPage').createMessageLoadQ
 let getMessageLoadScope: typeof import('@/pages/ChatPage').getMessageLoadScope;
 let mergeMessagePagination: typeof import('@/pages/ChatPage').mergeMessagePagination;
 let parseNavState: typeof import('@/pages/ChatPage').parseNavState;
+let mergeLineageMessages: typeof import('@/pages/ChatPage').mergeLineageMessages;
+let requestLineageParentHistory: typeof import('@/pages/ChatPage').requestLineageParentHistory;
+let resolveLineageParent: typeof import('@/pages/ChatPage').resolveLineageParent;
+let shouldRequestLineageParentInitialPage: typeof import('@/pages/ChatPage').shouldRequestLineageParentInitialPage;
+let createLineageRefreshAttemptGate: typeof import('@/pages/ChatPage').createLineageRefreshAttemptGate;
+let getLineageHistoryScopeTransition: typeof import('@/pages/ChatPage').getLineageHistoryScopeTransition;
+let getLineageHistoryRequestIdentity: typeof import('@/pages/ChatPage').getLineageHistoryRequestIdentity;
+let createChatMessageSender: typeof import('@/pages/ChatPage').createChatMessageSender;
+let LineageHistoryNotice: typeof import('@/pages/ChatPage').LineageHistoryNotice;
 
 interface Deferred<T> {
     promise: Promise<T>;
@@ -51,6 +60,15 @@ beforeAll(async () => {
     getMessageLoadScope = pageModule.getMessageLoadScope;
     mergeMessagePagination = pageModule.mergeMessagePagination;
     parseNavState = pageModule.parseNavState;
+    mergeLineageMessages = pageModule.mergeLineageMessages;
+    requestLineageParentHistory = pageModule.requestLineageParentHistory;
+    resolveLineageParent = pageModule.resolveLineageParent;
+    shouldRequestLineageParentInitialPage = pageModule.shouldRequestLineageParentInitialPage;
+    createLineageRefreshAttemptGate = pageModule.createLineageRefreshAttemptGate;
+    getLineageHistoryScopeTransition = pageModule.getLineageHistoryScopeTransition;
+    getLineageHistoryRequestIdentity = pageModule.getLineageHistoryRequestIdentity;
+    createChatMessageSender = pageModule.createChatMessageSender;
+    LineageHistoryNotice = pageModule.LineageHistoryNotice;
 });
 
 afterAll(() => {
@@ -273,6 +291,192 @@ describe('ChatPage feed mapping', () => {
             model: 'gpt-5.6-luna',
             hasModelOverride: true,
         });
+    });
+
+    it('renders trusted parent messages once before the child segment', () => {
+        const parentMessages: NormalizedMessage[] = [
+            {
+                id: 'parent-1', localId: null, seq: 1, createdAt: 1000, isSidechain: false,
+                role: 'user', content: { type: 'text', text: 'Parent prompt' },
+            },
+            {
+                id: 'parent-2', localId: null, seq: 2, createdAt: 2000, isSidechain: false,
+                role: 'agent', content: [{ type: 'text', text: 'Parent answer', uuid: 'parent-2', parentUUID: null }],
+            },
+            {
+                id: 'parent-2', localId: null, seq: 2, createdAt: 2000, isSidechain: false,
+                role: 'agent', content: [{ type: 'text', text: 'Parent answer', uuid: 'parent-2', parentUUID: null }],
+            },
+        ];
+        const childMessages: NormalizedMessage[] = [
+            parentMessages[1],
+            {
+                id: 'child-1', localId: null, seq: 1, createdAt: 3000, isSidechain: false,
+                role: 'user', content: { type: 'text', text: 'Child prompt' },
+            },
+        ];
+
+        const groups = mergeLineageMessages(parentMessages, childMessages);
+
+        expect([...groups.parentMessages, ...groups.childMessages].map((message) => message.id))
+            .toEqual(['parent-1', 'parent-2', 'child-1']);
+    });
+
+    it('rejects a missing, self-referencing, foreign-agent, or foreign-workspace parent', () => {
+        const child = {
+            id: 'child-session',
+            metadata: {
+                path: '/workspace', host: 'host', machineId: 'machine', flavor: 'cursor',
+                resumedFromRemcliSessionId: 'missing-parent',
+            },
+        } as Session;
+
+        expect(resolveLineageParent(child, [child])).toMatchObject({ parentId: null, isKnown: false });
+
+        const selfReferencingChild = {
+            ...child,
+            metadata: { ...child.metadata, resumedFromRemcliSessionId: child.id },
+        } as Session;
+        expect(resolveLineageParent(selfReferencingChild, [selfReferencingChild])).toMatchObject({
+            parentId: null,
+            isKnown: true,
+        });
+
+        const foreignAgentParent = {
+            id: 'missing-parent',
+            metadata: { ...child.metadata, flavor: 'codex' },
+        } as Session;
+        expect(resolveLineageParent(child, [foreignAgentParent])).toMatchObject({ parentId: null, isKnown: true });
+
+        const foreignWorkspaceParent = {
+            id: 'missing-parent',
+            metadata: { ...child.metadata, resumedFromRemcliSessionId: undefined, path: '/other-workspace' },
+        } as Session;
+        expect(resolveLineageParent(child, [foreignWorkspaceParent])).toMatchObject({ parentId: null, isKnown: true });
+
+        const foreignMachineParent = {
+            id: 'missing-parent',
+            metadata: { ...child.metadata, machineId: 'other-machine' },
+        } as Session;
+        expect(resolveLineageParent(child, [foreignMachineParent])).toMatchObject({ parentId: null, isKnown: true });
+    });
+
+    it('requests parent history through the existing protocol loader', async () => {
+        const requestMessages = vi.fn(async (sessionId: string) => ({
+            total: 2,
+            hasMore: false,
+            consumed: 2,
+            nextOffset: 2,
+            sessionId,
+        }));
+
+        await requestLineageParentHistory('parent-session', requestMessages);
+
+        expect(requestMessages).toHaveBeenCalledTimes(1);
+        expect(requestMessages).toHaveBeenCalledWith('parent-session');
+    });
+
+    it('requests the first parent page even when cached messages are already marked loaded', () => {
+        // isLoaded has no pagination metadata, so the cached-store case must not skip this request.
+        expect(shouldRequestLineageParentInitialPage('parent-session', null)).toBe(true);
+        expect(shouldRequestLineageParentInitialPage('parent-session', 'parent-session')).toBe(false);
+    });
+
+    it('keeps the initial parent request stable across StrictMode replay and a temporary missing snapshot', () => {
+        let scope = null;
+        const first = getLineageHistoryScopeTransition(scope, 'child-session', 'parent-session');
+        scope = first.scope;
+        const requestIdentity = getLineageHistoryRequestIdentity('child-session', 'parent-session');
+
+        expect(first.shouldReset).toBe(true);
+        expect(shouldRequestLineageParentInitialPage(requestIdentity, null)).toBe(true);
+
+        const strictReplay = getLineageHistoryScopeTransition(scope, 'child-session', 'parent-session');
+        scope = strictReplay.scope;
+        expect(strictReplay.shouldReset).toBe(false);
+        expect(shouldRequestLineageParentInitialPage(requestIdentity, requestIdentity)).toBe(false);
+
+        const missingParent = getLineageHistoryScopeTransition(scope, 'child-session', null);
+        scope = missingParent.scope;
+        expect(missingParent.shouldReset).toBe(false);
+
+        const reappearedParent = getLineageHistoryScopeTransition(scope, 'child-session', 'parent-session');
+        scope = reappearedParent.scope;
+        expect(reappearedParent.shouldReset).toBe(false);
+        expect(shouldRequestLineageParentInitialPage(requestIdentity, requestIdentity)).toBe(false);
+
+        const nextRoute = getLineageHistoryScopeTransition(scope, 'next-child-session', 'parent-session');
+        const nextRequestIdentity = getLineageHistoryRequestIdentity('next-child-session', 'parent-session');
+        expect(nextRoute.shouldReset).toBe(true);
+        expect(nextRequestIdentity).not.toBe(requestIdentity);
+        expect(shouldRequestLineageParentInitialPage(nextRequestIdentity, requestIdentity)).toBe(true);
+    });
+
+    it('invokes missing-parent refresh only for the initial snapshot of each candidate', () => {
+        const gate = createLineageRefreshAttemptGate();
+        const refresh = vi.fn();
+        const refreshIfNeeded = (candidateId: string | null, isKnown: boolean): void => {
+            if (gate.consumeInitialAttempt(candidateId, isKnown)) refresh();
+        };
+
+        refreshIfNeeded('missing-parent', false);
+        refreshIfNeeded('missing-parent', false);
+        refreshIfNeeded('missing-parent', true);
+        expect(refresh).toHaveBeenCalledTimes(1);
+
+        refreshIfNeeded('known-parent', true);
+        refreshIfNeeded('known-parent', false);
+        expect(refresh).toHaveBeenCalledTimes(1);
+
+        refreshIfNeeded('new-parent', false);
+        expect(refresh).toHaveBeenCalledTimes(2);
+    });
+
+    it('loads one cached parent initial page and keeps its pagination metadata', async () => {
+        const page = {
+            total: 3,
+            hasMore: true,
+            consumed: 2,
+            nextOffset: 2,
+            sessionId: 'parent-session',
+        };
+        const requestMessages = vi.fn(async (sessionId: string) => ({ ...page, sessionId }));
+
+        const loadedPage = await requestLineageParentHistory('parent-session', requestMessages);
+        const pagination = mergeMessagePagination(
+            { offset: 0, total: 0, hasMore: false },
+            loadedPage,
+            'initial',
+        );
+
+        expect(requestMessages).toHaveBeenCalledTimes(1);
+        expect(requestMessages).toHaveBeenCalledWith('parent-session');
+        expect(pagination).toEqual({ offset: 2, total: 3, hasMore: true });
+    });
+
+    it('renders a visible inline degraded notice for unavailable parent history', () => {
+        const markup = renderToStaticMarkup(React.createElement(LineageHistoryNotice, { state: 'unavailable' }));
+
+        expect(markup).toContain('role="status"');
+        expect(markup).toContain('data-lineage-notice="unavailable"');
+        expect(markup).toContain('previous history unavailable');
+        const noticeElement = markup.match(/<div[^>]*>/)?.[0] ?? '';
+        expect(noticeElement).not.toContain('rounded-xl');
+        expect(noticeElement).not.toContain('border');
+        expect(noticeElement).not.toContain('bg-');
+    });
+
+    it('sends new input through the child session id only', async () => {
+        const calls: string[] = [];
+        const sendMessage = async (sessionId: string, text: string): Promise<void> => {
+            calls.push(`${sessionId}:${text}`);
+        };
+
+        const sendChildMessage = createChatMessageSender('child-session', sendMessage);
+        await sendChildMessage('Child prompt');
+
+        expect(calls).toEqual(['child-session:Child prompt']);
+        expect(calls).not.toContain('parent-session:Child prompt');
     });
 
     it('uses native agent session ids for resume instead of the remcli session id', () => {

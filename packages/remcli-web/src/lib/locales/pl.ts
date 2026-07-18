@@ -45,6 +45,7 @@ export const pl: Dictionary = {
     "chat.resumeFailed": "nie udało się wznowić sesji",
     "chat.sendFailed": "nie udało się wysłać wiadomości",
     "chat.executionError": "ostatnia operacja zakończyła się błędem",
+    "chat.lineageUnavailable": "wcześniejsza historia jest niedostępna · bieżąca sesja trwa dalej",
 
     "tts.listen": "słuchaj",
     "tts.synth": "synteza…",

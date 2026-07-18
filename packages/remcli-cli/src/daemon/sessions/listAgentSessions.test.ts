@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { appendFileSync, chmodSync, mkdirSync, writeFileSync, rmSync, existsSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 
 // ---- Mocks ----
 
@@ -923,6 +924,24 @@ describe('listAgentSessions', () => {
             expect(ids).toEqual([id1, id2]);
         });
 
+        it('should expose only the selected workspace and preserve its path for resume', async () => {
+            const listCursorSessions = await getListCursorSessions();
+            const selectedDirectory = '/workspace/selected';
+            const otherDirectory = '/workspace/other';
+            const selectedWorkspaceId = createHash('md5').update(selectedDirectory).digest('hex');
+            const otherWorkspaceId = createHash('md5').update(otherDirectory).digest('hex');
+            const selectedSessionId = '33333333-3333-3333-3333-333333333333';
+            createCursorSession(cursorChatsDir, selectedWorkspaceId, selectedSessionId);
+            createCursorSession(cursorChatsDir, otherWorkspaceId, '44444444-4444-4444-4444-444444444444');
+
+            const sessions = listCursorSessions(selectedDirectory);
+
+            expect(sessions).toEqual([expect.objectContaining({
+                sessionId: selectedSessionId,
+                projectPath: selectedDirectory,
+            })]);
+        });
+
         it('should skip session directories without store.db', async () => {
             const listCursorSessions = await getListCursorSessions();
             const sessionId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
@@ -1112,6 +1131,32 @@ describe('listAgentSessions', () => {
             const sessions = listAllAgentSessions();
             const agents = sessions.map(s => s.agent).sort();
             expect(agents).toEqual(['claude', 'codex', 'cursor', 'gemini']);
+        });
+
+        it('should preserve the selected Cursor workspace when listing through the aggregate API', async () => {
+            const listAllAgentSessions = await getListAllAgentSessions();
+            const cursorDir = join(testDir, '.cursor', 'chats');
+            const selectedDirectory = join(testDir, 'selected-workspace');
+            const otherDirectory = join(testDir, 'other-workspace');
+            const selectedSessionId = '11111111-2222-3333-4444-555555555555';
+
+            createCursorSession(
+                cursorDir,
+                createHash('md5').update(selectedDirectory).digest('hex'),
+                selectedSessionId,
+            );
+            createCursorSession(
+                cursorDir,
+                createHash('md5').update(otherDirectory).digest('hex'),
+                '66666666-7777-8888-9999-aaaaaaaaaaaa',
+            );
+
+            const sessions = listAllAgentSessions('cursor', selectedDirectory);
+
+            expect(sessions).toEqual([expect.objectContaining({
+                sessionId: selectedSessionId,
+                projectPath: selectedDirectory,
+            })]);
         });
 
         it('should sort by lastModified descending', async () => {

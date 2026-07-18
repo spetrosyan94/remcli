@@ -32,6 +32,7 @@ interface MockSocket {
     disconnect: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
     emit: ReturnType<typeof vi.fn>;
+    emitWithAck: ReturnType<typeof vi.fn>;
     connected: boolean;
 }
 
@@ -59,6 +60,7 @@ describe('ApiSessionClient connection handling', () => {
             disconnect: vi.fn(),
             close: vi.fn(),
             emit: vi.fn(),
+            emitWithAck: vi.fn(),
             connected: true,
         };
 
@@ -208,6 +210,69 @@ describe('ApiSessionClient connection handling', () => {
             });
         });
         expect(client.requestPendingUserMessageRedelivery()).toBe(false);
+    });
+
+    it('rejects a bounded metadata update when the server returns error', async () => {
+        mockSocket.emitWithAck.mockResolvedValue({ result: 'error' });
+        const client = new ApiSessionClient('fake-token', mockSession);
+
+        await expect(client.updateMetadata((metadata) => ({
+            ...metadata,
+            path: '/tmp/updated',
+        }), {
+            maxAttempts: 2,
+            timeoutMs: 1,
+        })).rejects.toThrow('Session metadata update was rejected by the server');
+
+        expect(mockSocket.emitWithAck).toHaveBeenCalledOnce();
+    });
+
+    it('rejects a default metadata update immediately when the server returns error', async () => {
+        mockSocket.emitWithAck.mockResolvedValue({ result: 'error' });
+        const client = new ApiSessionClient('fake-token', mockSession);
+
+        await expect(client.updateMetadata((metadata) => ({
+            ...metadata,
+            path: '/tmp/rejected',
+        }))).rejects.toThrow('Session metadata update was rejected by the server');
+
+        expect(mockSocket.emitWithAck).toHaveBeenCalledOnce();
+    });
+
+    it('bounds pending metadata transport retries instead of waiting indefinitely', async () => {
+        mockSocket.emitWithAck.mockImplementation(() => new Promise<never>(() => {}));
+        const client = new ApiSessionClient('fake-token', mockSession);
+
+        await expect(client.updateMetadata((metadata) => ({
+            ...metadata,
+            path: '/tmp/updated',
+        }), {
+            maxAttempts: 2,
+            timeoutMs: 10,
+        })).rejects.toThrow('Metadata update timed out');
+
+        expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2);
+    });
+
+    it('bounds a lifecycle metadata update queued behind a pending retry', async () => {
+        mockSocket.emitWithAck.mockImplementation(() => new Promise<never>(() => {}));
+        const client = new ApiSessionClient('fake-token', mockSession);
+
+        void client.updateMetadata((metadata) => ({
+            ...metadata,
+            path: '/tmp/pending',
+        }));
+        await vi.waitFor(() => expect(mockSocket.emitWithAck).toHaveBeenCalledOnce());
+
+        await expect(client.updateMetadata((metadata) => ({
+            ...metadata,
+            lifecycleState: 'archived',
+        }), {
+            maxAttempts: 1,
+            timeoutMs: 1,
+        })).rejects.toThrow('Metadata update timed out after 1ms');
+
+        expect(mockSocket.emitWithAck).toHaveBeenCalledOnce();
     });
 
     afterEach(() => {

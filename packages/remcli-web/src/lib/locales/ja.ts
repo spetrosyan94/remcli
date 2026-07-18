@@ -45,6 +45,7 @@ export const ja: Dictionary = {
     "chat.resumeFailed": "セッションを再開できませんでした",
     "chat.sendFailed": "メッセージを送信できませんでした",
     "chat.executionError": "直前の操作はエラーで終了しました",
+    "chat.lineageUnavailable": "以前の履歴は利用できません · 現在のセッションは続行します",
 
     "tts.listen": "再生",
     "tts.synth": "合成中…",
