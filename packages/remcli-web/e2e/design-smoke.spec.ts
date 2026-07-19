@@ -1066,10 +1066,10 @@ test("runtime Cursor catalog renders account-visible models, native controls, an
     await expect(page.locator('[data-slot="drawer-overlay"]')).toHaveCount(0);
     await expect(modeControl).toContainText("Plan");
 
-    const launchControl = page.getByRole("button", { name: /^Launch controls/i });
+    const launchControl = page.getByRole("button", { name: /^Advanced/i });
     await launchControl.click();
     const launchSheet = page.locator('[data-slot="drawer-content"]');
-    await expect(launchSheet).toContainText("Launch controls");
+    await expect(launchSheet).toContainText("Advanced");
     await expect(launchSheet.getByRole("button", { name: "host-controlled", exact: true })).toBeVisible();
     await expect(launchSheet.getByRole("button", { name: "enabled", exact: true })).toBeVisible();
     await expect(launchSheet.getByRole("button", { name: "disabled", exact: true })).toBeVisible();

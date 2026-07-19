@@ -5,7 +5,7 @@
 // Модели/режимы — daemon-normalized provider capabilities; static options
 // остаются только у ещё не capability-driven providers.
 import * as React from "react";
-import { ArrowUp, Check, ChevronDown, Folder, FolderOpen, Loader2, RotateCcw, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, Folder, FolderOpen, Loader2, RotateCcw, SlidersHorizontal, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { AgentIcon, StatusDot, type AgentId } from "@/components/kit";
@@ -234,13 +234,19 @@ export function getReasoningControlState(input: {
     return "ready";
 }
 
-function formatCursorLaunchControls(controls: CursorLaunchControls): string {
-    const flags = [
+function getCursorLaunchControlsSummary(controls: CursorLaunchControls): string | null {
+    const changedControls = [
         controls.force ? t("new.cursorForce") : null,
         controls.autoReview ? t("new.cursorAutoReview") : null,
+        controls.sandbox !== "local-configuration"
+            ? `${t("new.cursorSandbox")} ${cursorSandboxLabel(controls.sandbox)}`
+            : null,
+        controls.approveMcps ? "MCP" : null,
     ].filter((value): value is string => value !== null);
-    const sandbox = cursorSandboxLabel(controls.sandbox);
-    return `${flags.length > 0 ? `${flags.join(" · ")} · ` : ""}${t("new.cursorSandbox")} ${sandbox}`;
+
+    return changedControls.length > 0
+        ? t("new.cursorAdvancedSummary", { controls: changedControls.join(" · ") })
+        : null;
 }
 
 function cursorExecutionModeLabel(mode: CursorLaunchControls["executionMode"]): string {
@@ -575,6 +581,9 @@ export function NewSessionPage() {
     const activeModeLabel = agent === "cursor"
         ? cursorExecutionModeLabel(cursorLaunchControls.executionMode)
         : getAgentPermissionLabel(agent, mode);
+    const cursorLaunchControlsSummary = agent === "cursor"
+        ? getCursorLaunchControlsSummary(cursorLaunchControls)
+        : null;
     const selectedCodexModel = findCodexModel(codexCapabilities, codexModelId);
     const selectedCursorModel = findCursorModel(cursorCapabilities, cursorModelId);
     const activeModelLabel = agent === "codex"
@@ -1153,14 +1162,14 @@ export function NewSessionPage() {
                             onClick={() => openSheet("cursor-launch")}
                             aria-haspopup="dialog"
                             aria-expanded={sheetKind === "cursor-launch"}
-                            aria-controls="cursor-launch-sheet"
-                            className="flex min-h-11 min-w-0 items-center gap-2 rounded-[10px] border border-dashed border-border bg-card px-2.5 text-left transition-[border-color,background-color,transform] active:scale-[0.96]"
+                            aria-controls="new-session-sheet"
+                            aria-label={`${t("new.cursorAdvanced")}${cursorLaunchControlsSummary ? ` · ${cursorLaunchControlsSummary}` : ""}`}
+                            className={`inline-flex min-h-11 max-w-full self-start items-center gap-1.5 rounded-[10px] border px-2.5 font-mono text-[11px] transition-[border-color,background-color,transform] active:scale-[0.96] ${cursorLaunchControlsSummary ? "border-accent/40 bg-accent/[0.06] text-foreground" : "border-border bg-card text-muted-foreground"}`}
                         >
-                            <span className="min-w-0 flex-1">
-                                <span className="block truncate font-mono text-[11px] font-semibold text-foreground">{t("new.cursorLaunchControls")}</span>
-                                <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">{formatCursorLaunchControls(cursorLaunchControls)}</span>
+                            <SlidersHorizontal className="size-3 shrink-0" aria-hidden="true" />
+                            <span className="min-w-0 truncate">
+                                {t("new.cursorAdvanced")}{cursorLaunchControlsSummary ? ` · ${cursorLaunchControlsSummary}` : ""}
                             </span>
-                            <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
                         </button>
                     )}
                 </section>
@@ -1332,7 +1341,7 @@ export function NewSessionPage() {
                     {sheetKind === "cursor-launch" && (
                         <>
                             <div id="cursor-launch-sheet">
-                                <SheetHeader title={t("new.cursorLaunchControls")} tag="cursor" />
+                                <SheetHeader title={t("new.cursorAdvanced")} tag="cursor" />
                                 <button
                                     type="button"
                                     role="switch"

@@ -740,7 +740,7 @@ describe('NewSessionPage Cursor capability selection', () => {
 
         page = renderNewSessionPage();
         const launchTrigger = findElement(page, (element) => element.type === 'button'
-            && elementText(element).includes('new.cursorLaunchControls'));
+            && elementText(element).includes('new.cursorAdvanced'));
         launchTrigger.props.onClick?.();
         page = renderNewSessionPage();
 
