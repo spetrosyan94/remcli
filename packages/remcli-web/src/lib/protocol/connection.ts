@@ -92,8 +92,9 @@ export function parseConnectData(data: string): P2PQRPayload | null {
  */
 export function parseConnectUrl(data: string): P2PQRPayload | null {
     try {
-        const url = new URL(data);
+        const url = new URL(data.trim());
         if (!url.hash || url.hash.length <= 1) return null;
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
 
         const base64 = url.hash.substring(1);
         const decoded = atob(base64);
@@ -110,35 +111,6 @@ export function parseConnectUrl(data: string): P2PQRPayload | null {
         const host = url.hostname;
         const port = url.port ? parseInt(url.port, 10) : 80;
         return { mode: 'p2p', host, port, key: compact.k, v: compact.v };
-    } catch {
-        return null;
-    }
-}
-
-/**
- * Build a payload from manual input: server URL (http://host:port or
- * https://tunnel-host) + base64 shared secret key.
- */
-export function parseManualInput(serverUrl: string, key: string): P2PQRPayload | null {
-    const trimmedKey = key.trim();
-    if (!trimmedKey) return null;
-    let decoded: DecodedPairingKey;
-    try {
-        decoded = decodePairingKey(trimmedKey);
-    } catch {
-        return null;
-    }
-    try {
-        const withProtocol = /^https?:\/\//i.test(serverUrl.trim())
-            ? serverUrl.trim()
-            : `http://${serverUrl.trim()}`;
-        const url = new URL(withProtocol);
-        if (url.protocol === 'https:') {
-            // Tunnel mode — host contains full URL with protocol, port=0
-            return { mode: 'p2p', host: url.origin, port: 0, key: trimmedKey, v: decoded.version };
-        }
-        const port = url.port ? parseInt(url.port, 10) : 80;
-        return { mode: 'p2p', host: url.hostname, port, key: trimmedKey, v: decoded.version };
     } catch {
         return null;
     }

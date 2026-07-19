@@ -451,7 +451,7 @@ test("dialog controls keep their full mobile hit area", async ({ page }, testInf
     await expect(dialog).toHaveCount(0);
 });
 
-test("Connect fixture states preserve usable controls and labelled manual inputs", async ({ page }, testInfo) => {
+test("Connect fixture states preserve usable controls and one labelled connection-link input", async ({ page }, testInfo) => {
     test.skip(!isMobileProject(testInfo), "Mobile connection-state regression.");
     const pageIssues = collectPageIssues(page);
 
@@ -461,8 +461,8 @@ test("Connect fixture states preserve usable controls and labelled manual inputs
     await assertNoHorizontalOverflow(page);
 
     await openFixtureRoute(page, "/connect?fixtures=1&connectFixture=manual");
-    await expect(page.getByRole("textbox", { name: "address:port" })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "connection key" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "https://…/terminal/connect#…" })).toBeVisible();
+    await expect(page.getByRole("textbox")).toHaveCount(1);
     await assertMobileTouchTargets(page);
     await assertNoHorizontalOverflow(page);
 
@@ -484,9 +484,9 @@ test("connect fixture state cannot change the production connection flow", async
     await page.goto("/connect?connectFixture=error", { waitUntil: "domcontentloaded" });
 
     await expect(page.getByRole("button", { name: "Scan QR code" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Enter address manually" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Paste connection link" })).toBeVisible();
     await expect(page.getByText("Failed to connect", { exact: true })).toHaveCount(0);
-    await expect(page.getByRole("textbox", { name: "address:port" })).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: "https://…/terminal/connect#…" })).toHaveCount(0);
 
     expect(pageIssues).toEqual([]);
 });

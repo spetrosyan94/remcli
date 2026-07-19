@@ -49,7 +49,7 @@ function buildFixturePath(route: FixtureRoute): string {
 async function expectFixtureRouteReady(page: Page, route: FixtureRoute): Promise<void> {
     if (route.name === "connect") {
         await expect(page.getByRole("button", { name: "Scan QR code" })).toBeVisible();
-        await expect(page.getByRole("button", { name: "Enter address manually" })).toBeVisible();
+        await expect(page.getByRole("button", { name: "Paste connection link" })).toBeVisible();
         return;
     }
 
@@ -64,7 +64,7 @@ async function expectFixtureRouteReady(page: Page, route: FixtureRoute): Promise
     }
 
     if (route.name === "connect-manual") {
-        await expect(page.getByRole("textbox", { name: "address:port" })).toBeVisible();
+        await expect(page.getByRole("textbox", { name: "https://…/terminal/connect#…" })).toBeVisible();
         return;
     }
 

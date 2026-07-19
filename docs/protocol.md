@@ -32,6 +32,8 @@ https://<subdomain>.trycloudflare.com/terminal/connect#<base64(JSON)>   (tunnel)
 ```
 Хэш-фрагмент — компактный JSON в base64 `{k: <pairing material>, v: <version>}`; host/port выводятся из URL. v1 содержит один 32-byte secret. v2 содержит 64 bytes: `authSecret || contentSecret`. `authSecret` формирует bearer HMAC-SHA512, а `contentSecret` остаётся ключом legacy content encryption. Веб-клиент принимает только соответствующие пары длина/версия.
 
+Если QR недоступен, веб-клиент принимает эту же полную ссылку одной вставкой из terminal output. Отдельные поля адреса и ключа не используются. Принимаются только `http`/`https`; hash-ключ остаётся в браузере и не показывается в статусе или ошибке подключения.
+
 Pairing хранится в `~/.remcli/p2p-pairing.json` с правами `0600`: `{ v: 2, authSecret, contentSecret, port, createdAt }`. Старый файл `{ secret, ... }` мигрируется как одинаковые auth/content secrets. Материал pairing не пишется в `daemon.state.json`, heartbeat, machine metadata или диагностические логи.
 
 ### Show QR и rekey

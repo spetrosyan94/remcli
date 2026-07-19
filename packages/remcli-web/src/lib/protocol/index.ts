@@ -2,7 +2,7 @@
  * P2P daemon protocol client — public API for the web app screens.
  *
  * Typical flow:
- *   1. ConnectPage: parseConnectData()/parseManualInput() → startProtocolClient(payload)
+ *   1. ConnectPage: parseConnectData()/parseConnectUrl() → startProtocolClient(payload)
  *   2. App boot:    restoreProtocolClient()
  *   3. Screens:     useSessions()/useMachines()/useSessionMessages(id)/useConnectionStatus()
  *   4. Chat:        loadSessionMessages(id) + sendSessionMessage(id, text)
@@ -14,7 +14,6 @@
 export {
     parseConnectData,
     parseConnectUrl,
-    parseManualInput,
     deriveBearerToken,
     decodePairingKey,
     createP2PCredentials,

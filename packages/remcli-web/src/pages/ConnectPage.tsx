@@ -1,9 +1,9 @@
 // remcli-web — Onboarding / Подключение (design/screens/connect.tsx, connect-states.html).
 // Реальный флоу P2P: hash из QR-ссылки демона (/terminal/connect#base64({k,v})) → авто-коннект;
-// камера getUserMedia + BarcodeDetector (фолбэк — ручной ввод URL+ключа);
+// камера getUserMedia + BarcodeDetector (фолбэк — вставка полной connection URL);
 // startProtocolClient + live-статус сокета → редирект на / либо состояние error.
 import * as React from "react";
-import { Loader2, QrCode, X } from "lucide-react";
+import { Link2, Loader2, QrCode, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router";
 import { Caret, Logo } from "@/components/kit";
 import { t } from "@/lib/i18n";
@@ -13,7 +13,6 @@ import {
     getStoredConnection,
     parseConnectData,
     parseConnectUrl,
-    parseManualInput,
     startProtocolClient,
     useConnectionStatus,
     type P2PQRPayload,
@@ -111,13 +110,12 @@ export function ConnectPage() {
     }, [restoreFailed]);
     const [state, setState] = React.useState<ConnectState>(fixtureState ?? (failedPayload ? "error" : "idle"));
     const [payload, setPayload] = React.useState<P2PQRPayload | null>(failedPayload ?? (fixtureState === "error" ? FIXTURE_ERROR_PAYLOAD : null));
-    const [address, setAddress] = React.useState("");
-    const [secretKey, setSecretKey] = React.useState("");
+    const [connectionLink, setConnectionLink] = React.useState("");
     const [manualError, setManualError] = React.useState<string | null>(null);
     const [scannerNotice, setScannerNotice] = React.useState<string | null>(null);
     const videoRef = React.useRef<HTMLVideoElement | null>(null);
 
-    const target = payload ? payloadTarget(payload) : address;
+    const target = payload ? payloadTarget(payload) : "";
     const timeoutMessage = splitTimeoutMessage(t("connect.error.timeout", { address: TIMEOUT_ADDRESS_PLACEHOLDER }));
 
     const beginConnect = React.useCallback((next: P2PQRPayload) => {
@@ -221,7 +219,7 @@ export function ConnectPage() {
     }, [state, beginConnect]);
 
     const startManualConnect = () => {
-        const parsed = parseManualInput(address, secretKey);
+        const parsed = parseConnectUrl(connectionLink);
         if (!parsed) {
             setManualError(t("connect.manual.invalid"));
             return;
@@ -298,30 +296,43 @@ export function ConnectPage() {
                 )}
 
                 {state === "manual" && (
-                    <div className="mt-8 flex w-full flex-col gap-2.5 rounded-2xl border border-border bg-card px-4 py-4">
+                    <form
+                        className="mt-8 flex w-full flex-col gap-2.5 rounded-2xl border border-border bg-card px-4 py-4"
+                        onSubmit={(event) => {
+                            event.preventDefault();
+                            startManualConnect();
+                        }}
+                    >
                         <span className="text-[13px] font-semibold">{t("connect.manual.title")}</span>
                         {scannerNotice && (
                             <p className="font-mono text-[11px] leading-relaxed text-status-permission">{scannerNotice}</p>
                         )}
-                        <input
-                            className="h-11 rounded-[10px] border border-input bg-muted px-3 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15"
-                            aria-label={t("connect.manual.addressPlaceholder")}
-                            placeholder={t("connect.manual.addressPlaceholder")}
-                            value={address}
-                            onChange={(event) => setAddress(event.target.value)}
-                        />
-                        <input
-                            className="h-11 rounded-[10px] border border-input bg-muted px-3 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15"
-                            aria-label={t("connect.manual.keyPlaceholder")}
-                            placeholder={t("connect.manual.keyPlaceholder")}
-                            value={secretKey}
-                            onChange={(event) => setSecretKey(event.target.value)}
-                        />
+                        <p id="connection-link-hint" className="font-mono text-[11px] leading-relaxed text-muted-foreground">{t("connect.manual.hint")}</p>
+                        <div className="flex h-11 min-w-0 items-center gap-2 rounded-[10px] border border-input bg-muted px-3 transition-[border-color,box-shadow] duration-[var(--dur-micro)] ease-[var(--ease-out)] focus-within:border-accent focus-within:ring-[3px] focus-within:ring-accent/15">
+                            <Link2 className="size-3.5 shrink-0 text-muted-foreground" />
+                            <input
+                                aria-label={t("connect.manual.linkPlaceholder")}
+                                aria-describedby="connection-link-hint"
+                                autoCapitalize="none"
+                                autoComplete="off"
+                                autoCorrect="off"
+                                className="h-11 min-w-0 flex-1 bg-transparent font-mono text-[13px] outline-none placeholder:text-muted-foreground"
+                                inputMode="url"
+                                placeholder={t("connect.manual.linkPlaceholder")}
+                                spellCheck={false}
+                                type="text"
+                                value={connectionLink}
+                                onChange={(event) => {
+                                    setConnectionLink(event.target.value);
+                                    setManualError(null);
+                                }}
+                            />
+                        </div>
                         {manualError && (
                             <p className="font-mono text-[11px] text-status-error">{manualError}</p>
                         )}
-                        <button onClick={startManualConnect} className="h-11 rounded-[10px] bg-primary text-sm font-semibold text-primary-foreground">{t("connect.manual.submit")}</button>
-                    </div>
+                        <button type="submit" className="h-11 rounded-[10px] bg-primary text-sm font-semibold text-primary-foreground">{t("connect.manual.submit")}</button>
+                    </form>
                 )}
             </div>
 

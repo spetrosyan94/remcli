@@ -8,7 +8,6 @@ import {
     getStoredConnection,
     parseConnectData,
     parseConnectUrl,
-    parseManualInput,
     restoreCredentials,
     storeConnection
 } from '@/lib/protocol/connection';
@@ -73,6 +72,17 @@ describe('parseConnectData / parseConnectUrl', () => {
         });
     });
 
+    it('accepts a copied connection URL with surrounding whitespace', () => {
+        const hash = Buffer.from(JSON.stringify({ k: key, v: 1 })).toString('base64');
+        expect(parseConnectUrl(`\n https://abc.trycloudflare.com/terminal/connect#${hash} \n`)).toEqual({
+            mode: 'p2p',
+            host: 'https://abc.trycloudflare.com',
+            port: 0,
+            key,
+            v: 1,
+        });
+    });
+
     it('parses a v2 QR only when the version matches its split key material', () => {
         const payload = JSON.stringify({ mode: 'p2p', host: '192.168.1.5', port: 8005, key: v2Key, v: 2 });
         expect(parseConnectData(payload)).toEqual({ mode: 'p2p', host: '192.168.1.5', port: 8005, key: v2Key, v: 2 });
@@ -85,32 +95,10 @@ describe('parseConnectData / parseConnectUrl', () => {
         expect(parseConnectData('not a url')).toBeNull();
         expect(parseConnectData('{"mode":"p2p"}')).toBeNull();
         expect(parseConnectData('http://192.168.1.5:8005/terminal/connect')).toBeNull(); // no hash
+        const hash = Buffer.from(JSON.stringify({ k: key, v: 1 })).toString('base64');
+        expect(parseConnectUrl(`ftp://192.168.1.5:8005/terminal/connect#${hash}`)).toBeNull();
         const badHash = Buffer.from(JSON.stringify({ nope: true })).toString('base64');
         expect(parseConnectData(`http://192.168.1.5:8005/terminal/connect#${badHash}`)).toBeNull();
-    });
-});
-
-describe('parseManualInput', () => {
-    const key = Buffer.from(new Uint8Array(32).fill(9)).toString('base64');
-
-    it('builds a payload from host:port + key', () => {
-        expect(parseManualInput('192.168.1.5:8005', key)).toEqual({
-            mode: 'p2p', host: '192.168.1.5', port: 8005, key, v: 1
-        });
-        expect(parseManualInput('http://192.168.1.5:8005', key)).toEqual({
-            mode: 'p2p', host: '192.168.1.5', port: 8005, key, v: 1
-        });
-    });
-
-    it('treats https URLs as tunnel mode (port=0)', () => {
-        expect(parseManualInput('https://abc.trycloudflare.com', key)).toEqual({
-            mode: 'p2p', host: 'https://abc.trycloudflare.com', port: 0, key, v: 1
-        });
-    });
-
-    it('rejects an empty or non-base64 key', () => {
-        expect(parseManualInput('192.168.1.5:8005', '')).toBeNull();
-        expect(parseManualInput('192.168.1.5:8005', '!!!not-base64!!!')).toBeNull();
     });
 });
 
