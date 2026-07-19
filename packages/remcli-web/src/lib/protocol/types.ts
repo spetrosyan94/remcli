@@ -283,11 +283,7 @@ export type PermissionMode =
     | 'read-only'
     | 'workspace-write'
     | 'danger-full-access'
-    | 'auto_edit'
-    | 'agent'
-    | 'ask'
-    | 'force'
-    | 'auto-review';
+    | 'auto_edit';
 
 export interface Session {
     id: string;

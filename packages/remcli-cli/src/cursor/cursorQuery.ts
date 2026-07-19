@@ -10,6 +10,7 @@ import { createInterface } from 'node:readline';
 
 import { logger } from '@/ui/logger';
 import { buildCursorTurnArguments, resolveCursorExecutable } from './cursorCli';
+import type { CursorLaunchControls } from './cursorLaunchControls';
 import type { CursorStreamEvent } from './types';
 
 const FORCE_KILL_TIMEOUT_MS = 1_000;
@@ -32,12 +33,10 @@ export interface CursorQueryOptions {
     env?: Record<string, string>;
     /** Path to Cursor Agent executable, used by focused tests. */
     executable?: string;
-    /** Cursor agent mode: agent, plan or ask. */
-    mode?: 'agent' | 'plan' | 'ask';
-    /** Map the explicit Remcli force permission to Cursor --force. */
-    force?: boolean;
-    /** Map the explicit Remcli auto-review permission to Cursor --auto-review. */
-    autoReview?: boolean;
+    /** Native Cursor controls validated when this Remcli session was created. */
+    launchControls?: CursorLaunchControls;
+    /** Remcli's immutable non-interactive workspace-trust policy. */
+    trustWorkspace?: boolean;
 }
 
 export interface CursorTurnOutcome {
@@ -90,7 +89,7 @@ export async function runCursorTurn(
     const startedAt = Date.now();
 
     logger.debug(
-        `[cursor] Starting native turn executable=${executable} mode=${options.mode ?? 'agent'} hasResume=${Boolean(options.resumeSessionId)} hasModel=${Boolean(options.model)}`,
+        `[cursor] Starting native turn executable=${executable} executionMode=${options.launchControls?.executionMode ?? 'agent'} hasResume=${Boolean(options.resumeSessionId)} hasModel=${Boolean(options.model)}`,
     );
 
     let child: ChildProcess;

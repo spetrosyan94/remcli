@@ -11,20 +11,18 @@ describe('agent permission modes', () => {
         expect(getAgentPermissionModes('claude')).toEqual(['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions']);
         expect(getAgentPermissionModes('codex')).toEqual(['read-only', 'workspace-write', 'danger-full-access']);
         expect(getAgentPermissionModes('gemini')).toEqual(['manual', 'auto_edit', 'plan']);
-        expect(getAgentPermissionModes('cursor')).toEqual(['agent', 'plan', 'ask', 'force', 'auto-review']);
+        expect(getAgentPermissionModes('cursor')).toEqual([]);
     });
 
     it('uses the agent-specific initial permission mode', () => {
         expect(getDefaultPermissionMode('claude')).toBe('manual');
         expect(getDefaultPermissionMode('codex')).toBe('workspace-write');
         expect(getDefaultPermissionMode('gemini')).toBe('manual');
-        expect(getDefaultPermissionMode('cursor')).toBe('agent');
     });
 
     it('keeps supported modes unchanged', () => {
         expect(normalizeAgentPermissionMode('codex', 'danger-full-access')).toBe('danger-full-access');
         expect(normalizeAgentPermissionMode('claude', 'acceptEdits')).toBe('acceptEdits');
-        expect(normalizeAgentPermissionMode('cursor', 'plan')).toBe('plan');
         expect(normalizeAgentPermissionMode('gemini', 'auto_edit')).toBe('auto_edit');
     });
 
@@ -46,6 +44,5 @@ describe('agent permission modes', () => {
     it('keeps non-Codex labels as backend-native permission values', () => {
         expect(getAgentPermissionLabel('gemini', 'auto_edit')).toBe('auto_edit');
         expect(getAgentPermissionLabel('claude', 'acceptEdits')).toBe('acceptEdits');
-        expect(getAgentPermissionLabel('cursor', 'auto-review')).toBe('auto-review');
     });
 });

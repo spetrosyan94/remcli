@@ -92,6 +92,20 @@ if (!args.includes('--print') || outputFormatIndex < 0 || args[outputFormatIndex
 if (!args.includes('--trust')) {
     fail('Controlled Cursor Agent expected --trust for the daemon-owned non-interactive turn.');
 }
+const modeIndex = args.indexOf('--mode');
+if (modeIndex >= 0 && !['plan', 'ask'].includes(args[modeIndex + 1] || '')) {
+    fail('Controlled Cursor Agent received an unsupported --mode value.');
+}
+if (args.filter((arg) => arg === '--mode').length > 1) {
+    fail('Controlled Cursor Agent received duplicate --mode flags.');
+}
+const sandboxIndex = args.indexOf('--sandbox');
+if (sandboxIndex >= 0 && !['enabled', 'disabled'].includes(args[sandboxIndex + 1] || '')) {
+    fail('Controlled Cursor Agent received an unsupported --sandbox value.');
+}
+if (args.filter((arg) => arg === '--sandbox').length > 1) {
+    fail('Controlled Cursor Agent received duplicate --sandbox flags.');
+}
 if (resumeIndex >= 0 && (!resumeSessionId || resumeSessionId !== options.nativeSessionId)) {
     fail('Controlled Cursor Agent received an unexpected native resume ID.');
 }

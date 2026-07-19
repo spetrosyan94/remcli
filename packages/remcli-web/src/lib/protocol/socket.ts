@@ -262,6 +262,26 @@ export interface CursorExecutionConfig {
     catalogVersion: string;
 }
 
+export type CursorExecutionMode = 'agent' | 'plan' | 'ask';
+export type CursorSandboxMode = 'local-configuration' | 'enabled' | 'disabled';
+
+/** Native Cursor controls fixed at session creation and validated by the daemon. */
+export interface CursorLaunchControls {
+    executionMode: CursorExecutionMode;
+    force: boolean;
+    autoReview: boolean;
+    sandbox: CursorSandboxMode;
+    approveMcps: boolean;
+}
+
+export const DEFAULT_CURSOR_LAUNCH_CONTROLS: CursorLaunchControls = {
+    executionMode: 'agent',
+    force: false,
+    autoReview: false,
+    sandbox: 'local-configuration',
+    approveMcps: false,
+};
+
 export interface CursorModelCapability {
     id: string;
     displayName: string;
@@ -287,6 +307,7 @@ export interface SpawnSessionOptions {
     permissionMode?: PermissionMode;
     codexExecution?: CodexExecutionConfig;
     cursorExecution?: CursorExecutionConfig;
+    cursorLaunchControls?: CursorLaunchControls;
     resumeSessionId?: string;
     resumeSessionName?: string;
     environmentVariables?: Record<string, string>;
@@ -507,6 +528,7 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
         permissionMode,
         codexExecution,
         cursorExecution,
+        cursorLaunchControls,
     } = options;
     try {
         const result = await machineRpc<SpawnSessionResult | null, {
@@ -521,6 +543,7 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
             permissionMode?: PermissionMode;
             codexExecution?: CodexExecutionConfig;
             cursorExecution?: CursorExecutionConfig;
+            cursorLaunchControls?: CursorLaunchControls;
         }>(
             machineId,
             'spawn-remcli-session',
@@ -536,6 +559,7 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
                 permissionMode,
                 codexExecution,
                 cursorExecution,
+                cursorLaunchControls,
             }
         );
         if (!result) {

@@ -16,19 +16,25 @@ import {
 } from './conciergeService';
 import { CONCIERGE_SYSTEM_PROMPT, CONCIERGE_TOOLS } from './constants';
 import type { ConciergeDeps, ConciergeRequestBody } from './types';
-import type { CursorExecutionConfig } from '@/cursor/cursorCapabilities';
+import type { CursorDaemonSelection } from '@/cursor/cursorCapabilities';
 
 // ---- Helpers ----
 
 function makeDeps(overrides?: Partial<ConciergeDeps>): ConciergeDeps {
-    const defaultCursorExecution: CursorExecutionConfig = {
-        model: 'auto',
-        catalogVersion: 'cursor-catalog-v1',
+    const defaultCursorSelection: CursorDaemonSelection = {
+        execution: {
+            model: 'auto',
+            catalogVersion: 'cursor-catalog-v1',
+        },
+        runner: {
+            executable: 'agent',
+            cliFingerprint: '0123456789abcdef',
+        },
     };
     return {
         listSessions: () => [],
         spawnSession: async () => ({ type: 'success', sessionId: 'sess-123' }),
-        getDefaultCursorExecution: async () => defaultCursorExecution,
+        getDefaultCursorSelection: async () => defaultCursorSelection,
         getDaemonStatus: () => ({ version: '1.0.0', uptimeSec: 42, port: 12345, tunnelUrl: null }),
         ...overrides,
     };
@@ -240,19 +246,25 @@ describe('executeToolCall — spawn_agent_session validation', () => {
         expect(result).toEqual({ type: 'success', sessionId: 'sess-ok' });
     });
 
-    it('spawns Cursor with a daemon-validated provider default and control mode', async () => {
+    it('spawns Cursor with a daemon-validated provider default and native launch controls', async () => {
         const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'cursor-session' }));
-        const getDefaultCursorExecution = vi.fn(async () => ({
-            model: 'gpt-5.6-luna-xhigh',
-            catalogVersion: 'fresh-cursor-catalog',
+        const getDefaultCursorSelection = vi.fn(async () => ({
+            execution: {
+                model: 'gpt-5.6-luna-xhigh',
+                catalogVersion: 'fresh-cursor-catalog',
+            },
+            runner: {
+                executable: 'agent' as const,
+                cliFingerprint: '0123456789abcdef',
+            },
         }));
         const result = await executeToolCall(
             'spawn_agent_session',
             JSON.stringify({ agent: 'cursor', directory: process.cwd() }),
-            makeDeps({ spawnSession: spawn, getDefaultCursorExecution }),
+            makeDeps({ spawnSession: spawn, getDefaultCursorSelection }),
         );
 
-        expect(getDefaultCursorExecution).toHaveBeenCalledOnce();
+        expect(getDefaultCursorSelection).toHaveBeenCalledOnce();
         expect(spawn).toHaveBeenCalledWith({
             agent: 'cursor',
             directory: process.cwd(),
@@ -261,7 +273,17 @@ describe('executeToolCall — spawn_agent_session validation', () => {
                 model: 'gpt-5.6-luna-xhigh',
                 catalogVersion: 'fresh-cursor-catalog',
             },
-            permissionMode: 'agent',
+            cursorLaunchControls: {
+                executionMode: 'agent',
+                force: false,
+                autoReview: false,
+                sandbox: 'local-configuration',
+                approveMcps: false,
+            },
+            cursorRunner: {
+                executable: 'agent',
+                cliFingerprint: '0123456789abcdef',
+            },
         });
         expect(result).toEqual({ type: 'success', sessionId: 'cursor-session' });
     });
@@ -273,7 +295,7 @@ describe('executeToolCall — spawn_agent_session validation', () => {
             JSON.stringify({ agent: 'cursor', directory: process.cwd() }),
             makeDeps({
                 spawnSession: spawn,
-                getDefaultCursorExecution: async () => null,
+                getDefaultCursorSelection: async () => null,
             }),
         );
 

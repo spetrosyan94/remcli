@@ -5,7 +5,7 @@
 // Модели/режимы — daemon-normalized provider capabilities; static options
 // остаются только у ещё не capability-driven providers.
 import * as React from "react";
-import { ArrowUp, ChevronDown, Folder, FolderOpen, Loader2, RotateCcw, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, Folder, FolderOpen, Loader2, RotateCcw, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { AgentIcon, StatusDot, type AgentId } from "@/components/kit";
@@ -34,8 +34,10 @@ import {
     type CodexCapabilitiesSnapshot,
     type CodexExecutionConfig,
     type CodexModelCapability,
+    DEFAULT_CURSOR_LAUNCH_CONTROLS,
     type CursorCapabilitiesSnapshot,
     type CursorExecutionConfig,
+    type CursorLaunchControls,
     type CursorModelCapability,
     type DirectoryListing,
     type Machine,
@@ -45,7 +47,7 @@ import {
 } from "@/lib/protocol";
 import { linkZenTaskSession } from "@/lib/zenTasks";
 
-type SheetKind = "machine" | "model" | "permission" | "reasoning" | "resume" | "directory";
+type SheetKind = "machine" | "model" | "permission" | "reasoning" | "cursor-launch" | "resume" | "directory";
 
 interface SheetState {
     kind: SheetKind;
@@ -94,6 +96,68 @@ export function modelOverrideState(model: string, hasExplicitModelSelection: boo
 
 export function getResumeDirectory(projectPath: string | undefined, activeDirectory: string): string {
     return projectPath || activeDirectory;
+}
+
+export interface CursorResumeNavigationPreset {
+    machineId: string;
+    directory: string;
+    resumeSessionId: string;
+    resumeSessionName: string | null;
+}
+
+interface NewSessionNavigationState {
+    zenTaskTitle?: string;
+    zenTaskId?: string;
+    cursorResume?: CursorResumeNavigationPreset;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null;
+}
+
+function nonEmptyString(value: unknown): value is string {
+    return typeof value === "string" && value.trim().length > 0;
+}
+
+export function parseNewSessionNavigationState(state: unknown): NewSessionNavigationState {
+    if (!isRecord(state)) return {};
+
+    const cursorResumeValue = state.cursorResume;
+    let cursorResume: CursorResumeNavigationPreset | undefined;
+    if (isRecord(cursorResumeValue)
+        && nonEmptyString(cursorResumeValue.machineId)
+        && nonEmptyString(cursorResumeValue.directory)
+        && nonEmptyString(cursorResumeValue.resumeSessionId)
+        && (cursorResumeValue.resumeSessionName === undefined
+            || cursorResumeValue.resumeSessionName === null
+            || nonEmptyString(cursorResumeValue.resumeSessionName))) {
+        cursorResume = {
+            machineId: cursorResumeValue.machineId,
+            directory: cursorResumeValue.directory,
+            resumeSessionId: cursorResumeValue.resumeSessionId,
+            resumeSessionName: typeof cursorResumeValue.resumeSessionName === "string"
+                ? cursorResumeValue.resumeSessionName
+                : null,
+        };
+    }
+
+    return {
+        ...(nonEmptyString(state.zenTaskTitle) ? { zenTaskTitle: state.zenTaskTitle } : {}),
+        ...(nonEmptyString(state.zenTaskId) ? { zenTaskId: state.zenTaskId } : {}),
+        ...(cursorResume ? { cursorResume } : {}),
+    };
+}
+
+export function isCursorResumePresetCompatible(
+    preset: CursorResumeNavigationPreset | null,
+    machineId: string | undefined,
+    directory: string,
+): boolean {
+    return preset === null || (machineId === preset.machineId && directory === preset.directory);
+}
+
+export function getPrimarySelectorLabelKey(_agent: AgentId): "new.accessLevel" {
+    return "new.accessLevel";
 }
 
 export function getDefaultCodexExecution(capabilities: CodexCapabilitiesSnapshot): CodexExecutionConfig | null {
@@ -170,15 +234,42 @@ export function getReasoningControlState(input: {
     return "ready";
 }
 
+function formatCursorLaunchControls(controls: CursorLaunchControls): string {
+    const flags = [
+        controls.force ? t("new.cursorForce") : null,
+        controls.autoReview ? t("new.cursorAutoReview") : null,
+    ].filter((value): value is string => value !== null);
+    const sandbox = cursorSandboxLabel(controls.sandbox);
+    return `${flags.length > 0 ? `${flags.join(" · ")} · ` : ""}${t("new.cursorSandbox")} ${sandbox}`;
+}
+
+function cursorExecutionModeLabel(mode: CursorLaunchControls["executionMode"]): string {
+    switch (mode) {
+        case "plan":
+            return t("new.cursorModePlan");
+        case "ask":
+            return t("new.cursorModeAsk");
+        default:
+            return t("new.cursorModeAgent");
+    }
+}
+
+function cursorSandboxLabel(sandbox: CursorLaunchControls["sandbox"]): string {
+    if (sandbox === "local-configuration") return t("new.cursorHostControlled");
+    if (sandbox === "enabled") return t("new.cursorSandboxEnabled");
+    return t("new.cursorSandboxDisabled");
+}
+
 export function buildNewSessionSpawnOptions(input: {
     machineId: string;
     directory: string;
     agent: AgentId;
-    permissionMode: PermissionMode;
+    permissionMode?: PermissionMode;
     codexExecution: CodexExecutionConfig | null;
     codexReasoningEfforts: readonly CodexModelCapability["supportedReasoningEfforts"][number][];
     cursorExecution?: CursorExecutionConfig | null;
-    resume?: AgentSessionInfo;
+    cursorLaunchControls?: CursorLaunchControls;
+    resume?: ResumeTarget;
 }): SpawnSessionOptions {
     const spawnAgent = input.resume?.agent ?? input.agent;
     if (spawnAgent === "codex" && !input.codexExecution) {
@@ -190,15 +281,22 @@ export function buildNewSessionSpawnOptions(input: {
     if (spawnAgent === "cursor" && !input.cursorExecution) {
         throw new Error("Cursor requires a capability-validated execution selection.");
     }
+    if (spawnAgent === "cursor" && !input.cursorLaunchControls) {
+        throw new Error("Cursor requires validated launch controls.");
+    }
+    if (spawnAgent !== "cursor" && !input.permissionMode) {
+        throw new Error(`${spawnAgent} requires a permission selection.`);
+    }
     return {
         machineId: input.machineId,
         directory: input.directory,
         agent: spawnAgent,
         resumeSessionId: input.resume?.sessionId,
         resumeSessionName: input.resume?.sessionName ?? undefined,
-        permissionMode: input.permissionMode,
+        ...(spawnAgent !== "cursor" && input.permissionMode ? { permissionMode: input.permissionMode } : {}),
         ...(spawnAgent === "codex" && input.codexExecution ? { codexExecution: input.codexExecution } : {}),
         ...(spawnAgent === "cursor" && input.cursorExecution ? { cursorExecution: input.cursorExecution } : {}),
+        ...(spawnAgent === "cursor" && input.cursorLaunchControls ? { cursorLaunchControls: input.cursorLaunchControls } : {}),
     };
 }
 
@@ -252,7 +350,14 @@ interface RecentDir {
 interface PendingDirectoryCreation {
     directory: string;
     options: SpawnSessionOptions;
-    resume?: AgentSessionInfo;
+    resume?: ResumeTarget;
+}
+
+interface ResumeTarget {
+    agent: AgentId;
+    projectPath: string;
+    sessionId: string;
+    sessionName: string | null;
 }
 
 interface DirectoryBackTarget {
@@ -279,22 +384,33 @@ function SheetRow({
     meta,
     onClick,
     disabled = false,
+    showSelectionIndicator = false,
 }: {
     isActive: boolean;
     label: string;
     meta?: React.ReactNode;
     onClick: () => void;
     disabled?: boolean;
+    showSelectionIndicator?: boolean;
 }) {
+    const isSelected = showSelectionIndicator && isActive;
+    const labelLayoutClassName = showSelectionIndicator
+        ? "min-w-0 flex-1 break-words whitespace-normal"
+        : "min-w-0 flex-1 truncate";
+
     return (
         <button
             type="button"
             onClick={onClick}
             disabled={disabled}
-            className="flex min-h-11 w-full min-w-0 items-center gap-[11px] border-t border-border px-[18px] py-3 text-left disabled:cursor-not-allowed disabled:opacity-50"
+            aria-pressed={showSelectionIndicator ? isActive : undefined}
+            className={`flex min-h-11 w-full min-w-0 items-center gap-[11px] border-t px-[18px] py-3 text-left transition-[background-color,border-color,transform] duration-[var(--dur-micro)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 ${isSelected ? "border-accent/30 bg-accent/10" : "border-border bg-card"}`}
         >
-            <span className={`min-w-0 flex-1 truncate font-mono text-[12.5px] ${isActive ? "text-foreground" : "text-muted-foreground"}`}>{label}</span>
+            <span className={`${labelLayoutClassName} font-mono text-[12.5px] ${isActive ? `${isSelected ? "font-semibold " : ""}text-foreground` : "text-muted-foreground"}`}>{label}</span>
             {meta}
+            {showSelectionIndicator && (isActive
+                ? <Check className="size-4 shrink-0 text-accent" aria-hidden="true" />
+                : <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground/25" aria-hidden="true" />)}
         </button>
     );
 }
@@ -392,13 +508,20 @@ export function ResumeSheetContent({
 export function NewSessionPage() {
     const navigate = useNavigate();
     const location = useLocation();
-    const zenState = (location.state ?? null) as { zenTaskTitle?: string; zenTaskId?: string } | null;
+    const navigationState = parseNewSessionNavigationState(location.state);
 
     const machines = useMachines();
     const sessions = useSessions();
 
-    const [machineId, setMachineId] = React.useState<string | null>(null);
-    const [agent, setAgent] = React.useState<AgentId>("claude");
+    const [cursorResumePreset, setCursorResumePreset] = React.useState<CursorResumeNavigationPreset | null>(
+        () => navigationState.cursorResume ?? null,
+    );
+    const [machineId, setMachineId] = React.useState<string | null>(
+        () => navigationState.cursorResume?.machineId ?? null,
+    );
+    const [agent, setAgent] = React.useState<AgentId>(
+        () => navigationState.cursorResume ? "cursor" : "claude",
+    );
     const [model, setModel] = React.useState(AGENT_OPTIONS[0].models[0]);
     const [hasExplicitModelSelection, setHasExplicitModelSelection] = React.useState(false);
     const [mode, setMode] = React.useState<PermissionMode>(() => getDefaultPermissionMode("claude"));
@@ -410,9 +533,12 @@ export function NewSessionPage() {
     const [cursorCapabilities, setCursorCapabilities] = React.useState<CursorCapabilitiesSnapshot | null>(null);
     const [cursorModelId, setCursorModelId] = React.useState<string | null>(null);
     const [cursorExecution, setCursorExecution] = React.useState<CursorExecutionConfig | null>(null);
+    const [cursorLaunchControls, setCursorLaunchControls] = React.useState<CursorLaunchControls>(() => ({
+        ...DEFAULT_CURSOR_LAUNCH_CONTROLS,
+    }));
     const [isCursorCapabilitiesLoading, setIsCursorCapabilitiesLoading] = React.useState(false);
     const [cursorCapabilitiesReloadKey, setCursorCapabilitiesReloadKey] = React.useState(0);
-    const [dir, setDir] = React.useState<string | null>(null);
+    const [dir, setDir] = React.useState<string | null>(() => navigationState.cursorResume?.directory ?? null);
     const [dirDisplayPath, setDirDisplayPath] = React.useState<string | null>(null);
     const [directoryRequestPath, setDirectoryRequestPath] = React.useState<string | undefined>(undefined);
     const [directoryListing, setDirectoryListing] = React.useState<DirectoryListing | null>(null);
@@ -427,10 +553,12 @@ export function NewSessionPage() {
     const [pendingDirectoryCreation, setPendingDirectoryCreation] = React.useState<PendingDirectoryCreation | null>(null);
     const [resumeItems, setResumeItems] = React.useState<AgentSessionInfo[] | null>(null);
     const [resumeError, setResumeError] = React.useState<string | null>(null);
-    const [resumeRetryItem, setResumeRetryItem] = React.useState<AgentSessionInfo | null>(null);
+    const [resumeRetryItem, setResumeRetryItem] = React.useState<ResumeTarget | null>(null);
     const [resumeReloadKey, setResumeReloadKey] = React.useState(0);
 
-    const machine = machines.find((m) => m.id === machineId) ?? machines[0] ?? null;
+    const selectedMachine = machines.find((m) => m.id === machineId) ?? null;
+    // A Cursor resume preset must never silently fall back to another machine.
+    const machine = selectedMachine ?? (cursorResumePreset ? null : machines[0] ?? null);
     const activeMachineId = machine?.id;
     const homeDir = machine?.metadata?.homeDir;
     const sheetKind = sheet?.kind ?? null;
@@ -444,9 +572,16 @@ export function NewSessionPage() {
         : agent === "codex"
             ? []
             : getAgentPermissionModes(agent);
-    const activeModeLabel = getAgentPermissionLabel(agent, mode);
+    const activeModeLabel = agent === "cursor"
+        ? cursorExecutionModeLabel(cursorLaunchControls.executionMode)
+        : getAgentPermissionLabel(agent, mode);
     const selectedCodexModel = findCodexModel(codexCapabilities, codexModelId);
     const selectedCursorModel = findCursorModel(cursorCapabilities, cursorModelId);
+    const activeModelLabel = agent === "codex"
+        ? selectedCodexModel?.displayName ?? t("new.capabilitiesLoading")
+        : agent === "cursor"
+            ? selectedCursorModel?.displayName ?? t("new.capabilitiesLoading")
+            : model;
     const hasCodexReasoningSelection = selectedCodexModel
         ? selectedCodexModel.supportedReasoningEfforts.length === 0
             || (codexExecution?.model === selectedCodexModel.id
@@ -467,16 +602,13 @@ export function NewSessionPage() {
     const isCodexCapabilityUnavailable = agent === "codex"
         && !isCodexCapabilitiesLoading
         && (!codexCapabilities || codexCapabilities.status === "unavailable" || selectedCodexModel === null);
-    const hasCursorPermissionSelection = agent === "cursor"
-        && agentPermissionModes.includes(mode);
     const isCursorCatalogReady = agent === "cursor"
         && cursorCapabilities?.status === "ready"
         && selectedCursorModel !== null;
     const isCursorCapabilityReady = isCursorCatalogReady
         && cursorExecution !== null
         && cursorExecution.catalogVersion === cursorCapabilities.catalogVersion
-        && cursorExecution.model === selectedCursorModel?.id
-        && hasCursorPermissionSelection;
+        && cursorExecution.model === selectedCursorModel?.id;
     const isCursorCapabilityUnavailable = agent === "cursor"
         && !isCursorCapabilitiesLoading
         && (!cursorCapabilities || cursorCapabilities.status === "unavailable" || selectedCursorModel === null);
@@ -530,6 +662,15 @@ export function NewSessionPage() {
     const activeDirDisplayPath = dir
         ? (dirDisplayPath ?? formatPathRelativeToHome(dir, homeDir))
         : (recentDirs[0]?.displayPath ?? formatPathRelativeToHome(activeDir, homeDir));
+    const isResumePresetCompatible = isCursorResumePresetCompatible(cursorResumePreset, machine?.id, activeDir);
+    const cursorResumeTarget: ResumeTarget | undefined = cursorResumePreset
+        ? {
+            agent: "cursor",
+            projectPath: cursorResumePreset.directory,
+            sessionId: cursorResumePreset.resumeSessionId,
+            sessionName: cursorResumePreset.resumeSessionName,
+        }
+        : undefined;
     const hasActiveDirInRecent = recentDirs.some((d) => d.path === activeDir);
     const shouldShowSelectedDir = activeDir !== "" && !hasActiveDirInRecent;
     const directoryHeaderPath = directoryListing?.path ?? directoryRequestPath ?? activeDir;
@@ -605,7 +746,10 @@ export function NewSessionPage() {
         setCursorCapabilities(null);
         setCursorModelId(null);
         setCursorExecution(null);
-        void machineGetCursorCapabilities(activeMachineId, cursorCapabilitiesReloadKey > 0)
+        void machineGetCursorCapabilities(
+            activeMachineId,
+            cursorCapabilitiesReloadKey > 0 || cursorResumePreset !== null,
+        )
             .then((capabilities) => {
                 if (isStale) return;
                 setCursorCapabilities(capabilities);
@@ -613,9 +757,6 @@ export function NewSessionPage() {
                 const defaultModel = capabilities.models.find((item) => item.isDefault) ?? null;
                 setCursorModelId(defaultModel?.id ?? null);
                 setCursorExecution(defaultModel ? createCursorExecutionForModel(capabilities, defaultModel.id) : null);
-                setMode((current) => getAgentPermissionModes("cursor").includes(current)
-                    ? current
-                    : getDefaultPermissionMode("cursor"));
             })
             .catch(() => {
                 if (!isStale) setCursorCapabilities(null);
@@ -624,7 +765,7 @@ export function NewSessionPage() {
                 if (!isStale) setIsCursorCapabilitiesLoading(false);
             });
         return () => { isStale = true; };
-    }, [activeMachineId, agent, cursorCapabilitiesReloadKey]);
+    }, [activeMachineId, agent, cursorCapabilitiesReloadKey, cursorResumePreset]);
 
     // resume-sheet: RPC list-agent-sessions с фильтром по агенту
     React.useEffect(() => {
@@ -662,6 +803,7 @@ export function NewSessionPage() {
     }, [activeMachineId, directoryReloadKey, directoryRequestPath, sheetKind]);
 
     const selectAgent = (id: AgentId) => {
+        if (id !== "cursor") setCursorResumePreset(null);
         setAgent(id);
         const nextModel = AGENT_OPTIONS.find((a) => a.id === id)?.models[0];
         if (nextModel) setModel(nextModel);
@@ -674,10 +816,14 @@ export function NewSessionPage() {
         if (id !== "cursor") {
             setCursorExecution(null);
         }
-        setMode(getDefaultPermissionMode(id));
+        setCursorLaunchControls({ ...DEFAULT_CURSOR_LAUNCH_CONTROLS });
+        if (id !== "cursor") {
+            setMode(getDefaultPermissionMode(id));
+        }
     };
 
     const selectDir = (path: string, displayPath?: string) => {
+        if (cursorResumePreset && path !== cursorResumePreset.directory) setCursorResumePreset(null);
         setDir(path);
         setDirDisplayPath(displayPath ?? null);
     };
@@ -718,7 +864,7 @@ export function NewSessionPage() {
         setDirectoryRequestPath(path);
     };
 
-    const finishSpawn = async (sessionId: string, resume?: AgentSessionInfo) => {
+    const finishSpawn = async (sessionId: string, resume?: ResumeTarget) => {
         // ждём появления сессии в сторе (нужен cipher для первого сообщения)
         for (let attempt = 0; attempt < 10 && !useProtocolStore.getState().sessions[sessionId]; attempt++) {
             await refreshSessions().catch(() => undefined);
@@ -726,19 +872,35 @@ export function NewSessionPage() {
             await new Promise((resolve) => setTimeout(resolve, 400));
         }
 
-        if (zenState?.zenTaskId) linkZenTaskSession(zenState.zenTaskId, sessionId);
-        const permissionMode = normalizeAgentPermissionMode(agent, mode);
+        if (navigationState.zenTaskId) linkZenTaskSession(navigationState.zenTaskId, sessionId);
+        const permissionMode = agent === "cursor"
+            ? undefined
+            : normalizeAgentPermissionMode(agent, mode);
         const modelState = agent === "codex" || agent === "cursor"
             ? {}
             : modelOverrideState(model, hasExplicitModelSelection);
-        if (zenState?.zenTaskTitle && !resume) {
-            await sendSessionMessage(sessionId, zenState.zenTaskTitle, { permissionMode, ...modelState })
+        if (navigationState.zenTaskTitle && !resume) {
+            await sendSessionMessage(sessionId, navigationState.zenTaskTitle, {
+                ...(permissionMode ? { permissionMode } : {}),
+                ...modelState,
+            })
                 .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)));
         }
-        navigate(`/session/${sessionId}`, { replace: true, state: { permissionMode, ...modelState } });
+        navigate(`/session/${sessionId}`, {
+            replace: true,
+            state: {
+                ...(permissionMode ? { permissionMode } : {}),
+                ...modelState,
+            },
+        });
     };
 
-    const handleSpawnResult = async (result: SpawnSessionResult, options: SpawnSessionOptions, resume?: AgentSessionInfo) => {
+    const handleSpawnResult = async (
+        result: SpawnSessionResult,
+        options: SpawnSessionOptions,
+        resume?: ResumeTarget,
+        isNavigationResume = false,
+    ) => {
         if (result.type === "requestToApproveDirectoryCreation") {
             setPendingDirectoryCreation({
                 directory: result.directory,
@@ -762,7 +924,7 @@ export function NewSessionPage() {
                 setIsCursorCapabilitiesLoading(true);
                 setCursorCapabilitiesReloadKey((value) => value + 1);
             }
-            if (resume) {
+            if (resume && !isNavigationResume) {
                 setResumeError(result.errorMessage);
                 setResumeRetryItem(resume);
                 return;
@@ -773,15 +935,20 @@ export function NewSessionPage() {
         await finishSpawn(result.sessionId, resume);
     };
 
-    const spawn = async (resume?: AgentSessionInfo) => {
+    const spawn = async (resume?: ResumeTarget) => {
         if (!machine || isSpawning) return;
-        const directory = getResumeDirectory(resume?.projectPath, activeDir);
+        const selectedResume = resume ?? cursorResumeTarget;
+        const isNavigationResume = resume === undefined && cursorResumeTarget !== undefined;
+        if (!resume && cursorResumePreset && !isResumePresetCompatible) return;
+        const directory = getResumeDirectory(selectedResume?.projectPath, activeDir);
         if (directory === "") {
             openDirectoryPicker();
             return;
         }
-        const spawnAgent = resume?.agent ?? agent;
-        const permissionMode = normalizeAgentPermissionMode(spawnAgent, mode);
+        const spawnAgent = selectedResume?.agent ?? agent;
+        const permissionMode = spawnAgent === "cursor"
+            ? undefined
+            : normalizeAgentPermissionMode(spawnAgent, mode);
         if (spawnAgent === "codex" && !isCodexCapabilityReady) {
             toast.error(t("new.capabilitiesUnavailable"));
             return;
@@ -790,7 +957,7 @@ export function NewSessionPage() {
             toast.error(t("new.capabilitiesUnavailable"));
             return;
         }
-        if (resume) {
+        if (selectedResume) {
             setResumeError(null);
             setResumeRetryItem(null);
         }
@@ -806,10 +973,11 @@ export function NewSessionPage() {
                     ? selectedCodexModel?.supportedReasoningEfforts ?? []
                     : [],
                 cursorExecution,
-                resume,
+                cursorLaunchControls,
+                resume: selectedResume,
             });
             const result = await machineSpawnNewSession(options);
-            await handleSpawnResult(result, options, resume);
+            await handleSpawnResult(result, options, selectedResume, isNavigationResume);
         } finally {
             setIsSpawning(false);
         }
@@ -899,20 +1067,30 @@ export function NewSessionPage() {
                                     <span className="min-w-0 truncate">{t("new.capabilitiesRetry")}</span>
                                 </button>
                             ) : (
-                                <button type="button" onClick={() => openSheet("model")} disabled={isCapabilityDrivenAgent && !isActiveCapabilityCatalogReady}
+                                <button
+                                    type="button"
+                                    onClick={() => openSheet("model")}
+                                    disabled={isCapabilityDrivenAgent && !isActiveCapabilityCatalogReady}
+                                    aria-label={`${t("new.model")}: ${activeModelLabel}`}
+                                    aria-haspopup="dialog"
+                                    aria-expanded={sheetKind === "model"}
+                                    aria-controls="new-session-sheet"
                                     className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] active:scale-[0.96] disabled:opacity-50">
-                                    <span className="min-w-0 truncate">{agent === "codex"
-                                        ? selectedCodexModel?.displayName
-                                        : agent === "cursor"
-                                            ? selectedCursorModel?.displayName
-                                            : model}</span>
+                                    <span className="min-w-0 truncate">{activeModelLabel}</span>
                                     <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
                                 </button>
                             )}
                         </section>
                         <section data-capability-control="permission" className="flex min-w-0 flex-col gap-2">
-                            <span className="flex min-h-[22px] items-end font-mono text-[10px] text-muted-foreground">{t("new.permissions")}</span>
-                            <button type="button" onClick={() => openSheet("permission")} disabled={(agent === "codex" && codexCapabilities?.status !== "ready") || (agent === "cursor" && cursorCapabilities?.status !== "ready")}
+                            <span className="flex min-h-[22px] items-end font-mono text-[10px] text-muted-foreground">{t(getPrimarySelectorLabelKey(agent))}</span>
+                            <button
+                                type="button"
+                                onClick={() => openSheet("permission")}
+                                disabled={(agent === "codex" && codexCapabilities?.status !== "ready") || (agent === "cursor" && cursorCapabilities?.status !== "ready")}
+                                aria-label={`${t(getPrimarySelectorLabelKey(agent))}: ${activeModeLabel}`}
+                                aria-haspopup="dialog"
+                                aria-expanded={sheetKind === "permission"}
+                                aria-controls="new-session-sheet"
                                 className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] active:scale-[0.96] disabled:opacity-50">
                                 <span className="min-w-0 truncate">{activeModeLabel}</span>
                                 <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
@@ -942,13 +1120,26 @@ export function NewSessionPage() {
                                     <span className="min-w-0 truncate">{t("new.reasoningNoOptions")}</span>
                                 </div>
                             ) : reasoningControlState === "choose-required" ? (
-                                <button type="button" onClick={() => openSheet("reasoning")}
+                                <button
+                                    type="button"
+                                    onClick={() => openSheet("reasoning")}
+                                    aria-label={`${t("new.reasoning")}: ${t("new.reasoningChoose")}`}
+                                    aria-haspopup="dialog"
+                                    aria-expanded={sheetKind === "reasoning"}
+                                    aria-controls="new-session-sheet"
                                     className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] active:scale-[0.96]">
                                     <span className="min-w-0 truncate">{t("new.reasoningChoose")}</span>
                                     <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
                                 </button>
                             ) : (
-                                <button type="button" onClick={() => openSheet("reasoning")} disabled={reasoningControlState !== "ready"}
+                                <button
+                                    type="button"
+                                    onClick={() => openSheet("reasoning")}
+                                    disabled={reasoningControlState !== "ready"}
+                                    aria-label={`${t("new.reasoning")}: ${codexExecution?.reasoningEffort ?? ""}`}
+                                    aria-haspopup="dialog"
+                                    aria-expanded={sheetKind === "reasoning"}
+                                    aria-controls="new-session-sheet"
                                     className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] active:scale-[0.96] disabled:opacity-50">
                                     <span className="min-w-0 truncate">{codexExecution?.reasoningEffort}</span>
                                     <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
@@ -956,6 +1147,22 @@ export function NewSessionPage() {
                             )}
                         </section>
                     </div>
+                    {agent === "cursor" && (
+                        <button
+                            type="button"
+                            onClick={() => openSheet("cursor-launch")}
+                            aria-haspopup="dialog"
+                            aria-expanded={sheetKind === "cursor-launch"}
+                            aria-controls="cursor-launch-sheet"
+                            className="flex min-h-11 min-w-0 items-center gap-2 rounded-[10px] border border-dashed border-border bg-card px-2.5 text-left transition-[border-color,background-color,transform] active:scale-[0.96]"
+                        >
+                            <span className="min-w-0 flex-1">
+                                <span className="block truncate font-mono text-[11px] font-semibold text-foreground">{t("new.cursorLaunchControls")}</span>
+                                <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">{formatCursorLaunchControls(cursorLaunchControls)}</span>
+                            </span>
+                            <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+                        </button>
+                    )}
                 </section>
 
                 {/* директория — недавние quick picks + browser/picker через RPC list-directory */}
@@ -988,12 +1195,25 @@ export function NewSessionPage() {
                     </div>
                 </section>
 
+                {cursorResumePreset && (
+                    <section role="status" className="flex min-w-0 flex-col gap-1 rounded-xl border border-accent/30 bg-accent/[0.06] px-3.5 py-3 font-mono text-[11.5px]">
+                        <span className="font-semibold text-foreground">{t("new.resumeTitle")} · Cursor</span>
+                        <span className="min-w-0 truncate text-foreground">
+                            {cursorResumePreset.resumeSessionName ?? t("new.resumeTag")}
+                        </span>
+                        <code className="break-all text-[10px] text-muted-foreground">{cursorResumePreset.resumeSessionId}</code>
+                        {!isResumePresetCompatible && (
+                            <span role="alert" className="mt-1 text-destructive">{t("new.resumePresetMismatch")}</span>
+                        )}
+                    </section>
+                )}
+
                 {/* промпт из задачи Zen — уйдёт первым сообщением после запуска */}
-                {zenState?.zenTaskTitle && (
+                {navigationState.zenTaskTitle && (
                     <section className="flex flex-col gap-2">
                         <span className="font-mono text-[10px] text-muted-foreground">{t("new.promptLabel")}</span>
                         <div className="rounded-xl border border-border bg-card px-3.5 py-3 text-[13px] leading-snug">
-                            {zenState.zenTaskTitle}
+                            {navigationState.zenTaskTitle}
                         </div>
                     </section>
                 )}
@@ -1006,11 +1226,13 @@ export function NewSessionPage() {
             </main>
 
             <footer className="px-5 pb-[max(14px,env(safe-area-inset-bottom))] pt-3">
-                <button onClick={() => void spawn()} disabled={!machine || activeDir === "" || isSpawning || (agent === "codex" && !isCodexCapabilityReady) || (agent === "cursor" && !isCursorCapabilityReady)}
+                <button onClick={() => void spawn()} disabled={!machine || activeDir === "" || isSpawning || !isResumePresetCompatible || (agent === "codex" && !isCodexCapabilityReady) || (agent === "cursor" && !isCursorCapabilityReady)}
                     className="h-[52px] w-full overflow-hidden rounded-xl bg-accent px-3 text-base font-semibold text-accent-foreground disabled:opacity-50">
                     {isSpawning
                         ? t("new.spawning")
-                        : <span className="block truncate whitespace-nowrap">{t("new.startButton", { agent, dir: activeDirDisplayPath || "…" })}</span>}
+                        : <span className="block truncate whitespace-nowrap">{cursorResumePreset
+                            ? `${t("new.resumeTitle")} · ${cursorResumePreset.resumeSessionName ?? cursorResumePreset.resumeSessionId}`
+                            : t("new.startButton", { agent, dir: activeDirDisplayPath || "…" })}</span>}
                 </button>
             </footer>
 
@@ -1021,12 +1243,12 @@ export function NewSessionPage() {
                     setSheet((currentSheet) => resolveSheetOpenChange(sheet, currentSheet, isOpen));
                 }}
             >
-                <DrawerContent className={drawerContentClassName}>
+                <DrawerContent id="new-session-sheet" className={drawerContentClassName}>
                     {sheetKind === "machine" && (
                         <>
                             <SheetHeader title={t("new.machineTitle")} tag={t("new.machine")} />
                             {machines.map((m) => (
-                                <SheetRow key={m.id} isActive={m.id === machine?.id} label={machineName(m)}
+                                <SheetRow key={m.id} isActive={m.id === machine?.id} label={machineName(m)} showSelectionIndicator
                                     meta={
                                         <>
                                             <StatusDot status={m.active ? "running" : "offline"} className="size-1.5" />
@@ -1036,6 +1258,9 @@ export function NewSessionPage() {
                                         </>
                                     }
                                     onClick={() => {
+                                        if (cursorResumePreset && m.id !== cursorResumePreset.machineId) {
+                                            setCursorResumePreset(null);
+                                        }
                                         setMachineId(m.id);
                                         setDir(null);
                                         setDirDisplayPath(null);
@@ -1053,7 +1278,7 @@ export function NewSessionPage() {
                             <SheetHeader title={t("new.modelTitle")} tag={agent} />
                             {agent === "codex" && codexCapabilities?.status === "ready" && codexCapabilities.catalogVersion
                                 ? codexCapabilities.models.map((item) => (
-                                    <SheetRow key={item.id} isActive={item.id === codexModelId} label={item.displayName}
+                                    <SheetRow key={item.id} isActive={item.id === codexModelId} label={item.displayName} showSelectionIndicator
                                         onClick={() => {
                                             setCodexModelId(item.id);
                                             setCodexExecution(createCodexExecutionForModel(codexCapabilities, item.id));
@@ -1062,7 +1287,7 @@ export function NewSessionPage() {
                                 ))
                                 : agent === "cursor" && cursorCapabilities?.status === "ready" && cursorCapabilities.catalogVersion
                                     ? cursorCapabilities.models.map((item) => (
-                                        <SheetRow key={item.id} isActive={item.id === cursorModelId} label={item.displayName}
+                                        <SheetRow key={item.id} isActive={item.id === cursorModelId} label={item.displayName} showSelectionIndicator
                                             onClick={() => {
                                                 setCursorModelId(item.id);
                                                 setCursorExecution(createCursorExecutionForModel(cursorCapabilities, item.id));
@@ -1070,7 +1295,7 @@ export function NewSessionPage() {
                                             }} />
                                     ))
                                 : agentModels.map((item) => (
-                                    <SheetRow key={item} isActive={item === model} label={item}
+                                    <SheetRow key={item} isActive={item === model} label={item} showSelectionIndicator
                                         onClick={() => {
                                             setModel(item);
                                             setHasExplicitModelSelection(true);
@@ -1081,18 +1306,103 @@ export function NewSessionPage() {
                     )}
                     {sheetKind === "permission" && (
                         <>
-                            <SheetHeader title={t("new.permissions")} tag={agent} />
-                            {agentPermissionModes.map((permission) => (
-                                <SheetRow key={permission} isActive={permission === mode} label={getAgentPermissionLabel(agent, permission)}
+                            <SheetHeader title={t("new.accessLevel")} tag={agent} />
+                            {agent === "cursor" ? (
+                                (["agent", "plan", "ask"] as const).map((executionMode) => (
+                                    <SheetRow
+                                        key={executionMode}
+                                        isActive={executionMode === cursorLaunchControls.executionMode}
+                                        label={cursorExecutionModeLabel(executionMode)}
+                                        showSelectionIndicator
+                                        meta={executionMode === "agent"
+                                            ? <span className="font-mono text-[10px] text-muted-foreground">{t("new.cursorModeAgentHint")}</span>
+                                            : undefined}
+                                        onClick={() => {
+                                            setCursorLaunchControls((current) => ({ ...current, executionMode }));
+                                            setSheet(null);
+                                        }}
+                                    />
+                                ))
+                            ) : agentPermissionModes.map((permission) => (
+                                <SheetRow key={permission} isActive={permission === mode} label={getAgentPermissionLabel(agent, permission)} showSelectionIndicator
                                     onClick={() => { setMode(permission); setSheet(null); }} />
                             ))}
+                        </>
+                    )}
+                    {sheetKind === "cursor-launch" && (
+                        <>
+                            <div id="cursor-launch-sheet">
+                                <SheetHeader title={t("new.cursorLaunchControls")} tag="cursor" />
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked={cursorLaunchControls.force}
+                                    onClick={() => setCursorLaunchControls((current) => ({ ...current, force: !current.force }))}
+                                    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left transition-[background-color,transform] active:scale-[0.96]"
+                                >
+                                    <span className="min-w-0 flex-1">
+                                        <span className="block font-mono text-[12.5px] text-foreground">{t("new.cursorForce")}</span>
+                                        <span className="mt-0.5 block font-mono text-[9.5px] leading-[1.35] text-muted-foreground">--force</span>
+                                    </span>
+                                    <span aria-hidden="true" className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-[var(--dur-micro)] ${cursorLaunchControls.force ? "bg-accent" : "bg-muted-foreground/30"}`}>
+                                        <span className={`absolute top-1 size-4 rounded-full bg-card shadow-sm transition-transform duration-[var(--dur-micro)] ${cursorLaunchControls.force ? "translate-x-6" : "translate-x-1"}`} />
+                                    </span>
+                                </button>
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked={cursorLaunchControls.autoReview}
+                                    onClick={() => setCursorLaunchControls((current) => ({ ...current, autoReview: !current.autoReview }))}
+                                    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left transition-[background-color,transform] active:scale-[0.96]"
+                                >
+                                    <span className="min-w-0 flex-1">
+                                        <span className="block font-mono text-[12.5px] text-foreground">{t("new.cursorAutoReview")}</span>
+                                        <span className="mt-0.5 block font-mono text-[9.5px] leading-[1.35] text-muted-foreground">--auto-review</span>
+                                    </span>
+                                    <span aria-hidden="true" className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-[var(--dur-micro)] ${cursorLaunchControls.autoReview ? "bg-accent" : "bg-muted-foreground/30"}`}>
+                                        <span className={`absolute top-1 size-4 rounded-full bg-card shadow-sm transition-transform duration-[var(--dur-micro)] ${cursorLaunchControls.autoReview ? "translate-x-6" : "translate-x-1"}`} />
+                                    </span>
+                                </button>
+                                <div className="border-t border-border px-[18px] pb-2 pt-3">
+                                    <span className="font-mono text-[10px] font-semibold text-muted-foreground">{t("new.cursorSandbox")}</span>
+                                </div>
+                                {(["local-configuration", "enabled", "disabled"] as const).map((sandbox) => (
+                                    <SheetRow
+                                        key={sandbox}
+                                        isActive={sandbox === cursorLaunchControls.sandbox}
+                                        label={cursorSandboxLabel(sandbox)}
+                                        showSelectionIndicator
+                                        onClick={() => setCursorLaunchControls((current) => ({ ...current, sandbox }))}
+                                    />
+                                ))}
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked={cursorLaunchControls.approveMcps}
+                                    onClick={() => setCursorLaunchControls((current) => ({ ...current, approveMcps: !current.approveMcps }))}
+                                    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left transition-[background-color,transform] active:scale-[0.96]"
+                                >
+                                    <span className="min-w-0 flex-1">
+                                        <span className="block font-mono text-[12.5px] text-foreground">{t("new.cursorApproveMcps")}</span>
+                                        <span className="mt-0.5 block font-mono text-[9.5px] leading-[1.35] text-muted-foreground">--approve-mcps</span>
+                                    </span>
+                                    <span aria-hidden="true" className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-[var(--dur-micro)] ${cursorLaunchControls.approveMcps ? "bg-accent" : "bg-muted-foreground/30"}`}>
+                                        <span className={`absolute top-1 size-4 rounded-full bg-card shadow-sm transition-transform duration-[var(--dur-micro)] ${cursorLaunchControls.approveMcps ? "translate-x-6" : "translate-x-1"}`} />
+                                    </span>
+                                </button>
+                                <div className="border-t border-border px-[18px] py-3 font-mono text-[9.5px] leading-[1.45] text-muted-foreground">
+                                    <span className="block">{t("new.cursorTrustFact")}</span>
+                                    <span className="mt-1 block">{t("new.cursorHostControlledFact")}</span>
+                                    <span className="mt-1 block">{t("new.cursorLocalRulesFact")}</span>
+                                </div>
+                            </div>
                         </>
                     )}
                     {sheetKind === "reasoning" && selectedCodexModel && selectedCodexModel.supportedReasoningEfforts.length > 0 && codexCapabilities?.catalogVersion && (
                         <>
                             <SheetHeader title={t("new.reasoningTitle")} tag={selectedCodexModel.displayName} />
                             {selectedCodexModel.supportedReasoningEfforts.map((reasoningEffort) => (
-                                <SheetRow key={reasoningEffort} isActive={reasoningEffort === codexExecution?.reasoningEffort} label={reasoningEffort}
+                                <SheetRow key={reasoningEffort} isActive={reasoningEffort === codexExecution?.reasoningEffort} label={reasoningEffort} showSelectionIndicator
                                     onClick={() => {
                                         const nextExecution = createCodexExecutionForModel(codexCapabilities, selectedCodexModel.id, reasoningEffort);
                                         if (!nextExecution) return;

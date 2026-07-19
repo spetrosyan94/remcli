@@ -1,7 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CursorTurnError } from './cursorQuery';
+import type { CursorLaunchControls } from './cursorLaunchControls';
 import type { CursorStreamEvent } from './types';
+
+const TEST_CURSOR_LAUNCH_CONTROLS: CursorLaunchControls = {
+    executionMode: 'agent',
+    force: false,
+    autoReview: false,
+    sandbox: 'local-configuration',
+    approveMcps: false,
+};
+const TEST_CURSOR_RUNNER = {
+    executable: 'agent' as const,
+    cliFingerprint: '0123456789abcdef',
+};
 
 interface TestSession {
     sessionId: string;
@@ -24,7 +37,7 @@ interface TestSession {
 interface QueuedMessage {
     message: string;
     mode: {
-        permissionMode: string;
+        launchControls: CursorLaunchControls;
         model?: string;
     };
     isolate: boolean;
@@ -60,6 +73,7 @@ const testState = vi.hoisted(() => {
 
         private resolver: ((message: QueuedMessage | null) => void) | null = null;
         public waitCount = 0;
+        public pushed: Array<{ message: string; mode: { launchControls: CursorLaunchControls; model?: string } }> = [];
 
         public constructor(_hash: unknown) {
             FakeMessageQueue.instances.push(this);
@@ -77,8 +91,11 @@ const testState = vi.hoisted(() => {
             });
         }
 
-        public push(_message: string, _mode: unknown): void {
-            // The runner tests deliver complete queue batches through resolve().
+        public push(message: string, mode: unknown): void {
+            this.pushed.push({
+                message,
+                mode: mode as { launchControls: CursorLaunchControls; model?: string },
+            });
         }
 
         public resolve(message: QueuedMessage | null): void {
@@ -97,6 +114,7 @@ const testState = vi.hoisted(() => {
         reportTerminalSessionStarted: vi.fn(),
         bindDaemonCursorSession: vi.fn(),
         preflightDaemonCursorRunner: vi.fn(),
+        verifyCursorRunnerIdentity: vi.fn(),
         createSessionMetadata: vi.fn(createSessionMetadataResult),
         runCursorTurn: vi.fn(),
         isCursorTurnAbortError: vi.fn(() => false),
@@ -114,6 +132,8 @@ const testState = vi.hoisted(() => {
             this.reportTerminalSessionStarted.mockReset();
             this.bindDaemonCursorSession.mockReset();
             this.preflightDaemonCursorRunner.mockReset();
+            this.verifyCursorRunnerIdentity.mockReset();
+            this.verifyCursorRunnerIdentity.mockResolvedValue(true);
             this.createSessionMetadata.mockReset();
             this.createSessionMetadata.mockImplementation(createSessionMetadataResult);
             this.runCursorTurn.mockReset();
@@ -150,6 +170,14 @@ vi.mock('@/daemon/controlClient', () => ({
     bindDaemonCursorSession: testState.bindDaemonCursorSession,
     preflightDaemonCursorRunner: testState.preflightDaemonCursorRunner,
 }));
+
+vi.mock('./cursorCapabilities', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./cursorCapabilities')>();
+    return {
+        ...actual,
+        verifyCursorRunnerIdentity: testState.verifyCursorRunnerIdentity,
+    };
+});
 
 vi.mock('@/utils/setupOfflineReconnection', () => ({
     setupOfflineReconnection: vi.fn((options: ReconnectionOptions) => {
@@ -256,7 +284,7 @@ function createCredentials(): { token: string; encryption: { type: 'legacy'; sec
 function createQueuedMessage(message: string): QueuedMessage {
     return {
         message,
-        mode: { permissionMode: 'agent' },
+        mode: { launchControls: { ...TEST_CURSOR_LAUNCH_CONTROLS } },
         isolate: false,
         hash: 'agent-mode',
     };
@@ -383,7 +411,8 @@ describe('runCursor lifecycle', () => {
                     model: 'controlled-cursor-model',
                     catalogVersion: 'controlled-cursor-catalog',
                 },
-                permissionMode: 'agent' as const,
+                launchControls: { ...TEST_CURSOR_LAUNCH_CONTROLS },
+                runner: { ...TEST_CURSOR_RUNNER },
             } : {}),
         });
 
@@ -410,6 +439,27 @@ describe('runCursor lifecycle', () => {
             startedBy: 'daemon',
         });
 
+        expect(testState.preflightDaemonCursorRunner).not.toHaveBeenCalled();
+        expect(testState.createSessionMetadata).not.toHaveBeenCalled();
+        expect(testState.getOrCreateSession).not.toHaveBeenCalled();
+    });
+
+    it('rejects a token-bearing daemon runner whose CLI identity changes before P2P creation', async () => {
+        process.env.REMCLI_DAEMON_RUNNER_TOKEN = 'daemon-owned-runner-token';
+        testState.verifyCursorRunnerIdentity.mockResolvedValue(false);
+
+        await runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+            execution: {
+                model: 'controlled-cursor-model',
+                catalogVersion: 'controlled-cursor-catalog',
+            },
+            launchControls: { ...TEST_CURSOR_LAUNCH_CONTROLS },
+            runner: { ...TEST_CURSOR_RUNNER },
+        });
+
+        expect(testState.verifyCursorRunnerIdentity).toHaveBeenCalledWith(TEST_CURSOR_RUNNER);
         expect(testState.preflightDaemonCursorRunner).not.toHaveBeenCalled();
         expect(testState.createSessionMetadata).not.toHaveBeenCalled();
         expect(testState.getOrCreateSession).not.toHaveBeenCalled();
@@ -1089,51 +1139,34 @@ describe('runCursor lifecycle', () => {
         }));
     });
 
-    it('removes provisional parent history when a mode change abandons the requested native resume', async () => {
-        const parentSessionId = 'trusted-parent-remcli-session';
+    it('keeps launch controls and model immutable when a phone message forges generic overrides', async () => {
         const session = createTestSession('cursor-session');
-        testState.response = { id: 'cursor-session' };
         testState.initialSession = session;
-        testState.acquireDaemonRunnerCredential.mockResolvedValue(true);
-        testState.preflightDaemonCursorRunner.mockResolvedValue({
-            ok: true,
-            data: { type: 'verified', parentRemcliSessionId: parentSessionId },
-        });
-        mirrorInitialMetadata(session);
 
         const runPromise = runCursor({
             credentials: createCredentials(),
-            startedBy: 'daemon',
-            resumeSessionId: 'expected-native-session',
+            startedBy: 'terminal',
         });
         const queue = await waitForMessageQueue();
-        queue.resolve(createQueuedMessage('first resume prompt'));
-        await vi.waitFor(() => expect(testState.runCursorTurn).toHaveBeenCalledOnce());
-        await vi.waitFor(() => expect(queue.waitCount).toBe(2));
+        const userMessageHandler = session.onUserMessage.mock.calls[0]?.[0] as ((message: {
+            content: { text: string };
+            meta?: { permissionMode?: string; model?: string };
+        }) => void) | undefined;
+        if (!userMessageHandler) {
+            throw new Error('Cursor user-message handler was not registered.');
+        }
 
-        queue.resolve({
-            message: 'fresh mode prompt',
-            mode: { permissionMode: 'plan' },
-            isolate: false,
-            hash: 'plan-mode',
+        userMessageHandler({
+            content: { text: 'forged phone prompt' },
+            meta: { permissionMode: 'plan', model: 'forged-not-account-visible-model' },
         });
-        await vi.waitFor(() => expect(testState.runCursorTurn).toHaveBeenCalledTimes(2));
 
-        expect(session.metadata).not.toHaveProperty('resumedFromRemcliSessionId');
-        expect(session.metadataUpdates.some((metadata) => !('resumedFromRemcliSessionId' in metadata))).toBe(true);
-        expect(testState.runCursorTurn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
-            resumeSessionId: 'expected-native-session',
-        }));
-        expect(testState.runCursorTurn.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
-            resumeSessionId: undefined,
-        }));
+        expect(queue.pushed).toEqual([{
+            message: 'forged phone prompt',
+            mode: { launchControls: TEST_CURSOR_LAUNCH_CONTROLS, model: undefined },
+        }]);
         process.emit('SIGTERM');
         await runPromise;
-
-        expect(session.metadataUpdates.at(-1)).toEqual(expect.objectContaining({
-            lifecycleState: 'archived',
-        }));
-        expect(session.metadataUpdates.at(-1)).not.toHaveProperty('resumedFromRemcliSessionId');
     });
 
     it('ignores a forged lineage environment value for a terminal Cursor session', async () => {

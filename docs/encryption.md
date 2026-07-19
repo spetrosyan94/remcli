@@ -400,13 +400,20 @@ Payload, хранящийся в `SessionMessage.content`, всегда заши
       "completedAt": 123,
       "status": "canceled | denied | approved",
       "reason": "...",
-      "mode": "manual | acceptEdits | bypassPermissions | plan | auto | dontAsk | read-only | workspace-write | danger-full-access | auto_edit | agent | ask | force | auto-review",
+      "mode": "manual | acceptEdits | bypassPermissions | plan | auto | dontAsk | read-only | workspace-write | danger-full-access | auto_edit",
       "decision": "approved | approved_for_session | denied | abort",
       "allowTools": ["..."]
     }
   }
 }
 ```
+
+`mode` описывает только подтверждённые permission modes Claude Code, Codex и
+Gemini. Cursor не сериализует свои native launch controls в это поле. Для
+Cursor старт сессии передаёт отдельные typed данные: execution mode
+`agent | plan | ask`, независимые `force` и `autoReview`, sandbox override и
+MCP approval. В Agent mode flag `--mode` не передаётся; локальные Cursor
+allow/deny rules остаются внутри Cursor CLI и не копируются в Remcli metadata.
 
 ### Метаданные машины (зашифрованы)
 ```json

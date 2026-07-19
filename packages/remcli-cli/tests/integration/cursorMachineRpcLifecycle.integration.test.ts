@@ -19,6 +19,7 @@ import {
     createControlledCursorAgent,
     type ControlledCursorAgent,
 } from './controlledCursorAgent';
+import type { CursorLaunchControls } from '@/cursor/cursorLaunchControls';
 
 const SOCKET_TIMEOUT_MS = 8_000;
 const RPC_REGISTRATION_TIMEOUT_MS = 8_000;
@@ -38,6 +39,13 @@ const RUNNER_DELIVERY_PROBE_WINDOW_MS = 250;
 const TEST_SESSION_MESSAGE_ACK_VERSION = 1;
 const TMUX_SIBLING_SENTINEL_COMMAND = 'sleep 60';
 const CURSOR_WORKSPACE_MISMATCH_ERROR = 'Cursor session belongs to a different working directory. Select its original workspace before resuming.';
+const FIXTURE_CURSOR_LAUNCH_CONTROLS: CursorLaunchControls = {
+    executionMode: 'agent',
+    force: false,
+    autoReview: false,
+    sandbox: 'local-configuration',
+    approveMcps: false,
+};
 
 interface RpcCallAck {
     ok: boolean;
@@ -66,8 +74,7 @@ interface InFlightDeliveryReplay {
 }
 
 interface PhonePromptOverrides {
-    model?: string;
-    permissionMode?: 'agent' | 'plan' | 'ask' | 'force' | 'auto-review';
+    meta?: Record<string, unknown>;
 }
 
 interface LifecycleHarness {
@@ -328,6 +335,7 @@ function getAssistantText(value: unknown): string | null {
 function createSpawnParams(
     resumeSessionId?: string,
     directory: string = process.cwd(),
+    cursorLaunchControls: CursorLaunchControls = FIXTURE_CURSOR_LAUNCH_CONTROLS,
 ): Record<string, unknown> {
     if (!fixtureCursorExecution) {
         throw new Error('Controlled Cursor capability snapshot was not initialized.');
@@ -338,8 +346,8 @@ function createSpawnParams(
         directory,
         approvedNewDirectoryCreation: false,
         agent: 'cursor',
-        permissionMode: 'agent',
         cursorExecution: fixtureCursorExecution,
+        cursorLaunchControls,
         ...(resumeSessionId ? {
             resumeSessionId,
             resumeSessionName: 'Controlled Cursor native session',
@@ -487,6 +495,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
         const cursorCapabilities = new CursorCapabilitiesService({
             readModelList: async () => ({
                 executable: 'agent',
+                version: 'controlled-cursor-agent 1.0.0',
                 output: [
                     'Available models',
                     '',
@@ -597,8 +606,8 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
                     content: { type: 'text', text },
                     meta: {
                         sentFrom: 'phone',
-                        permissionMode: overrides.permissionMode ?? 'agent',
-                        model: overrides.model ?? FIXTURE_MODEL,
+                        model: FIXTURE_MODEL,
+                        ...overrides.meta,
                     },
                 })),
             });
@@ -780,8 +789,26 @@ afterEach(async () => {
 });
 
 describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_MS }, () => {
-    it('keeps the daemon-validated Cursor model and control when a phone message forges overrides', async () => {
+    it('rejects generic or incomplete Cursor launch input and keeps the daemon-validated selection immutable', async () => {
         harness = await createLifecycleHarness();
+
+        const genericPermissionParams = {
+            ...createSpawnParams(),
+            permissionMode: 'plan',
+        };
+        const { cursorLaunchControls: _ignoredControls, ...missingControlsParams } = createSpawnParams();
+        await expect(
+            harness.callMachineRpc('spawn-remcli-session', genericPermissionParams),
+        ).resolves.toEqual({
+            error: 'Cursor launch controls must not use the generic permissionMode field.',
+        });
+        await expect(
+            harness.callMachineRpc('spawn-remcli-session', missingControlsParams),
+        ).resolves.toEqual({
+            error: 'Cursor requires a current model and validated launch controls.',
+        });
+        expect(harness.getChildren()).toHaveLength(0);
+        expect(harness.fixture.getInvocations()).toEqual([]);
 
         const spawned = await harness.callMachineRpc('spawn-remcli-session', createSpawnParams());
         expect(spawned).toEqual({ type: 'success', sessionId: expect.any(String) });
@@ -790,8 +817,10 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
         }
 
         harness.sendPhonePrompt(spawned.sessionId, FIRST_CONTEXT_PROMPT, {
-            model: 'forged-not-account-visible-model',
-            permissionMode: 'plan',
+            meta: {
+                model: 'forged-not-account-visible-model',
+                permissionMode: 'plan',
+            },
         });
         await waitForCondition(
             () => harness!.fixture.getInvocations().length === 1,
@@ -814,10 +843,20 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
         );
     });
 
-    it('creates, guards, stops and resumes one native Cursor session through the daemon-owned runner', async () => {
+    it('creates, guards, stops and resumes one native Cursor session with all independent controls', async () => {
         harness = await createLifecycleHarness();
+        const launchControls: CursorLaunchControls = {
+            executionMode: 'agent',
+            force: true,
+            autoReview: true,
+            sandbox: 'enabled',
+            approveMcps: true,
+        };
 
-        const spawned = await harness.callMachineRpc('spawn-remcli-session', createSpawnParams());
+        const spawned = await harness.callMachineRpc(
+            'spawn-remcli-session',
+            createSpawnParams(undefined, process.cwd(), launchControls),
+        );
         expect(isSpawnResult(spawned)).toBe(true);
         expect(spawned).toEqual({ type: 'success', sessionId: expect.any(String) });
         if (!isSpawnResult(spawned) || !spawned.sessionId) {
@@ -836,7 +875,10 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
         );
 
         expect(harness.fixture.getInvocations()).toEqual([{
-            args: ['--print', '--output-format', 'stream-json', '--trust', '--model', FIXTURE_MODEL, FIRST_CONTEXT_PROMPT],
+            args: [
+                '--print', '--output-format', 'stream-json', '--trust', '--model', FIXTURE_MODEL,
+                '--force', '--auto-review', '--sandbox', 'enabled', '--approve-mcps', FIRST_CONTEXT_PROMPT,
+            ],
             prompt: FIRST_CONTEXT_PROMPT,
             sessionId: TEST_NATIVE_SESSION_ID,
         }]);
@@ -860,7 +902,7 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
 
         const duplicateResume = await harness.callMachineRpc(
             'spawn-remcli-session',
-            createSpawnParams(TEST_NATIVE_SESSION_ID),
+            createSpawnParams(TEST_NATIVE_SESSION_ID, process.cwd(), launchControls),
         );
         expect(duplicateResume).toEqual({ type: 'success', sessionId: firstRemcliSessionId });
         expect(harness.getChildren()).toHaveLength(1);
@@ -876,7 +918,7 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
 
         const resumedForActiveStop = await harness.callMachineRpc(
             'spawn-remcli-session',
-            createSpawnParams(TEST_NATIVE_SESSION_ID),
+            createSpawnParams(TEST_NATIVE_SESSION_ID, process.cwd(), launchControls),
         );
         expect(resumedForActiveStop).toEqual({ type: 'success', sessionId: expect.any(String) });
         if (!isSpawnResult(resumedForActiveStop) || !resumedForActiveStop.sessionId) {
@@ -912,7 +954,7 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
 
         const resumed = await harness.callMachineRpc(
             'spawn-remcli-session',
-            createSpawnParams(TEST_NATIVE_SESSION_ID),
+            createSpawnParams(TEST_NATIVE_SESSION_ID, process.cwd(), launchControls),
         );
         expect(isSpawnResult(resumed)).toBe(true);
         expect(resumed).toEqual({ type: 'success', sessionId: expect.any(String) });
@@ -935,7 +977,10 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
         expect(harness.fixture.getProtocolViolations()).toEqual([]);
         expect(harness.fixture.getInvocations()).toEqual([
             {
-                args: ['--print', '--output-format', 'stream-json', '--trust', '--model', FIXTURE_MODEL, FIRST_CONTEXT_PROMPT],
+                args: [
+                    '--print', '--output-format', 'stream-json', '--trust', '--model', FIXTURE_MODEL,
+                    '--force', '--auto-review', '--sandbox', 'enabled', '--approve-mcps', FIRST_CONTEXT_PROMPT,
+                ],
                 prompt: FIRST_CONTEXT_PROMPT,
                 sessionId: TEST_NATIVE_SESSION_ID,
             },
@@ -949,6 +994,10 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
                     FIXTURE_MODEL,
                     '--resume',
                     TEST_NATIVE_SESSION_ID,
+                    '--force',
+                    '--auto-review',
+                    '--sandbox', 'enabled',
+                    '--approve-mcps',
                     ACTIVE_STOP_PROMPT,
                 ],
                 prompt: ACTIVE_STOP_PROMPT,
@@ -965,6 +1014,10 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
                     FIXTURE_MODEL,
                     '--resume',
                     TEST_NATIVE_SESSION_ID,
+                    '--force',
+                    '--auto-review',
+                    '--sandbox', 'enabled',
+                    '--approve-mcps',
                     RESUME_CONTEXT_PROMPT,
                 ],
                 prompt: RESUME_CONTEXT_PROMPT,
@@ -972,6 +1025,7 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
                 sessionId: TEST_NATIVE_SESSION_ID,
             },
         ]);
+        expect(harness.fixture.getInvocations().every((invocation) => !invocation.args.includes('--mode'))).toBe(true);
         expect(harness.fixture.getInterruptedPrompts()).toEqual([ACTIVE_STOP_PROMPT]);
 
         const stoppedResumed = await harness.callMachineRpc('stop-session', { sessionId: resumedRemcliSessionId });

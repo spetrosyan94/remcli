@@ -35,7 +35,8 @@ Web/PWA -> P2P daemon -> daemon-owned tmux wrapper -> agent --print -> Cursor
 ```text
 agent --print --output-format stream-json --trust \
   [--model <model>] [--resume <native-session-id>] \
-  [--mode plan|ask] [--force|--auto-review] <prompt>
+  [--mode plan|ask] [--force] [--auto-review] \
+  [--sandbox enabled|disabled] [--approve-mcps] <prompt>
 ```
 
 - `agent` - текущий бинарник; `cursor-agent` используется только как fallback
@@ -92,21 +93,50 @@ agent --print --output-format stream-json --trust \
    отклоняется до spawn.
 8. До подтверждения `system/init` pending resume дедуплицируется по запрошенному
    native ID, но этот ID не считается подтверждённым и не публикуется в metadata.
+9. Кнопка Resume из Cursor Chat не запускает native CLI напрямую. Она передаёт
+   закрытый navigation preset в New Session; тот заново читает capability catalog
+   выбранной машины, показывает свежие model/launch controls и только затем
+   отправляет typed `cursorExecution` + `cursorLaunchControls` + native resume ID.
+   URL не содержит native ID или выбор controls.
 
-## Permissions
+## Execution и controls
 
-| UI mode | Нативное соответствие |
+| Поверхность | Нативное соответствие |
 |---|---|
-| `agent` | Без `--mode`, `--force` и `--auto-review` |
-| `plan` | `--mode plan` |
-| `ask` | `--mode ask` |
-| `force` | `--force` |
-| `auto-review` | `--auto-review` |
+| Execution mode `Agent` | Не передавать `--mode` |
+| Execution mode `Plan` | `--mode plan` |
+| Execution mode `Ask` | `--mode ask` |
+| Launch control `Force` | Независимый `--force` |
+| Launch control `Auto-review` | Независимый `--auto-review` |
+| Sandbox override | `--sandbox enabled|disabled`; без override host-controlled |
+| MCP approval | Opt-in `--approve-mcps`; default не одобряет все MCP |
+| Workspace trust | Daemon-owned headless runner всегда передаёт `--trust` |
 
-`plan` и `ask` локальный CLI описывает как read-only. `force` и
-`auto-review` - отдельные provider flags; они не являются общими Remcli aliases
-и не смешиваются друг с другом. Нативный event может содержать vendor value
-`permissionMode: "default"`; Remcli не экспортирует его как режим разрешений.
+`plan` и `ask` локальный CLI описывает как read-only. `--force`,
+`--auto-review`, sandbox и MCP approval - отдельные provider-native controls,
+которые Remcli не сжимает в общий `PermissionMode` и не делает искусственно
+взаимоисключающими. Локальные Cursor allow/deny rules остаются источником
+истины: Remcli их не читает, не меняет и не сериализует. Нативный event может
+содержать vendor value `permissionMode: "default"`; Remcli не экспортирует его
+как пользовательский режим.
+
+В интерфейсе первичный selector всех provider называется «Уровень доступа».
+Для Cursor он выбирает только execution mode (`Agent`/`Plan`/`Ask`); это единая
+терминология UI, а не попытка выдать mode за Codex permission profile. Launch
+controls остаются отдельным sheet.
+
+Перед созданием Cursor child command `SessionSpawner` очищает унаследованный
+legacy `REMCLI_CURSOR_PERMISSION_MODE` через `/usr/bin/env -u ...` на границе
+tmux. Этот ключ не читается как input и не может изменить argv нового runner.
+
+### Визуальный contract selector-ов
+
+Выбранные rows модели, execution mode, sandbox и reasoning используют
+`aria-pressed="true"`, accent surface и check-indicator. Длинный label в такой
+row переносится, а не скрывается ellipsis. Resume/history rows не являются
+toggle-selector-ами и не получают этот признак. Локальный `design/` служит
+визуальным reference; versioned contract и Browser/E2E проверка находятся в
+этом документе и `design-smoke.spec.ts`.
 
 ## Account-visible model catalog
 
@@ -124,16 +154,20 @@ agent --print --output-format stream-json --trust \
    со стартом. Daemon принудительно refresh-валидирует пару перед spawn; stale
    или чужая model отклоняется typed ошибкой, после которой Web очищает выбор и
    повторно запрашивает catalog.
-4. Cursor CLI не публикует отдельный machine-readable reasoning selector.
-   Remcli показывает явный informational status «reasoning не настраивается
-   отдельно», не выводя effort из suffix model id.
-5. `agent`, `plan`, `ask`, `force` и `auto-review` пока отображаются как
-   native launch controls. Отдельная future work должна развести execution mode,
-   sandbox, MCP approval, workspace trust и реальные permission allow/deny
-   semantics вместо одного UI поля.
+4. Cursor CLI допускает parameterized `--model` overrides, включая effort, но
+   не публикует безопасный machine-readable catalog допустимых efforts для
+   конкретной account-visible модели. Это current product limitation Remcli:
+   пока он показывает informational status «reasoning не настраивается
+   отдельно» и не выводит effort из suffix model id.
+5. Web передаёт отдельно `cursorExecution` и полный `cursorLaunchControls`;
+   `Agent` означает отсутствие `--mode`, а native flags не являются generic
+   permission aliases. Workspace trust и local allow/deny rules отображаются
+   как факты, не как телефонные selectors.
 6. Только daemon-owned runner может получить injected `REMCLI_CURSOR_*` model
    selection. Обычный terminal `remcli cursor` игнорирует эти переменные.
-   Concierge получает fresh provider default или не запускает Cursor вовсе.
+   Fresh validation также связывает executable и version fingerprint; runner
+   перепроверяет его перед созданием P2P metadata. Concierge получает тот же
+   daemon-owned selection или не запускает Cursor вовсе.
 
 ## Ошибки и остановка
 

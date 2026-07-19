@@ -370,6 +370,31 @@ interface ChatNavState {
     hasModelOverride: boolean;
 }
 
+export interface CursorResumeNavigationState {
+    cursorResume: {
+        machineId: string;
+        directory: string;
+        resumeSessionId: string;
+        resumeSessionName: string | null;
+    };
+}
+
+export function buildCursorResumeNavigationState(input: {
+    machineId: string;
+    directory: string;
+    resumeSessionId: string;
+    resumeSessionName?: string;
+}): CursorResumeNavigationState {
+    return {
+        cursorResume: {
+            machineId: input.machineId,
+            directory: input.directory,
+            resumeSessionId: input.resumeSessionId,
+            resumeSessionName: input.resumeSessionName?.trim() || null,
+        },
+    };
+}
+
 /** Начальные model/permissionMode из navigate state (контракт NewSessionPage → /session/:id). */
 export function parseNavState(state: unknown): ChatNavState {
     if (!state || typeof state !== "object") return { hasModelOverride: false };
@@ -917,9 +942,7 @@ export function ChatPage() {
 
     const [isBooting, setIsBooting] = React.useState(true);
     const [draft, setDraft] = React.useState("");
-    const [uiMode, setUiMode] = React.useState<PermissionMode>(() =>
-        navState.permissionMode ?? normalizeAgentPermissionMode(agent, undefined)
-    );
+    const [uiMode, setUiMode] = React.useState<PermissionMode | null>(() => navState.permissionMode ?? null);
     const [busyPermissionIds, setBusyPermissionIds] = React.useState<readonly string[]>([]);
     const [expandedTools, setExpandedTools] = React.useState<Record<string, boolean>>({});
     const [isWhisperAvailable, setIsWhisperAvailable] = React.useState(false);
@@ -949,8 +972,11 @@ export function ChatPage() {
     const status = session ? sessionStatus(session) : "offline";
     const hasVisibleErrorMessage = feed.some((item) => item.kind === "agent-group" && item.tone === "error");
     const shouldShowExecutionErrorNotice = status === "error" && !hasVisibleErrorMessage;
+    const isCursorSession = agent === "cursor";
     const permissionModes = React.useMemo(() => getAgentPermissionModes(agent), [agent]);
-    const activePermissionMode = normalizeAgentPermissionMode(agent, uiMode);
+    const activePermissionMode = agent === "cursor"
+        ? null
+        : normalizeAgentPermissionMode(agent, uiMode ?? undefined);
     const formatPermissionMode = React.useCallback(
         (permission: string) => getAgentPermissionLabel(agent, permission as PermissionMode),
         [agent],
@@ -958,7 +984,11 @@ export function ChatPage() {
 
     React.useEffect(() => {
         if (!session) return;
-        setUiMode((current) => normalizeAgentPermissionMode(agent, current));
+        if (agent === "cursor") {
+            setUiMode(null);
+            return;
+        }
+        setUiMode((current) => normalizeAgentPermissionMode(agent, current ?? undefined));
     }, [agent, session]);
 
     // ── Пагинация истории: offset = число
@@ -1450,6 +1480,20 @@ export function ChatPage() {
     const resumeSession = async () => {
         const meta = session?.metadata;
         if (!meta?.path || !resumeAgentSessionId || !rpcMachineId || isResuming) return;
+
+        if (agent === "cursor") {
+            setIsResuming(true);
+            navigate("/new", {
+                state: buildCursorResumeNavigationState({
+                    machineId: rpcMachineId,
+                    directory: meta.path,
+                    resumeSessionId: resumeAgentSessionId,
+                    resumeSessionName: meta.name,
+                }),
+            });
+            return;
+        }
+
         setIsResuming(true);
         try {
             const result = await machineSpawnNewSession({
@@ -1494,11 +1538,13 @@ export function ChatPage() {
     }
 
     const handleModeChange = (value: string) => {
+        if (isCursorSession) return;
         const nextMode = value as PermissionMode;
         if (permissionModes.includes(nextMode)) setUiMode(nextMode);
     };
 
     const selectPermissionMode = (nextMode: PermissionMode) => {
+        if (isCursorSession) return;
         setUiMode(nextMode);
         setIsPermissionSheetOpen(false);
     };
@@ -1531,9 +1577,11 @@ export function ChatPage() {
         const text = draft.trim();
         if (!text) return;
         setDraft("");
-        const options = navState.hasModelOverride
-            ? { permissionMode: activePermissionMode, model: navState.model ?? null }
-            : { permissionMode: activePermissionMode };
+        const options = isCursorSession
+            ? {}
+            : navState.hasModelOverride
+                ? { permissionMode: activePermissionMode!, model: navState.model ?? null }
+                : { permissionMode: activePermissionMode! };
         void createChatMessageSender(sessionId)(text, options)
             .catch((error: unknown) => {
                 const message = error instanceof Error ? error.message : String(error);
@@ -1561,7 +1609,7 @@ export function ChatPage() {
             {/* десктоп (3a): постоянный сайдбар сессий, активная — подсвечена */}
             <SessionsSidebar activeSessionId={session.id} className="hidden lg:flex" />
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {/* шапка: проект · агент/хост/статус · режим разрешений · меню */}
+            {/* шапка: проект · агент/хост/статус · уровень доступа · меню */}
             <header className="flex items-center gap-2.5 border-b border-border px-3.5 pb-2.5 lg:pt-2.5">
                 <button aria-label={t("chat.aria.back")} onClick={() => navigate(-1)}
                     className="flex size-11 items-center justify-center rounded-[10px] transition-[background-color,transform] active:scale-[0.96] lg:hidden">
@@ -1576,26 +1624,35 @@ export function ChatPage() {
                 </div>
                 {/* Терминал доступен на desktop; сегменты — только когда для них достаточно места. */}
                 <div className="hidden items-center gap-2 lg:flex">
-                    <div className="hidden xl:block">
-                        <Segmented
-                            options={permissionModes}
-                            value={activePermissionMode}
-                            onChange={handleModeChange}
-                            getLabel={formatPermissionMode}
-                            shouldFitContent
-                        />
-                    </div>
+                    {!isCursorSession && (
+                        <div className="hidden xl:block">
+                            <Segmented
+                                options={permissionModes}
+                                value={activePermissionMode ?? ""}
+                                onChange={handleModeChange}
+                                getLabel={formatPermissionMode}
+                                shouldFitContent
+                            />
+                        </div>
+                    )}
                     <Link to={`/session/${session.id}/terminal`}
                         className="flex h-10 items-center rounded-lg border border-border px-3 font-mono text-[11px] text-muted-foreground">
                         {t("chat.terminal")}
                     </Link>
                 </div>
                 {/* Компактный picker нужен на mobile и узком desktop; полные labels — в Drawer. */}
-                <button onClick={() => setIsPermissionSheetOpen(true)}
-                    className="flex h-11 max-w-[118px] items-center gap-1 rounded-lg bg-muted px-3 font-mono text-[10.5px] transition-[background-color,color,transform] active:scale-[0.96] xl:hidden">
-                    <span className="truncate">{formatPermissionMode(activePermissionMode)}</span>
-                    <ChevronDown className="size-2.5 shrink-0 text-muted-foreground" />
-                </button>
+                {!isCursorSession && (
+                    <button
+                        onClick={() => setIsPermissionSheetOpen(true)}
+                        aria-label={`${t("new.accessLevel")}: ${formatPermissionMode(activePermissionMode!)}`}
+                        aria-haspopup="dialog"
+                        aria-expanded={isPermissionSheetOpen}
+                        aria-controls="chat-access-level-sheet"
+                        className="flex h-11 max-w-[118px] items-center gap-1 rounded-lg bg-muted px-3 font-mono text-[10.5px] transition-[background-color,color,transform] active:scale-[0.96] xl:hidden">
+                        <span className="truncate">{formatPermissionMode(activePermissionMode!)}</span>
+                        <ChevronDown className="size-2.5 shrink-0 text-muted-foreground" />
+                    </button>
+                )}
                 <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                         <button aria-label={t("chat.aria.menu")} className="flex size-11 items-center justify-center rounded-[10px] transition-[background-color,transform] active:scale-[0.96]">
@@ -1772,10 +1829,10 @@ export function ChatPage() {
                     )}
                 </div>
             </footer>
-            <Drawer open={isPermissionSheetOpen} onOpenChange={setIsPermissionSheetOpen}>
-                <DrawerContent className={PERMISSION_SHEET_CONTENT_CLASS}>
+            <Drawer open={!isCursorSession && isPermissionSheetOpen} onOpenChange={setIsPermissionSheetOpen}>
+                <DrawerContent id="chat-access-level-sheet" className={PERMISSION_SHEET_CONTENT_CLASS}>
                     <div className="flex items-center px-[18px] pb-2 pt-1">
-                        <DrawerTitle className="text-[14.5px] font-semibold">{t("new.permissions")}</DrawerTitle>
+                        <DrawerTitle className="text-[14.5px] font-semibold">{t("new.accessLevel")}</DrawerTitle>
                         <span className="ml-auto font-mono text-[10px] text-muted-foreground">{agent}</span>
                     </div>
                     {permissionModes.map((permission) => (

@@ -116,10 +116,51 @@ const FIXTURE_CURSOR_RESUME_SESSION: AgentSessionInfo = {
     createdAt: FIXTURE_BASE_TIME - 6 * 60_000,
     sessionName: 'Cursor lifecycle review',
 };
+const FIXTURE_ENDED_CURSOR_CHAT_SESSION_ID = 'fixture-cursor-ended-chat';
+const FIXTURE_ENDED_CURSOR_CHAT_SESSION: Session = {
+    id: FIXTURE_ENDED_CURSOR_CHAT_SESSION_ID,
+    seq: 90,
+    createdAt: FIXTURE_BASE_TIME - 12 * 60_000,
+    updatedAt: FIXTURE_BASE_TIME - 60_000,
+    active: false,
+    activeAt: FIXTURE_BASE_TIME - 60_000,
+    metadata: {
+        path: '/Users/dev/projects/remcli',
+        host: 'macbook-pro.local',
+        homeDir: '/Users/dev',
+        remcliHomeDir: '/Users/dev/.remcli',
+        machineId: 'fx-machine-online',
+        flavor: 'cursor',
+        startedBy: 'daemon',
+        name: 'Cursor chat resume',
+        agentSessionId: 'fixture-cursor-chat-native',
+        cursorSessionId: 'fixture-cursor-chat-native',
+        summary: {
+            text: 'Остановленная Cursor-сессия для Chat Resume',
+            updatedAt: FIXTURE_BASE_TIME - 60_000,
+        },
+    },
+    metadataVersion: 1,
+    agentState: {
+        controlledByUser: false,
+        requests: {},
+        completedRequests: {},
+    },
+    agentStateVersion: 1,
+    thinking: false,
+    thinkingAt: 0,
+    presence: FIXTURE_BASE_TIME - 60_000,
+};
 
 function fixtureQueryParameter(name: string): string | null {
     if (typeof window === 'undefined') return null;
     return new URLSearchParams(window.location.search).get(name);
+}
+
+function fixtureSessions(): Session[] {
+    return fixtureQueryParameter('chatResume') === 'cursor'
+        ? [...FIXTURE_SESSIONS, FIXTURE_ENDED_CURSOR_CHAT_SESSION]
+        : [...FIXTURE_SESSIONS];
 }
 
 type LineageFixtureScenario = 'recovery' | 'reconnect-callback' | 'stable-parent' | 'unavailable' | 'foreign-parent';
@@ -167,7 +208,7 @@ function fixtureSessionSnapshot(
     const lineageSessions = lineageSessionsForScenario(scenario)
         .filter((session) => !shouldReturnChildOnlySnapshot || session.id === FIXTURE_LINEAGE_CHILD_SESSION_ID);
 
-    return [...FIXTURE_SESSIONS, ...lineageSessions].map((session) => structuredClone(session));
+    return [...fixtureSessions(), ...lineageSessions].map((session) => structuredClone(session));
 }
 
 const FIXTURE_UNKNOWN_RESUME_HISTORY: readonly NormalizedMessage[] = [{
@@ -404,8 +445,11 @@ export function initFixturesIfEnabled(): boolean {
     getFixtureLineageMetricsState();
     const store = useProtocolStore.getState();
     store.applyMachines(FIXTURE_MACHINES);
-    store.applySessions(FIXTURE_SESSIONS);
+    store.applySessions(fixtureSessions());
     store.applyMessages(FIXTURE_CHAT_SESSION_ID, fixtureChatMessages(), { markLoaded: true });
+    if (fixtureQueryParameter('chatResume') === 'cursor') {
+        store.applyMessages(FIXTURE_ENDED_CURSOR_CHAT_SESSION_ID, [], { markLoaded: true });
+    }
     const lineageScenario = lineageFixtureScenario();
     if (lineageScenario === 'recovery') {
         // Start with a stale but trusted parent snapshot. The mounted ChatPage

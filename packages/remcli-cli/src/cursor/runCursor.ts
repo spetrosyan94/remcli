@@ -34,8 +34,18 @@ import {
     preflightDaemonCursorRunner,
 } from '@/daemon/controlClient';
 import type { ApiSessionClient } from '@/api/apiSession';
-import type { CursorPermissionMode, Metadata, PermissionMode } from '@/api/types';
-import type { CursorExecutionConfig } from './cursorCapabilities';
+import type { Metadata } from '@/api/types';
+import {
+    isCursorRunnerIdentity,
+    verifyCursorRunnerIdentity,
+    type CursorExecutionConfig,
+    type CursorRunnerIdentity,
+} from './cursorCapabilities';
+import {
+    DEFAULT_CURSOR_LAUNCH_CONTROLS,
+    isCursorLaunchControls,
+    type CursorLaunchControls,
+} from './cursorLaunchControls';
 
 import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
 import {
@@ -60,18 +70,6 @@ function withoutResumedFromRemcliSessionId(metadata: Metadata): Metadata {
     return updatedMetadata;
 }
 
-function isCursorPermissionMode(mode: unknown): mode is CursorPermissionMode {
-    return mode === 'agent'
-        || mode === 'plan'
-        || mode === 'ask'
-        || mode === 'force'
-        || mode === 'auto-review';
-}
-
-function formatUnsupportedCursorPermissionMessage(permissionMode: PermissionMode): string {
-    return `Unsupported Cursor permission mode "${permissionMode}".`;
-}
-
 /**
  * Main entry point for the cursor command with ink UI
  */
@@ -80,7 +78,8 @@ export async function runCursor(opts: {
     startedBy?: 'daemon' | 'terminal';
     resumeSessionId?: string;
     execution?: CursorExecutionConfig;
-    permissionMode?: CursorPermissionMode;
+    launchControls?: CursorLaunchControls;
+    runner?: CursorRunnerIdentity;
 }): Promise<void> {
     // Define session
     //
@@ -100,7 +99,11 @@ export async function runCursor(opts: {
 
     if (opts.startedBy === 'daemon'
         && process.env.REMCLI_DAEMON_RUNNER_TOKEN
-        && (!opts.execution || !isCursorPermissionMode(opts.permissionMode))) {
+        && (!opts.execution
+            || !opts.launchControls
+            || !opts.runner
+            || !isCursorLaunchControls(opts.launchControls)
+            || !isCursorRunnerIdentity(opts.runner))) {
         logger.warn(`[Cursor] ${DAEMON_EXECUTION_SELECTION_REQUIRED_ERROR}`);
         return;
     }
@@ -109,6 +112,11 @@ export async function runCursor(opts: {
     let resumedFromRemcliSessionId: string | undefined;
     if (opts.startedBy === 'daemon') {
         try {
+            if (process.env.REMCLI_DAEMON_RUNNER_TOKEN
+                && (!opts.runner || !await verifyCursorRunnerIdentity(opts.runner))) {
+                logger.debug('[Cursor] Daemon runner CLI identity did not match capability validation.');
+                return;
+            }
             const runnerPreflight = await preflightDaemonCursorRunner({
                 agent: 'cursor',
                 nativeResumeSessionId: opts.resumeSessionId,
@@ -195,51 +203,28 @@ export async function runCursor(opts: {
     session = initialSession;
 
     const messageQueue = new MessageQueue2<CursorMode>((mode) => hashObject({
-        permissionMode: mode.permissionMode,
+        launchControls: mode.launchControls,
         model: mode.model,
     }));
 
-    // Track current overrides
-    let currentPermissionMode: CursorPermissionMode | undefined = opts.permissionMode;
-    let currentModel: string | undefined = opts.execution?.model;
+    // Native launch controls and account-validated model are session-level
+    // selection. A phone message never changes the daemon-owned runner.
+    const currentLaunchControls = opts.launchControls ?? DEFAULT_CURSOR_LAUNCH_CONTROLS;
+    const currentModel = opts.execution?.model;
 
     const createUserMessageHandler = (target: ApiSessionClient) => (message: Parameters<ApiSessionClient['onUserMessage']>[0] extends (value: infer T) => unknown ? T : never) => {
         const messageMeta = message.meta;
-        let messagePermissionMode = currentPermissionMode;
-        if (opts.execution) {
-            if (messageMeta?.permissionMode && messageMeta.permissionMode !== currentPermissionMode) {
-                logger.warn('[Cursor] Ignoring unvalidated per-message execution control override.');
-            }
-        } else if (messageMeta?.permissionMode) {
-            const requestedMode = messageMeta.permissionMode as PermissionMode;
-            if (isCursorPermissionMode(requestedMode)) {
-                messagePermissionMode = requestedMode;
-                currentPermissionMode = messagePermissionMode;
-                logger.debug(`[Cursor] Permission mode updated: ${currentPermissionMode}`);
-            } else {
-                const errorText = formatUnsupportedCursorPermissionMessage(requestedMode);
-                logger.warn(`[Cursor] ${errorText}`);
-                target.sendSessionEvent({ type: 'message', message: errorText, isError: true });
-                return;
-            }
+        if (messageMeta?.permissionMode) {
+            logger.warn('[Cursor] Ignoring generic per-message permission override; launch controls are fixed for this session.');
         }
 
-        let messageModel = currentModel;
-        if (opts.execution) {
-            const hasModelOverride = Object.prototype.hasOwnProperty.call(messageMeta ?? {}, 'model');
-            const requestedModel = messageMeta?.model || undefined;
-            if (hasModelOverride && requestedModel !== currentModel) {
-                logger.warn('[Cursor] Ignoring unvalidated per-message model override.');
-            }
-        } else if (messageMeta && Object.prototype.hasOwnProperty.call(messageMeta, 'model')) {
-            messageModel = messageMeta.model || undefined;
-            currentModel = messageModel;
-            logger.debug(`[Cursor] Model updated: ${messageModel || 'reset to default'}`);
+        if (Object.prototype.hasOwnProperty.call(messageMeta ?? {}, 'model')) {
+            logger.warn('[Cursor] Ignoring per-message model override; the selected Cursor model is fixed for this session.');
         }
 
         const mode: CursorMode = {
-            permissionMode: messagePermissionMode || 'agent',
-            model: messageModel,
+            launchControls: currentLaunchControls,
+            model: currentModel,
         };
         messageQueue.push(message.content.text, mode);
     };
@@ -613,29 +598,17 @@ export async function runCursor(opts: {
                 // Build prompt (no CHANGE_TITLE_INSTRUCTION — Cursor doesn't have access to remcli MCP server)
                 const prompt = message.message;
 
-                // Map permission mode → Cursor CLI flags.
-                const cursorMode = (() => {
-                    switch (message.mode.permissionMode) {
-                        case 'plan': return 'plan' as const;
-                        case 'ask': return 'ask' as const;
-                        default: return 'agent' as const;
-                    }
-                })();
-                const cursorForce = message.mode.permissionMode === 'force';
-                const cursorAutoReview = message.mode.permissionMode === 'auto-review';
+                const { launchControls } = message.mode;
+                const cursorMode = launchControls.executionMode;
 
                 // Show active mode in terminal
                 const modeLabel = cursorMode === 'plan'
                     ? 'Plan'
                     : cursorMode === 'ask'
                         ? 'Ask'
-                        : cursorForce
-                            ? 'Agent + Force'
-                            : cursorAutoReview
-                                ? 'Agent + Auto-review'
-                                : 'Agent';
+                        : 'Agent';
                 messageBuffer.addMessage(`Mode: ${modeLabel}`, 'system');
-                logger.debug(`[Cursor] Spawning with mode=${cursorMode} force=${cursorForce} autoReview=${cursorAutoReview} permissionMode=${message.mode.permissionMode}`);
+                logger.debug(`[Cursor] Spawning with executionMode=${cursorMode} force=${launchControls.force} autoReview=${launchControls.autoReview} sandbox=${launchControls.sandbox} approveMcps=${launchControls.approveMcps}`);
 
                 // Send task_started
                 session.sendAgentMessage('cursor', {
@@ -654,9 +627,9 @@ export async function runCursor(opts: {
                     model: message.mode.model,
                     resumeSessionId: cursorSessionId ?? requestedResumeSessionId,
                     abort: abortController.signal,
-                    mode: cursorMode,
-                    force: cursorForce,
-                    autoReview: cursorAutoReview,
+                    launchControls,
+                    trustWorkspace: true,
+                    ...(opts.runner ? { executable: opts.runner.executable } : {}),
                 }, async (event) => {
                     // Debug: log every event type for diagnosis
                     logger.debug(`[Cursor] Event: type=${event.type} subtype=${event.subtype ?? '-'} hasContent=${!!event.message?.content} hasTextDelta=${!!event.text_delta} hasText=${!!event.text}`);

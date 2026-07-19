@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildCursorTurnArguments, resolveCursorExecutable } from './cursorCli';
+import { DEFAULT_CURSOR_LAUNCH_CONTROLS } from './cursorLaunchControls';
 
 describe('Cursor native CLI boundary', () => {
     it('prefers the current agent executable and falls back only when necessary', () => {
@@ -15,12 +16,19 @@ describe('Cursor native CLI boundary', () => {
         expect(probes).toEqual(['agent', 'cursor-agent']);
     });
 
-    it('builds one explicit non-interactive turn without a credential argument', () => {
+    it('builds one explicit non-interactive turn with every independent native launch control', () => {
         const argumentsList = buildCursorTurnArguments({
             prompt: 'Inspect the current workspace.',
             model: 'composer-1.5',
             resumeSessionId: '4dbf4d0d-bf5c-4487-8a53-972fa2d57199',
-            mode: 'plan',
+            trustWorkspace: true,
+            launchControls: {
+                executionMode: 'plan',
+                force: true,
+                autoReview: true,
+                sandbox: 'disabled',
+                approveMcps: true,
+            },
         });
 
         expect(argumentsList).toEqual([
@@ -30,28 +38,35 @@ describe('Cursor native CLI boundary', () => {
             '--model', 'composer-1.5',
             '--resume', '4dbf4d0d-bf5c-4487-8a53-972fa2d57199',
             '--mode', 'plan',
+            '--force',
+            '--auto-review',
+            '--sandbox', 'disabled',
+            '--approve-mcps',
             'Inspect the current workspace.',
         ]);
         expect(argumentsList).not.toContain('--api-key');
     });
 
-    it('maps explicit native write modes without inventing a generic permission flag', () => {
-        expect(buildCursorTurnArguments({ prompt: 'Use the normal Agent mode.', mode: 'agent' })).toEqual([
+    it('maps Agent to an omitted --mode flag and preserves default launch controls', () => {
+        expect(buildCursorTurnArguments({
+            prompt: 'Use the normal Agent mode.',
+            trustWorkspace: true,
+            launchControls: { ...DEFAULT_CURSOR_LAUNCH_CONTROLS },
+        })).toEqual([
             '--print', '--output-format', 'stream-json', '--trust', 'Use the normal Agent mode.',
         ]);
-        expect(buildCursorTurnArguments({ prompt: 'Write the change.', force: true })).toEqual([
-            '--print', '--output-format', 'stream-json', '--trust', '--force', 'Write the change.',
-        ]);
-        expect(buildCursorTurnArguments({ prompt: 'Review the diff.', autoReview: true })).toEqual([
-            '--print', '--output-format', 'stream-json', '--trust', '--auto-review', 'Review the diff.',
+        expect(buildCursorTurnArguments({ prompt: 'No trust override.' })).toEqual([
+            '--print', '--output-format', 'stream-json', 'No trust override.',
         ]);
     });
 
-    it('rejects mutually exclusive native modes before spawning a process', () => {
+    it('rejects malformed launch controls before spawning a process', () => {
         expect(() => buildCursorTurnArguments({
             prompt: 'Do not run.',
-            force: true,
-            autoReview: true,
-        })).toThrow('cannot be enabled together');
+            launchControls: {
+                ...DEFAULT_CURSOR_LAUNCH_CONTROLS,
+                force: 'true',
+            } as unknown as typeof DEFAULT_CURSOR_LAUNCH_CONTROLS,
+        })).toThrow('launch controls are invalid');
     });
 });

@@ -33,7 +33,7 @@ import { bootstrapMachineSocket } from './machineSocket';
 import { startHeartbeatLoop } from './heartbeat';
 import { startCodexAppServerHost, type CodexAppServerHostHandle } from '@/codex/codexAppServerHost';
 import { CodexCapabilitiesService } from '@/codex/codexCapabilities';
-import { CursorCapabilitiesService, getDefaultCursorExecution } from '@/cursor/cursorCapabilities';
+import { CursorCapabilitiesService } from '@/cursor/cursorCapabilities';
 import { PairingRekeyCoordinator } from './p2p/pairingRekey';
 import { redactDiagnosticData } from '@/utils/redaction';
 import QRCode from 'qrcode';
@@ -517,10 +517,10 @@ export async function startDaemon(): Promise<void> {
             status: s.remcliSessionMetadataFromLocalWebhook?.lifecycleState ?? 'running',
         })),
         spawnSession: sessionManager.spawnSession,
-        getDefaultCursorExecution: async () => {
+        getDefaultCursorSelection: async () => {
             const capabilities = cursorCapabilities;
             if (!capabilities) return null;
-            return getDefaultCursorExecution(await capabilities.getCapabilities(true));
+            return await capabilities.getDefaultSelection();
         },
         getDaemonStatus: () => ({
             version: packageJson.version,

@@ -13,6 +13,7 @@ provider-specific архитектура AI-агентов.
 | [encryption.md](encryption.md) | Схемы шифрования, бинарные форматы, обёртывание ключей, кодирование на проводе |
 | [cli-architecture.md](cli-architecture.md) | Поток запуска CLI, жизненный цикл демона, управление сессиями, RPC |
 | [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) | Архитектура Codex/ChatGPT через официальный Codex app-server |
+| [agent-architecture/cursor-cli-architecture.md](agent-architecture/cursor-cli-architecture.md) | Архитектура Cursor Agent CLI: native resume, capability catalog и controls запуска |
 | [agent-architecture/agent-remote-control-template.md](agent-architecture/agent-remote-control-template.md) | Шаблон документации для следующих AI-агентов |
 
 ## Соглашения

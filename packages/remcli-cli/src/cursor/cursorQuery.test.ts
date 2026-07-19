@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { CursorTurnError, runCursorTurn } from './cursorQuery';
+import { DEFAULT_CURSOR_LAUNCH_CONTROLS } from './cursorLaunchControls';
 
 const runOnUnix = process.platform === 'win32' ? it.skip : it;
 
@@ -197,7 +198,11 @@ describe('runCursorTurn', () => {
             prompt: 'fixture prompt must not be logged',
             model: 'composer-1.5',
             resumeSessionId: 'cursor-native-session',
-            mode: 'plan',
+            trustWorkspace: true,
+            launchControls: {
+                ...DEFAULT_CURSOR_LAUNCH_CONTROLS,
+                executionMode: 'plan',
+            },
             env: {
                 REMCLI_CURSOR_FIXTURE_SCENARIO: 'success',
                 REMCLI_CURSOR_FIXTURE_ARGS_PATH: argsPath,

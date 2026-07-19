@@ -38,7 +38,7 @@ function createDeferred<T>(): Deferred<T> {
 }
 
 function createModelListResult(output: string = MODEL_LIST_OUTPUT): CursorModelListResult {
-    return { executable: 'agent', output };
+    return { executable: 'agent', output, version: 'controlled-cursor-agent 1.0.0' };
 }
 
 function expectCapabilityError(action: () => void, code: CursorCapabilitiesError['code']): void {
@@ -139,6 +139,23 @@ describe('Cursor capability snapshot validation', () => {
         }, 1_001), 'unsupported_selection');
         expectCapabilityError(() => validateCursorExecution(snapshot, execution ?? undefined, 6_000), 'expired');
     });
+
+    it('binds the catalog version to the verified CLI identity', () => {
+        const agentSnapshot = createCursorCapabilitiesSnapshot(
+            MODEL_LIST_OUTPUT,
+            () => 1_000,
+            5_000,
+            { executable: 'agent', cliFingerprint: '0123456789abcdef' },
+        );
+        const fallbackSnapshot = createCursorCapabilitiesSnapshot(
+            MODEL_LIST_OUTPUT,
+            () => 1_000,
+            5_000,
+            { executable: 'cursor-agent', cliFingerprint: 'fedcba9876543210' },
+        );
+
+        expect(agentSnapshot.catalogVersion).not.toBe(fallbackSnapshot.catalogVersion);
+    });
 });
 
 describe('CursorCapabilitiesService', () => {
@@ -180,6 +197,26 @@ describe('CursorCapabilitiesService', () => {
 
         await service.validateSelection(getDefaultCursorExecution(snapshot) ?? undefined);
         expect(readModelList).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns the current CLI identity only with a freshly validated provider default', async () => {
+        const service = new CursorCapabilitiesService({
+            readModelList: async () => createModelListResult(),
+            now: () => 1_000,
+        });
+
+        const selection = await service.getDefaultSelection();
+
+        expect(selection).toEqual({
+            execution: {
+                model: 'auto',
+                catalogVersion: expect.any(String),
+            },
+            runner: {
+                executable: 'agent',
+                cliFingerprint: expect.stringMatching(/^[a-f0-9]{16}$/),
+            },
+        });
     });
 
     it('returns a typed unavailable snapshot without surfacing raw CLI failure output', async () => {

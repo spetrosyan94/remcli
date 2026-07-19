@@ -35,6 +35,7 @@ import {
     ConciergeRequestBody,
     ConciergeResponse,
 } from '@/daemon/concierge/types';
+import { DEFAULT_CURSOR_LAUNCH_CONTROLS } from '@/cursor/cursorLaunchControls';
 
 // ─── System prompt composition ───────────────────────────────────
 
@@ -186,10 +187,10 @@ async function executeSpawnAgentSession(rawArgs: string, deps: ConciergeDeps): P
         return { error: `Directory does not exist: "${directory}".` };
     }
 
-    const cursorExecution = agent === 'cursor'
-        ? await deps.getDefaultCursorExecution()
+    const cursorSelection = agent === 'cursor'
+        ? await deps.getDefaultCursorSelection()
         : null;
-    if (agent === 'cursor' && !cursorExecution) {
+    if (agent === 'cursor' && !cursorSelection) {
         return { error: 'Cursor is unavailable because its account-visible model catalog could not be validated.' };
     }
 
@@ -200,9 +201,10 @@ async function executeSpawnAgentSession(rawArgs: string, deps: ConciergeDeps): P
         agent,
         directory,
         approvedNewDirectoryCreation: false,
-        ...(cursorExecution ? {
-            cursorExecution,
-            permissionMode: 'agent' as const,
+        ...(cursorSelection ? {
+            cursorExecution: cursorSelection.execution,
+            cursorLaunchControls: { ...DEFAULT_CURSOR_LAUNCH_CONTROLS },
+            cursorRunner: cursorSelection.runner,
         } : {}),
     });
     return result;

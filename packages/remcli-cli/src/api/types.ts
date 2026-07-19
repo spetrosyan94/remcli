@@ -4,7 +4,6 @@ import { UsageSchema } from '@/claude/types'
 export type ClaudePermissionMode = 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk'
 export type CodexPermissionMode = 'read-only' | 'workspace-write' | 'danger-full-access'
 export type GeminiPermissionMode = 'manual' | 'auto_edit' | 'plan'
-export type CursorPermissionMode = 'agent' | 'plan' | 'ask' | 'force' | 'auto-review'
 
 /**
  * Permission mode type - union of native agent modes.
@@ -13,7 +12,7 @@ export type CursorPermissionMode = 'agent' | 'plan' | 'ask' | 'force' | 'auto-re
  * Agent-specific modes are validated at each backend boundary.
  * `default` is a model sentinel only, never a permission mode.
  */
-export type PermissionMode = ClaudePermissionMode | CodexPermissionMode | GeminiPermissionMode | CursorPermissionMode
+export type PermissionMode = ClaudePermissionMode | CodexPermissionMode | GeminiPermissionMode
 
 /**
  * Usage data type from Claude
@@ -246,8 +245,7 @@ export const MessageMetaSchema = z.object({
   permissionMode: z.enum([
     'manual', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk',
     'read-only', 'workspace-write', 'danger-full-access',
-    'auto_edit',
-    'agent', 'ask', 'force', 'auto-review'
+    'auto_edit'
   ]).optional(), // Permission mode for this message
   model: z.string().nullable().optional(), // Model name for this message (null = reset)
   fallbackModel: z.string().nullable().optional(), // Fallback model for this message (null = reset)

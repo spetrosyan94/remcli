@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Metadata } from '@/api/types';
+import type { SpawnSessionOptions } from '@/modules/common/registerCommonHandlers';
 
 const tmuxMocks = vi.hoisted(() => ({
     executeTmuxCommand: vi.fn(),
@@ -259,6 +260,24 @@ function getDaemonRunnerToken(spawnIndex = 0): string {
     return runnerToken;
 }
 
+const CONTROLLED_CURSOR_SELECTION = {
+    cursorExecution: {
+        model: 'controlled-cursor-model',
+        catalogVersion: 'controlled-cursor-catalog',
+    },
+    cursorLaunchControls: {
+        executionMode: 'agent',
+        force: false,
+        autoReview: false,
+        sandbox: 'local-configuration',
+        approveMcps: false,
+    },
+    cursorRunner: {
+        executable: 'agent',
+        cliFingerprint: '0123456789abcdef',
+    },
+} satisfies Pick<SpawnSessionOptions, 'cursorExecution' | 'cursorLaunchControls' | 'cursorRunner'>;
+
 function mockTrackedDaemonTmuxOwnership(
     manager: ReturnType<typeof createSessionManager>,
     remcliSessionId: string,
@@ -447,10 +466,20 @@ describe('createSessionManager resume deduplication', () => {
         const spawning = manager.spawnSession({
             directory: process.cwd(),
             agent: 'cursor',
-            permissionMode: 'ask',
             cursorExecution: {
                 model: 'cursor-grok-4.5-high',
                 catalogVersion: 'cursor-catalog-1',
+            },
+            cursorLaunchControls: {
+                executionMode: 'ask',
+                force: true,
+                autoReview: true,
+                sandbox: 'enabled',
+                approveMcps: true,
+            },
+            cursorRunner: {
+                executable: 'agent',
+                cliFingerprint: '0123456789abcdef',
             },
         });
 
@@ -459,7 +488,13 @@ describe('createSessionManager resume deduplication', () => {
         expect(environment).toMatchObject({
             REMCLI_CURSOR_MODEL: 'cursor-grok-4.5-high',
             REMCLI_CURSOR_CATALOG_VERSION: 'cursor-catalog-1',
-            REMCLI_CURSOR_PERMISSION_MODE: 'ask',
+            REMCLI_CURSOR_EXECUTION_MODE: 'ask',
+            REMCLI_CURSOR_FORCE: 'true',
+            REMCLI_CURSOR_AUTO_REVIEW: 'true',
+            REMCLI_CURSOR_SANDBOX: 'enabled',
+            REMCLI_CURSOR_APPROVE_MCPS: 'true',
+            REMCLI_CURSOR_EXECUTABLE: 'agent',
+            REMCLI_CURSOR_CLI_FINGERPRINT: '0123456789abcdef',
         });
 
         manager.onRemcliSessionWebhook('remcli-cursor-capability', createSessionMetadata(process.pid, {
@@ -467,6 +502,85 @@ describe('createSessionManager resume deduplication', () => {
             flavor: 'cursor',
         }), getDaemonRunnerToken());
         await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-capability' });
+    });
+
+    it('does not inherit the legacy Cursor permission environment into a daemon spawn', async () => {
+        const previousLegacyPermissionMode = process.env.REMCLI_CURSOR_PERMISSION_MODE;
+        process.env.REMCLI_CURSOR_PERMISSION_MODE = 'legacy-permission-alias';
+
+        try {
+            tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+                success: true,
+                sessionId: 'tmux-cursor-legacy-env',
+                windowId: '@622',
+                paneId: '%622',
+                pid: process.pid,
+            });
+            const manager = createSessionManager();
+            const spawning = manager.spawnSession({
+                directory: process.cwd(),
+                agent: 'cursor',
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
+
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+            const environment = tmuxMocks.spawnInTmux.mock.calls[0]?.[2] as Record<string, string>;
+            expect(environment).not.toHaveProperty('REMCLI_CURSOR_PERMISSION_MODE');
+            const command = tmuxMocks.spawnInTmux.mock.calls[0]?.[0]?.[0] as string;
+            expect(command).toMatch(/^\/usr\/bin\/env -u REMCLI_CURSOR_PERMISSION_MODE /);
+            expect(command).not.toContain('legacy-permission-alias');
+
+            manager.onRemcliSessionWebhook('remcli-cursor-legacy-env', createSessionMetadata(process.pid, {
+                startedBy: 'daemon',
+                flavor: 'cursor',
+            }), getDaemonRunnerToken());
+            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-legacy-env' });
+        } finally {
+            if (previousLegacyPermissionMode === undefined) {
+                delete process.env.REMCLI_CURSOR_PERMISSION_MODE;
+            } else {
+                process.env.REMCLI_CURSOR_PERMISSION_MODE = previousLegacyPermissionMode;
+            }
+        }
+    });
+
+    const invalidCursorSpawnCases: Array<[
+        string,
+        () => Partial<Pick<SpawnSessionOptions, 'cursorExecution' | 'cursorLaunchControls' | 'cursorRunner'>>,
+    ]> = [
+        ['missing cursor launch controls', () => {
+            const { cursorLaunchControls: _cursorLaunchControls, ...selection } = CONTROLLED_CURSOR_SELECTION;
+            return selection;
+        }],
+        ['invalid Cursor sandbox', () => ({
+            ...CONTROLLED_CURSOR_SELECTION,
+            cursorLaunchControls: {
+                ...CONTROLLED_CURSOR_SELECTION.cursorLaunchControls,
+                sandbox: 'unsupported-sandbox',
+            } as unknown as SpawnSessionOptions['cursorLaunchControls'],
+        })],
+        ['malformed Cursor runner fingerprint', () => ({
+            ...CONTROLLED_CURSOR_SELECTION,
+            cursorRunner: {
+                ...CONTROLLED_CURSOR_SELECTION.cursorRunner,
+                cliFingerprint: 'not-a-fingerprint',
+            } as unknown as SpawnSessionOptions['cursorRunner'],
+        })],
+    ];
+
+    it.each(invalidCursorSpawnCases)('fails closed for Cursor spawn with %s before tmux spawn', async (_caseName, buildOverrides) => {
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...buildOverrides(),
+        });
+
+        await expect(spawning).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Cursor requires a daemon-validated model, launch controls, and CLI identity.',
+        });
+        expect(tmuxMocks.spawnInTmux).not.toHaveBeenCalled();
     });
 
     it('does not spawn a Codex resume after shutdown starts during async resume resolution', async () => {
@@ -1933,6 +2047,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor' as const,
             resumeSessionId: 'cursor-native-resume',
+            ...CONTROLLED_CURSOR_SELECTION,
         };
         const first = manager.spawnSession(options);
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
@@ -1959,7 +2074,11 @@ describe('createSessionManager resume deduplication', () => {
         });
 
         const manager = createSessionManager();
-        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        const initialSpawn = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         manager.onRemcliSessionWebhook('remcli-cursor-shutdown-race', createSessionMetadata(runnerPid, {
             startedBy: 'daemon',
@@ -1986,6 +2105,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor',
             resumeSessionId: nativeSessionId,
+            ...CONTROLLED_CURSOR_SELECTION,
         });
         await vi.waitFor(() => expect(tmuxMocks.getPaneInfo).toHaveBeenCalledOnce());
 
@@ -2015,7 +2135,11 @@ describe('createSessionManager resume deduplication', () => {
             });
 
             const manager = createSessionManager();
-            const spawning = manager.spawnSession({ directory: workspace, agent: 'cursor' });
+            const spawning = manager.spawnSession({
+                directory: workspace,
+                agent: 'cursor',
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
             await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
 
             const runnerToken = getDaemonRunnerToken();
@@ -2058,12 +2182,14 @@ describe('createSessionManager resume deduplication', () => {
                 directory: workspace,
                 agent: 'cursor',
                 resumeSessionId: nativeCursorSessionId,
+                ...CONTROLLED_CURSOR_SELECTION,
             })).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-fresh' });
 
             await expect(manager.spawnSession({
                 directory: otherWorkspace,
                 agent: 'cursor',
                 resumeSessionId: nativeCursorSessionId,
+                ...CONTROLLED_CURSOR_SELECTION,
             })).resolves.toEqual({
                 type: 'error',
                 errorMessage: 'Cursor session belongs to a different working directory. Select its original workspace before resuming.',
@@ -2089,6 +2215,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor',
             resumeSessionId: 'cursor-native-workspace',
+            ...CONTROLLED_CURSOR_SELECTION,
         });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         manager.onRemcliSessionWebhook('remcli-cursor-workspace', createSessionMetadata(process.pid, {
@@ -2101,6 +2228,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: tmpdir(),
             agent: 'cursor',
             resumeSessionId: 'cursor-native-workspace',
+            ...CONTROLLED_CURSOR_SELECTION,
         })).resolves.toEqual({
             type: 'error',
             errorMessage: 'Cursor session belongs to a different working directory. Select its original workspace before resuming.',
@@ -2118,7 +2246,11 @@ describe('createSessionManager resume deduplication', () => {
 
             const manager = createSessionManager();
             const nativeSessionId = 'cursor-native-unbound-lineage';
-            const firstSpawn = manager.spawnSession({ directory: workspace, agent: 'cursor' });
+            const firstSpawn = manager.spawnSession({
+                directory: workspace,
+                agent: 'cursor',
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
             await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
             manager.onRemcliSessionWebhook('remcli-cursor-unbound-parent', createSessionMetadata(21_020, {
                 path: workspace,
@@ -2138,6 +2270,7 @@ describe('createSessionManager resume deduplication', () => {
                 directory: workspace,
                 agent: 'cursor',
                 resumeSessionId: nativeSessionId,
+                ...CONTROLLED_CURSOR_SELECTION,
             });
             await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
             await expect(manager.preflightCursorRunner({
@@ -2168,7 +2301,11 @@ describe('createSessionManager resume deduplication', () => {
 
             const nativeSessionId = 'cursor-native-restarted-daemon';
             const firstManager = createSessionManager();
-            const firstSpawn = firstManager.spawnSession({ directory: workspace, agent: 'cursor' });
+            const firstSpawn = firstManager.spawnSession({
+                directory: workspace,
+                agent: 'cursor',
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
             await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
             firstManager.onRemcliSessionWebhook('remcli-cursor-before-restart', createSessionMetadata(21_025, {
                 path: workspace,
@@ -2191,6 +2328,7 @@ describe('createSessionManager resume deduplication', () => {
                 directory: workspace,
                 agent: 'cursor',
                 resumeSessionId: nativeSessionId,
+                ...CONTROLLED_CURSOR_SELECTION,
             });
             await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
             await expect(restartedManager.preflightCursorRunner({
@@ -2223,7 +2361,11 @@ describe('createSessionManager resume deduplication', () => {
             const manager = createSessionManager();
             const nativeSessionId = 'cursor-native-lineage';
             const parentSessionId = 'remcli-cursor-lineage-parent';
-            const firstSpawn = manager.spawnSession({ directory: workspace, agent: 'cursor' });
+            const firstSpawn = manager.spawnSession({
+                directory: workspace,
+                agent: 'cursor',
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
             await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
             manager.onRemcliSessionWebhook(parentSessionId, createSessionMetadata(21_030, {
                 path: workspace,
@@ -2246,6 +2388,7 @@ describe('createSessionManager resume deduplication', () => {
                 directory: otherWorkspace,
                 agent: 'cursor',
                 resumeSessionId: nativeSessionId,
+                ...CONTROLLED_CURSOR_SELECTION,
             })).resolves.toEqual({
                 type: 'error',
                 errorMessage: 'Cursor session belongs to a different working directory. Select its original workspace before resuming.',
@@ -2256,6 +2399,7 @@ describe('createSessionManager resume deduplication', () => {
                 directory: workspace,
                 agent: 'cursor',
                 resumeSessionId: nativeSessionId,
+                ...CONTROLLED_CURSOR_SELECTION,
             });
             await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
             const preflightRequest = {
@@ -2308,7 +2452,11 @@ describe('createSessionManager resume deduplication', () => {
         });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         const runnerToken = getDaemonRunnerToken();
 
@@ -2376,7 +2524,11 @@ describe('createSessionManager resume deduplication', () => {
         });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         const runnerToken = getDaemonRunnerToken();
         const sessionMetadata = createSessionMetadata(runnerPid, {
@@ -2423,9 +2575,17 @@ describe('createSessionManager resume deduplication', () => {
                 .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-owner-b', pid: 21_002 });
 
             const manager = createSessionManager();
-            const firstSpawn = manager.spawnSession({ directory: workspace, agent: 'cursor' });
+            const firstSpawn = manager.spawnSession({
+                directory: workspace,
+                agent: 'cursor',
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
             await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(1));
-            const secondSpawn = manager.spawnSession({ directory: workspace, agent: 'cursor' });
+            const secondSpawn = manager.spawnSession({
+                directory: workspace,
+                agent: 'cursor',
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
             await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
 
             manager.onRemcliSessionWebhook('remcli-cursor-owner-a', createSessionMetadata(21_001, {
@@ -2451,6 +2611,7 @@ describe('createSessionManager resume deduplication', () => {
                 directory: workspace,
                 agent: 'cursor',
                 resumeSessionId: nativeSessionId,
+                ...CONTROLLED_CURSOR_SELECTION,
             });
             const competingBinding = manager.bindNativeCursorSession({
                 agent: 'cursor',
@@ -2476,6 +2637,7 @@ describe('createSessionManager resume deduplication', () => {
                 directory: otherWorkspace,
                 agent: 'cursor',
                 resumeSessionId: nativeSessionId,
+                ...CONTROLLED_CURSOR_SELECTION,
             })).resolves.toEqual({
                 type: 'error',
                 errorMessage: 'Cursor session belongs to a different working directory. Select its original workspace before resuming.',
@@ -2511,7 +2673,11 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-reused-resume', pid: reusedPid + 1 });
 
         const manager = createSessionManager({ onSessionStopped });
-        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        const firstSpawn = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         manager.onRemcliSessionWebhook('remcli-cursor-reused-a', createSessionMetadata(reusedPid, {
             startedBy: 'daemon',
@@ -2531,7 +2697,11 @@ describe('createSessionManager resume deduplication', () => {
         const stoppingFirst = manager.stopSession('remcli-cursor-reused-a');
         await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledOnce());
 
-        const secondSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        const secondSpawn = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
         manager.onRemcliSessionWebhook('remcli-cursor-reused-b', createSessionMetadata(reusedPid, {
             startedBy: 'daemon',
@@ -2550,6 +2720,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor',
             resumeSessionId: nativeSessionId,
+            ...CONTROLLED_CURSOR_SELECTION,
         })).resolves.toEqual({
             type: 'error',
             errorMessage: 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.',
@@ -2585,6 +2756,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor',
             resumeSessionId: nativeSessionId,
+            ...CONTROLLED_CURSOR_SELECTION,
         });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(3));
         manager.onRemcliSessionWebhook('remcli-cursor-reused-resume', createSessionMetadata(reusedPid + 1, {
@@ -2615,7 +2787,11 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-stop-race-lineage', windowId: '@417', paneId: '%417', pid: reusedPid + 1 });
 
         const manager = createSessionManager({ onSessionStopped });
-        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        const firstSpawn = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         manager.onRemcliSessionWebhook('remcli-cursor-stop-race-a', createSessionMetadata(reusedPid, {
             startedBy: 'daemon',
@@ -2638,7 +2814,11 @@ describe('createSessionManager resume deduplication', () => {
         const stoppingFirst = manager.stopSession('remcli-cursor-stop-race-a');
         await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(firstRunner));
 
-        const secondSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        const secondSpawn = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
         manager.onRemcliSessionWebhook('remcli-cursor-stop-race-b', createSessionMetadata(reusedPid, {
             startedBy: 'daemon',
@@ -2676,6 +2856,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor',
             resumeSessionId: firstNativeSessionId,
+            ...CONTROLLED_CURSOR_SELECTION,
         });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(3));
         await expect(manager.preflightCursorRunner({
@@ -2702,6 +2883,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor',
             resumeSessionId: 'cursor-native-stop-race-b',
+            ...CONTROLLED_CURSOR_SELECTION,
         })).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-stop-race-b' });
         expect(onSessionStopped).toHaveBeenCalledOnce();
         expect(onSessionStopped).toHaveBeenCalledWith('remcli-cursor-stop-race-a');
@@ -2724,7 +2906,11 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-prune-race-lineage', windowId: '@418', paneId: '%418', pid: reusedPid + 1 });
 
         const manager = createSessionManager({ onSessionStopped });
-        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        const firstSpawn = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         manager.onRemcliSessionWebhook('remcli-cursor-prune-race-a', createSessionMetadata(reusedPid, {
             startedBy: 'daemon',
@@ -2747,7 +2933,11 @@ describe('createSessionManager resume deduplication', () => {
         manager.pruneDeadSessions();
         await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(firstRunner));
 
-        const secondSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        const secondSpawn = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
         manager.onRemcliSessionWebhook('remcli-cursor-prune-race-b', createSessionMetadata(reusedPid, {
             startedBy: 'daemon',
@@ -2778,6 +2968,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor',
             resumeSessionId: 'cursor-native-prune-race-b',
+            ...CONTROLLED_CURSOR_SELECTION,
         })).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-prune-race-b' });
         expect(onSessionStopped).toHaveBeenCalledOnce();
         expect(onSessionStopped).toHaveBeenCalledWith('remcli-cursor-prune-race-a');
@@ -2786,6 +2977,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor',
             resumeSessionId: firstNativeSessionId,
+            ...CONTROLLED_CURSOR_SELECTION,
         });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(3));
         await expect(manager.preflightCursorRunner({
@@ -2823,7 +3015,11 @@ describe('createSessionManager resume deduplication', () => {
         });
 
         const manager = createSessionManager();
-        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        const initialSpawn = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         manager.onRemcliSessionWebhook('remcli-cursor-unknown-pane', createSessionMetadata(runnerPid, {
             startedBy: 'daemon',
@@ -2845,6 +3041,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor',
             resumeSessionId: nativeSessionId,
+            ...CONTROLLED_CURSOR_SELECTION,
         })).resolves.toEqual({
             type: 'error',
             errorMessage: 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.',
@@ -2868,7 +3065,11 @@ describe('createSessionManager resume deduplication', () => {
         });
 
         const manager = createSessionManager();
-        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        const initialSpawn = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         manager.onRemcliSessionWebhook(remcliSessionId, createSessionMetadata(runnerPid, {
             startedBy: 'daemon',
@@ -2925,7 +3126,11 @@ describe('createSessionManager resume deduplication', () => {
         });
 
         const manager = createSessionManager();
-        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        const initialSpawn = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         manager.onRemcliSessionWebhook('remcli-cursor-stopping-pane', createSessionMetadata(runnerPid, {
             startedBy: 'daemon',
@@ -2950,6 +3155,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor',
             resumeSessionId: nativeSessionId,
+            ...CONTROLLED_CURSOR_SELECTION,
         })).resolves.toEqual({
             type: 'error',
             errorMessage: 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.',
@@ -2977,6 +3183,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor',
             resumeSessionId,
+            ...CONTROLLED_CURSOR_SELECTION,
         });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         manager.onRemcliSessionWebhook('remcli-cursor-pre-init-stopping-pane', createSessionMetadata(runnerPid, {
@@ -3001,6 +3208,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor',
             resumeSessionId,
+            ...CONTROLLED_CURSOR_SELECTION,
         });
         await vi.waitFor(() => expect(tmuxMocks.getPaneInfo).toHaveBeenCalledOnce());
 
@@ -3031,6 +3239,7 @@ describe('createSessionManager resume deduplication', () => {
             directory: process.cwd(),
             agent: 'cursor',
             resumeSessionId: unsafeResumeId,
+            ...CONTROLLED_CURSOR_SELECTION,
         });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
 
@@ -3970,7 +4179,13 @@ describe('createSessionManager resume deduplication', () => {
             });
 
             const manager = createSessionManager();
-            const spawning = manager.spawnSession({ directory: process.cwd(), agent });
+            const spawning = agent === 'cursor'
+                ? manager.spawnSession({
+                    directory: process.cwd(),
+                    agent,
+                    ...CONTROLLED_CURSOR_SELECTION,
+                })
+                : manager.spawnSession({ directory: process.cwd(), agent });
             await vi.waitFor(() => expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledOnce());
 
             manager.onRemcliSessionWebhook(
@@ -4000,7 +4215,11 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: 'tmux-gemini-replacement:main', windowId: '@464', paneId: '%464', pid: reusedPid });
 
         const manager = createSessionManager();
-        const displacedSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'cursor' });
+        const displacedSpawn = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
         await vi.waitFor(() => expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledOnce());
 
         const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'gemini' });

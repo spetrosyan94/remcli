@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { io as ioClient, type Socket } from 'socket.io-client';
+import type { CursorLaunchControls } from '@/cursor/cursorLaunchControls';
 
 const shouldRunRealCursor = process.env.REMCLI_REAL_CURSOR === '1';
 const realCursorDescribe = shouldRunRealCursor ? describe : describe.skip;
@@ -29,6 +30,13 @@ const CLI_ARTIFACT_SNAPSHOT_ATTEMPTS = 30;
 const CLI_ARTIFACT_SNAPSHOT_RETRY_MS = 250;
 const RUNNER_DELIVERY_PROBE_WINDOW_MS = 250;
 const TEST_SESSION_MESSAGE_ACK_VERSION = 1;
+const REAL_CURSOR_LAUNCH_CONTROLS: CursorLaunchControls = {
+    executionMode: 'agent',
+    force: false,
+    autoReview: false,
+    sandbox: 'local-configuration',
+    approveMcps: false,
+};
 
 interface RpcCallAck {
     ok: boolean;
@@ -272,8 +280,8 @@ function createSpawnParams(cursorExecution: CursorExecution, resumeSessionId?: s
         directory: process.cwd(),
         approvedNewDirectoryCreation: false,
         agent: 'cursor',
-        permissionMode: 'ask',
         cursorExecution,
+        cursorLaunchControls: REAL_CURSOR_LAUNCH_CONTROLS,
         ...(resumeSessionId ? { resumeSessionId, resumeSessionName: 'Real Cursor native session' } : {}),
     };
 }
@@ -547,7 +555,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
                     message: encryption.encodeBase64(encryption.encrypt(contentSecret, 'legacy', {
                         role: 'user',
                         content: { type: 'text', text: prompt },
-                        meta: { sentFrom: 'phone', permissionMode: 'ask' },
+                        meta: { sentFrom: 'phone' },
                     })),
                 });
             },

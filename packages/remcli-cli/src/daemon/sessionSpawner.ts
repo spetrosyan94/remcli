@@ -39,12 +39,27 @@ import { getTmuxUtilities, isTmuxAvailable } from '@/utils/tmux';
 import { expandEnvironmentVariables } from '@/utils/expandEnvVars';
 import { openTerminalWithCommand } from '@/utils/openTerminal';
 import { buildCodexRemoteTuiCommand } from '@/codex/codexAppServerHost';
+import { isCursorRunnerIdentity } from '@/cursor/cursorCapabilities';
+import { isCursorLaunchControls } from '@/cursor/cursorLaunchControls';
 
 const DAEMON_SHUTDOWN_CANCELLATION_MESSAGE = 'Daemon shut down before session process registration.';
 const CODEX_RESUME_SHUTDOWN_CANCELLATION_MESSAGE = 'Daemon shut down before Codex resume process registration.';
 const DAEMON_SHUTTING_DOWN_SPAWN_ERROR_MESSAGE = 'Daemon is shutting down and cannot start a new session.';
 const CURSOR_RESUME_OWNERSHIP_UNCONFIRMED_ERROR = 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.';
 const RUNNER_CONTROL_TOKEN_BYTES = 32;
+const CURSOR_LEGACY_PERMISSION_ENV_KEY = 'REMCLI_CURSOR_PERMISSION_MODE';
+const CURSOR_DAEMON_SELECTION_ENV_KEYS = [
+    'REMCLI_CURSOR_MODEL',
+    'REMCLI_CURSOR_CATALOG_VERSION',
+    'REMCLI_CURSOR_PERMISSION_MODE',
+    'REMCLI_CURSOR_EXECUTION_MODE',
+    'REMCLI_CURSOR_FORCE',
+    'REMCLI_CURSOR_AUTO_REVIEW',
+    'REMCLI_CURSOR_SANDBOX',
+    'REMCLI_CURSOR_APPROVE_MCPS',
+    'REMCLI_CURSOR_EXECUTABLE',
+    'REMCLI_CURSOR_CLI_FINGERPRINT',
+] as const;
 
 interface SessionSpawnAwaiter {
     session: TrackedSession;
@@ -1756,6 +1771,19 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
             // Each remote session gets its own tmux session → its own Terminal.app tab
             const agent = options.agent === 'gemini' ? 'gemini' : options.agent === 'cursor' ? 'cursor' : (options.agent === 'codex' ? 'codex' : 'claude');
+            const hasValidatedCursorSelection = Boolean(
+                options.cursorExecution
+                && options.cursorLaunchControls
+                && options.cursorRunner
+                && isCursorLaunchControls(options.cursorLaunchControls)
+                && isCursorRunnerIdentity(options.cursorRunner),
+            );
+            if (agent === 'cursor' && !hasValidatedCursorSelection) {
+                return {
+                    type: 'error',
+                    errorMessage: 'Cursor requires a daemon-validated model, launch controls, and CLI identity.',
+                };
+            }
             const tmuxSessionName = `remcli-${agent}-${randomUUID()}`;
             const windowName = 'main';
 
@@ -1767,6 +1795,9 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             const cliPath = runnerEntrypointPath ?? join(projectPath(), 'dist', 'index.mjs');
             const resumeArg = options.resumeSessionId ? ` --resume ${shellQuote(options.resumeSessionId)}` : '';
             const fullCommand = `node --no-warnings --no-deprecation ${shellQuote(cliPath)} ${shellQuote(agent)} --remcli-starting-mode remote --started-by daemon${resumeArg}`;
+            const childCommand = agent === 'cursor'
+                ? `/usr/bin/env -u ${CURSOR_LEGACY_PERMISSION_ENV_KEY} ${fullCommand}`
+                : fullCommand;
 
             // Spawn in tmux with environment variables
             const tmuxEnv: Record<string, string> = {};
@@ -1780,6 +1811,15 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
             // Add extra environment variables (these should already be filtered)
             Object.assign(tmuxEnv, extraEnv);
+
+            // A daemon runner must never inherit a stale or profile-provided
+            // Cursor selection. The machine RPC injects a freshly validated,
+            // opaque executable identity below.
+            if (agent === 'cursor') {
+                for (const key of CURSOR_DAEMON_SELECTION_ENV_KEYS) {
+                    delete tmuxEnv[key];
+                }
+            }
 
             // Pass session name for resumed sessions (used by runClaude to set P2P metadata)
             if (options.resumeSessionName) {
@@ -1797,12 +1837,19 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 }
             }
 
-            if (agent === 'cursor' && options.cursorExecution) {
+            if (agent === 'cursor'
+                && options.cursorExecution
+                && options.cursorLaunchControls
+                && options.cursorRunner) {
                 tmuxEnv.REMCLI_CURSOR_MODEL = options.cursorExecution.model;
                 tmuxEnv.REMCLI_CURSOR_CATALOG_VERSION = options.cursorExecution.catalogVersion;
-                if (options.permissionMode) {
-                    tmuxEnv.REMCLI_CURSOR_PERMISSION_MODE = options.permissionMode;
-                }
+                tmuxEnv.REMCLI_CURSOR_EXECUTION_MODE = options.cursorLaunchControls.executionMode;
+                tmuxEnv.REMCLI_CURSOR_FORCE = String(options.cursorLaunchControls.force);
+                tmuxEnv.REMCLI_CURSOR_AUTO_REVIEW = String(options.cursorLaunchControls.autoReview);
+                tmuxEnv.REMCLI_CURSOR_SANDBOX = options.cursorLaunchControls.sandbox;
+                tmuxEnv.REMCLI_CURSOR_APPROVE_MCPS = String(options.cursorLaunchControls.approveMcps);
+                tmuxEnv.REMCLI_CURSOR_EXECUTABLE = options.cursorRunner.executable;
+                tmuxEnv.REMCLI_CURSOR_CLI_FINGERPRINT = options.cursorRunner.cliFingerprint;
             }
 
             const runnerControlToken = createRunnerControlToken();
@@ -1813,7 +1860,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             if (tmuxSpawnCancellationResult) {
                 return tmuxSpawnCancellationResult;
             }
-            const tmuxResult = await tmux.spawnInTmux([fullCommand], {
+            const tmuxResult = await tmux.spawnInTmux([childCommand], {
                 sessionName: tmuxSessionName,
                 windowName: windowName,
                 ownershipMarker: tmuxOwnershipMarker,

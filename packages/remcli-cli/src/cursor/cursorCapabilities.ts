@@ -10,16 +10,22 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 import { logger } from '@/ui/logger';
+import {
+    CURSOR_EXECUTABLE_CANDIDATES,
+    isCursorExecutable,
+    type CursorExecutable,
+} from './cursorCli';
 
 const CAPABILITIES_TTL_MS = 60 * 1_000;
 const DISCOVERY_TIMEOUT_MS = 5_000;
 const DISCOVERY_MAX_BUFFER_BYTES = 256 * 1_024;
 const DISCOVERY_FORCE_KILL_DELAY_MS = 250;
-const CURSOR_EXECUTABLE_CANDIDATES = ['agent', 'cursor-agent'] as const;
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const MODEL_LINE_PATTERN = /^([A-Za-z0-9][A-Za-z0-9._-]*)\s+-\s+(.+?)$/;
 const DEFAULT_SUFFIXES = [' (default)', ' (current, default)'] as const;
 const UNKNOWN_DEFAULT_STATUS_MARKER_PATTERN = /\(.*\b(?:current|default)\b.*\)$/i;
+const CLI_VERSION_MAX_LENGTH = 256;
+const CLI_FINGERPRINT_PATTERN = /^[a-f0-9]{16}$/;
 
 export type CursorCapabilityErrorCode = 'unavailable' | 'expired' | 'unsupported_selection';
 
@@ -52,11 +58,25 @@ export interface CursorCapabilitiesServiceOptions {
 
 interface CachedCapabilities {
     snapshot: CursorCapabilitiesSnapshot;
+    runner: CursorRunnerIdentity | null;
 }
 
 export interface CursorModelListResult {
-    executable: string;
+    executable: CursorExecutable;
     output: string;
+    version: string;
+}
+
+/** Opaque identity bound to the fresh account-visible model catalog. */
+export interface CursorRunnerIdentity {
+    executable: CursorExecutable;
+    cliFingerprint: string;
+}
+
+/** Fresh daemon-only Cursor selection used by internal spawn callers. */
+export interface CursorDaemonSelection {
+    execution: CursorExecutionConfig;
+    runner: CursorRunnerIdentity;
 }
 
 export class CursorCapabilitiesError extends Error {
@@ -78,13 +98,61 @@ function unavailableSnapshot(code: CursorCapabilityErrorCode): CursorCapabilitie
     };
 }
 
-function createCatalogVersion(models: CursorModelCapability[]): string {
-    const payload = JSON.stringify(models.map((model) => ({
-        id: model.id,
-        displayName: model.displayName,
-        isDefault: model.isDefault,
-    })));
+function createCursorCliFingerprint(executable: CursorExecutable, version: string): string {
+    const normalizedVersion = version.trim();
+    if (!normalizedVersion
+        || normalizedVersion.length > CLI_VERSION_MAX_LENGTH
+        || /[\u0000-\u001f]/.test(normalizedVersion)) {
+        throw new Error('Cursor CLI returned an unsupported version value.');
+    }
+
+    return createHash('sha256')
+        .update(`${executable}\u0000${normalizedVersion}`)
+        .digest('hex')
+        .slice(0, 16);
+}
+
+function createCatalogVersion(models: CursorModelCapability[], runner: CursorRunnerIdentity): string {
+    const payload = JSON.stringify({
+        runner: runner.cliFingerprint,
+        models: models.map((model) => ({
+            id: model.id,
+            displayName: model.displayName,
+            isDefault: model.isDefault,
+        })),
+    });
     return createHash('sha256').update(payload).digest('hex').slice(0, 16);
+}
+
+function createDefaultCursorRunnerIdentity(): CursorRunnerIdentity {
+    return {
+        executable: 'agent',
+        cliFingerprint: createCursorCliFingerprint('agent', 'test-default'),
+    };
+}
+
+function createCursorRunnerIdentity(source: CursorModelListResult): CursorRunnerIdentity {
+    return {
+        executable: source.executable,
+        cliFingerprint: createCursorCliFingerprint(source.executable, source.version),
+    };
+}
+
+export function isCursorRunnerIdentity(value: unknown): value is CursorRunnerIdentity {
+    try {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+        if (Object.getPrototypeOf(value) !== Object.prototype) return false;
+
+        const record = value as Record<string, unknown>;
+        return Reflect.ownKeys(record).length === 2
+            && Object.prototype.hasOwnProperty.call(record, 'executable')
+            && Object.prototype.hasOwnProperty.call(record, 'cliFingerprint')
+            && isCursorExecutable(record.executable)
+            && typeof record.cliFingerprint === 'string'
+            && CLI_FINGERPRINT_PATTERN.test(record.cliFingerprint);
+    } catch {
+        return false;
+    }
 }
 
 function readCursorModelLine(line: string): CursorModelCapability | null {
@@ -169,6 +237,7 @@ export function createCursorCapabilitiesSnapshot(
     output: string,
     now: () => number = Date.now,
     cacheTtlMs: number = CAPABILITIES_TTL_MS,
+    runner: CursorRunnerIdentity = createDefaultCursorRunnerIdentity(),
 ): CursorCapabilitiesSnapshot {
     const models = parseCursorModelList(output);
     const fetchedAt = now();
@@ -177,7 +246,7 @@ export function createCursorCapabilitiesSnapshot(
         status: 'ready',
         fetchedAt,
         expiresAt: fetchedAt + cacheTtlMs,
-        catalogVersion: createCatalogVersion(models),
+        catalogVersion: createCatalogVersion(models, runner),
         models,
     };
 }
@@ -226,9 +295,13 @@ function terminateChildProcess(child: ReturnType<typeof spawn>, signal: NodeJS.S
     }
 }
 
-function runCursorModelsCommand(executable: string): Promise<string> {
+function runCursorTextCommand(
+    executable: CursorExecutable,
+    args: string[],
+    operation: string,
+): Promise<string> {
     return new Promise((resolve, reject) => {
-        const child = spawn(executable, ['models'], {
+        const child = spawn(executable, args, {
             detached: process.platform !== 'win32',
             shell: false,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -273,7 +346,7 @@ function runCursorModelsCommand(executable: string): Promise<string> {
         timeout = setTimeout(() => {
             didTimeOut = true;
             terminateWithFallback();
-            rejectOnce(new Error('Cursor CLI model discovery timed out.'));
+            rejectOnce(new Error(`Cursor CLI ${operation} timed out.`));
         }, DISCOVERY_TIMEOUT_MS);
         timeout.unref();
 
@@ -282,7 +355,7 @@ function runCursorModelsCommand(executable: string): Promise<string> {
             outputBytes += chunk.length;
             if (outputBytes > DISCOVERY_MAX_BUFFER_BYTES) {
                 terminateWithFallback();
-                rejectOnce(new Error('Cursor CLI model discovery exceeded the output limit.'));
+                rejectOnce(new Error(`Cursor CLI ${operation} exceeded the output limit.`));
                 return;
             }
             outputChunks.push(chunk);
@@ -295,12 +368,32 @@ function runCursorModelsCommand(executable: string): Promise<string> {
                 return;
             }
             if (exitCode !== 0) {
-                rejectOnce(new Error('Cursor CLI model discovery failed.'));
+                rejectOnce(new Error(`Cursor CLI ${operation} failed.`));
                 return;
             }
             resolveOnce(Buffer.concat(outputChunks).toString('utf8'));
         });
     });
+}
+
+function runCursorModelsCommand(executable: CursorExecutable): Promise<string> {
+    return runCursorTextCommand(executable, ['models'], 'model discovery');
+}
+
+function runCursorVersionCommand(executable: CursorExecutable): Promise<string> {
+    return runCursorTextCommand(executable, ['--version'], 'version discovery');
+}
+
+/** Verify that a spawned daemon runner still executes the capability-checked CLI. */
+export async function verifyCursorRunnerIdentity(runner: CursorRunnerIdentity): Promise<boolean> {
+    if (!isCursorRunnerIdentity(runner)) return false;
+
+    try {
+        const version = await runCursorVersionCommand(runner.executable);
+        return createCursorCliFingerprint(runner.executable, version) === runner.cliFingerprint;
+    } catch {
+        return false;
+    }
 }
 
 function isExecutableNotFound(error: unknown): boolean {
@@ -312,7 +405,11 @@ async function readModelListFromCli(): Promise<CursorModelListResult> {
 
     for (const executable of CURSOR_EXECUTABLE_CANDIDATES) {
         try {
-            return { executable, output: await runCursorModelsCommand(executable) };
+            const [output, version] = await Promise.all([
+                runCursorModelsCommand(executable),
+                runCursorVersionCommand(executable),
+            ]);
+            return { executable, output, version };
         } catch (error) {
             if (isExecutableNotFound(error)) {
                 lastNotFoundError = error instanceof Error ? error : new Error('Cursor CLI executable was not found.');
@@ -331,7 +428,7 @@ export class CursorCapabilitiesService {
     private readonly now: () => number;
     private readonly cacheTtlMs: number;
     private cached: CachedCapabilities | null = null;
-    private inFlight: Promise<CursorCapabilitiesSnapshot> | null = null;
+    private inFlight: Promise<CachedCapabilities> | null = null;
 
     constructor(options: CursorCapabilitiesServiceOptions = {}) {
         this.readModelList = options.readModelList ?? readModelListFromCli;
@@ -340,18 +437,39 @@ export class CursorCapabilitiesService {
     }
 
     async getCapabilities(forceRefresh: boolean = false): Promise<CursorCapabilitiesSnapshot> {
+        return (await this.getCachedCapabilities(forceRefresh)).snapshot;
+    }
+
+    async validateSelection(execution: CursorExecutionConfig | undefined): Promise<CursorRunnerIdentity> {
+        const cached = await this.getCachedCapabilities(true);
+        validateCursorExecution(cached.snapshot, execution, this.now());
+        if (!cached.runner) {
+            throw new CursorCapabilitiesError('unavailable');
+        }
+        return cached.runner;
+    }
+
+    async getDefaultSelection(): Promise<CursorDaemonSelection | null> {
+        const cached = await this.getCachedCapabilities(true);
+        const execution = getDefaultCursorExecution(cached.snapshot);
+        if (!execution || !cached.runner) return null;
+        validateCursorExecution(cached.snapshot, execution, this.now());
+        return { execution, runner: cached.runner };
+    }
+
+    private async getCachedCapabilities(forceRefresh: boolean): Promise<CachedCapabilities> {
         const cached = this.cached;
         if (!forceRefresh
             && cached
             && cached.snapshot.status === 'ready'
             && cached.snapshot.expiresAt !== null
             && cached.snapshot.expiresAt > this.now()) {
-            return cached.snapshot;
+            return cached;
         }
 
         if (this.inFlight) return await this.inFlight;
 
-        let refresh: Promise<CursorCapabilitiesSnapshot>;
+        let refresh: Promise<CachedCapabilities>;
         refresh = this.refresh().finally(() => {
             if (this.inFlight === refresh) {
                 this.inFlight = null;
@@ -361,25 +479,23 @@ export class CursorCapabilitiesService {
         return await refresh;
     }
 
-    async validateSelection(execution: CursorExecutionConfig | undefined): Promise<void> {
-        validateCursorExecution(await this.getCapabilities(true), execution, this.now());
-    }
-
-    private async refresh(): Promise<CursorCapabilitiesSnapshot> {
+    private async refresh(): Promise<CachedCapabilities> {
         try {
             const source = await this.readModelList();
+            const runner = createCursorRunnerIdentity(source);
             const snapshot = createCursorCapabilitiesSnapshot(
                 source.output,
                 this.now,
                 this.cacheTtlMs,
+                runner,
             );
-            this.cached = { snapshot };
+            this.cached = { snapshot, runner };
             logger.debug(`[CursorCapabilities] refreshed ${snapshot.models.length} account-visible models.`);
-            return snapshot;
+            return this.cached;
         } catch {
             this.cached = null;
             logger.debug('[CursorCapabilities] discovery unavailable.');
-            return unavailableSnapshot('unavailable');
+            return { snapshot: unavailableSnapshot('unavailable'), runner: null };
         }
     }
 }

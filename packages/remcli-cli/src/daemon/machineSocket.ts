@@ -28,9 +28,10 @@ import {
     CursorCapabilitiesError,
     CursorCapabilitiesService,
     type CursorExecutionConfig,
+    type CursorRunnerIdentity,
 } from '@/cursor/cursorCapabilities';
 import type { CodexSandbox } from '@/codex/types';
-import type { CursorPermissionMode } from '@/api/types';
+import { isCursorLaunchControls, type CursorLaunchControls } from '@/cursor/cursorLaunchControls';
 import type { StopSessionResult } from '@/daemon/types';
 import type { PairingRekeyCoordinator } from './p2p/pairingRekey';
 
@@ -88,14 +89,6 @@ function isCodexExecutionConfig(value: unknown): value is CodexExecutionConfig {
     } catch {
         return false;
     }
-}
-
-function isCursorPermissionMode(value: unknown): value is CursorPermissionMode {
-    return value === 'agent'
-        || value === 'plan'
-        || value === 'ask'
-        || value === 'force'
-        || value === 'auto-review';
 }
 
 function isCursorExecutionConfig(value: unknown): value is CursorExecutionConfig {
@@ -170,7 +163,9 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
             permissionMode,
             codexExecution,
             cursorExecution,
+            cursorLaunchControls,
         } = params || {};
+        let cursorRunner: CursorRunnerIdentity | undefined;
         logger.debugLargeJson('[DAEMON RUN] RPC spawn-remcli-session', buildSafeSpawnSessionLogPayload(params));
 
         if (!directory) {
@@ -192,11 +187,14 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         }
 
         if (agent === 'cursor') {
-            if (!isCursorPermissionMode(permissionMode) || !isCursorExecutionConfig(cursorExecution)) {
-                throw new Error('Cursor requires a current model and execution control selection.');
+            if (Object.prototype.hasOwnProperty.call(params ?? {}, 'permissionMode')) {
+                throw new Error('Cursor launch controls must not use the generic permissionMode field.');
+            }
+            if (!isCursorExecutionConfig(cursorExecution) || !isCursorLaunchControls(cursorLaunchControls)) {
+                throw new Error('Cursor requires a current model and validated launch controls.');
             }
             try {
-                await cursorCapabilities.validateSelection(cursorExecution);
+                cursorRunner = await cursorCapabilities.validateSelection(cursorExecution);
             } catch (error) {
                 if (error instanceof CursorCapabilitiesError) {
                     throw new Error(`Cursor capability selection rejected: ${error.code}.`);
@@ -215,9 +213,15 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
             environmentVariables,
             resumeSessionId,
             resumeSessionName,
-            permissionMode,
-            codexExecution,
-            cursorExecution,
+            ...(agent !== 'cursor' && permissionMode !== undefined ? { permissionMode } : {}),
+            ...(codexExecution ? { codexExecution } : {}),
+            ...(agent === 'cursor' && cursorExecution && cursorLaunchControls && cursorRunner
+                ? {
+                    cursorExecution,
+                    cursorLaunchControls: cursorLaunchControls as CursorLaunchControls,
+                    cursorRunner,
+                }
+                : {}),
         });
 
         switch (result.type) {

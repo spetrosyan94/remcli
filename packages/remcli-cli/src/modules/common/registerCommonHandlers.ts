@@ -10,7 +10,8 @@ import { RpcHandlerManager } from '../../api/rpc/RpcHandlerManager';
 import { validatePath } from './pathSecurity';
 import type { PermissionMode } from '@/api/types';
 import type { CodexExecutionConfig } from '@/codex/codexCapabilities';
-import type { CursorExecutionConfig } from '@/cursor/cursorCapabilities';
+import type { CursorExecutionConfig, CursorRunnerIdentity } from '@/cursor/cursorCapabilities';
+import type { CursorLaunchControls } from '@/cursor/cursorLaunchControls';
 
 const execAsync = promisify(exec);
 
@@ -134,6 +135,10 @@ export interface SpawnSessionOptions {
     codexExecution?: CodexExecutionConfig;
     /** Atomic, daemon-validated Cursor model selection. */
     cursorExecution?: CursorExecutionConfig;
+    /** Atomic Cursor native launch controls, validated from the RPC before spawn. */
+    cursorLaunchControls?: CursorLaunchControls;
+    /** Internal daemon-only executable identity from fresh capability validation. */
+    cursorRunner?: CursorRunnerIdentity;
     token?: string;
     environmentVariables?: {
         // Anthropic Claude API configuration

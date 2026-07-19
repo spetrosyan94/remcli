@@ -14,6 +14,21 @@ describe('normalizeRawMessage', () => {
         expect(() => MessageMetaSchema.parse({ permissionMode: 'yolo' })).toThrow();
     });
 
+    it('keeps historical content after discarding an obsolete permission value', () => {
+        const result = normalizeRawMessage('historic-message', null, 1, 1_000, {
+            role: 'user',
+            content: { type: 'text', text: 'keep this message' },
+            meta: { sentFrom: 'terminal', permissionMode: 'obsolete-mode' },
+        });
+
+        expect(result).toMatchObject({
+            role: 'user',
+            content: { type: 'text', text: 'keep this message' },
+            meta: { sentFrom: 'terminal' },
+        });
+        expect(result?.meta).not.toHaveProperty('permissionMode');
+    });
+
     it('normalizes a plain user message with meta', () => {
         const result = normalizeRawMessage('m1', 'local-1', 5, 1000, {
             role: 'user',

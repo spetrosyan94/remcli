@@ -52,7 +52,6 @@ const CHAT_HEADER_METADATA_MIN_WIDTH_PX = 200;
 const CHAT_HEADER_STATUS_MAX_HEIGHT_PX = 20;
 const CLAUDE_PERMISSION_LABELS = ["manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"] as const;
 const CODEX_PERMISSION_LABELS = ["read-only", "workspace-write", "danger-full-access"] as const;
-const CURSOR_CONTROL_LABELS = ["agent", "plan", "ask", "force", "auto-review"] as const;
 
 function collectPageIssues(page: Page): PageIssue[] {
     const issues: PageIssue[] = [];
@@ -806,6 +805,31 @@ test("Cursor native resume keeps its binding error and retry inside the same she
     expect(pageIssues).toEqual([]);
 });
 
+test("ended Cursor Chat Resume uses a non-URL typed New Session handoff", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/session/fixture-cursor-ended-chat?fixtures=1&chatResume=cursor");
+    await page.getByRole("button", { name: /Resume$/ }).click();
+
+    await page.waitForURL(/\/new$/);
+    expect(new URL(page.url()).search).toBe("");
+    await expect(page.getByText("Cursor chat resume", { exact: true })).toBeVisible();
+    await expect(page.getByText("fixture-cursor-chat-native", { exact: true })).toBeVisible();
+
+    const resumeButton = page.getByRole("button", { name: /Resume session.*Cursor chat resume/i });
+    await expect(resumeButton).toBeEnabled();
+    await resumeButton.click();
+    await page.waitForURL(/\/session\/fx-resume-cursor-/);
+
+    await assertNoHorizontalOverflow(page);
+    await assertNoBottomToastOverlap(page);
+    if (isMobileProject(testInfo)) {
+        await assertMobileTouchTargets(page);
+    }
+    expect(pageIssues).toEqual([]);
+});
+
 test("directory keeps its content region stable and reduces motion to the design token", async ({ page }, testInfo) => {
     const pageIssues = collectPageIssues(page);
 
@@ -1026,13 +1050,70 @@ test("runtime Cursor catalog renders account-visible models, native controls, an
     await alternateModel.click();
     await expect(capabilityControl(page, "model").locator("button")).toContainText("GPT-5.6 Luna 1M Extra High");
 
-    await capabilityControl(page, "permission").locator("button").click();
-    await assertPermissionLabelsAreFullyVisible(page.locator('[data-slot="drawer-content"]'), CURSOR_CONTROL_LABELS);
-    await page.getByRole("button", { name: "force", exact: true }).click();
-    await expect(capabilityControl(page, "permission").locator("button")).toContainText("force");
+    const modeControl = capabilityControl(page, "permission").locator("button");
+    await modeControl.click();
+    const modeSheet = page.locator('[data-slot="drawer-content"]');
+    await expect(modeSheet.getByRole("button", { name: /^Agent\b/i })).toBeVisible();
+    await expect(modeSheet.getByRole("button", { name: /^Plan\b/i })).toBeVisible();
+    await expect(modeSheet.getByRole("button", { name: /^Ask\b/i })).toBeVisible();
+    for (const permission of CODEX_PERMISSION_LABELS) {
+        await expect(modeSheet.getByText(permission, { exact: true })).toHaveCount(0);
+    }
+    for (const launchControl of ["Force", "Auto-review", "Approve all MCP servers"]) {
+        await expect(modeSheet.getByText(launchControl, { exact: true })).toHaveCount(0);
+    }
+    await modeSheet.getByRole("button", { name: /^Plan\b/i }).click();
+    await expect(page.locator('[data-slot="drawer-overlay"]')).toHaveCount(0);
+    await expect(modeControl).toContainText("Plan");
+
+    const launchControl = page.getByRole("button", { name: /^Launch controls/i });
+    await launchControl.click();
+    const launchSheet = page.locator('[data-slot="drawer-content"]');
+    await expect(launchSheet).toContainText("Launch controls");
+    await expect(launchSheet.getByRole("button", { name: "host-controlled", exact: true })).toBeVisible();
+    await expect(launchSheet.getByRole("button", { name: "enabled", exact: true })).toBeVisible();
+    await expect(launchSheet.getByRole("button", { name: "disabled", exact: true })).toBeVisible();
+
+    const forceSwitch = launchSheet.getByRole("switch", { name: /^Force\b/i });
+    const autoReviewSwitch = launchSheet.getByRole("switch", { name: /^Auto-review\b/i });
+    const approveMcpsSwitch = launchSheet.getByRole("switch", { name: /^Approve all MCP servers\b/i });
+    await expect(launchSheet.getByRole("switch")).toHaveCount(3);
+    await expect(forceSwitch).toHaveAttribute("aria-checked", "false");
+    await expect(autoReviewSwitch).toHaveAttribute("aria-checked", "false");
+    await expect(approveMcpsSwitch).toHaveAttribute("aria-checked", "false");
+
+    await forceSwitch.click();
+    await expect(forceSwitch).toHaveAttribute("aria-checked", "true");
+    await expect(autoReviewSwitch).toHaveAttribute("aria-checked", "false");
+    await expect(approveMcpsSwitch).toHaveAttribute("aria-checked", "false");
+
+    await autoReviewSwitch.click();
+    await expect(forceSwitch).toHaveAttribute("aria-checked", "true");
+    await expect(autoReviewSwitch).toHaveAttribute("aria-checked", "true");
+    await expect(approveMcpsSwitch).toHaveAttribute("aria-checked", "false");
+
+    await approveMcpsSwitch.click();
+    await expect(forceSwitch).toHaveAttribute("aria-checked", "true");
+    await expect(autoReviewSwitch).toHaveAttribute("aria-checked", "true");
+    await expect(approveMcpsSwitch).toHaveAttribute("aria-checked", "true");
+
+    const disabledSandbox = launchSheet.getByRole("button", { name: "disabled", exact: true });
+    await disabledSandbox.click();
+    await expect(disabledSandbox).toHaveAttribute("aria-pressed", "true");
+    await expect(disabledSandbox).toHaveClass(/bg-accent\/10/);
+    await expect(disabledSandbox.locator("svg")).toHaveCount(1);
+    if (isMobileProject(testInfo)) {
+        await assertNoHorizontalOverflow(page);
+        await assertMobileTouchTargets(page);
+    }
+    await page.keyboard.press("Escape");
+    await expect(page.locator('[data-slot="drawer-content"]')).toHaveCount(0);
     await expect(capabilityControl(page, "reasoning")).toContainText("reasoning not configured separately");
     await expect(page.getByRole("button", { name: /Start cursor/i })).toBeEnabled();
     await assertNoHorizontalOverflow(page);
+    if (isMobileProject(testInfo)) {
+        await assertMobileTouchTargets(page);
+    }
     expect(pageIssues).toEqual([]);
 });
 

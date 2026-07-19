@@ -16,7 +16,7 @@ state или UX-контракт, обновлять соответствующ�
 | Документ | Что описывает |
 |----------|---------------|
 | [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) | Codex app-server, native resume/TUI и capability-driven model/reasoning contract |
-| [agent-architecture/cursor-cli-architecture.md](agent-architecture/cursor-cli-architecture.md) | Native Cursor Agent CLI: turn boundary, resume identity, permissions и lifecycle |
+| [agent-architecture/cursor-cli-architecture.md](agent-architecture/cursor-cli-architecture.md) | Native Cursor Agent CLI: turn boundary, resume identity, уровень доступа и lifecycle |
 | [agent-architecture/agent-remote-control-template.md](agent-architecture/agent-remote-control-template.md) | Шаблон для следующих provider-specific архитектур |
 
 ## Local Rules

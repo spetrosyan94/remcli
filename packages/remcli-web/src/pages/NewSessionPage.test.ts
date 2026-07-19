@@ -3,15 +3,29 @@ import type { CodexCapabilitiesSnapshot, CursorCapabilitiesSnapshot } from '@/li
 
 const componentHooks = vi.hoisted(() => {
     const values: unknown[] = [];
+    const effects: Array<{
+        dependencies: readonly unknown[] | undefined;
+        cleanup: (() => void) | undefined;
+    }> = [];
     let index = 0;
+    let effectIndex = 0;
+    let areEffectsEnabled = false;
 
     return {
         reset() {
+            for (const effect of effects) effect.cleanup?.();
             values.length = 0;
+            effects.length = 0;
             index = 0;
+            effectIndex = 0;
+            areEffectsEnabled = false;
         },
         beginRender() {
             index = 0;
+            effectIndex = 0;
+        },
+        enableEffects() {
+            areEffectsEnabled = true;
         },
         useState<T>(initialValue: T | (() => T)) {
             const currentIndex = index++;
@@ -35,18 +49,39 @@ const componentHooks = vi.hoisted(() => {
             }
             return values[currentIndex] as { current: T };
         },
+        useEffect(effect: () => void | (() => void), dependencies?: readonly unknown[]) {
+            const currentEffectIndex = effectIndex++;
+            if (!areEffectsEnabled) return;
+
+            const previousEffect = effects[currentEffectIndex];
+            const hasChanged = previousEffect === undefined
+                || dependencies === undefined
+                || previousEffect.dependencies === undefined
+                || previousEffect.dependencies.length !== dependencies.length
+                || previousEffect.dependencies.some((dependency, index) => dependency !== dependencies[index]);
+            if (!hasChanged) return;
+
+            previousEffect?.cleanup?.();
+            const cleanup = effect();
+            effects[currentEffectIndex] = {
+                dependencies: dependencies ? [...dependencies] : undefined,
+                cleanup: typeof cleanup === 'function' ? cleanup : undefined,
+            };
+        },
     };
 });
 
 const machineSpawnNewSessionMock = vi.hoisted(() => vi.fn());
+const machineGetCursorCapabilitiesMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
 const protocolSessions = vi.hoisted(() => ({ current: [] as unknown[] }));
+const navigationState = vi.hoisted(() => ({ current: null as unknown }));
 
 vi.mock('react', async (importOriginal) => {
     const actual = await importOriginal<typeof import('react')>();
     return {
         ...actual,
-        useEffect: () => undefined,
+        useEffect: componentHooks.useEffect,
         useMemo: <T>(factory: () => T) => factory(),
         useRef: componentHooks.useRef,
         useState: componentHooks.useState,
@@ -54,7 +89,7 @@ vi.mock('react', async (importOriginal) => {
 });
 
 vi.mock('react-router', () => ({
-    useLocation: () => ({ state: null }),
+    useLocation: () => ({ state: navigationState.current }),
     useNavigate: () => navigateMock,
 }));
 
@@ -100,8 +135,15 @@ vi.mock('@/lib/protocol', () => ({
     machineListAgentSessions: vi.fn(),
     machineListDirectory: vi.fn(),
     machineGetCodexCapabilities: vi.fn(),
-    machineGetCursorCapabilities: vi.fn(),
+    machineGetCursorCapabilities: machineGetCursorCapabilitiesMock,
     machineSpawnNewSession: machineSpawnNewSessionMock,
+    DEFAULT_CURSOR_LAUNCH_CONTROLS: {
+        executionMode: 'agent',
+        force: false,
+        autoReview: false,
+        sandbox: 'local-configuration',
+        approveMcps: false,
+    },
     refreshSessions: vi.fn(),
     sendSessionMessage: vi.fn(),
     useMachines: () => [{
@@ -132,6 +174,7 @@ interface TestElement {
         role?: string;
         'aria-label'?: string;
         'aria-busy'?: boolean;
+        showSelectionIndicator?: boolean;
     };
 }
 
@@ -171,6 +214,12 @@ function renderNewSessionPage(): unknown {
     return NewSessionPage();
 }
 
+async function flushPendingEffects(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+}
+
 let agentOptions: Array<{ id: string; models: string[] }> = [];
 let getModelOverride = (_model: string): string | null => {
     throw new Error('NewSessionPage module was not loaded');
@@ -199,6 +248,9 @@ let createCursorExecutionForModel: typeof import('@/pages/NewSessionPage').creat
 ) => {
     throw new Error('NewSessionPage module was not loaded');
 };
+let parseNewSessionNavigationState: typeof import('@/pages/NewSessionPage').parseNewSessionNavigationState = (_state) => ({});
+let isCursorResumePresetCompatible: typeof import('@/pages/NewSessionPage').isCursorResumePresetCompatible = (_preset, _machineId, _directory) => true;
+let getPrimarySelectorLabelKey: typeof import('@/pages/NewSessionPage').getPrimarySelectorLabelKey = (_agent) => 'new.accessLevel';
 let getReasoningControlState: typeof import('@/pages/NewSessionPage').getReasoningControlState = (_input) => {
     throw new Error('NewSessionPage module was not loaded');
 };
@@ -234,6 +286,9 @@ beforeAll(async () => {
     createCodexExecutionForModel = pageModule.createCodexExecutionForModel;
     getDefaultCursorExecution = pageModule.getDefaultCursorExecution;
     createCursorExecutionForModel = pageModule.createCursorExecutionForModel;
+    parseNewSessionNavigationState = pageModule.parseNewSessionNavigationState;
+    isCursorResumePresetCompatible = pageModule.isCursorResumePresetCompatible;
+    getPrimarySelectorLabelKey = pageModule.getPrimarySelectorLabelKey;
     getReasoningControlState = pageModule.getReasoningControlState;
     buildNewSessionSpawnOptions = pageModule.buildNewSessionSpawnOptions;
     isCodexCapabilityRejection = pageModule.isCodexCapabilityRejection;
@@ -251,10 +306,54 @@ afterAll(() => {
 
 beforeEach(() => {
     componentHooks.reset();
+    machineGetCursorCapabilitiesMock.mockReset();
     machineSpawnNewSessionMock.mockReset();
     machineSpawnNewSessionMock.mockResolvedValue({ type: 'success', sessionId: 'session-1' });
     navigateMock.mockReset();
     protocolSessions.current = [];
+    navigationState.current = null;
+});
+
+describe('NewSessionPage navigation state and shared access-level label', () => {
+    it('restores only a strict Cursor resume preset and ignores reload or malformed state', () => {
+        expect(parseNewSessionNavigationState(null)).toEqual({});
+        expect(parseNewSessionNavigationState({ cursorResume: { machineId: 'machine-1' } })).toEqual({});
+        expect(parseNewSessionNavigationState({ cursorResume: {
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            resumeSessionId: 'cursor-native-session-id',
+            resumeSessionName: 'Cursor lifecycle review',
+        } })).toEqual({
+            cursorResume: {
+                machineId: 'machine-1',
+                directory: '/workspace/remcli',
+                resumeSessionId: 'cursor-native-session-id',
+                resumeSessionName: 'Cursor lifecycle review',
+            },
+        });
+    });
+
+    it('blocks a Cursor resume preset when machine or directory no longer matches', () => {
+        const preset = parseNewSessionNavigationState({ cursorResume: {
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            resumeSessionId: 'cursor-native-session-id',
+            resumeSessionName: null,
+        } }).cursorResume ?? null;
+
+        expect(isCursorResumePresetCompatible(preset, 'machine-1', '/workspace/remcli')).toBe(true);
+        expect(isCursorResumePresetCompatible(preset, 'machine-2', '/workspace/remcli')).toBe(false);
+        expect(isCursorResumePresetCompatible(preset, 'machine-1', '/workspace/other')).toBe(false);
+        expect(isCursorResumePresetCompatible(null, 'machine-2', '/workspace/other')).toBe(true);
+    });
+
+    it('uses the common access-level heading for every provider without changing inner semantics', () => {
+        expect(getPrimarySelectorLabelKey('claude')).toBe('new.accessLevel');
+        expect(getPrimarySelectorLabelKey('codex')).toBe('new.accessLevel');
+        expect(getPrimarySelectorLabelKey('cursor')).toBe('new.accessLevel');
+        expect(getPrimarySelectorLabelKey('gemini')).toBe('new.accessLevel');
+    });
+
 });
 
 describe('NewSessionPage Codex capability selection', () => {
@@ -550,24 +649,220 @@ describe('NewSessionPage Cursor capability selection', () => {
 
     it('sends the validated Cursor execution atomically through spawn RPC', () => {
         const cursorExecution = getDefaultCursorExecution(capabilities);
+        const cursorLaunchControls = {
+            executionMode: 'agent' as const,
+            force: true,
+            autoReview: true,
+            sandbox: 'disabled' as const,
+            approveMcps: true,
+        };
 
         expect(buildNewSessionSpawnOptions({
             machineId: 'machine-1',
             directory: '/workspace/remcli',
             agent: 'cursor',
-            permissionMode: 'agent',
+            permissionMode: 'workspace-write',
             codexExecution: null,
             codexReasoningEfforts: [],
             cursorExecution,
+            cursorLaunchControls,
         })).toEqual({
             machineId: 'machine-1',
             directory: '/workspace/remcli',
             agent: 'cursor',
             resumeSessionId: undefined,
             resumeSessionName: undefined,
-            permissionMode: 'agent',
             cursorExecution,
+            cursorLaunchControls,
         });
+    });
+
+    it('forwards Cursor native execution and launch controls through the spawn transport', async () => {
+        machineGetCursorCapabilitiesMock.mockResolvedValue(capabilities);
+        componentHooks.enableEffects();
+
+        let page = renderNewSessionPage();
+        const cursorAgent = findElement(page, (element) => element.type === 'button'
+            && elementText(element) === 'Cursoragent');
+        cursorAgent.props.onClick?.();
+
+        renderNewSessionPage();
+        await flushPendingEffects();
+        page = renderNewSessionPage();
+
+        const startButton = findElement(page, (element) => element.type === 'button'
+            && elementText(element) === 'start:cursor');
+        expect(startButton.props.disabled).toBe(false);
+
+        await startButton.props.onClick?.();
+
+        expect(machineSpawnNewSessionMock).toHaveBeenCalledTimes(1);
+        expect(machineSpawnNewSessionMock).toHaveBeenCalledWith({
+            machineId: 'machine-1',
+            directory: '/workspace',
+            agent: 'cursor',
+            resumeSessionId: undefined,
+            resumeSessionName: undefined,
+            cursorExecution: {
+                model: 'auto',
+                catalogVersion: 'cursor-catalog-1',
+            },
+            cursorLaunchControls: {
+                executionMode: 'agent',
+                force: false,
+                autoReview: false,
+                sandbox: 'local-configuration',
+                approveMcps: false,
+            },
+        });
+        expect(machineSpawnNewSessionMock.mock.calls[0]?.[0]).not.toHaveProperty('permissionMode');
+    });
+
+    it('forwards user-selected Cursor modes and launch controls through the spawn transport', async () => {
+        machineGetCursorCapabilitiesMock.mockResolvedValue(capabilities);
+        componentHooks.enableEffects();
+
+        let page = renderNewSessionPage();
+        const cursorAgent = findElement(page, (element) => element.type === 'button'
+            && elementText(element) === 'Cursoragent');
+        cursorAgent.props.onClick?.();
+
+        renderNewSessionPage();
+        await flushPendingEffects();
+        page = renderNewSessionPage();
+
+        const modeTrigger = findElement(page, (element) => element.type === 'button'
+            && elementText(element).includes('new.cursorModeAgent'));
+        modeTrigger.props.onClick?.();
+        page = renderNewSessionPage();
+        const planMode = findElement(page, (element) => element.props.label === 'new.cursorModePlan');
+        planMode.props.onClick?.();
+
+        page = renderNewSessionPage();
+        const launchTrigger = findElement(page, (element) => element.type === 'button'
+            && elementText(element).includes('new.cursorLaunchControls'));
+        launchTrigger.props.onClick?.();
+        page = renderNewSessionPage();
+
+        const forceSwitch = findElement(page, (element) => element.props.role === 'switch'
+            && elementText(element).includes('new.cursorForce'));
+        forceSwitch.props.onClick?.();
+        page = renderNewSessionPage();
+        const autoReviewSwitch = findElement(page, (element) => element.props.role === 'switch'
+            && elementText(element).includes('new.cursorAutoReview'));
+        autoReviewSwitch.props.onClick?.();
+        page = renderNewSessionPage();
+        const disabledSandbox = findElement(page, (element) => element.props.label === 'new.cursorSandboxDisabled');
+        expect(disabledSandbox.props.showSelectionIndicator).toBe(true);
+        disabledSandbox.props.onClick?.();
+        page = renderNewSessionPage();
+        const approveMcpsSwitch = findElement(page, (element) => element.props.role === 'switch'
+            && elementText(element).includes('new.cursorApproveMcps'));
+        approveMcpsSwitch.props.onClick?.();
+        page = renderNewSessionPage();
+
+        const startButton = findElement(page, (element) => element.type === 'button'
+            && elementText(element) === 'start:cursor');
+        await startButton.props.onClick?.();
+
+        expect(machineSpawnNewSessionMock).toHaveBeenCalledWith({
+            machineId: 'machine-1',
+            directory: '/workspace',
+            agent: 'cursor',
+            resumeSessionId: undefined,
+            resumeSessionName: undefined,
+            cursorExecution: {
+                model: 'auto',
+                catalogVersion: 'cursor-catalog-1',
+            },
+            cursorLaunchControls: {
+                executionMode: 'plan',
+                force: true,
+                autoReview: true,
+                sandbox: 'disabled',
+                approveMcps: true,
+            },
+        });
+        expect(machineSpawnNewSessionMock.mock.calls[0]?.[0]).not.toHaveProperty('permissionMode');
+    });
+
+    it('restores a Cursor resume preset and sends native identity plus controls after a fresh catalog check', async () => {
+        navigationState.current = {
+            cursorResume: {
+                machineId: 'machine-1',
+                directory: '/workspace/remcli',
+                resumeSessionId: 'cursor-native-session-id',
+                resumeSessionName: 'Cursor lifecycle review',
+            },
+        };
+        machineGetCursorCapabilitiesMock.mockResolvedValue(capabilities);
+        componentHooks.enableEffects();
+
+        let page = renderNewSessionPage();
+        expect(elementText(page)).toContain('Cursor lifecycle review');
+        expect(elementText(page)).toContain('cursor-native-session-id');
+
+        await flushPendingEffects();
+        page = renderNewSessionPage();
+
+        expect(machineGetCursorCapabilitiesMock).toHaveBeenCalledWith('machine-1', true);
+        const startButton = findElement(page, (element) => element.type === 'button'
+            && elementText(element).includes('new.resumeTitle'));
+        expect(startButton.props.disabled).toBe(false);
+
+        await startButton.props.onClick?.();
+
+        expect(machineSpawnNewSessionMock).toHaveBeenCalledWith({
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            agent: 'cursor',
+            resumeSessionId: 'cursor-native-session-id',
+            resumeSessionName: 'Cursor lifecycle review',
+            cursorExecution: {
+                model: 'auto',
+                catalogVersion: 'cursor-catalog-1',
+            },
+            cursorLaunchControls: {
+                executionMode: 'agent',
+                force: false,
+                autoReview: false,
+                sandbox: 'local-configuration',
+                approveMcps: false,
+            },
+        });
+        expect(machineSpawnNewSessionMock.mock.calls[0]?.[0]).not.toHaveProperty('permissionMode');
+    });
+
+    it('keeps Cursor resume blocked when the fresh catalog is unavailable', async () => {
+        navigationState.current = {
+            cursorResume: {
+                machineId: 'machine-1',
+                directory: '/workspace/remcli',
+                resumeSessionId: 'cursor-native-session-id',
+                resumeSessionName: 'Cursor lifecycle review',
+            },
+        };
+        machineGetCursorCapabilitiesMock.mockResolvedValue({
+            agent: 'cursor',
+            status: 'unavailable',
+            fetchedAt: null,
+            expiresAt: null,
+            catalogVersion: null,
+            models: [],
+            errorCode: 'unavailable',
+        } satisfies CursorCapabilitiesSnapshot);
+        componentHooks.enableEffects();
+
+        renderNewSessionPage();
+        await flushPendingEffects();
+        const page = renderNewSessionPage();
+        const startButton = findElement(page, (element) => element.type === 'button'
+            && elementText(element).includes('new.resumeTitle'));
+
+        expect(machineGetCursorCapabilitiesMock).toHaveBeenCalledWith('machine-1', true);
+        expect(startButton.props.disabled).toBe(true);
+        await startButton.props.onClick?.();
+        expect(machineSpawnNewSessionMock).not.toHaveBeenCalled();
     });
 
     it('fails closed without a validated Cursor execution selection', () => {
@@ -575,11 +870,30 @@ describe('NewSessionPage Cursor capability selection', () => {
             machineId: 'machine-1',
             directory: '/workspace/remcli',
             agent: 'cursor',
-            permissionMode: 'agent',
             codexExecution: null,
             codexReasoningEfforts: [],
             cursorExecution: null,
+            cursorLaunchControls: {
+                executionMode: 'agent',
+                force: false,
+                autoReview: false,
+                sandbox: 'local-configuration',
+                approveMcps: false,
+            },
         })).toThrow('Cursor requires a capability-validated execution selection.');
+    });
+
+    it('fails closed without validated Cursor launch controls', () => {
+        const cursorExecution = getDefaultCursorExecution(capabilities);
+
+        expect(() => buildNewSessionSpawnOptions({
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            agent: 'cursor',
+            codexExecution: null,
+            codexReasoningEfforts: [],
+            cursorExecution,
+        })).toThrow('Cursor requires validated launch controls.');
     });
 });
 

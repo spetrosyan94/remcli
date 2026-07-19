@@ -12,6 +12,7 @@ let createMessageLoadQueue: typeof import('@/pages/ChatPage').createMessageLoadQ
 let getMessageLoadScope: typeof import('@/pages/ChatPage').getMessageLoadScope;
 let mergeMessagePagination: typeof import('@/pages/ChatPage').mergeMessagePagination;
 let parseNavState: typeof import('@/pages/ChatPage').parseNavState;
+let buildCursorResumeNavigationState: typeof import('@/pages/ChatPage').buildCursorResumeNavigationState;
 let mergeLineageMessages: typeof import('@/pages/ChatPage').mergeLineageMessages;
 let requestLineageParentHistory: typeof import('@/pages/ChatPage').requestLineageParentHistory;
 let resolveLineageParent: typeof import('@/pages/ChatPage').resolveLineageParent;
@@ -60,6 +61,7 @@ beforeAll(async () => {
     getMessageLoadScope = pageModule.getMessageLoadScope;
     mergeMessagePagination = pageModule.mergeMessagePagination;
     parseNavState = pageModule.parseNavState;
+    buildCursorResumeNavigationState = pageModule.buildCursorResumeNavigationState;
     mergeLineageMessages = pageModule.mergeLineageMessages;
     requestLineageParentHistory = pageModule.requestLineageParentHistory;
     resolveLineageParent = pageModule.resolveLineageParent;
@@ -495,6 +497,25 @@ describe('ChatPage feed mapping', () => {
         expect(agentSessionIdOf(baseSession, 'claude')).toBe('claude-session-id');
         expect(agentSessionIdOf(baseSession, 'gemini')).toBe('gemini-session-id');
         expect(agentSessionIdOf(baseSession, 'cursor')).toBe('cursor-session-id');
+    });
+
+    it('builds a non-URL Cursor resume navigation payload with the native session identity', () => {
+        const navigationState = buildCursorResumeNavigationState({
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            resumeSessionId: 'cursor-native-session-id',
+            resumeSessionName: 'Cursor lifecycle review',
+        });
+
+        expect(navigationState).toEqual({
+            cursorResume: {
+                machineId: 'machine-1',
+                directory: '/workspace/remcli',
+                resumeSessionId: 'cursor-native-session-id',
+                resumeSessionName: 'Cursor lifecycle review',
+            },
+        });
+        expect(JSON.stringify(navigationState)).not.toContain('permissionMode');
     });
 
     it('falls back to generic agentSessionId when provider-specific resume id is absent', () => {

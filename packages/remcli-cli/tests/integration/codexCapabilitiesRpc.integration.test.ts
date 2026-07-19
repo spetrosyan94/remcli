@@ -14,6 +14,7 @@ import {
     type CursorCapabilitiesSnapshot,
     type CursorExecutionConfig,
 } from '@/cursor/cursorCapabilities';
+import { DEFAULT_CURSOR_LAUNCH_CONTROLS } from '@/cursor/cursorLaunchControls';
 import {
     bootstrapMachineSocket,
     type MachineSocketHandle,
@@ -110,6 +111,7 @@ function createCursorCapabilitiesService(): CursorCapabilitiesService {
     return new CursorCapabilitiesService({
         readModelList: async () => ({
             executable: 'agent',
+            version: 'controlled-cursor-agent 1.0.0',
             output: [
                 'Available models',
                 '',
@@ -330,6 +332,18 @@ async function expectSpawned(
 
     expect(result).toEqual({ type: 'success', sessionId: 'spawned-codex-session' });
     expect(harness.spawnSession).toHaveBeenCalledOnce();
+    if (spawnParams.agent === 'cursor') {
+        const validationResult = harness.cursorValidateSelectionSpy.mock.results.at(-1);
+        if (!validationResult) {
+            throw new Error('Cursor spawn did not validate the capability selection.');
+        }
+        const cursorRunner = await validationResult.value;
+        expect(harness.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            ...expectedSpawnOptions(spawnParams),
+            cursorRunner,
+        }));
+        return;
+    }
     expect(harness.spawnSession).toHaveBeenCalledWith(expectedSpawnOptions(spawnParams));
 }
 
@@ -481,8 +495,8 @@ function createValidCursorSpawnParams(
         approvedNewDirectoryCreation: false,
         token: 'session-token',
         agent: 'cursor',
-        permissionMode: 'ask',
         cursorExecution: execution,
+        cursorLaunchControls: { ...DEFAULT_CURSOR_LAUNCH_CONTROLS },
         ...overrides,
     };
 }
@@ -506,18 +520,22 @@ describe('Cursor machine RPC capability and spawn contract', { timeout: 15_000 }
         ['missing execution', (params: ReturnType<typeof createValidCursorSpawnParams>) => {
             const { cursorExecution: _cursorExecution, ...withoutExecution } = params;
             return withoutExecution;
-        }, 'Cursor requires a current model and execution control selection.'],
+        }, 'Cursor requires a current model and validated launch controls.'],
+        ['missing launch controls', (params: ReturnType<typeof createValidCursorSpawnParams>) => {
+            const { cursorLaunchControls: _cursorLaunchControls, ...withoutControls } = params;
+            return withoutControls;
+        }, 'Cursor requires a current model and validated launch controls.'],
         ['malformed execution', (params: ReturnType<typeof createValidCursorSpawnParams>) => ({
             ...params,
             cursorExecution: { model: 'auto', catalogVersion: 42 },
-        }), 'Cursor requires a current model and execution control selection.'],
+        }), 'Cursor requires a current model and validated launch controls.'],
         ['unknown execution field', (params: ReturnType<typeof createValidCursorSpawnParams>) => ({
             ...params,
             cursorExecution: {
                 ...params.cursorExecution,
                 unexpectedExecutionState: 'must-not-reach-spawn',
             },
-        }), 'Cursor requires a current model and execution control selection.'],
+        }), 'Cursor requires a current model and validated launch controls.'],
         ['stale catalog', (params: ReturnType<typeof createValidCursorSpawnParams>) => ({
             ...params,
             cursorExecution: { ...params.cursorExecution!, catalogVersion: 'stale-catalog' },
@@ -529,7 +547,7 @@ describe('Cursor machine RPC capability and spawn contract', { timeout: 15_000 }
         ['foreign provider control', (params: ReturnType<typeof createValidCursorSpawnParams>) => ({
             ...params,
             permissionMode: 'workspace-write',
-        }), 'Cursor requires a current model and execution control selection.'],
+        }), 'Cursor launch controls must not use the generic permissionMode field.'],
     ] as const)('rejects %s before spawn', async (_caseName, mutateParams, expectedError) => {
         const harness = await createRpcHarness();
         const params = mutateParams(createValidCursorSpawnParams(createValidCursorExecution(harness.cursorSnapshot)));

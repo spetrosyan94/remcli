@@ -20,10 +20,6 @@ const permissionModeSchema = z.enum([
     'workspace-write',
     'danger-full-access',
     'auto_edit',
-    'agent',
-    'ask',
-    'force',
-    'auto-review',
 ]);
 
 // ─── Message meta ────────────────────────────────────────────────
@@ -245,21 +241,54 @@ const rawAgentRecordSchema = z.discriminatedUnion('type', [z.object({
 /**
  * Preprocessor: normalizes hyphenated content types to canonical before validation.
  */
+function stripUnsupportedPermissionValue(value: unknown, key: 'mode' | 'permissionMode'): unknown {
+    try {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+        const record = value as Record<string, unknown>;
+        if (!Object.prototype.hasOwnProperty.call(record, key)
+            || permissionModeSchema.safeParse(record[key]).success) {
+            return value;
+        }
+
+        const normalized = { ...record };
+        delete normalized[key];
+        return normalized;
+    } catch {
+        return value;
+    }
+}
+
 function preprocessMessageContent(data: unknown): unknown {
     if (!data || typeof data !== 'object') return data;
-    const record = data as { role?: string; content?: { type?: string; data?: { type?: string; message?: { content?: unknown } } } };
+    const record = data as {
+        role?: string;
+        meta?: unknown;
+        content?: { type?: string; data?: { type?: string; message?: { content?: unknown } } };
+    };
 
     const normalizeContent = (item: unknown): unknown => {
         if (!item || typeof item !== 'object') return item;
         const typed = item as { type?: string };
+        let normalizedItem = item;
         if (typed.type === 'tool-call') {
-            return normalizeToToolUse(item as RawHyphenatedToolCall);
+            normalizedItem = normalizeToToolUse(item as RawHyphenatedToolCall);
+        } else if (typed.type === 'tool-call-result') {
+            normalizedItem = normalizeToToolResult(item as RawHyphenatedToolResult);
         }
-        if (typed.type === 'tool-call-result') {
-            return normalizeToToolResult(item as RawHyphenatedToolResult);
+
+        if (!normalizedItem || typeof normalizedItem !== 'object' || Array.isArray(normalizedItem)) {
+            return normalizedItem;
         }
-        return item;
+        const normalizedRecord = normalizedItem as { type?: string; permissions?: unknown };
+        if (normalizedRecord.type !== 'tool_result') return normalizedItem;
+
+        const permissions = stripUnsupportedPermissionValue(normalizedRecord.permissions, 'mode');
+        return permissions === normalizedRecord.permissions
+            ? normalizedItem
+            : { ...normalizedRecord, permissions };
     };
+
+    record.meta = stripUnsupportedPermissionValue(record.meta, 'permissionMode');
 
     if (record.role === 'agent' && record.content?.type === 'output' && record.content.data?.message
         && Array.isArray(record.content.data.message.content)) {

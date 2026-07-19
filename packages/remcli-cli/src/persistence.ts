@@ -89,8 +89,7 @@ export const AIBackendProfileSchema = z.object({
     defaultPermissionMode: z.enum([
         'manual', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk',
         'read-only', 'workspace-write', 'danger-full-access',
-        'auto_edit',
-        'agent', 'ask', 'force', 'auto-review'
+        'auto_edit'
     ]).optional(),
 
     // Default model mode for this profile

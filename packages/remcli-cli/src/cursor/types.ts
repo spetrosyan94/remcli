@@ -5,6 +5,8 @@
  * The format is NDJSON with events very similar to Claude Code SDK.
  */
 
+import type { CursorLaunchControls } from './cursorLaunchControls';
+
 /** A single event from cursor's stream-json output */
 export interface CursorStreamEvent {
     /** Cursor may add stream event types between CLI releases. */
@@ -37,6 +39,6 @@ export type ContentPart =
 
 /** Mode config for MessageQueue2 hashing */
 export interface CursorMode {
-    permissionMode: import('@/api/types').CursorPermissionMode;
+    launchControls: CursorLaunchControls;
     model?: string;
 }

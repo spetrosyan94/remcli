@@ -1,5 +1,5 @@
 import { execFile, type SpawnOptions } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -12,6 +12,7 @@ import { TmuxUtilities, type TmuxPaneInfo } from '@/utils/tmux';
 const execFileAsync = promisify(execFile);
 const isolatedTmuxServers = new Map<string, string>();
 const TMUX_OWNED_PANE_FORMAT = '#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{@remcli_owner}';
+const CURSOR_LEGACY_PERMISSION_ENV_KEY = 'REMCLI_CURSOR_PERMISSION_MODE';
 
 interface IsolatedTmuxServer {
     socketDirectory: string;
@@ -107,6 +108,10 @@ function parseOwnedPane(stdout: string): TmuxPaneInfo {
     return { sessionName, windowId, paneId, panePid, ownerMarker };
 }
 
+function shellQuote(value: string): string {
+    return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 async function createManuallyOwnedHost(
     server: IsolatedTmuxServer,
     ownerMarker: string,
@@ -181,6 +186,66 @@ afterEach(async () => {
 });
 
 describe.skipIf(!await isTmuxAvailable())('tmux immutable ownership integration', () => {
+    it('scrubs a stale Cursor legacy permission variable at the child command boundary', async () => {
+        const server = await createIsolatedTmuxServer();
+        const host = await createManuallyOwnedHost(server, randomUUID());
+        const resultPath = join(server.socketDirectory, 'cursor-legacy-permission-env.txt');
+
+        await execFileAsync('tmux', [
+            '-S',
+            server.socketPath,
+            'set-environment',
+            '-g',
+            CURSOR_LEGACY_PERMISSION_ENV_KEY,
+            'legacy-permission-alias',
+        ]);
+        const { stdout: staleEnvironment } = await execFileAsync('tmux', [
+            '-S',
+            server.socketPath,
+            'show-environment',
+            '-g',
+            CURSOR_LEGACY_PERMISSION_ENV_KEY,
+        ]);
+        expect(staleEnvironment.trim()).toBe(`${CURSOR_LEGACY_PERMISSION_ENV_KEY}=legacy-permission-alias`);
+
+        const command = [
+            '/usr/bin/env',
+            '-u',
+            CURSOR_LEGACY_PERMISSION_ENV_KEY,
+            '/bin/sh',
+            '-c',
+            shellQuote(`if [ -n "\${${CURSOR_LEGACY_PERMISSION_ENV_KEY}+x}" ]; then printf present > ${shellQuote(resultPath)}; else printf absent > ${shellQuote(resultPath)}; fi; sleep 30`),
+        ].join(' ');
+        const runner = await server.utilities.spawnInTmux(
+            [command],
+            {
+                sessionName: server.sessionName,
+                windowName: 'cursor-runner',
+                ownershipMarker: randomUUID(),
+            },
+        );
+
+        expect(runner.success).toBe(true);
+        if (!runner.success) return;
+        await vi.waitFor(async () => {
+            await expect(readFile(resultPath, 'utf8')).resolves.toBe('absent');
+        });
+        expect(await server.utilities.getPaneInfo(runner.ownership.paneId)).toEqual({
+            status: 'exists',
+            pane: runner.ownership,
+        });
+
+        const { stdout: serverEnvironmentAfterSpawn } = await execFileAsync('tmux', [
+            '-S',
+            server.socketPath,
+            'show-environment',
+            '-g',
+            CURSOR_LEGACY_PERMISSION_ENV_KEY,
+        ]);
+        expect(serverEnvironmentAfterSpawn.trim()).toBe(`${CURSOR_LEGACY_PERMISSION_ENV_KEY}=legacy-permission-alias`);
+        expect(host.paneId).not.toBe(runner.ownership.paneId);
+    });
+
     it('recovers a normal runner from response loss with one marked pane', async () => {
         const server = await createIsolatedTmuxServer();
         const ownerMarker = randomUUID();
