@@ -196,7 +196,7 @@ export const ru = {
     "new.reasoningNoOptions": "для этой модели нет настраиваемого уровня размышления",
     "new.reasoningChoose": "выберите уровень размышления",
     "new.capabilitiesLoading": "определяем…",
-    "new.capabilitiesUnavailable": "Данные Codex недоступны.",
+    "new.capabilitiesUnavailable": "Данные провайдера недоступны.",
     "new.capabilitiesRetry": "Повторить",
     "new.dirRecent": "директория · недавние",
     "new.dirBrowse": "выбрать директорию…",

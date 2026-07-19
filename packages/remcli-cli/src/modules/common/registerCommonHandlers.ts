@@ -10,6 +10,7 @@ import { RpcHandlerManager } from '../../api/rpc/RpcHandlerManager';
 import { validatePath } from './pathSecurity';
 import type { PermissionMode } from '@/api/types';
 import type { CodexExecutionConfig } from '@/codex/codexCapabilities';
+import type { CursorExecutionConfig } from '@/cursor/cursorCapabilities';
 
 const execAsync = promisify(exec);
 
@@ -131,6 +132,8 @@ export interface SpawnSessionOptions {
     permissionMode?: PermissionMode;
     /** Atomic, daemon-validated Codex model + reasoning selection. */
     codexExecution?: CodexExecutionConfig;
+    /** Atomic, daemon-validated Cursor model selection. */
+    cursorExecution?: CursorExecutionConfig;
     token?: string;
     environmentVariables?: {
         // Anthropic Claude API configuration

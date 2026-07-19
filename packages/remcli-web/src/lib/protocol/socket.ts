@@ -256,6 +256,28 @@ export interface CodexCapabilitiesSnapshot {
     errorCode?: 'unavailable' | 'expired' | 'unsupported_selection' | 'policy_denied';
 }
 
+/** Provider-defined Cursor selection, validated against the daemon's live catalog. */
+export interface CursorExecutionConfig {
+    model: string;
+    catalogVersion: string;
+}
+
+export interface CursorModelCapability {
+    id: string;
+    displayName: string;
+    isDefault: boolean;
+}
+
+export interface CursorCapabilitiesSnapshot {
+    agent: 'cursor';
+    status: 'ready' | 'unavailable';
+    fetchedAt: number | null;
+    expiresAt: number | null;
+    catalogVersion: string | null;
+    models: CursorModelCapability[];
+    errorCode?: 'unavailable' | 'expired' | 'unsupported_selection';
+}
+
 export interface SpawnSessionOptions {
     machineId: string;
     directory: string;
@@ -264,6 +286,7 @@ export interface SpawnSessionOptions {
     agent?: AgentKind;
     permissionMode?: PermissionMode;
     codexExecution?: CodexExecutionConfig;
+    cursorExecution?: CursorExecutionConfig;
     resumeSessionId?: string;
     resumeSessionName?: string;
     environmentVariables?: Record<string, string>;
@@ -332,7 +355,7 @@ export type PairingRekeyCancellationResult =
     | { type: 'invalid-code' };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null;
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isRpcErrorEnvelope(value: unknown): value is RpcErrorEnvelope {
@@ -404,6 +427,46 @@ function isAgentSessionListResponse(value: unknown): value is AgentSessionListRe
     return isRecord(value) && Array.isArray(value.sessions) && value.sessions.every(isAgentSessionInfo);
 }
 
+function isCursorCapabilityErrorCode(value: unknown): value is NonNullable<CursorCapabilitiesSnapshot['errorCode']> {
+    return value === 'unavailable' || value === 'expired' || value === 'unsupported_selection';
+}
+
+function isCursorModelCapability(value: unknown): value is CursorModelCapability {
+    return isRecord(value)
+        && typeof value.id === 'string'
+        && value.id.length > 0
+        && typeof value.displayName === 'string'
+        && value.displayName.trim().length > 0
+        && typeof value.isDefault === 'boolean';
+}
+
+function isCursorCapabilitiesSnapshot(value: unknown): value is CursorCapabilitiesSnapshot {
+    if (!isRecord(value)
+        || value.agent !== 'cursor'
+        || (value.status !== 'ready' && value.status !== 'unavailable')
+        || !Array.isArray(value.models)
+        || !value.models.every(isCursorModelCapability)
+        || (value.errorCode !== undefined && !isCursorCapabilityErrorCode(value.errorCode))) {
+        return false;
+    }
+
+    if (value.status === 'ready') {
+        return typeof value.fetchedAt === 'number'
+            && Number.isFinite(value.fetchedAt)
+            && typeof value.expiresAt === 'number'
+            && Number.isFinite(value.expiresAt)
+            && typeof value.catalogVersion === 'string'
+            && value.catalogVersion.length > 0
+            && value.models.filter((model) => model.isDefault).length === 1
+            && value.errorCode === undefined;
+    }
+
+    return value.fetchedAt === null
+        && value.expiresAt === null
+        && value.catalogVersion === null
+        && value.models.length === 0;
+}
+
 function isSealedPairingQr(value: unknown): value is SealedPairingQr {
     return isRecord(value)
         && value.format === 'nacl-box-v1'
@@ -443,6 +506,7 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
         environmentVariables,
         permissionMode,
         codexExecution,
+        cursorExecution,
     } = options;
     try {
         const result = await machineRpc<SpawnSessionResult | null, {
@@ -456,6 +520,7 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
             environmentVariables?: Record<string, string>;
             permissionMode?: PermissionMode;
             codexExecution?: CodexExecutionConfig;
+            cursorExecution?: CursorExecutionConfig;
         }>(
             machineId,
             'spawn-remcli-session',
@@ -470,6 +535,7 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
                 environmentVariables,
                 permissionMode,
                 codexExecution,
+                cursorExecution,
             }
         );
         if (!result) {
@@ -494,6 +560,25 @@ export async function machineGetCodexCapabilities(
         'get-codex-capabilities',
         forceRefresh ? { forceRefresh: true } : {},
     );
+}
+
+/** Read the daemon-normalized, account-specific Cursor model catalog. */
+export async function machineGetCursorCapabilities(
+    machineId: string,
+    forceRefresh: boolean = false,
+): Promise<CursorCapabilitiesSnapshot> {
+    const result = await machineRpc<unknown, { forceRefresh?: boolean }>(
+        machineId,
+        'get-cursor-capabilities',
+        forceRefresh ? { forceRefresh: true } : {},
+    );
+    if (isRpcErrorEnvelope(result)) {
+        throw new Error(result.error || 'Cursor capability RPC failed');
+    }
+    if (!isCursorCapabilitiesSnapshot(result)) {
+        throw new Error('Cursor capability RPC returned invalid response');
+    }
+    return result;
 }
 
 /** List child directories on a machine (daemon RPC `list-directory`). */

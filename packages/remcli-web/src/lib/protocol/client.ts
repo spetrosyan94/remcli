@@ -9,6 +9,7 @@
 import {
     fixtureAnswerPermission,
     fixtureGetCodexCapabilities,
+    fixtureGetCursorCapabilities,
     fixtureListAgentSessions,
     fixtureListDirectory,
     fixtureLoadSessionMessages,
@@ -46,6 +47,7 @@ import {
 import {
     machineListAgentSessions as socketMachineListAgentSessions,
     machineGetCodexCapabilities as socketMachineGetCodexCapabilities,
+    machineGetCursorCapabilities as socketMachineGetCursorCapabilities,
     machineListDirectory as socketMachineListDirectory,
     machineCancelPairingRekey as socketMachineCancelPairingRekey,
     machineRequestPairingRekey as socketMachineRequestPairingRekey,
@@ -64,6 +66,7 @@ import {
     waitForSocketConnection,
     type DirectoryListing,
     type CodexCapabilitiesSnapshot,
+    type CursorCapabilitiesSnapshot,
     type SpawnSessionOptions,
     type SpawnSessionResult,
     type PairingRekeyCancellationResult,
@@ -394,6 +397,17 @@ export async function machineGetCodexCapabilities(
         return fixtureGetCodexCapabilities();
     }
     return await socketMachineGetCodexCapabilities(machineId, forceRefresh);
+}
+
+/** Read the normalized Cursor model catalog for New Session. */
+export async function machineGetCursorCapabilities(
+    machineId: string,
+    forceRefresh: boolean = false,
+): Promise<CursorCapabilitiesSnapshot> {
+    if (isFixturesActive) {
+        return fixtureGetCursorCapabilities();
+    }
+    return await socketMachineGetCursorCapabilities(machineId, forceRefresh);
 }
 
 /** Spawn a new agent session on a machine; fixture mode creates a local store session. */

@@ -334,6 +334,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
         const { configuration } = await import('@/configuration');
         const { writeDaemonState, updateSettings } = await import('@/persistence');
         const { CodexCapabilitiesService } = await import('@/codex/codexCapabilities');
+        const { CursorCapabilitiesService } = await import('@/cursor/cursorCapabilities');
         const { createSessionManager } = await import('@/daemon/sessionSpawner');
         const { startDaemonControlServer } = await import('@/daemon/controlServer');
         const { bootstrapMachineSocket } = await import('@/daemon/machineSocket');
@@ -437,6 +438,18 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
                 codexAppServerPid: process.pid,
             }),
         });
+        const cursorCapabilities = new CursorCapabilitiesService({
+            readModelList: async () => ({
+                executable: 'agent',
+                output: [
+                    'Available models',
+                    '',
+                    'auto - Auto (default)',
+                    '',
+                    'Tip: use --model <id> to switch.',
+                ].join('\n'),
+            }),
+        });
         const machineSocket = bootstrapMachineSocket({
             p2pPort: p2pServer.port,
             machineId: TEST_MACHINE_ID,
@@ -444,6 +457,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
             contentSecret,
             pairingRekeyCoordinator,
             codexCapabilities,
+            cursorCapabilities,
             spawnSession: sessionManager.spawnSession,
             stopSession: sessionManager.stopSession,
             requestShutdown: () => undefined,

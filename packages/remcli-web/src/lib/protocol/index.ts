@@ -44,6 +44,7 @@ export {
     sendSessionMessage,
     // fixture-aware обёртки над socket.ts (в fixture-режиме — локальный ответ)
     machineGetCodexCapabilities,
+    machineGetCursorCapabilities,
     machineSpawnNewSession,
     machineListAgentSessions,
     machineListDirectory,
@@ -89,6 +90,9 @@ export {
     type CodexExecutionConfig,
     type CodexModelCapability,
     type CodexReasoningEffort,
+    type CursorCapabilitiesSnapshot,
+    type CursorExecutionConfig,
+    type CursorModelCapability,
     type DirectoryEntry,
     type DirectoryHome,
     type DirectoryListing,

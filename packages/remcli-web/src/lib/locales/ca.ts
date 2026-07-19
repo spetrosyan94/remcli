@@ -195,7 +195,7 @@ export const ca: Dictionary = {
     "new.reasoningNoOptions": "no hi ha raonament configurable per a aquest model",
     "new.reasoningChoose": "tria un nivell de raonament",
     "new.capabilitiesLoading": "comprovant…",
-    "new.capabilitiesUnavailable": "Dades de Codex no disponibles.",
+    "new.capabilitiesUnavailable": "Dades del proveïdor no disponibles.",
     "new.capabilitiesRetry": "Torna-ho a provar",
     "new.dirRecent": "directori · recents",
     "new.dirBrowse": "tria directori…",

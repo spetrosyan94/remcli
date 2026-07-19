@@ -195,7 +195,7 @@ export const zhHans: Dictionary = {
     "new.reasoningNoOptions": "此模型没有可配置的推理级别",
     "new.reasoningChoose": "选择推理级别",
     "new.capabilitiesLoading": "正在检查…",
-    "new.capabilitiesUnavailable": "Codex 数据不可用。",
+    "new.capabilitiesUnavailable": "提供商数据不可用。",
     "new.capabilitiesRetry": "重试",
     "new.dirRecent": "目录 · 最近",
     "new.dirBrowse": "选择目录…",

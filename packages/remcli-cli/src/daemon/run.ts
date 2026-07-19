@@ -33,6 +33,7 @@ import { bootstrapMachineSocket } from './machineSocket';
 import { startHeartbeatLoop } from './heartbeat';
 import { startCodexAppServerHost, type CodexAppServerHostHandle } from '@/codex/codexAppServerHost';
 import { CodexCapabilitiesService } from '@/codex/codexCapabilities';
+import { CursorCapabilitiesService, getDefaultCursorExecution } from '@/cursor/cursorCapabilities';
 import { PairingRekeyCoordinator } from './p2p/pairingRekey';
 import { redactDiagnosticData } from '@/utils/redaction';
 import QRCode from 'qrcode';
@@ -386,6 +387,7 @@ export async function startDaemon(): Promise<void> {
     let p2pServer: P2PServer | null = null;
     let machineSocketHandle: ReturnType<typeof bootstrapMachineSocket> | null = null;
     let codexCapabilities: CodexCapabilitiesService | null = null;
+    let cursorCapabilities: CursorCapabilitiesService | null = null;
     let machineId = '';
     let tunnelStop: (() => void) | null = null;
     let tunnelUrl: string | undefined;
@@ -426,7 +428,7 @@ export async function startDaemon(): Promise<void> {
         // The daemon's self-machine is intentionally reconnected with the new
         // bearer; session runners retain their stable content secret and lease.
         setTimeout(() => {
-          if (!p2pServer || !machineId || !codexCapabilities) return;
+          if (!p2pServer || !machineId || !codexCapabilities || !cursorCapabilities) return;
           machineSocketHandle?.close();
           machineSocketHandle = bootstrapMachineSocket({
             p2pPort: p2pServer.port,
@@ -435,6 +437,7 @@ export async function startDaemon(): Promise<void> {
             contentSecret: pairing.contentSecret,
             pairingRekeyCoordinator,
             codexCapabilities,
+            cursorCapabilities,
             spawnSession: sessionManager.spawnSession,
             stopSession: sessionManager.stopSession,
             requestShutdown: () => requestShutdown('remcli-web'),
@@ -473,6 +476,7 @@ export async function startDaemon(): Promise<void> {
         codexAppServerPid: fileState.codexAppServerPid,
       }),
     });
+    cursorCapabilities = new CursorCapabilitiesService();
     writeDaemonState(fileState);
     logger.debug('[DAEMON RUN] Daemon state written');
 
@@ -513,6 +517,11 @@ export async function startDaemon(): Promise<void> {
             status: s.remcliSessionMetadataFromLocalWebhook?.lifecycleState ?? 'running',
         })),
         spawnSession: sessionManager.spawnSession,
+        getDefaultCursorExecution: async () => {
+            const capabilities = cursorCapabilities;
+            if (!capabilities) return null;
+            return getDefaultCursorExecution(await capabilities.getCapabilities(true));
+        },
         getDaemonStatus: () => ({
             version: packageJson.version,
             uptimeSec: Math.floor((Date.now() - daemonStartMs) / 1000),
@@ -595,8 +604,8 @@ export async function startDaemon(): Promise<void> {
     logger.debug(`[DAEMON RUN] Machine registered in P2P store: ${machineId}`);
 
     // ─── Self-connect as machine client for RPC handling ────────────
-    if (!codexCapabilities) {
-        throw new Error('Codex capability service was not initialized.');
+    if (!codexCapabilities || !cursorCapabilities) {
+        throw new Error('Provider capability services were not initialized.');
     }
     machineSocketHandle = bootstrapMachineSocket({
         p2pPort: p2pServer.port,
@@ -605,6 +614,7 @@ export async function startDaemon(): Promise<void> {
         contentSecret: pairing.contentSecret,
         pairingRekeyCoordinator,
         codexCapabilities,
+        cursorCapabilities,
         spawnSession: sessionManager.spawnSession,
         stopSession: sessionManager.stopSession,
         requestShutdown: () => requestShutdown('remcli-web')

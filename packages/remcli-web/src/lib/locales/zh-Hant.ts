@@ -195,7 +195,7 @@ export const zhHant: Dictionary = {
     "new.reasoningNoOptions": "此模型沒有可設定的推理級別",
     "new.reasoningChoose": "選擇推理級別",
     "new.capabilitiesLoading": "正在檢查…",
-    "new.capabilitiesUnavailable": "Codex 資料無法使用。",
+    "new.capabilitiesUnavailable": "供應商資料無法使用。",
     "new.capabilitiesRetry": "重試",
     "new.dirRecent": "目錄 · 最近",
     "new.dirBrowse": "選擇目錄…",

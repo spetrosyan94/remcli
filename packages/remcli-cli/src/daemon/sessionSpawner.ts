@@ -1797,6 +1797,14 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 }
             }
 
+            if (agent === 'cursor' && options.cursorExecution) {
+                tmuxEnv.REMCLI_CURSOR_MODEL = options.cursorExecution.model;
+                tmuxEnv.REMCLI_CURSOR_CATALOG_VERSION = options.cursorExecution.catalogVersion;
+                if (options.permissionMode) {
+                    tmuxEnv.REMCLI_CURSOR_PERMISSION_MODE = options.permissionMode;
+                }
+            }
+
             const runnerControlToken = createRunnerControlToken();
             const tmuxOwnershipMarker = randomUUID();
             tmuxEnv.REMCLI_DAEMON_RUNNER_TOKEN = runnerControlToken;

@@ -378,6 +378,13 @@ describe('runCursor lifecycle', () => {
             credentials: createCredentials(),
             startedBy: parsed.startedBy,
             resumeSessionId: parsed.resumeSessionId,
+            ...(runnerToken ? {
+                execution: {
+                    model: 'controlled-cursor-model',
+                    catalogVersion: 'controlled-cursor-catalog',
+                },
+                permissionMode: 'agent' as const,
+            } : {}),
         });
 
         expect(parsed).toMatchObject({
@@ -393,6 +400,19 @@ describe('runCursor lifecycle', () => {
         expect(testState.getOrCreateSession).not.toHaveBeenCalled();
         expect(testState.FakeMessageQueue.instances).toHaveLength(0);
         expect(testState.acquireDaemonRunnerCredential).not.toHaveBeenCalled();
+    });
+
+    it('rejects a token-bearing daemon runner that lacks the daemon-validated model and control', async () => {
+        process.env.REMCLI_DAEMON_RUNNER_TOKEN = 'daemon-owned-runner-token';
+
+        await runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+        });
+
+        expect(testState.preflightDaemonCursorRunner).not.toHaveBeenCalled();
+        expect(testState.createSessionMetadata).not.toHaveBeenCalled();
+        expect(testState.getOrCreateSession).not.toHaveBeenCalled();
     });
 
     it('publishes fresh daemon metadata only after runner preflight succeeds', async () => {

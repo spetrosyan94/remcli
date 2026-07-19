@@ -195,7 +195,7 @@ export const pl: Dictionary = {
     "new.reasoningNoOptions": "brak konfigurowalnego rozumowania dla tego modelu",
     "new.reasoningChoose": "wybierz poziom rozumowania",
     "new.capabilitiesLoading": "sprawdzanie…",
-    "new.capabilitiesUnavailable": "Dane Codex są niedostępne.",
+    "new.capabilitiesUnavailable": "Dane dostawcy są niedostępne.",
     "new.capabilitiesRetry": "Spróbuj ponownie",
     "new.dirRecent": "katalog · ostatnie",
     "new.dirBrowse": "wybierz katalog…",

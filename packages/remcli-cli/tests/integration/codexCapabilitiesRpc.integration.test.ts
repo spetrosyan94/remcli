@@ -10,6 +10,11 @@ import {
     type CodexExecutionConfig,
 } from '@/codex/codexCapabilities';
 import {
+    CursorCapabilitiesService,
+    type CursorCapabilitiesSnapshot,
+    type CursorExecutionConfig,
+} from '@/cursor/cursorCapabilities';
+import {
     bootstrapMachineSocket,
     type MachineSocketHandle,
 } from '@/daemon/machineSocket';
@@ -41,6 +46,8 @@ interface RpcHarness {
     snapshot: CodexCapabilitiesSnapshot;
     spawnSession: ReturnType<typeof vi.fn<(options: SpawnSessionOptions) => Promise<SpawnSessionResult>>>;
     validateSelectionSpy: MockInstance<CodexCapabilitiesService['validateSelection']>;
+    cursorSnapshot: CursorCapabilitiesSnapshot;
+    cursorValidateSelectionSpy: MockInstance<CursorCapabilitiesService['validateSelection']>;
 }
 
 let p2pServer: P2PServer | null = null;
@@ -95,6 +102,23 @@ function createCodexCapabilitiesService(): CodexCapabilitiesService {
         getAppServerState: () => appServerState,
         isStateUsable: async () => true,
         createClient: () => capabilityClient,
+        now: () => 1_000,
+    });
+}
+
+function createCursorCapabilitiesService(): CursorCapabilitiesService {
+    return new CursorCapabilitiesService({
+        readModelList: async () => ({
+            executable: 'agent',
+            output: [
+                'Available models',
+                '',
+                'auto - Auto (default)',
+                'controlled-cursor-model - Controlled Cursor Model',
+                '',
+                'Tip: use --model <id> to switch.',
+            ].join('\n'),
+        }),
         now: () => 1_000,
     });
 }
@@ -198,8 +222,11 @@ async function createRpcHarness(): Promise<RpcHarness> {
     const bearerToken = deriveBearerToken(sharedSecret);
     const store = new P2PStore({ kvFilePath: null });
     const codexCapabilities = createCodexCapabilitiesService();
+    const cursorCapabilities = createCursorCapabilitiesService();
     const validateSelectionSpy = vi.spyOn(codexCapabilities, 'validateSelection');
+    const cursorValidateSelectionSpy = vi.spyOn(cursorCapabilities, 'validateSelection');
     const snapshot = await codexCapabilities.getCapabilities();
+    const cursorSnapshot = await cursorCapabilities.getCapabilities();
     const spawnSession = vi.fn(async (_options: SpawnSessionOptions): Promise<SpawnSessionResult> => ({
         type: 'success',
         sessionId: 'spawned-codex-session',
@@ -233,6 +260,7 @@ async function createRpcHarness(): Promise<RpcHarness> {
         contentSecret: sharedSecret,
         pairingRekeyCoordinator: createPairingRekeyCoordinator(sharedSecret),
         codexCapabilities,
+        cursorCapabilities,
         spawnSession,
         stopSession: () => ({ success: false }),
         requestShutdown: () => undefined,
@@ -246,6 +274,8 @@ async function createRpcHarness(): Promise<RpcHarness> {
         snapshot,
         spawnSession,
         validateSelectionSpy,
+        cursorSnapshot,
+        cursorValidateSelectionSpy,
     };
 }
 
@@ -287,14 +317,14 @@ function createValidSpawnParams(
     };
 }
 
-function expectedSpawnOptions(params: ReturnType<typeof createValidSpawnParams>): SpawnSessionOptions {
+function expectedSpawnOptions(params: SpawnSessionOptions & { type: string }): SpawnSessionOptions {
     const { type: _type, ...options } = params;
     return options;
 }
 
 async function expectSpawned(
     harness: RpcHarness,
-    spawnParams: ReturnType<typeof createValidSpawnParams>,
+    spawnParams: SpawnSessionOptions & { type: string },
 ): Promise<void> {
     const result = await callMachineRpc(harness, 'spawn-remcli-session', spawnParams);
 
@@ -430,5 +460,81 @@ describe('Codex machine RPC capability and spawn contract', { timeout: 15_000 },
         const spawnParams = mutateParams(createValidSpawnParams(createValidExecution(harness.snapshot)));
 
         await expectPreValidationRpcError(harness, spawnParams);
+    });
+});
+
+function createValidCursorExecution(snapshot: CursorCapabilitiesSnapshot): CursorExecutionConfig {
+    if (!snapshot.catalogVersion) {
+        throw new Error('Expected the deterministic Cursor capability snapshot to have a catalog version');
+    }
+    return { model: 'auto', catalogVersion: snapshot.catalogVersion };
+}
+
+function createValidCursorSpawnParams(
+    execution: CursorExecutionConfig,
+    overrides: Partial<SpawnSessionOptions> = {},
+): SpawnSessionOptions & { type: string } {
+    return {
+        type: 'spawn-in-directory',
+        machineId: TEST_MACHINE_ID,
+        directory: '/workspace/remcli',
+        approvedNewDirectoryCreation: false,
+        token: 'session-token',
+        agent: 'cursor',
+        permissionMode: 'ask',
+        cursorExecution: execution,
+        ...overrides,
+    };
+}
+
+describe('Cursor machine RPC capability and spawn contract', { timeout: 15_000 }, () => {
+    it('returns the daemon-normalized account-visible model snapshot through encrypted RPC', async () => {
+        const harness = await createRpcHarness();
+
+        await expect(callMachineRpc(harness, 'get-cursor-capabilities', {})).resolves.toEqual(harness.cursorSnapshot);
+    });
+
+    it('validates the exact catalog model before forwarding a Cursor spawn', async () => {
+        const harness = await createRpcHarness();
+        const spawnParams = createValidCursorSpawnParams(createValidCursorExecution(harness.cursorSnapshot));
+
+        await expectSpawned(harness, spawnParams);
+        expect(harness.cursorValidateSelectionSpy).toHaveBeenCalledWith(spawnParams.cursorExecution);
+    });
+
+    it.each([
+        ['missing execution', (params: ReturnType<typeof createValidCursorSpawnParams>) => {
+            const { cursorExecution: _cursorExecution, ...withoutExecution } = params;
+            return withoutExecution;
+        }, 'Cursor requires a current model and execution control selection.'],
+        ['malformed execution', (params: ReturnType<typeof createValidCursorSpawnParams>) => ({
+            ...params,
+            cursorExecution: { model: 'auto', catalogVersion: 42 },
+        }), 'Cursor requires a current model and execution control selection.'],
+        ['unknown execution field', (params: ReturnType<typeof createValidCursorSpawnParams>) => ({
+            ...params,
+            cursorExecution: {
+                ...params.cursorExecution,
+                unexpectedExecutionState: 'must-not-reach-spawn',
+            },
+        }), 'Cursor requires a current model and execution control selection.'],
+        ['stale catalog', (params: ReturnType<typeof createValidCursorSpawnParams>) => ({
+            ...params,
+            cursorExecution: { ...params.cursorExecution!, catalogVersion: 'stale-catalog' },
+        }), 'Cursor capability selection rejected: expired.'],
+        ['non-account model', (params: ReturnType<typeof createValidCursorSpawnParams>) => ({
+            ...params,
+            cursorExecution: { ...params.cursorExecution!, model: 'not-account-visible' },
+        }), 'Cursor capability selection rejected: unsupported_selection.'],
+        ['foreign provider control', (params: ReturnType<typeof createValidCursorSpawnParams>) => ({
+            ...params,
+            permissionMode: 'workspace-write',
+        }), 'Cursor requires a current model and execution control selection.'],
+    ] as const)('rejects %s before spawn', async (_caseName, mutateParams, expectedError) => {
+        const harness = await createRpcHarness();
+        const params = mutateParams(createValidCursorSpawnParams(createValidCursorExecution(harness.cursorSnapshot)));
+
+        await expectRpcError(harness, 'spawn-remcli-session', params, expectedError);
+        expect(harness.cursorValidateSelectionSpy).toHaveBeenCalledTimes(expectedError.startsWith('Cursor capability') ? 1 : 0);
     });
 });

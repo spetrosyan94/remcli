@@ -111,4 +111,69 @@ describe('socket reconnect lifecycle', () => {
 
         socketDisconnect();
     });
+
+    it('accepts only a normalized Cursor capability snapshot from encrypted machine RPC', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-cursor-capabilities' });
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const cipher = {
+            encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
+            decryptRaw: vi.fn().mockResolvedValue({
+                agent: 'cursor',
+                status: 'ready',
+                fetchedAt: 1,
+                expiresAt: 2,
+                catalogVersion: 'cursor-catalog-1',
+                models: [{ id: 'auto', displayName: 'Auto', isDefault: true }],
+            }),
+        } as unknown as Cipher;
+
+        const { machineGetCursorCapabilities, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+
+        await expect(machineGetCursorCapabilities('machine-1')).resolves.toEqual({
+            agent: 'cursor',
+            status: 'ready',
+            fetchedAt: 1,
+            expiresAt: 2,
+            catalogVersion: 'cursor-catalog-1',
+            models: [{ id: 'auto', displayName: 'Auto', isDefault: true }],
+        });
+
+        socketDisconnect();
+    });
+
+    it('rejects malformed Cursor capability RPC output before it reaches the UI', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'malformed-cursor-capabilities' });
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const cipher = {
+            encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
+            decryptRaw: vi.fn().mockResolvedValue({
+                agent: 'cursor',
+                status: 'ready',
+                fetchedAt: 1,
+                expiresAt: 2,
+                catalogVersion: 'cursor-catalog-1',
+                models: [{ id: 'auto', displayName: 'Auto', isDefault: false }],
+            }),
+        } as unknown as Cipher;
+
+        const { machineGetCursorCapabilities, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+
+        await expect(machineGetCursorCapabilities('machine-1')).rejects.toThrow('Cursor capability RPC returned invalid response');
+
+        socketDisconnect();
+    });
 });

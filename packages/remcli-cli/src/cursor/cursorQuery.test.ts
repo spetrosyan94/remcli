@@ -25,7 +25,67 @@ const emit = (event) => process.stdout.write(JSON.stringify(event) + '\\n');
 
 if (scenario === 'success') {
     emit({ type: 'system', subtype: 'init', session_id: sessionId });
+    emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'REMCLI_CURSOR_STREAM_TEXT' }] } });
     emit({ type: 'result', subtype: 'success', session_id: sessionId, result: 'REMCLI_CURSOR_SUCCESS' });
+    process.exit(0);
+}
+
+if (scenario === 'assistant-fallback') {
+    emit({ type: 'system', subtype: 'init', session_id: sessionId });
+    emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'REMCLI_CURSOR_FALLBACK' }] }, text_delta: 'REMCLI_CURSOR_FALLBACK' });
+    emit({ type: 'result', subtype: 'success', session_id: sessionId });
+    process.exit(0);
+}
+
+if (scenario === 'assistant-delta-fallback') {
+    emit({ type: 'system', subtype: 'init', session_id: sessionId });
+    emit({ type: 'assistant', text_delta: 'REMCLI_CURSOR_DELTA_' });
+    emit({ type: 'assistant', text_delta: 'FALLBACK' });
+    emit({ type: 'result', subtype: 'success', session_id: sessionId, result: '   ' });
+    process.exit(0);
+}
+
+if (scenario === 'non-assistant-text') {
+    emit({ type: 'system', subtype: 'init', session_id: sessionId });
+    emit({ type: 'thinking', text: 'REMCLI_CURSOR_THINKING' });
+    emit({ type: 'tool_call', text_delta: 'REMCLI_CURSOR_TOOL_OUTPUT' });
+    emit({ type: 'result', subtype: 'success', session_id: sessionId });
+    process.exit(0);
+}
+
+if (scenario === 'assistant-interleaving') {
+    emit({ type: 'system', subtype: 'init', session_id: sessionId });
+    emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'A' }] } });
+    emit({ type: 'assistant', text_delta: 'B' });
+    emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'AB' }] } });
+    emit({ type: 'assistant', text_delta: 'C' });
+    emit({ type: 'result', subtype: 'success', session_id: sessionId });
+    process.exit(0);
+}
+
+if (scenario === 'assistant-incremental-content') {
+    emit({ type: 'system', subtype: 'init', session_id: sessionId });
+    emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'A' }] } });
+    emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'AB' }] } });
+    emit({ type: 'result', subtype: 'success', session_id: sessionId });
+    process.exit(0);
+}
+
+if (scenario === 'assistant-whitespace-snapshot') {
+    emit({ type: 'system', subtype: 'init', session_id: sessionId });
+    emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'first' }] } });
+    emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: ' ' }] } });
+    emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'second' }] } });
+    emit({ type: 'result', subtype: 'success', session_id: sessionId });
+    process.exit(0);
+}
+
+if (scenario === 'assistant-session-gate') {
+    emit({ type: 'assistant', text_delta: 'before-init' });
+    emit({ type: 'system', subtype: 'init', session_id: sessionId });
+    emit({ type: 'assistant', session_id: 'foreign-native-session', text_delta: 'foreign' });
+    emit({ type: 'assistant', session_id: sessionId, text_delta: 'accepted' });
+    emit({ type: 'result', subtype: 'success', session_id: sessionId });
     process.exit(0);
 }
 
@@ -128,7 +188,7 @@ describe('runCursorTurn', () => {
         }
     });
 
-    runOnUnix('accepts a native response only after init, terminal success, and exit code zero', async () => {
+    runOnUnix('prefers a non-blank terminal result over assistant stream output', async () => {
         const argsPath = join(fixtureDirectory, 'args.json');
         const events: Array<{ type: string; subtype?: string }> = [];
 
@@ -154,6 +214,7 @@ describe('runCursorTurn', () => {
         });
         expect(events).toEqual([
             { type: 'system', subtype: 'init' },
+            { type: 'assistant', subtype: undefined },
             { type: 'result', subtype: 'success' },
         ]);
 
@@ -168,6 +229,82 @@ describe('runCursorTurn', () => {
         expect(received.args).toContain('plan');
         expect(received.args).not.toContain('--api-key');
         expect(received.args).not.toContain('fixture-api-key');
+    });
+
+    runOnUnix('uses a full assistant message as fallback without duplicating text deltas', async () => {
+        const outcome = await runCursorTurn({
+            executable: fixtureExecutable,
+            prompt: 'fixture prompt',
+            env: { REMCLI_CURSOR_FIXTURE_SCENARIO: 'assistant-fallback' },
+        }, () => undefined);
+
+        expect(outcome.response).toBe('REMCLI_CURSOR_FALLBACK');
+    });
+
+    runOnUnix('uses assistant text deltas when the terminal result is blank', async () => {
+        const outcome = await runCursorTurn({
+            executable: fixtureExecutable,
+            prompt: 'fixture prompt',
+            env: { REMCLI_CURSOR_FIXTURE_SCENARIO: 'assistant-delta-fallback' },
+        }, () => undefined);
+
+        expect(outcome.response).toBe('REMCLI_CURSOR_DELTA_FALLBACK');
+    });
+
+    runOnUnix('does not treat non-assistant stream text as an assistant response', async () => {
+        const outcome = await runCursorTurn({
+            executable: fixtureExecutable,
+            prompt: 'fixture prompt',
+            env: { REMCLI_CURSOR_FIXTURE_SCENARIO: 'non-assistant-text' },
+        }, () => undefined);
+
+        expect(outcome.response).toBe('');
+    });
+
+    runOnUnix('preserves interleaved assistant content and deltas in stream order', async () => {
+        const outcome = await runCursorTurn({
+            executable: fixtureExecutable,
+            prompt: 'fixture prompt',
+            env: { REMCLI_CURSOR_FIXTURE_SCENARIO: 'assistant-interleaving' },
+        }, () => undefined);
+
+        expect(outcome.response).toBe('ABABC');
+    });
+
+    runOnUnix('preserves incremental assistant content that has a cumulative-looking prefix', async () => {
+        const outcome = await runCursorTurn({
+            executable: fixtureExecutable,
+            prompt: 'fixture prompt',
+            env: { REMCLI_CURSOR_FIXTURE_SCENARIO: 'assistant-incremental-content' },
+        }, () => undefined);
+
+        expect(outcome.response).toBe('AAB');
+    });
+
+    runOnUnix('preserves whitespace-only assistant message chunks', async () => {
+        const outcome = await runCursorTurn({
+            executable: fixtureExecutable,
+            prompt: 'fixture prompt',
+            env: { REMCLI_CURSOR_FIXTURE_SCENARIO: 'assistant-whitespace-snapshot' },
+        }, () => undefined);
+
+        expect(outcome.response).toBe('first second');
+    });
+
+    runOnUnix('ignores assistant output before init and from a foreign native session', async () => {
+        const forwardedAssistantText: string[] = [];
+        const outcome = await runCursorTurn({
+            executable: fixtureExecutable,
+            prompt: 'fixture prompt',
+            env: { REMCLI_CURSOR_FIXTURE_SCENARIO: 'assistant-session-gate' },
+        }, (event) => {
+            if (event.type === 'assistant' && event.text_delta) {
+                forwardedAssistantText.push(event.text_delta);
+            }
+        });
+
+        expect(outcome.response).toBe('accepted');
+        expect(forwardedAssistantText).toEqual(['accepted']);
     });
 
     runOnUnix.each([

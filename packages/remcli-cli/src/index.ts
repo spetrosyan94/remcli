@@ -32,6 +32,7 @@ import {
     type CodexExecutionConfig,
 } from './codex/codexCapabilities'
 import type { CodexSandbox } from './codex/types'
+import { getCursorDaemonRunOptions } from './cursor/daemonExecution'
 
 /**
  * Print a subcommand error consistently and terminate the process.
@@ -202,8 +203,14 @@ async function ensureDaemonRunning(): Promise<void> {
       const {
         credentials
       } = await setupP2PForSession();
+      const daemonCursorExecution = getCursorDaemonRunOptions(startedBy);
 
-      await runCursor({credentials, startedBy, resumeSessionId});
+      await runCursor({
+        credentials,
+        startedBy,
+        resumeSessionId,
+        ...daemonCursorExecution,
+      });
     } catch (error) {
       exitWithSubcommandError(error)
     }

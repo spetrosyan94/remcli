@@ -186,10 +186,25 @@ async function executeSpawnAgentSession(rawArgs: string, deps: ConciergeDeps): P
         return { error: `Directory does not exist: "${directory}".` };
     }
 
+    const cursorExecution = agent === 'cursor'
+        ? await deps.getDefaultCursorExecution()
+        : null;
+    if (agent === 'cursor' && !cursorExecution) {
+        return { error: 'Cursor is unavailable because its account-visible model catalog could not be validated.' };
+    }
+
     // Directory is validated to exist, so directory-creation approval is irrelevant here.
     // Spawning a session is a privileged, LLM-initiated action — log it at info level for audit.
     logger.infoDeveloper(`[CONCIERGE] Spawning agent session: agent=${agent} directory=${directory}`);
-    const result = await deps.spawnSession({ agent, directory, approvedNewDirectoryCreation: false });
+    const result = await deps.spawnSession({
+        agent,
+        directory,
+        approvedNewDirectoryCreation: false,
+        ...(cursorExecution ? {
+            cursorExecution,
+            permissionMode: 'agent' as const,
+        } : {}),
+    });
     return result;
 }
 

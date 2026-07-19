@@ -65,6 +65,11 @@ interface InFlightDeliveryReplay {
     replayedSequences: number[];
 }
 
+interface PhonePromptOverrides {
+    model?: string;
+    permissionMode?: 'agent' | 'plan' | 'ask' | 'force' | 'auto-review';
+}
+
 interface LifecycleHarness {
     fixture: ControlledCursorAgent;
     callMachineRpc: (method: string, params: unknown) => Promise<unknown>;
@@ -73,13 +78,14 @@ interface LifecycleHarness {
     getPhoneAssistantTexts: (sessionId: string) => string[];
     probeReplacementRunnerDelivery: (sessionId: string) => Promise<number[]>;
     verifyInFlightDeliveryReplay: (sessionId: string, text: string) => Promise<InFlightDeliveryReplay>;
-    sendPhonePrompt: (sessionId: string, text: string) => void;
+    sendPhonePrompt: (sessionId: string, text: string, overrides?: PhonePromptOverrides) => void;
     close: () => Promise<void>;
 }
 
 let remcliHomeDir: string;
 let originalEnvironment: Record<string, string | undefined>;
 let harness: LifecycleHarness | null = null;
+let fixtureCursorExecution: { model: string; catalogVersion: string } | null = null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -323,6 +329,9 @@ function createSpawnParams(
     resumeSessionId?: string,
     directory: string = process.cwd(),
 ): Record<string, unknown> {
+    if (!fixtureCursorExecution) {
+        throw new Error('Controlled Cursor capability snapshot was not initialized.');
+    }
     return {
         type: 'spawn-in-directory',
         machineId: TEST_MACHINE_ID,
@@ -330,6 +339,7 @@ function createSpawnParams(
         approvedNewDirectoryCreation: false,
         agent: 'cursor',
         permissionMode: 'agent',
+        cursorExecution: fixtureCursorExecution,
         ...(resumeSessionId ? {
             resumeSessionId,
             resumeSessionName: 'Controlled Cursor native session',
@@ -369,6 +379,10 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
         const { configuration } = await import('@/configuration');
         const { writeDaemonState, updateSettings } = await import('@/persistence');
         const { CodexCapabilitiesService } = await import('@/codex/codexCapabilities');
+        const {
+            CursorCapabilitiesService,
+            getDefaultCursorExecution,
+        } = await import('@/cursor/cursorCapabilities');
         const { createSessionManager } = await import('@/daemon/sessionSpawner');
         const { startDaemonControlServer } = await import('@/daemon/controlServer');
         const { bootstrapMachineSocket } = await import('@/daemon/machineSocket');
@@ -470,6 +484,23 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
         });
 
         const codexCapabilities = new CodexCapabilitiesService({ getAppServerState: () => null });
+        const cursorCapabilities = new CursorCapabilitiesService({
+            readModelList: async () => ({
+                executable: 'agent',
+                output: [
+                    'Available models',
+                    '',
+                    `${FIXTURE_MODEL} - Controlled Cursor Model (default)`,
+                    '',
+                    'Tip: use --model <id> to switch.',
+                ].join('\n'),
+            }),
+        });
+        const cursorExecution = getDefaultCursorExecution(await cursorCapabilities.getCapabilities());
+        if (!cursorExecution) {
+            throw new Error('Controlled Cursor model discovery did not provide an explicit provider default.');
+        }
+        fixtureCursorExecution = cursorExecution;
         const machineSocket = bootstrapMachineSocket({
             p2pPort: p2pServer.port,
             machineId: TEST_MACHINE_ID,
@@ -477,6 +508,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
             contentSecret,
             pairingRekeyCoordinator,
             codexCapabilities,
+            cursorCapabilities,
             spawnSession: sessionManager.spawnSession,
             stopSession: sessionManager.stopSession,
             requestShutdown: () => undefined,
@@ -557,7 +589,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
             return { runnerPaneId, siblingPaneId };
         };
 
-        const sendPhonePrompt = (sessionId: string, text: string): void => {
+        const sendPhonePrompt = (sessionId: string, text: string, overrides: PhonePromptOverrides = {}): void => {
             appSocket.emit('message', {
                 sid: sessionId,
                 message: encryption.encodeBase64(encryption.encrypt(contentSecret, 'legacy', {
@@ -565,8 +597,8 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
                     content: { type: 'text', text },
                     meta: {
                         sentFrom: 'phone',
-                        permissionMode: 'agent',
-                        model: FIXTURE_MODEL,
+                        permissionMode: overrides.permissionMode ?? 'agent',
+                        model: overrides.model ?? FIXTURE_MODEL,
                     },
                 })),
             });
@@ -732,6 +764,7 @@ afterEach(async () => {
         cleanupError = error;
     } finally {
         harness = null;
+        fixtureCursorExecution = null;
 
         for (const [key, value] of Object.entries(originalEnvironment)) {
             if (value === undefined) {
@@ -747,6 +780,40 @@ afterEach(async () => {
 });
 
 describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_MS }, () => {
+    it('keeps the daemon-validated Cursor model and control when a phone message forges overrides', async () => {
+        harness = await createLifecycleHarness();
+
+        const spawned = await harness.callMachineRpc('spawn-remcli-session', createSpawnParams());
+        expect(spawned).toEqual({ type: 'success', sessionId: expect.any(String) });
+        if (!isSpawnResult(spawned) || !spawned.sessionId) {
+            throw new Error('Controlled Cursor spawn did not return a Remcli session ID.');
+        }
+
+        harness.sendPhonePrompt(spawned.sessionId, FIRST_CONTEXT_PROMPT, {
+            model: 'forged-not-account-visible-model',
+            permissionMode: 'plan',
+        });
+        await waitForCondition(
+            () => harness!.fixture.getInvocations().length === 1,
+            'the forged Cursor phone prompt to reach the daemon-owned runner',
+        );
+
+        expect(harness.fixture.getInvocations()).toEqual([{
+            args: ['--print', '--output-format', 'stream-json', '--trust', '--model', FIXTURE_MODEL, FIRST_CONTEXT_PROMPT],
+            prompt: FIRST_CONTEXT_PROMPT,
+            sessionId: TEST_NATIVE_SESSION_ID,
+        }]);
+        expect(harness.fixture.getProtocolViolations()).toEqual([]);
+
+        const stopped = await harness.callMachineRpc('stop-session', { sessionId: spawned.sessionId });
+        expect(stopped).toEqual({ message: 'Session stopped', sessionId: spawned.sessionId });
+        await waitForCondition(
+            () => harness!.getChildren().length === 0,
+            'the forged-override daemon-owned Cursor runner to stop',
+            LIFECYCLE_TIMEOUT_MS,
+        );
+    });
+
     it('creates, guards, stops and resumes one native Cursor session through the daemon-owned runner', async () => {
         harness = await createLifecycleHarness();
 

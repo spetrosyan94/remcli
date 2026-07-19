@@ -16,6 +16,7 @@ import { io as ioClient, type Socket } from 'socket.io-client';
 
 const shouldRunRealCursor = process.env.REMCLI_REAL_CURSOR === '1';
 const realCursorDescribe = shouldRunRealCursor ? describe : describe.skip;
+const REAL_CURSOR_TEST_MODEL = process.env.REMCLI_REAL_CURSOR_MODEL ?? 'gpt-5.6-luna-xhigh';
 
 const SOCKET_TIMEOUT_MS = 8_000;
 const RPC_REGISTRATION_TIMEOUT_MS = 8_000;
@@ -38,6 +39,12 @@ interface RpcCallAck {
 interface SpawnResult {
     type: string;
     sessionId?: string;
+    errorMessage?: string;
+}
+
+interface CursorExecution {
+    model: string;
+    catalogVersion: string;
 }
 
 interface CleanupTask {
@@ -47,6 +54,7 @@ interface CleanupTask {
 
 interface LifecycleHarness {
     callMachineRpc: (method: string, params: unknown) => Promise<unknown>;
+    cursorExecution: CursorExecution;
     getAssistantMessages: (sessionId: string) => string[];
     getChildrenCount: () => number;
     getExecutionOutcome: (sessionId: string) => 'error' | 'success' | null;
@@ -74,7 +82,15 @@ function isRpcCallAck(value: unknown): value is RpcCallAck {
 function isSpawnResult(value: unknown): value is SpawnResult {
     return isRecord(value)
         && typeof value.type === 'string'
-        && (value.sessionId === undefined || typeof value.sessionId === 'string');
+        && (value.sessionId === undefined || typeof value.sessionId === 'string')
+        && (value.errorMessage === undefined || typeof value.errorMessage === 'string');
+}
+
+function getSpawnFailureMessage(result: unknown): string {
+    if (isSpawnResult(result) && result.type === 'error' && result.errorMessage) {
+        return result.errorMessage;
+    }
+    return 'the daemon returned an invalid spawn result';
 }
 
 function isStoppedSession(value: unknown, sessionId: string): boolean {
@@ -249,7 +265,7 @@ function getAssistantText(value: unknown): string | null {
         : null;
 }
 
-function createSpawnParams(resumeSessionId?: string): Record<string, unknown> {
+function createSpawnParams(cursorExecution: CursorExecution, resumeSessionId?: string): Record<string, unknown> {
     return {
         type: 'spawn-in-directory',
         machineId: TEST_MACHINE_ID,
@@ -257,6 +273,7 @@ function createSpawnParams(resumeSessionId?: string): Record<string, unknown> {
         approvedNewDirectoryCreation: false,
         agent: 'cursor',
         permissionMode: 'ask',
+        cursorExecution,
         ...(resumeSessionId ? { resumeSessionId, resumeSessionName: 'Real Cursor native session' } : {}),
     };
 }
@@ -283,6 +300,9 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
         const { configuration } = await import('@/configuration');
         const { writeDaemonState, updateSettings } = await import('@/persistence');
         const { CodexCapabilitiesService } = await import('@/codex/codexCapabilities');
+        const {
+            CursorCapabilitiesService,
+        } = await import('@/cursor/cursorCapabilities');
         const { createSessionManager } = await import('@/daemon/sessionSpawner');
         const { startDaemonControlServer } = await import('@/daemon/controlServer');
         const { bootstrapMachineSocket } = await import('@/daemon/machineSocket');
@@ -387,6 +407,16 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
         });
 
         const codexCapabilities = new CodexCapabilitiesService({ getAppServerState: () => null });
+        const cursorCapabilities = new CursorCapabilitiesService();
+        const cursorSnapshot = await cursorCapabilities.getCapabilities(true);
+        if (cursorSnapshot.status !== 'ready' || !cursorSnapshot.catalogVersion) {
+            throw new Error('Real Cursor model discovery did not provide a ready account-visible catalog.');
+        }
+        const selectedModel = cursorSnapshot.models.find((model) => model.id === REAL_CURSOR_TEST_MODEL);
+        if (!selectedModel) {
+            throw new Error(`Real Cursor model ${REAL_CURSOR_TEST_MODEL} is not account-visible.`);
+        }
+        const cursorExecution = { model: selectedModel.id, catalogVersion: cursorSnapshot.catalogVersion };
         const machineSocket = bootstrapMachineSocket({
             p2pPort: p2pServer.port,
             machineId: TEST_MACHINE_ID,
@@ -394,6 +424,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
             contentSecret,
             pairingRekeyCoordinator,
             codexCapabilities,
+            cursorCapabilities,
             spawnSession: sessionManager.spawnSession,
             stopSession: sessionManager.stopSession,
             requestShutdown: () => undefined,
@@ -499,6 +530,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
 
         return {
             callMachineRpc,
+            cursorExecution,
             getAssistantMessages: (sessionId) => assistantMessages.get(sessionId) ?? [],
             getChildrenCount: () => sessionManager.getChildren().length,
             getExecutionOutcome: (sessionId) => {
@@ -574,7 +606,7 @@ realCursorDescribe('Cursor real lifecycle gate (skipped unless REMCLI_REAL_CURSO
         const followUpPrompt = 'Какой маркер я попросил запомнить в предыдущем сообщении? Не используй инструменты. Ответь только значением маркера, без пояснений и форматирования.';
         harness = await createLifecycleHarness();
 
-        const spawned = await harness.callMachineRpc('spawn-remcli-session', createSpawnParams());
+        const spawned = await harness.callMachineRpc('spawn-remcli-session', createSpawnParams(harness.cursorExecution));
         if (!isSpawnResult(spawned) || !spawned.sessionId) {
             throw new Error('Real Cursor initial spawn did not return a Remcli session ID.');
         }
@@ -609,10 +641,10 @@ realCursorDescribe('Cursor real lifecycle gate (skipped unless REMCLI_REAL_CURSO
 
         const resumed = await harness.callMachineRpc(
             'spawn-remcli-session',
-            createSpawnParams(nativeCursorSessionId),
+            createSpawnParams(harness.cursorExecution, nativeCursorSessionId),
         );
         if (!isSpawnResult(resumed) || !resumed.sessionId) {
-            throw new Error('Real Cursor resume spawn did not return a Remcli session ID.');
+            throw new Error(`Real Cursor resume spawn did not return a Remcli session ID: ${getSpawnFailureMessage(resumed)}`);
         }
         const resumedRemcliSessionId = resumed.sessionId;
         const resumedMessageCountBeforeFollowUp = harness.getAssistantMessages(resumedRemcliSessionId).length;

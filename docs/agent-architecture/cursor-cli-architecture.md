@@ -3,9 +3,9 @@
 ## Источники
 
 - Official docs: https://cursor.com/docs/cli/headless и https://cursor.com/docs/cli/reference/parameters
-- Local CLI: `agent --help`, `agent 2026.07.16-899851b`
+- Local CLI: `agent --help`, `agent models`, `agent 2026.07.16-899851b`
 - Context7: anonymous quota исчерпана; не заменять official docs устаревшими заметками.
-- Проверено: 2026-07-18.
+- Проверено: 2026-07-19.
 
 ## Назначение
 
@@ -46,6 +46,12 @@ agent --print --output-format stream-json --trust \
   headless runner. Рабочую директорию пользователь выбирает до spawn.
 - Успех принимается только после `system/init` с native ID, terminal
   `result.success` без `is_error` и exit code `0`.
+- В телефонный чат сначала передаётся непустой terminal `result`. Если текущий
+  Cursor CLI подтвердил успех без этого поля, Remcli использует только text
+  chunks из `assistant` events после `system/init` того же native session;
+  reasoning/tool events, pre-init и foreign-session payloads игнорируются.
+  `message.content` обрабатывается как incremental stream, а одинаковый
+  `content`/`text_delta` внутри одного события не дублируется.
 
 ## Идентичность и resume
 
@@ -102,6 +108,33 @@ agent --print --output-format stream-json --trust \
 и не смешиваются друг с другом. Нативный event может содержать vendor value
 `permissionMode: "default"`; Remcli не экспортирует его как режим разрешений.
 
+## Account-visible model catalog
+
+1. Daemon запускает только `agent models` (fallback binary: `cursor-agent`) с
+   ограниченными timeout и output buffer. Он строго принимает header
+   `Available models`, нормальные model rows, ровно один provider default
+   (`(default)` либо текущий CLI marker `(current, default)`) и
+   recognized footer; raw stdout/stderr, account/quota/auth data не выходят в
+   protocol и логи.
+2. `get-cursor-capabilities` возвращает нормализованный snapshot: exact model
+   id, display name, provider default, source freshness и opaque
+   `catalogVersion`. Web не содержит fallback catalog и блокирует Start/Resume,
+   пока нет этой пары.
+3. New Session передаёт `cursorExecution = { model, catalogVersion }` атомарно
+   со стартом. Daemon принудительно refresh-валидирует пару перед spawn; stale
+   или чужая model отклоняется typed ошибкой, после которой Web очищает выбор и
+   повторно запрашивает catalog.
+4. Cursor CLI не публикует отдельный machine-readable reasoning selector.
+   Remcli показывает явный informational status «reasoning не настраивается
+   отдельно», не выводя effort из suffix model id.
+5. `agent`, `plan`, `ask`, `force` и `auto-review` пока отображаются как
+   native launch controls. Отдельная future work должна развести execution mode,
+   sandbox, MCP approval, workspace trust и реальные permission allow/deny
+   semantics вместо одного UI поля.
+6. Только daemon-owned runner может получить injected `REMCLI_CURSOR_*` model
+   selection. Обычный terminal `remcli cursor` игнорирует эти переменные.
+   Concierge получает fresh provider default или не запускает Cursor вовсе.
+
 ## Ошибки и остановка
 
 - Missing executable, auth, invalid NDJSON, native failure, resume identity
@@ -124,15 +157,18 @@ agent --print --output-format stream-json --trust \
 - `I`: encrypted machine-RPC проходит real SessionManager/tmux/compiled runner
   до controlled native `agent`; проверяются exact argv, ACK no-replay, active
   native stop с SIGTERM, same-native resume и cleanup.
-- `UI-F`: Cursor-labelled Browser fixture проверяет bind/resume error и retry
-  в том же drawer на `390x844` и `1280x800`.
-- `L`: opt-in `REMCLI_REAL_CURSOR=1` create -> prompt -> stop -> resume context
-  gate остаётся pending; отдельно нужны disconnect-before-ACK, concurrent/pre-init
-  duplicate, workspace mismatch и exact owned tmux pane cleanup cases.
+- `UI-F`: Cursor-labelled Browser fixture проверяет model catalog, native
+  controls, unsupported reasoning, unavailable/retry и bind/resume error в том
+  же drawer на `390x844` и `1280x800`.
+- `L`: opt-in `REMCLI_REAL_CURSOR=1` прошёл create -> prompt -> stop -> same
+  native `--resume` -> context marker -> cleanup. Deterministic I tests отдельно
+  покрывают disconnect-before-ACK, concurrent/pre-init duplicate, workspace
+  mismatch и exact owned tmux pane cleanup.
 
 ## Явная граница
 
 Cursor CLI integration пока не объявляет full live mirror нативного Cursor TUI:
-Remcli передаёт подтверждённый terminal result в phone chat. Добавление live
-streaming/tool/approval mirror требует отдельного provider-specific дизайна,
-контракта и real gate.
+Remcli передаёт в phone chat подтверждённый terminal result или строго
+привязанный assistant fallback, но не создаёт отдельную live-ленту
+tool/approval events. Добавление такого mirror требует отдельного
+provider-specific дизайна, контракта и real gate.

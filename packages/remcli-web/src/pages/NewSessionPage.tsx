@@ -2,8 +2,8 @@
 // Машина/сессии — из стора протокола; спавн — RPC spawn-remcli-session
 // (payload как в remcli-cli/src/daemon/machineSocket.ts), resume-sheet —
 // RPC list-agent-sessions, directory-picker — RPC list-directory.
-// Модели/режимы — daemon-normalized provider capabilities; только non-Codex
-// providers пока используют локальные временные options.
+// Модели/режимы — daemon-normalized provider capabilities; static options
+// остаются только у ещё не capability-driven providers.
 import * as React from "react";
 import { ArrowUp, ChevronDown, Folder, FolderOpen, Loader2, RotateCcw, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router";
@@ -23,6 +23,7 @@ import {
     machineListDirectory,
     machineListAgentSessions,
     machineGetCodexCapabilities,
+    machineGetCursorCapabilities,
     machineSpawnNewSession,
     refreshSessions,
     sendSessionMessage,
@@ -33,6 +34,9 @@ import {
     type CodexCapabilitiesSnapshot,
     type CodexExecutionConfig,
     type CodexModelCapability,
+    type CursorCapabilitiesSnapshot,
+    type CursorExecutionConfig,
+    type CursorModelCapability,
     type DirectoryListing,
     type Machine,
     type PermissionMode,
@@ -77,7 +81,7 @@ export const AGENT_OPTIONS: AgentOption[] = [
     { id: "claude", name: "Claude", kind: "code", models: ["default", "sonnet", "opus", "haiku"] },
     { id: "codex", name: "Codex", kind: "cli", models: [] },
     { id: "gemini", name: "Gemini", kind: "cli", models: ["gemini-2.5-pro", "gemini-3-pro", "gemini-3-flash"] },
-    { id: "cursor", name: "Cursor", kind: "agent", models: ["default", "opus-4.6", "composer-1.5", "gemini-3-pro"] },
+    { id: "cursor", name: "Cursor", kind: "agent", models: [] },
 ];
 
 export function getModelOverride(model: string): string | null {
@@ -126,6 +130,29 @@ function findCodexModel(
     return capabilities.models.find((item) => item.id === modelId) ?? null;
 }
 
+export function getDefaultCursorExecution(capabilities: CursorCapabilitiesSnapshot): CursorExecutionConfig | null {
+    if (capabilities.status !== "ready" || !capabilities.catalogVersion) return null;
+    const model = capabilities.models.find((item) => item.isDefault);
+    return model ? createCursorExecutionForModel(capabilities, model.id) : null;
+}
+
+export function createCursorExecutionForModel(
+    capabilities: CursorCapabilitiesSnapshot,
+    modelId: string,
+): CursorExecutionConfig | null {
+    if (capabilities.status !== "ready" || !capabilities.catalogVersion) return null;
+    const model = capabilities.models.find((item) => item.id === modelId);
+    return model ? { model: model.id, catalogVersion: capabilities.catalogVersion } : null;
+}
+
+function findCursorModel(
+    capabilities: CursorCapabilitiesSnapshot | null,
+    modelId: string | null,
+): CursorModelCapability | null {
+    if (capabilities?.status !== "ready" || !modelId) return null;
+    return capabilities.models.find((item) => item.id === modelId) ?? null;
+}
+
 export type ReasoningControlState = "unsupported" | "loading" | "unavailable" | "no-options" | "choose-required" | "ready";
 
 export function getReasoningControlState(input: {
@@ -150,6 +177,7 @@ export function buildNewSessionSpawnOptions(input: {
     permissionMode: PermissionMode;
     codexExecution: CodexExecutionConfig | null;
     codexReasoningEfforts: readonly CodexModelCapability["supportedReasoningEfforts"][number][];
+    cursorExecution?: CursorExecutionConfig | null;
     resume?: AgentSessionInfo;
 }): SpawnSessionOptions {
     const spawnAgent = input.resume?.agent ?? input.agent;
@@ -159,6 +187,9 @@ export function buildNewSessionSpawnOptions(input: {
     if (spawnAgent === "codex" && input.codexReasoningEfforts.length > 0 && !input.codexExecution?.reasoningEffort) {
         throw new Error("Codex requires a selected reasoning effort for this model.");
     }
+    if (spawnAgent === "cursor" && !input.cursorExecution) {
+        throw new Error("Cursor requires a capability-validated execution selection.");
+    }
     return {
         machineId: input.machineId,
         directory: input.directory,
@@ -167,16 +198,25 @@ export function buildNewSessionSpawnOptions(input: {
         resumeSessionName: input.resume?.sessionName ?? undefined,
         permissionMode: input.permissionMode,
         ...(spawnAgent === "codex" && input.codexExecution ? { codexExecution: input.codexExecution } : {}),
+        ...(spawnAgent === "cursor" && input.cursorExecution ? { cursorExecution: input.cursorExecution } : {}),
     };
 }
 
 const CODEX_CAPABILITY_REJECTION_PATTERN = /^Codex capability selection rejected: (?:expired|unsupported_selection|policy_denied)\.$/;
+const CURSOR_CAPABILITY_REJECTION_PATTERN = /^Cursor capability selection rejected: (?:expired|unsupported_selection|unavailable)\.$/;
 
 /** Match only the daemon's typed Codex capability rejection envelope. */
 export function isCodexCapabilityRejection(result: SpawnSessionResult, agent: AgentId): boolean {
     return agent === "codex"
         && result.type === "error"
         && CODEX_CAPABILITY_REJECTION_PATTERN.test(result.errorMessage.trim());
+}
+
+/** Match only the daemon's typed Cursor capability rejection envelope. */
+export function isCursorCapabilityRejection(result: SpawnSessionResult, agent: AgentId): boolean {
+    return agent === "cursor"
+        && result.type === "error"
+        && CURSOR_CAPABILITY_REJECTION_PATTERN.test(result.errorMessage.trim());
 }
 
 /* ---------- Хелперы ---------- */
@@ -367,6 +407,11 @@ export function NewSessionPage() {
     const [codexExecution, setCodexExecution] = React.useState<CodexExecutionConfig | null>(null);
     const [isCodexCapabilitiesLoading, setIsCodexCapabilitiesLoading] = React.useState(false);
     const [codexCapabilitiesReloadKey, setCodexCapabilitiesReloadKey] = React.useState(0);
+    const [cursorCapabilities, setCursorCapabilities] = React.useState<CursorCapabilitiesSnapshot | null>(null);
+    const [cursorModelId, setCursorModelId] = React.useState<string | null>(null);
+    const [cursorExecution, setCursorExecution] = React.useState<CursorExecutionConfig | null>(null);
+    const [isCursorCapabilitiesLoading, setIsCursorCapabilitiesLoading] = React.useState(false);
+    const [cursorCapabilitiesReloadKey, setCursorCapabilitiesReloadKey] = React.useState(0);
     const [dir, setDir] = React.useState<string | null>(null);
     const [dirDisplayPath, setDirDisplayPath] = React.useState<string | null>(null);
     const [directoryRequestPath, setDirectoryRequestPath] = React.useState<string | undefined>(undefined);
@@ -401,6 +446,7 @@ export function NewSessionPage() {
             : getAgentPermissionModes(agent);
     const activeModeLabel = getAgentPermissionLabel(agent, mode);
     const selectedCodexModel = findCodexModel(codexCapabilities, codexModelId);
+    const selectedCursorModel = findCursorModel(cursorCapabilities, cursorModelId);
     const hasCodexReasoningSelection = selectedCodexModel
         ? selectedCodexModel.supportedReasoningEfforts.length === 0
             || (codexExecution?.model === selectedCodexModel.id
@@ -421,6 +467,35 @@ export function NewSessionPage() {
     const isCodexCapabilityUnavailable = agent === "codex"
         && !isCodexCapabilitiesLoading
         && (!codexCapabilities || codexCapabilities.status === "unavailable" || selectedCodexModel === null);
+    const hasCursorPermissionSelection = agent === "cursor"
+        && agentPermissionModes.includes(mode);
+    const isCursorCatalogReady = agent === "cursor"
+        && cursorCapabilities?.status === "ready"
+        && selectedCursorModel !== null;
+    const isCursorCapabilityReady = isCursorCatalogReady
+        && cursorExecution !== null
+        && cursorExecution.catalogVersion === cursorCapabilities.catalogVersion
+        && cursorExecution.model === selectedCursorModel?.id
+        && hasCursorPermissionSelection;
+    const isCursorCapabilityUnavailable = agent === "cursor"
+        && !isCursorCapabilitiesLoading
+        && (!cursorCapabilities || cursorCapabilities.status === "unavailable" || selectedCursorModel === null);
+    const isCapabilityDrivenAgent = agent === "codex" || agent === "cursor";
+    const isActiveCapabilitiesLoading = agent === "codex"
+        ? isCodexCapabilitiesLoading
+        : agent === "cursor"
+            ? isCursorCapabilitiesLoading
+            : false;
+    const isActiveCapabilityUnavailable = agent === "codex"
+        ? isCodexCapabilityUnavailable
+        : agent === "cursor"
+            ? isCursorCapabilityUnavailable
+            : false;
+    const isActiveCapabilityCatalogReady = agent === "codex"
+        ? isCodexCatalogReady
+        : agent === "cursor"
+            ? isCursorCatalogReady
+            : true;
     const reasoningControlState = getReasoningControlState({
         agent,
         isLoading: isCodexCapabilitiesLoading,
@@ -517,6 +592,40 @@ export function NewSessionPage() {
         return () => { isStale = true; };
     }, [activeMachineId, agent, codexCapabilitiesReloadKey]);
 
+    // Cursor exposes the account-visible model list through its native CLI.
+    // The page keeps only the daemon-normalized snapshot and sends that exact
+    // model/catalog pair atomically with spawn.
+    React.useEffect(() => {
+        if (agent !== "cursor" || !activeMachineId) {
+            setIsCursorCapabilitiesLoading(false);
+            return;
+        }
+        let isStale = false;
+        setIsCursorCapabilitiesLoading(true);
+        setCursorCapabilities(null);
+        setCursorModelId(null);
+        setCursorExecution(null);
+        void machineGetCursorCapabilities(activeMachineId, cursorCapabilitiesReloadKey > 0)
+            .then((capabilities) => {
+                if (isStale) return;
+                setCursorCapabilities(capabilities);
+                if (capabilities.status !== "ready") return;
+                const defaultModel = capabilities.models.find((item) => item.isDefault) ?? null;
+                setCursorModelId(defaultModel?.id ?? null);
+                setCursorExecution(defaultModel ? createCursorExecutionForModel(capabilities, defaultModel.id) : null);
+                setMode((current) => getAgentPermissionModes("cursor").includes(current)
+                    ? current
+                    : getDefaultPermissionMode("cursor"));
+            })
+            .catch(() => {
+                if (!isStale) setCursorCapabilities(null);
+            })
+            .finally(() => {
+                if (!isStale) setIsCursorCapabilitiesLoading(false);
+            });
+        return () => { isStale = true; };
+    }, [activeMachineId, agent, cursorCapabilitiesReloadKey]);
+
     // resume-sheet: RPC list-agent-sessions с фильтром по агенту
     React.useEffect(() => {
         if (sheetKind !== "resume" || !activeMachineId) return;
@@ -561,6 +670,10 @@ export function NewSessionPage() {
         if (id !== "codex") {
             setCodexExecution(null);
         }
+        if (id !== "cursor") setCursorModelId(null);
+        if (id !== "cursor") {
+            setCursorExecution(null);
+        }
         setMode(getDefaultPermissionMode(id));
     };
 
@@ -573,6 +686,16 @@ export function NewSessionPage() {
         const generation = sheetGenerationRef.current + 1;
         sheetGenerationRef.current = generation;
         setSheet({ kind, generation });
+    };
+
+    const retryActiveCapabilities = () => {
+        if (agent === "codex") {
+            setCodexCapabilitiesReloadKey((value) => value + 1);
+            return;
+        }
+        if (agent === "cursor") {
+            setCursorCapabilitiesReloadKey((value) => value + 1);
+        }
     };
 
     const openDirectoryPicker = () => {
@@ -605,7 +728,9 @@ export function NewSessionPage() {
 
         if (zenState?.zenTaskId) linkZenTaskSession(zenState.zenTaskId, sessionId);
         const permissionMode = normalizeAgentPermissionMode(agent, mode);
-        const modelState = agent === "codex" ? {} : modelOverrideState(model, hasExplicitModelSelection);
+        const modelState = agent === "codex" || agent === "cursor"
+            ? {}
+            : modelOverrideState(model, hasExplicitModelSelection);
         if (zenState?.zenTaskTitle && !resume) {
             await sendSessionMessage(sessionId, zenState.zenTaskTitle, { permissionMode, ...modelState })
                 .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)));
@@ -629,6 +754,13 @@ export function NewSessionPage() {
                 setCodexExecution(null);
                 setIsCodexCapabilitiesLoading(true);
                 setCodexCapabilitiesReloadKey((value) => value + 1);
+            }
+            if (isCursorCapabilityRejection(result, options.agent ?? "claude")) {
+                setCursorCapabilities(null);
+                setCursorModelId(null);
+                setCursorExecution(null);
+                setIsCursorCapabilitiesLoading(true);
+                setCursorCapabilitiesReloadKey((value) => value + 1);
             }
             if (resume) {
                 setResumeError(result.errorMessage);
@@ -654,6 +786,10 @@ export function NewSessionPage() {
             toast.error(t("new.capabilitiesUnavailable"));
             return;
         }
+        if (spawnAgent === "cursor" && !isCursorCapabilityReady) {
+            toast.error(t("new.capabilitiesUnavailable"));
+            return;
+        }
         if (resume) {
             setResumeError(null);
             setResumeRetryItem(null);
@@ -669,6 +805,7 @@ export function NewSessionPage() {
                 codexReasoningEfforts: spawnAgent === "codex"
                     ? selectedCodexModel?.supportedReasoningEfforts ?? []
                     : [],
+                cursorExecution,
                 resume,
             });
             const result = await machineSpawnNewSession(options);
@@ -751,27 +888,31 @@ export function NewSessionPage() {
                     >
                         <section data-capability-control="model" className="flex min-w-0 flex-col gap-2">
                             <span className="flex min-h-[22px] items-end font-mono text-[10px] text-muted-foreground">{t("new.model")}</span>
-                            {agent === "codex" && isCodexCapabilitiesLoading ? (
+                            {isActiveCapabilitiesLoading ? (
                                 <div aria-busy="true" className="flex min-h-11 min-w-0 items-center gap-1.5 rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] text-muted-foreground">
                                     <Loader2 className="size-3 shrink-0 animate-spin" />
                                     <span className="min-w-0 truncate">{t("new.capabilitiesLoading")}</span>
                                 </div>
-                            ) : agent === "codex" && isCodexCapabilityUnavailable ? (
-                                <button type="button" onClick={() => setCodexCapabilitiesReloadKey((value) => value + 1)}
+                            ) : isActiveCapabilityUnavailable ? (
+                                <button type="button" onClick={retryActiveCapabilities}
                                     className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-destructive/40 bg-destructive/[0.06] px-2.5 font-mono text-[11px] text-destructive transition-[border-color,background-color,transform] active:scale-[0.96]">
                                     <span className="min-w-0 truncate">{t("new.capabilitiesRetry")}</span>
                                 </button>
                             ) : (
-                                <button type="button" onClick={() => openSheet("model")} disabled={agent === "codex" && !isCodexCatalogReady}
+                                <button type="button" onClick={() => openSheet("model")} disabled={isCapabilityDrivenAgent && !isActiveCapabilityCatalogReady}
                                     className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] active:scale-[0.96] disabled:opacity-50">
-                                    <span className="min-w-0 truncate">{agent === "codex" ? selectedCodexModel?.displayName : model}</span>
+                                    <span className="min-w-0 truncate">{agent === "codex"
+                                        ? selectedCodexModel?.displayName
+                                        : agent === "cursor"
+                                            ? selectedCursorModel?.displayName
+                                            : model}</span>
                                     <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
                                 </button>
                             )}
                         </section>
                         <section data-capability-control="permission" className="flex min-w-0 flex-col gap-2">
                             <span className="flex min-h-[22px] items-end font-mono text-[10px] text-muted-foreground">{t("new.permissions")}</span>
-                            <button type="button" onClick={() => openSheet("permission")} disabled={agent === "codex" && codexCapabilities?.status !== "ready"}
+                            <button type="button" onClick={() => openSheet("permission")} disabled={(agent === "codex" && codexCapabilities?.status !== "ready") || (agent === "cursor" && cursorCapabilities?.status !== "ready")}
                                 className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] active:scale-[0.96] disabled:opacity-50">
                                 <span className="min-w-0 truncate">{activeModeLabel}</span>
                                 <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
@@ -792,7 +933,7 @@ export function NewSessionPage() {
                                     <span className="min-w-0 truncate">{t("new.capabilitiesLoading")}</span>
                                 </div>
                             ) : reasoningControlState === "unavailable" ? (
-                                <button type="button" onClick={() => setCodexCapabilitiesReloadKey((value) => value + 1)}
+                                <button type="button" onClick={retryActiveCapabilities}
                                     className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-destructive/40 bg-destructive/[0.06] px-2.5 font-mono text-[11px] text-destructive transition-[border-color,background-color,transform] active:scale-[0.96]">
                                     <span className="min-w-0 truncate">{t("new.capabilitiesRetry")}</span>
                                 </button>
@@ -858,14 +999,14 @@ export function NewSessionPage() {
                 )}
 
                 {/* resume: bottom-sheet со списком прошлых сессий агента (RPC list-agent-sessions) */}
-                <button onClick={() => openSheet("resume")} disabled={!machine || (agent === "codex" && !isCodexCapabilityReady)}
+                <button onClick={() => openSheet("resume")} disabled={!machine || (agent === "codex" && !isCodexCapabilityReady) || (agent === "cursor" && !isCursorCapabilityReady)}
                     className="flex h-11 items-center justify-center gap-2 rounded-[10px] border border-dashed border-border font-mono text-[11.5px] text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96]">
                     <RotateCcw className="size-3" /> {t("new.resume", { agent })}
                 </button>
             </main>
 
             <footer className="px-5 pb-[max(14px,env(safe-area-inset-bottom))] pt-3">
-                <button onClick={() => void spawn()} disabled={!machine || activeDir === "" || isSpawning || (agent === "codex" && !isCodexCapabilityReady)}
+                <button onClick={() => void spawn()} disabled={!machine || activeDir === "" || isSpawning || (agent === "codex" && !isCodexCapabilityReady) || (agent === "cursor" && !isCursorCapabilityReady)}
                     className="h-[52px] w-full overflow-hidden rounded-xl bg-accent px-3 text-base font-semibold text-accent-foreground disabled:opacity-50">
                     {isSpawning
                         ? t("new.spawning")
@@ -919,6 +1060,15 @@ export function NewSessionPage() {
                                             setSheet(null);
                                         }} />
                                 ))
+                                : agent === "cursor" && cursorCapabilities?.status === "ready" && cursorCapabilities.catalogVersion
+                                    ? cursorCapabilities.models.map((item) => (
+                                        <SheetRow key={item.id} isActive={item.id === cursorModelId} label={item.displayName}
+                                            onClick={() => {
+                                                setCursorModelId(item.id);
+                                                setCursorExecution(createCursorExecutionForModel(cursorCapabilities, item.id));
+                                                setSheet(null);
+                                            }} />
+                                    ))
                                 : agentModels.map((item) => (
                                     <SheetRow key={item} isActive={item === model} label={item}
                                         onClick={() => {

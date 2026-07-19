@@ -37,6 +37,7 @@ import {
 import type { NormalizedMessage } from '@/lib/protocol/messages';
 import type {
     CodexCapabilitiesSnapshot,
+    CursorCapabilitiesSnapshot,
     DirectoryListing,
     SpawnSessionOptions,
     SpawnSessionResult,
@@ -595,6 +596,42 @@ export async function fixtureGetCodexCapabilities(): Promise<CodexCapabilitiesSn
     };
 }
 
+/** Deterministic Cursor catalog for visual/browser fixtures only. */
+export async function fixtureGetCursorCapabilities(): Promise<CursorCapabilitiesSnapshot> {
+    const scenario = typeof window === 'undefined'
+        ? null
+        : new URLSearchParams(window.location.search).get('cursorCapabilities');
+    if (scenario === 'slow') {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (scenario === 'unavailable') {
+        return {
+            agent: 'cursor',
+            status: 'unavailable',
+            fetchedAt: null,
+            expiresAt: null,
+            catalogVersion: null,
+            models: [],
+            errorCode: 'unavailable',
+        };
+    }
+    return {
+        agent: 'cursor',
+        status: 'ready',
+        fetchedAt: FIXTURE_BASE_TIME,
+        expiresAt: FIXTURE_BASE_TIME + (5 * 60 * 1_000),
+        catalogVersion: 'fixture-cursor-models-v1',
+        models: [
+            { id: 'auto', displayName: 'Auto', isDefault: true },
+            {
+                id: 'gpt-5.6-luna-xhigh',
+                displayName: 'GPT-5.6 Luna 1M Extra High',
+                isDefault: false,
+            },
+        ],
+    };
+}
+
 export function isFixtureRestEndpoint(endpoint: string): boolean {
     return endpoint === FIXTURE_ENDPOINT;
 }
@@ -751,6 +788,19 @@ export async function fixtureSpawnNewSession(options: SpawnSessionOptions): Prom
             type: 'error',
             errorMessage: 'Codex capability selection rejected: unsupported_selection.',
         };
+    }
+
+    if (options.agent === 'cursor') {
+        const capabilities = await fixtureGetCursorCapabilities();
+        const isValidCursorExecution = capabilities.status === 'ready'
+            && options.cursorExecution?.catalogVersion === capabilities.catalogVersion
+            && capabilities.models.some((model) => model.id === options.cursorExecution?.model);
+        if (!isValidCursorExecution) {
+            return {
+                type: 'error',
+                errorMessage: 'Cursor capability selection rejected: unavailable.',
+            };
+        }
     }
 
     if (

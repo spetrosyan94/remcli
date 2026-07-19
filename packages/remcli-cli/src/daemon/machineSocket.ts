@@ -24,11 +24,18 @@ import {
     CodexCapabilitiesService,
     type CodexExecutionConfig,
 } from '@/codex/codexCapabilities';
+import {
+    CursorCapabilitiesError,
+    CursorCapabilitiesService,
+    type CursorExecutionConfig,
+} from '@/cursor/cursorCapabilities';
 import type { CodexSandbox } from '@/codex/types';
+import type { CursorPermissionMode } from '@/api/types';
 import type { StopSessionResult } from '@/daemon/types';
 import type { PairingRekeyCoordinator } from './p2p/pairingRekey';
 
 const CODEX_EXECUTION_KEYS = new Set(['model', 'catalogVersion', 'reasoningEffort']);
+const CURSOR_EXECUTION_KEYS = new Set(['model', 'catalogVersion']);
 
 export interface MachineSocketDeps {
     p2pPort: number;
@@ -37,6 +44,7 @@ export interface MachineSocketDeps {
     contentSecret: Uint8Array;
     pairingRekeyCoordinator: PairingRekeyCoordinator;
     codexCapabilities: CodexCapabilitiesService;
+    cursorCapabilities: CursorCapabilitiesService;
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
     stopSession: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
     requestShutdown: () => void;
@@ -82,6 +90,29 @@ function isCodexExecutionConfig(value: unknown): value is CodexExecutionConfig {
     }
 }
 
+function isCursorPermissionMode(value: unknown): value is CursorPermissionMode {
+    return value === 'agent'
+        || value === 'plan'
+        || value === 'ask'
+        || value === 'force'
+        || value === 'auto-review';
+}
+
+function isCursorExecutionConfig(value: unknown): value is CursorExecutionConfig {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+
+    try {
+        if (Object.getPrototypeOf(value) !== Object.prototype) return false;
+        if (!Reflect.ownKeys(value).every((key) =>
+            typeof key === 'string' && CURSOR_EXECUTION_KEYS.has(key))) return false;
+
+        return isNonEmptyStringDataProperty(value, 'model')
+            && isNonEmptyStringDataProperty(value, 'catalogVersion');
+    } catch {
+        return false;
+    }
+}
+
 export interface MachineSocketHandle {
     socket: ClientSocket;
     close: () => void;
@@ -95,6 +126,7 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         contentSecret,
         pairingRekeyCoordinator,
         codexCapabilities,
+        cursorCapabilities,
         spawnSession,
         stopSession,
         requestShutdown,
@@ -137,6 +169,7 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
             resumeSessionName,
             permissionMode,
             codexExecution,
+            cursorExecution,
         } = params || {};
         logger.debugLargeJson('[DAEMON RUN] RPC spawn-remcli-session', buildSafeSpawnSessionLogPayload(params));
 
@@ -158,6 +191,20 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
             }
         }
 
+        if (agent === 'cursor') {
+            if (!isCursorPermissionMode(permissionMode) || !isCursorExecutionConfig(cursorExecution)) {
+                throw new Error('Cursor requires a current model and execution control selection.');
+            }
+            try {
+                await cursorCapabilities.validateSelection(cursorExecution);
+            } catch (error) {
+                if (error instanceof CursorCapabilitiesError) {
+                    throw new Error(`Cursor capability selection rejected: ${error.code}.`);
+                }
+                throw new Error('Cursor capability discovery is unavailable. Refresh and try again.');
+            }
+        }
+
         const result = await spawnSession({
             directory,
             sessionId: sid,
@@ -170,6 +217,7 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
             resumeSessionName,
             permissionMode,
             codexExecution,
+            cursorExecution,
         });
 
         switch (result.type) {
@@ -187,6 +235,11 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
     machineRpcManager.registerHandler('get-codex-capabilities', async (params: { forceRefresh?: unknown }) => {
         const forceRefresh = params?.forceRefresh === true;
         return await codexCapabilities.getCapabilities(forceRefresh);
+    });
+
+    machineRpcManager.registerHandler('get-cursor-capabilities', async (params: { forceRefresh?: unknown }) => {
+        const forceRefresh = params?.forceRefresh === true;
+        return await cursorCapabilities.getCapabilities(forceRefresh);
     });
 
     machineRpcManager.registerHandler('stop-session', async (params: { sessionId?: string }) => {

@@ -435,6 +435,40 @@ describe('createSessionManager resume deduplication', () => {
         await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-codex-capability' });
     });
 
+    it('passes the daemon-validated Cursor execution config to the runner before its first turn', async () => {
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-cursor-capability',
+            windowId: '@621',
+            paneId: '%621',
+            pid: process.pid,
+        });
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            permissionMode: 'ask',
+            cursorExecution: {
+                model: 'cursor-grok-4.5-high',
+                catalogVersion: 'cursor-catalog-1',
+            },
+        });
+
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        const environment = tmuxMocks.spawnInTmux.mock.calls[0]?.[2] as Record<string, string>;
+        expect(environment).toMatchObject({
+            REMCLI_CURSOR_MODEL: 'cursor-grok-4.5-high',
+            REMCLI_CURSOR_CATALOG_VERSION: 'cursor-catalog-1',
+            REMCLI_CURSOR_PERMISSION_MODE: 'ask',
+        });
+
+        manager.onRemcliSessionWebhook('remcli-cursor-capability', createSessionMetadata(process.pid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-capability' });
+    });
+
     it('does not spawn a Codex resume after shutdown starts during async resume resolution', async () => {
         const manager = createSessionManager();
         const spawning = manager.spawnSession({

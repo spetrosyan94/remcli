@@ -16,13 +16,19 @@ import {
 } from './conciergeService';
 import { CONCIERGE_SYSTEM_PROMPT, CONCIERGE_TOOLS } from './constants';
 import type { ConciergeDeps, ConciergeRequestBody } from './types';
+import type { CursorExecutionConfig } from '@/cursor/cursorCapabilities';
 
 // ---- Helpers ----
 
 function makeDeps(overrides?: Partial<ConciergeDeps>): ConciergeDeps {
+    const defaultCursorExecution: CursorExecutionConfig = {
+        model: 'auto',
+        catalogVersion: 'cursor-catalog-v1',
+    };
     return {
         listSessions: () => [],
         spawnSession: async () => ({ type: 'success', sessionId: 'sess-123' }),
+        getDefaultCursorExecution: async () => defaultCursorExecution,
         getDaemonStatus: () => ({ version: '1.0.0', uptimeSec: 42, port: 12345, tunnelUrl: null }),
         ...overrides,
     };
@@ -232,6 +238,47 @@ describe('executeToolCall — spawn_agent_session validation', () => {
             expect.objectContaining({ agent: 'claude', directory: process.cwd() }),
         );
         expect(result).toEqual({ type: 'success', sessionId: 'sess-ok' });
+    });
+
+    it('spawns Cursor with a daemon-validated provider default and control mode', async () => {
+        const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'cursor-session' }));
+        const getDefaultCursorExecution = vi.fn(async () => ({
+            model: 'gpt-5.6-luna-xhigh',
+            catalogVersion: 'fresh-cursor-catalog',
+        }));
+        const result = await executeToolCall(
+            'spawn_agent_session',
+            JSON.stringify({ agent: 'cursor', directory: process.cwd() }),
+            makeDeps({ spawnSession: spawn, getDefaultCursorExecution }),
+        );
+
+        expect(getDefaultCursorExecution).toHaveBeenCalledOnce();
+        expect(spawn).toHaveBeenCalledWith({
+            agent: 'cursor',
+            directory: process.cwd(),
+            approvedNewDirectoryCreation: false,
+            cursorExecution: {
+                model: 'gpt-5.6-luna-xhigh',
+                catalogVersion: 'fresh-cursor-catalog',
+            },
+            permissionMode: 'agent',
+        });
+        expect(result).toEqual({ type: 'success', sessionId: 'cursor-session' });
+    });
+
+    it('does not spawn Cursor when no fresh provider default can be validated', async () => {
+        const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'cursor-session' }));
+        const result = await executeToolCall(
+            'spawn_agent_session',
+            JSON.stringify({ agent: 'cursor', directory: process.cwd() }),
+            makeDeps({
+                spawnSession: spawn,
+                getDefaultCursorExecution: async () => null,
+            }),
+        );
+
+        expect(result).toEqual(expect.objectContaining({ error: expect.stringMatching(/catalog could not be validated/i) }));
+        expect(spawn).not.toHaveBeenCalled();
     });
 });
 

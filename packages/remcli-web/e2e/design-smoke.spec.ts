@@ -52,6 +52,7 @@ const CHAT_HEADER_METADATA_MIN_WIDTH_PX = 200;
 const CHAT_HEADER_STATUS_MAX_HEIGHT_PX = 20;
 const CLAUDE_PERMISSION_LABELS = ["manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"] as const;
 const CODEX_PERMISSION_LABELS = ["read-only", "workspace-write", "danger-full-access"] as const;
+const CURSOR_CONTROL_LABELS = ["agent", "plan", "ask", "force", "auto-review"] as const;
 
 function collectPageIssues(page: Page): PageIssue[] {
     const issues: PageIssue[] = [];
@@ -904,6 +905,23 @@ async function openCodexCapabilityFixture(page: Page, testInfo: TestInfo, path: 
     return pageIssues;
 }
 
+async function openCursorCapabilityFixture(page: Page, testInfo: TestInfo, path: string, expectedModel: string | null = "Auto"): Promise<PageIssue[]> {
+    const pageIssues = collectPageIssues(page);
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, path);
+    await expect(page.locator('[data-capability-layout="two-row"]')).toBeVisible();
+
+    const cursor = page.getByRole("button", { name: /cursor agent/i });
+    await cursor.click();
+    await expect(cursor).toHaveClass(/border-accent/);
+    if (expectedModel) {
+        await expect(capabilityControl(page, "model").locator("button")).toContainText(expectedModel);
+    } else {
+        await expect(capabilityControl(page, "model").getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+    }
+    return pageIssues;
+}
+
 test("runtime new-session capability controls keep the accepted two-row contract", async ({ page }, testInfo) => {
     const pageIssues = await openCodexCapabilityFixture(page, testInfo, "/new?fixtures=1");
     const boxes = await Promise.all((["model", "permission", "reasoning"] as const).map(async (name) => {
@@ -999,11 +1017,37 @@ test("runtime Codex choose-required fixture enables start only after an explicit
     expect(pageIssues).toEqual([]);
 });
 
-test("runtime Cursor keeps reasoning as a separate unsupported status", async ({ page }, testInfo) => {
-    const pageIssues = collectPageIssues(page);
-    await assertRequiredViewport(page, testInfo);
-    await openFixtureRoute(page, "/new?fixtures=1");
-    await page.getByRole("button", { name: /cursor agent/i }).click();
+test("runtime Cursor catalog renders account-visible models, native controls, and unsupported reasoning", async ({ page }, testInfo) => {
+    const pageIssues = await openCursorCapabilityFixture(page, testInfo, "/new?fixtures=1");
+
+    await capabilityControl(page, "model").locator("button").click();
+    const alternateModel = page.getByRole("button", { name: "GPT-5.6 Luna 1M Extra High", exact: true });
+    await expect(alternateModel).toBeVisible();
+    await alternateModel.click();
+    await expect(capabilityControl(page, "model").locator("button")).toContainText("GPT-5.6 Luna 1M Extra High");
+
+    await capabilityControl(page, "permission").locator("button").click();
+    await assertPermissionLabelsAreFullyVisible(page.locator('[data-slot="drawer-content"]'), CURSOR_CONTROL_LABELS);
+    await page.getByRole("button", { name: "force", exact: true }).click();
+    await expect(capabilityControl(page, "permission").locator("button")).toContainText("force");
+    await expect(capabilityControl(page, "reasoning")).toContainText("reasoning not configured separately");
+    await expect(page.getByRole("button", { name: /Start cursor/i })).toBeEnabled();
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("runtime Cursor unavailable catalog blocks start and exposes retry", async ({ page }, testInfo) => {
+    const pageIssues = await openCursorCapabilityFixture(
+        page,
+        testInfo,
+        "/new?fixtures=1&cursorCapabilities=unavailable",
+        null,
+    );
+
+    await expect(page.getByRole("button", { name: /Start cursor/i })).toBeDisabled();
+    const modelRetry = capabilityControl(page, "model").getByRole("button", { name: "Retry", exact: true });
+    await modelRetry.click();
+    await expect(modelRetry).toBeVisible();
     await expect(capabilityControl(page, "reasoning")).toContainText("reasoning not configured separately");
     await assertNoHorizontalOverflow(page);
     expect(pageIssues).toEqual([]);

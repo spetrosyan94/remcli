@@ -177,6 +177,7 @@ export async function runCursorTurn(
 
     let initEvent: CursorStreamEvent | null = null;
     let resultEvent: CursorStreamEvent | null = null;
+    let assistantText = '';
     let lifecycleStage: 'awaiting-init' | 'awaiting-result' = 'awaiting-init';
     let protocolError: CursorTurnError | null = null;
 
@@ -208,6 +209,9 @@ export async function runCursorTurn(
                     terminateWithFallback();
                     break;
                 }
+                if (initEvent?.session_id && initEvent.session_id !== event.session_id) {
+                    assistantText = '';
+                }
                 initEvent = event;
                 lifecycleStage = 'awaiting-result';
             }
@@ -222,6 +226,17 @@ export async function runCursorTurn(
                     break;
                 }
                 resultEvent = event;
+            }
+
+            if (
+                event.type === 'assistant'
+                && (!initEvent?.session_id || (event.session_id && event.session_id !== initEvent.session_id))
+            ) {
+                continue;
+            }
+
+            if (event.type === 'assistant') {
+                assistantText += getAssistantEventText(event);
             }
 
             try {
@@ -282,11 +297,39 @@ export async function runCursorTurn(
         );
     }
 
+    const terminalResult = typeof resultEvent.result === 'string' ? resultEvent.result : '';
     return {
         sessionId: initEvent.session_id,
-        response: typeof resultEvent.result === 'string' ? resultEvent.result : '',
+        response: terminalResult.trim() ? terminalResult : assistantText,
         exitCode: finalResult.exitCode,
     };
+}
+
+function getAssistantMessageText(event: CursorStreamEvent): string {
+    const content = event.message?.content;
+    if (!Array.isArray(content)) return '';
+
+    return content
+        .filter((part): part is { type: 'text'; text: string } => (
+            isRecord(part) && part.type === 'text' && typeof part.text === 'string'
+        ))
+        .map((part) => part.text)
+        .join('');
+}
+
+function getAssistantEventText(event: CursorStreamEvent): string {
+    const messageText = getAssistantMessageText(event);
+    const partialText = typeof event.text_delta === 'string'
+        ? event.text_delta
+        : typeof event.text === 'string'
+            ? event.text
+            : '';
+
+    if (!messageText || !partialText || messageText.endsWith(partialText)) {
+        return messageText || partialText;
+    }
+
+    return messageText + partialText;
 }
 
 function parseCursorStreamEvent(line: string): CursorStreamEvent {

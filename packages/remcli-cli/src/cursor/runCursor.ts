@@ -35,6 +35,7 @@ import {
 } from '@/daemon/controlClient';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { CursorPermissionMode, Metadata, PermissionMode } from '@/api/types';
+import type { CursorExecutionConfig } from './cursorCapabilities';
 
 import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
 import {
@@ -51,6 +52,7 @@ const LIFECYCLE_METADATA_UPDATE_OPTIONS = {
 } as const;
 
 const MAX_PROVISIONAL_PARENT_ROLLBACK_UPDATES = 2;
+const DAEMON_EXECUTION_SELECTION_REQUIRED_ERROR = 'Cursor daemon runner requires a validated execution and control selection.';
 
 function withoutResumedFromRemcliSessionId(metadata: Metadata): Metadata {
     const updatedMetadata = { ...metadata };
@@ -58,7 +60,7 @@ function withoutResumedFromRemcliSessionId(metadata: Metadata): Metadata {
     return updatedMetadata;
 }
 
-function isCursorPermissionMode(mode: PermissionMode): mode is CursorPermissionMode {
+function isCursorPermissionMode(mode: unknown): mode is CursorPermissionMode {
     return mode === 'agent'
         || mode === 'plan'
         || mode === 'ask'
@@ -77,6 +79,8 @@ export async function runCursor(opts: {
     credentials: Credentials;
     startedBy?: 'daemon' | 'terminal';
     resumeSessionId?: string;
+    execution?: CursorExecutionConfig;
+    permissionMode?: CursorPermissionMode;
 }): Promise<void> {
     // Define session
     //
@@ -93,6 +97,13 @@ export async function runCursor(opts: {
         process.exit(1);
     }
     logger.debug(`Using machineId: ${machineId}`);
+
+    if (opts.startedBy === 'daemon'
+        && process.env.REMCLI_DAEMON_RUNNER_TOKEN
+        && (!opts.execution || !isCursorPermissionMode(opts.permissionMode))) {
+        logger.warn(`[Cursor] ${DAEMON_EXECUTION_SELECTION_REQUIRED_ERROR}`);
+        return;
+    }
 
     let trustedStartedBy: 'daemon' | 'terminal' | undefined;
     let resumedFromRemcliSessionId: string | undefined;
@@ -189,13 +200,18 @@ export async function runCursor(opts: {
     }));
 
     // Track current overrides
-    let currentPermissionMode: CursorPermissionMode | undefined = undefined;
-    let currentModel: string | undefined = undefined;
+    let currentPermissionMode: CursorPermissionMode | undefined = opts.permissionMode;
+    let currentModel: string | undefined = opts.execution?.model;
 
     const createUserMessageHandler = (target: ApiSessionClient) => (message: Parameters<ApiSessionClient['onUserMessage']>[0] extends (value: infer T) => unknown ? T : never) => {
+        const messageMeta = message.meta;
         let messagePermissionMode = currentPermissionMode;
-        if (message.meta?.permissionMode) {
-            const requestedMode = message.meta.permissionMode as PermissionMode;
+        if (opts.execution) {
+            if (messageMeta?.permissionMode && messageMeta.permissionMode !== currentPermissionMode) {
+                logger.warn('[Cursor] Ignoring unvalidated per-message execution control override.');
+            }
+        } else if (messageMeta?.permissionMode) {
+            const requestedMode = messageMeta.permissionMode as PermissionMode;
             if (isCursorPermissionMode(requestedMode)) {
                 messagePermissionMode = requestedMode;
                 currentPermissionMode = messagePermissionMode;
@@ -209,8 +225,14 @@ export async function runCursor(opts: {
         }
 
         let messageModel = currentModel;
-        if (message.meta?.hasOwnProperty('model')) {
-            messageModel = message.meta.model || undefined;
+        if (opts.execution) {
+            const hasModelOverride = Object.prototype.hasOwnProperty.call(messageMeta ?? {}, 'model');
+            const requestedModel = messageMeta?.model || undefined;
+            if (hasModelOverride && requestedModel !== currentModel) {
+                logger.warn('[Cursor] Ignoring unvalidated per-message model override.');
+            }
+        } else if (messageMeta && Object.prototype.hasOwnProperty.call(messageMeta, 'model')) {
+            messageModel = messageMeta.model || undefined;
             currentModel = messageModel;
             logger.debug(`[Cursor] Model updated: ${messageModel || 'reset to default'}`);
         }

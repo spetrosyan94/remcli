@@ -195,7 +195,7 @@ export const ja: Dictionary = {
     "new.reasoningNoOptions": "このモデルでは推論を設定できません",
     "new.reasoningChoose": "推論レベルを選択",
     "new.capabilitiesLoading": "確認中…",
-    "new.capabilitiesUnavailable": "Codex データを取得できません。",
+    "new.capabilitiesUnavailable": "プロバイダーのデータを取得できません。",
     "new.capabilitiesRetry": "再試行",
     "new.dirRecent": "ディレクトリ · 最近",
     "new.dirBrowse": "ディレクトリを選択…",

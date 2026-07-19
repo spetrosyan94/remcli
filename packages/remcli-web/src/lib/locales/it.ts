@@ -195,7 +195,7 @@ export const it: Dictionary = {
     "new.reasoningNoOptions": "nessun ragionamento configurabile per questo modello",
     "new.reasoningChoose": "scegli un livello di ragionamento",
     "new.capabilitiesLoading": "verifica…",
-    "new.capabilitiesUnavailable": "Dati Codex non disponibili.",
+    "new.capabilitiesUnavailable": "Dati del provider non disponibili.",
     "new.capabilitiesRetry": "Riprova",
     "new.dirRecent": "directory · recenti",
     "new.dirBrowse": "scegli directory…",

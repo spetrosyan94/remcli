@@ -27,6 +27,7 @@ const TEST_MACHINE_ID = 'machine-rpc-directory-smoke';
 interface P2PModules {
     P2PStore: typeof import('@/daemon/p2p/p2pStore').P2PStore;
     PairingRekeyCoordinator: typeof import('@/daemon/p2p/pairingRekey').PairingRekeyCoordinator;
+    CursorCapabilitiesService: typeof import('@/cursor/cursorCapabilities').CursorCapabilitiesService;
     bootstrapMachineSocket: typeof import('@/daemon/machineSocket').bootstrapMachineSocket;
     deriveBearerToken: typeof import('@/daemon/p2p/p2pAuth').deriveBearerToken;
     generateSharedSecret: typeof import('@/daemon/p2p/p2pAuth').generateSharedSecret;
@@ -69,12 +70,14 @@ async function importP2PModules(): Promise<P2PModules> {
         p2pStore,
         pairingRekey,
         machineSocket,
+        cursorCapabilities,
         p2pAuth,
         p2pServerModule,
     ] = await Promise.all([
         import('@/daemon/p2p/p2pStore'),
         import('@/daemon/p2p/pairingRekey'),
         import('@/daemon/machineSocket'),
+        import('@/cursor/cursorCapabilities'),
         import('@/daemon/p2p/p2pAuth'),
         import('@/daemon/p2p/p2pServer'),
     ]);
@@ -82,6 +85,7 @@ async function importP2PModules(): Promise<P2PModules> {
     return {
         P2PStore: p2pStore.P2PStore,
         PairingRekeyCoordinator: pairingRekey.PairingRekeyCoordinator,
+        CursorCapabilitiesService: cursorCapabilities.CursorCapabilitiesService,
         bootstrapMachineSocket: machineSocket.bootstrapMachineSocket,
         deriveBearerToken: p2pAuth.deriveBearerToken,
         generateSharedSecret: p2pAuth.generateSharedSecret,
@@ -318,6 +322,12 @@ describe('machine RPC directory browser smoke', { timeout: 15_000 }, () => {
             bearerToken,
             contentSecret: sharedSecret,
             pairingRekeyCoordinator: createPairingRekeyCoordinator(modules, sharedSecret),
+            cursorCapabilities: new modules.CursorCapabilitiesService({
+                readModelList: async () => ({
+                    executable: 'agent',
+                    output: 'Available models\n\nauto - Auto (default)\n\nTip: use --model <id> to switch.',
+                }),
+            }),
             spawnSession: async () => ({ type: 'error', errorMessage: 'spawn-session is outside this smoke test' }),
             stopSession: () => ({ success: false }),
             requestShutdown: () => undefined,
@@ -428,6 +438,12 @@ describe('machine RPC stop acknowledgements', { timeout: 15_000 }, () => {
             bearerToken,
             contentSecret: sharedSecret,
             pairingRekeyCoordinator: createPairingRekeyCoordinator(modules, sharedSecret),
+            cursorCapabilities: new modules.CursorCapabilitiesService({
+                readModelList: async () => ({
+                    executable: 'agent',
+                    output: 'Available models\n\nauto - Auto (default)\n\nTip: use --model <id> to switch.',
+                }),
+            }),
             spawnSession: async () => ({ type: 'error', errorMessage: 'spawn-session is outside this smoke test' }),
             stopSession,
             requestShutdown: () => undefined,

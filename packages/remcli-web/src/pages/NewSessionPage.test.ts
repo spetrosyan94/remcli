@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CodexCapabilitiesSnapshot } from '@/lib/protocol';
+import type { CodexCapabilitiesSnapshot, CursorCapabilitiesSnapshot } from '@/lib/protocol';
 
 const componentHooks = vi.hoisted(() => {
     const values: unknown[] = [];
@@ -100,6 +100,7 @@ vi.mock('@/lib/protocol', () => ({
     machineListAgentSessions: vi.fn(),
     machineListDirectory: vi.fn(),
     machineGetCodexCapabilities: vi.fn(),
+    machineGetCursorCapabilities: vi.fn(),
     machineSpawnNewSession: machineSpawnNewSessionMock,
     refreshSessions: vi.fn(),
     sendSessionMessage: vi.fn(),
@@ -189,6 +190,15 @@ let createCodexExecutionForModel: typeof import('@/pages/NewSessionPage').create
 ) => {
     throw new Error('NewSessionPage module was not loaded');
 };
+let getDefaultCursorExecution: typeof import('@/pages/NewSessionPage').getDefaultCursorExecution = (_capabilities) => {
+    throw new Error('NewSessionPage module was not loaded');
+};
+let createCursorExecutionForModel: typeof import('@/pages/NewSessionPage').createCursorExecutionForModel = (
+    _capabilities,
+    _modelId,
+) => {
+    throw new Error('NewSessionPage module was not loaded');
+};
 let getReasoningControlState: typeof import('@/pages/NewSessionPage').getReasoningControlState = (_input) => {
     throw new Error('NewSessionPage module was not loaded');
 };
@@ -196,6 +206,7 @@ let buildNewSessionSpawnOptions: typeof import('@/pages/NewSessionPage').buildNe
     throw new Error('NewSessionPage module was not loaded');
 };
 let isCodexCapabilityRejection: typeof import('@/pages/NewSessionPage').isCodexCapabilityRejection = (_result, _agent) => false;
+let isCursorCapabilityRejection: typeof import('@/pages/NewSessionPage').isCursorCapabilityRejection = (_result, _agent) => false;
 let resolveSheetOpenChange: typeof import('@/pages/NewSessionPage').resolveSheetOpenChange = (_renderedSheet, currentSheet) => currentSheet;
 let NewSessionPage: typeof import('@/pages/NewSessionPage').NewSessionPage;
 let ResumeSheetContent: typeof import('@/pages/NewSessionPage').ResumeSheetContent;
@@ -221,9 +232,12 @@ beforeAll(async () => {
     getResumeDirectory = pageModule.getResumeDirectory;
     getDefaultCodexExecution = pageModule.getDefaultCodexExecution;
     createCodexExecutionForModel = pageModule.createCodexExecutionForModel;
+    getDefaultCursorExecution = pageModule.getDefaultCursorExecution;
+    createCursorExecutionForModel = pageModule.createCursorExecutionForModel;
     getReasoningControlState = pageModule.getReasoningControlState;
     buildNewSessionSpawnOptions = pageModule.buildNewSessionSpawnOptions;
     isCodexCapabilityRejection = pageModule.isCodexCapabilityRejection;
+    isCursorCapabilityRejection = pageModule.isCursorCapabilityRejection;
     resolveSheetOpenChange = pageModule.resolveSheetOpenChange;
     NewSessionPage = pageModule.NewSessionPage;
     ResumeSheetContent = pageModule.ResumeSheetContent;
@@ -273,6 +287,12 @@ describe('NewSessionPage Codex capability selection', () => {
         const codex = agentOptions.find((option) => option.id === 'codex');
 
         expect(codex?.models).toEqual([]);
+    });
+
+    it('has no static Cursor catalog in the web bundle', () => {
+        const cursor = agentOptions.find((option) => option.id === 'cursor');
+
+        expect(cursor?.models).toEqual([]);
     });
 
     it('uses the daemon default and preserves every provider-advertised effort', () => {
@@ -451,6 +471,25 @@ describe('NewSessionPage Codex capability selection', () => {
         }, 'cursor')).toBe(false);
     });
 
+    it('recognizes only canonical Cursor capability rejections', () => {
+        expect(isCursorCapabilityRejection({
+            type: 'error',
+            errorMessage: 'Cursor capability selection rejected: unsupported_selection.',
+        }, 'cursor')).toBe(true);
+        expect(isCursorCapabilityRejection({
+            type: 'error',
+            errorMessage: 'Cursor capability selection rejected: unavailable.',
+        }, 'cursor')).toBe(true);
+        expect(isCursorCapabilityRejection({
+            type: 'error',
+            errorMessage: 'Cursor capability discovery is unavailable. Refresh and try again.',
+        }, 'cursor')).toBe(false);
+        expect(isCursorCapabilityRejection({
+            type: 'error',
+            errorMessage: 'Cursor capability selection rejected: expired.',
+        }, 'codex')).toBe(false);
+    });
+
     it('ignores a stale close from a previous same-kind drawer instance', () => {
         const staleSheet = { kind: 'model' as const, generation: 1 };
         const currentSheet = { kind: 'model' as const, generation: 2 };
@@ -481,6 +520,66 @@ describe('NewSessionPage Codex capability selection', () => {
     it('keeps model navigation metadata only for non-Codex legacy providers', () => {
         expect(modelOverrideState('default', false)).toEqual({});
         expect(getModelOverride('sonnet')).toBe('sonnet');
+    });
+});
+
+describe('NewSessionPage Cursor capability selection', () => {
+    const capabilities: CursorCapabilitiesSnapshot = {
+        agent: 'cursor',
+        status: 'ready',
+        fetchedAt: 1,
+        expiresAt: 2,
+        catalogVersion: 'cursor-catalog-1',
+        models: [
+            { id: 'auto', displayName: 'Auto', isDefault: true },
+            { id: 'gpt-5.6-luna-xhigh', displayName: 'GPT-5.6 Luna 1M Extra High', isDefault: false },
+        ],
+    };
+
+    it('uses the explicit Cursor provider default and preserves exact model IDs', () => {
+        expect(getDefaultCursorExecution(capabilities)).toEqual({
+            model: 'auto',
+            catalogVersion: 'cursor-catalog-1',
+        });
+        expect(createCursorExecutionForModel(capabilities, 'gpt-5.6-luna-xhigh')).toEqual({
+            model: 'gpt-5.6-luna-xhigh',
+            catalogVersion: 'cursor-catalog-1',
+        });
+        expect(createCursorExecutionForModel(capabilities, 'not-account-visible')).toBeNull();
+    });
+
+    it('sends the validated Cursor execution atomically through spawn RPC', () => {
+        const cursorExecution = getDefaultCursorExecution(capabilities);
+
+        expect(buildNewSessionSpawnOptions({
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            agent: 'cursor',
+            permissionMode: 'agent',
+            codexExecution: null,
+            codexReasoningEfforts: [],
+            cursorExecution,
+        })).toEqual({
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            agent: 'cursor',
+            resumeSessionId: undefined,
+            resumeSessionName: undefined,
+            permissionMode: 'agent',
+            cursorExecution,
+        });
+    });
+
+    it('fails closed without a validated Cursor execution selection', () => {
+        expect(() => buildNewSessionSpawnOptions({
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            agent: 'cursor',
+            permissionMode: 'agent',
+            codexExecution: null,
+            codexReasoningEfforts: [],
+            cursorExecution: null,
+        })).toThrow('Cursor requires a capability-validated execution selection.');
     });
 });
 
