@@ -59,11 +59,21 @@ Phone/Web -> Remcli P2P -> daemon/session -> provider runtime -> session -> Remc
 
 ## Verification
 
-- Unit tests:
-- Integration tests:
-- Real AI opt-in tests:
-- Browser/UI gate:
-- Manual smoke:
+Каждую ячейку заполнять отдельно для **этого** provider. Общий Remcli harness
+проверяет transport/lifecycle, но не доказывает native contract другого CLI.
+
+| Уровень | Что доказывает | Не засчитывается как доказательство |
+|---|---|---|
+| `D` — deterministic | argv/env, parser/event order, native id, resume, permission/model/reasoning mapping и provider errors с контролируемым executable/transport | Generic daemon или UI test без provider protocol |
+| `I` — product boundary | encrypted machine-RPC/P2P, spawn/resume и typed handoff до provider boundary | Unit mock `spawnSession` или fake WebSocket без daemon boundary |
+| `L` — opt-in real | Реальный установленный CLI/API: create -> prompt -> stop -> resume и проверка контекста | Skipped gate, fixture executable или только `--help` |
+| `UI-F` — Browser fixture | Provider-labelled create/resume/error/recovery states на mobile и desktop | Generic fixture другого provider; не заменяет `L` |
+
+- `D` tests and files:
+- `I` tests and files:
+- `L` opt-in command, required credential and last actual result:
+- `UI-F` Browser routes/viewports/states:
+- Manual smoke and remaining limitations:
 
 ## Open Risks
 

@@ -81,10 +81,10 @@ npm run gemini              # Gemini CLI
 
 | Агент | Resume |
 |-------|--------|
-| Claude Code | Полный — `--resume` с восстановлением истории |
-| Cursor | Полный — `agent --resume` |
-| Gemini | Полный — через ACP `session/load` (с фолбэком на новую сессию) |
-| Codex | Поддерживается — Remcli использует официальный Codex app-server: shared daemon WebSocket endpoint предпочтителен; при stale state или initial transient WebSocket connect failure используется typed private stdio fallback. `thread/start`/`thread/resume`, `turn/start` и `turn/steer` работают с тем же `threadId`. `codex mcp-server` и `codex-reply` не используются для chat/resume transport; `remcli-mcp` остаётся отдельным tool bridge |
+| Claude Code | Реализован путь `--resume`; provider-specific acceptance (daemon boundary, real CLI и Browser fixture) ещё не завершена |
+| Cursor | Реализован путь `agent --resume`; provider-specific D/I/UI-F приняты, opt-in real lifecycle gate и negative hardening ещё в плане |
+| Gemini | Реализован ACP-путь `session/load` с фолбэком на новую сессию; provider-specific acceptance ещё не завершена |
+| Codex | Поддерживается — Remcli использует официальный Codex app-server: shared daemon WebSocket endpoint предпочтителен; при stale state или initial transient WebSocket connect failure используется typed private stdio fallback. `thread/start`/`thread/resume`, `turn/start` и `turn/steer` работают с тем же `threadId`. Capability boundary, fixture UI, узкий opt-in app-server gate и daemon/P2P lifecycle gate проверены; visual-baseline reconciliation остаётся в плане. `codex mcp-server` и `codex-reply` не используются для chat/resume transport; `remcli-mcp` остаётся отдельным tool bridge |
 
 ---
 

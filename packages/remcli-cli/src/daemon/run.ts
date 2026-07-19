@@ -32,7 +32,9 @@ import { ConciergeDeps } from './concierge/types';
 import { bootstrapMachineSocket } from './machineSocket';
 import { startHeartbeatLoop } from './heartbeat';
 import { startCodexAppServerHost, type CodexAppServerHostHandle } from '@/codex/codexAppServerHost';
+import { CodexCapabilitiesService } from '@/codex/codexCapabilities';
 import { PairingRekeyCoordinator } from './p2p/pairingRekey';
+import { redactDiagnosticData } from '@/utils/redaction';
 import QRCode from 'qrcode';
 
 // Prepare initial metadata
@@ -73,6 +75,161 @@ function resolveWebAppDir(): string | undefined {
     return undefined;
 }
 
+export interface DaemonShutdownDependencies {
+    machineSocketHandle: ReturnType<typeof bootstrapMachineSocket> | null;
+    killAllSessions: () => Promise<void>;
+    codexAppServerHost: CodexAppServerHostHandle | null;
+    tunnelStop: (() => void) | null;
+    freeWhisper: () => Promise<void>;
+    stopTts: () => Promise<void>;
+    flushP2PStore: () => void;
+    stopP2PServer: () => Promise<void>;
+    stopControlServer: () => Promise<void>;
+    cleanupDaemonState: () => Promise<void>;
+    stopCaffeinate: () => Promise<void>;
+    releaseDaemonLock: () => Promise<void>;
+}
+
+type ExitProcess = (code: number) => void;
+type ShutdownSource = 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception';
+
+export interface DaemonShutdownRequest {
+    source: ShutdownSource;
+    errorMessage?: string;
+}
+
+export type DaemonShutdownResult = 'completed' | 'retry';
+
+export interface DaemonShutdownLifecycleDependencies {
+    waitForShutdownRequest: () => Promise<DaemonShutdownRequest>;
+    cleanupAndShutdown: (request: DaemonShutdownRequest) => Promise<DaemonShutdownResult>;
+}
+
+export interface DaemonShutdownRequestChannel {
+    enqueueShutdownRequest: (request: DaemonShutdownRequest) => void;
+    waitForShutdownRequest: () => Promise<DaemonShutdownRequest>;
+}
+
+export function createDaemonShutdownRequestChannel(): DaemonShutdownRequestChannel {
+    const pendingShutdownRequests: DaemonShutdownRequest[] = [];
+    let resolveNextShutdownRequest: ((request: DaemonShutdownRequest) => void) | null = null;
+
+    return {
+        enqueueShutdownRequest: (request) => {
+            if (resolveNextShutdownRequest) {
+                const resolveShutdownRequest = resolveNextShutdownRequest;
+                resolveNextShutdownRequest = null;
+                resolveShutdownRequest(request);
+                return;
+            }
+
+            pendingShutdownRequests.push(request);
+        },
+        waitForShutdownRequest: () => {
+            const pendingShutdownRequest = pendingShutdownRequests.shift();
+            if (pendingShutdownRequest) {
+                return Promise.resolve(pendingShutdownRequest);
+            }
+
+            return new Promise<DaemonShutdownRequest>((resolve) => {
+                resolveNextShutdownRequest = resolve;
+            });
+        },
+    };
+}
+
+export async function performDaemonShutdown(
+    dependencies: DaemonShutdownDependencies,
+    exitProcess: ExitProcess = (code) => process.exit(code),
+): Promise<DaemonShutdownResult> {
+
+    try {
+        dependencies.machineSocketHandle?.close();
+        logger.debug('[DAEMON RUN] Machine RPC socket closed');
+    } catch (error) {
+        logger.debug('[DAEMON RUN] Failed to close machine RPC socket:', error);
+    }
+
+    try {
+        await dependencies.killAllSessions();
+    } catch (error) {
+        logger.warn('[DAEMON RUN] Session cleanup was not confirmed; refusing clean daemon exit', error);
+        throw error;
+    }
+
+    if (dependencies.codexAppServerHost) {
+        try {
+            await dependencies.codexAppServerHost.stop();
+            logger.debug('[DAEMON RUN] Shared Codex app-server stopped');
+        } catch (error) {
+            logger.warn(
+                '[DAEMON RUN] Failed to stop shared Codex app-server; preserving daemon ownership for retry:',
+                redactDiagnosticData(error),
+            );
+            return 'retry';
+        }
+    }
+
+    if (dependencies.tunnelStop) {
+        try {
+            dependencies.tunnelStop();
+            logger.debug('[DAEMON RUN] Tunnel stopped');
+        } catch (error) {
+            logger.debug('[DAEMON RUN] Failed to stop tunnel:', error);
+        }
+    }
+
+    try {
+        await dependencies.freeWhisper();
+        logger.debug('[DAEMON RUN] Whisper native resources freed');
+    } catch (error) {
+        logger.debug('[DAEMON RUN] Failed to free Whisper resources:', error);
+    }
+
+    try {
+        await dependencies.stopTts();
+        logger.debug('[DAEMON RUN] TTS provider stopped');
+    } catch (error) {
+        logger.debug('[DAEMON RUN] Failed to stop TTS provider:', error);
+    }
+
+    try {
+        dependencies.flushP2PStore();
+        logger.debug('[DAEMON RUN] KV store flushed to disk');
+    } catch (error) {
+        logger.debug('[DAEMON RUN] Failed to flush KV store to disk:', error);
+        throw error;
+    }
+
+    try {
+        await dependencies.stopP2PServer();
+        logger.debug('[DAEMON RUN] P2P server stopped');
+    } catch (error) {
+        logger.debug('[DAEMON RUN] Failed to stop P2P server:', error);
+    }
+
+    await dependencies.stopControlServer();
+    await dependencies.cleanupDaemonState();
+    await dependencies.stopCaffeinate();
+    await dependencies.releaseDaemonLock();
+
+    logger.debug('[DAEMON RUN] Cleanup completed, exiting process');
+    exitProcess(0);
+    return 'completed';
+}
+
+export async function runDaemonShutdownLifecycle(
+    dependencies: DaemonShutdownLifecycleDependencies,
+): Promise<void> {
+    while (true) {
+        const shutdownRequest = await dependencies.waitForShutdownRequest();
+        const shutdownResult = await dependencies.cleanupAndShutdown(shutdownRequest);
+        if (shutdownResult === 'completed') {
+            return;
+        }
+    }
+}
+
 export async function startDaemon(): Promise<void> {
   // We don't have cleanup function at the time of server construction
   // Control flow is:
@@ -85,27 +242,25 @@ export async function startDaemon(): Promise<void> {
   // shut down. We will force exit the process with code 1.
   let startupFailureExitTimer: NodeJS.Timeout | null = null;
   let isCleanupInProgress = false;
-  let requestShutdown: (source: 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception', errorMessage?: string) => void;
-  let resolvesWhenShutdownRequested = new Promise<({ source: 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception', errorMessage?: string })>((resolve) => {
-    requestShutdown = (source, errorMessage) => {
-      logger.debug(`[DAEMON RUN] Requesting shutdown (source: ${source}, errorMessage: ${errorMessage})`);
+  let isShutdownRetryPending = false;
+  const shutdownRequestChannel = createDaemonShutdownRequestChannel();
+  const requestShutdown = (source: ShutdownSource, errorMessage?: string): void => {
+    logger.debug(`[DAEMON RUN] Requesting shutdown (source: ${source}, errorMessage: ${errorMessage})`);
 
-      // Fallback - in case startup malfunctions - we will force exit the process with code 1
-      if (!isCleanupInProgress && !startupFailureExitTimer) {
-        startupFailureExitTimer = setTimeout(async () => {
-          logger.debug('[DAEMON RUN] Startup malfunctioned, forcing exit with code 1');
+    // A failed shared app-server stop keeps the daemon alive for an explicit retry.
+    if (!isCleanupInProgress && !isShutdownRetryPending && !startupFailureExitTimer) {
+      startupFailureExitTimer = setTimeout(async () => {
+        logger.debug('[DAEMON RUN] Startup malfunctioned, forcing exit with code 1');
 
-          // Give time for logs to be flushed
-          await new Promise(resolve => setTimeout(resolve, 100))
+        // Give time for logs to be flushed
+        await new Promise(resolve => setTimeout(resolve, 100));
 
-          process.exit(1);
-        }, 1_000);
-      }
+        process.exit(1);
+      }, 1_000);
+    }
 
-      // Start graceful shutdown
-      resolve({ source, errorMessage });
-    };
-  });
+    shutdownRequestChannel.enqueueShutdownRequest({ source, errorMessage });
+  };
 
   // Setup signal handlers
   process.on('SIGINT', () => {
@@ -230,6 +385,7 @@ export async function startDaemon(): Promise<void> {
 
     let p2pServer: P2PServer | null = null;
     let machineSocketHandle: ReturnType<typeof bootstrapMachineSocket> | null = null;
+    let codexCapabilities: CodexCapabilitiesService | null = null;
     let machineId = '';
     let tunnelStop: (() => void) | null = null;
     let tunnelUrl: string | undefined;
@@ -270,7 +426,7 @@ export async function startDaemon(): Promise<void> {
         // The daemon's self-machine is intentionally reconnected with the new
         // bearer; session runners retain their stable content secret and lease.
         setTimeout(() => {
-          if (!p2pServer || !machineId) return;
+          if (!p2pServer || !machineId || !codexCapabilities) return;
           machineSocketHandle?.close();
           machineSocketHandle = bootstrapMachineSocket({
             p2pPort: p2pServer.port,
@@ -278,6 +434,7 @@ export async function startDaemon(): Promise<void> {
             bearerToken: deriveBearerToken(pairing.authSecret),
             contentSecret: pairing.contentSecret,
             pairingRekeyCoordinator,
+            codexCapabilities,
             spawnSession: sessionManager.spawnSession,
             stopSession: sessionManager.stopSession,
             requestShutdown: () => requestShutdown('remcli-web'),
@@ -310,6 +467,12 @@ export async function startDaemon(): Promise<void> {
       startedWithCliVersion: packageJson.version,
       daemonLogPath: logger.logFilePath
     };
+    codexCapabilities = new CodexCapabilitiesService({
+      getAppServerState: () => ({
+        codexAppServerEndpoint: fileState.codexAppServerEndpoint,
+        codexAppServerPid: fileState.codexAppServerPid,
+      }),
+    });
     writeDaemonState(fileState);
     logger.debug('[DAEMON RUN] Daemon state written');
 
@@ -432,12 +595,16 @@ export async function startDaemon(): Promise<void> {
     logger.debug(`[DAEMON RUN] Machine registered in P2P store: ${machineId}`);
 
     // ─── Self-connect as machine client for RPC handling ────────────
+    if (!codexCapabilities) {
+        throw new Error('Codex capability service was not initialized.');
+    }
     machineSocketHandle = bootstrapMachineSocket({
         p2pPort: p2pServer.port,
         machineId,
         bearerToken: deriveBearerToken(pairing.authSecret),
         contentSecret: pairing.contentSecret,
         pairingRekeyCoordinator,
+        codexCapabilities,
         spawnSession: sessionManager.spawnSession,
         stopSession: sessionManager.stopSession,
         requestShutdown: () => requestShutdown('remcli-web')
@@ -496,9 +663,10 @@ export async function startDaemon(): Promise<void> {
     });
 
     // Setup signal handlers
-    const cleanupAndShutdown = async (source: 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception', errorMessage?: string) => {
+    const cleanupAndShutdown = async (source: ShutdownSource, errorMessage?: string): Promise<DaemonShutdownResult> => {
       logger.debug(`[DAEMON RUN] Starting proper cleanup (source: ${source}, errorMessage: ${errorMessage})...`);
       isCleanupInProgress = true;
+      isShutdownRetryPending = false;
 
       if (startupFailureExitTimer) {
         clearTimeout(startupFailureExitTimer);
@@ -511,87 +679,43 @@ export async function startDaemon(): Promise<void> {
         logger.debug('[DAEMON RUN] Health check interval cleared');
       }
 
-      // Disconnect machine RPC socket
-      try {
-        machineSocketHandle?.close();
-        logger.debug('[DAEMON RUN] Machine RPC socket closed');
-      } catch (error) {
-        logger.debug('[DAEMON RUN] Failed to close machine RPC socket:', error);
+      const shutdownResult = await performDaemonShutdown({
+        machineSocketHandle,
+        killAllSessions: sessionManager.killAllSessions,
+        codexAppServerHost,
+        tunnelStop,
+        freeWhisper,
+        stopTts,
+        flushP2PStore: () => p2pStore.flushKvToDisk(),
+        stopP2PServer: () => p2pServer.stop(),
+        stopControlServer,
+        cleanupDaemonState,
+        stopCaffeinate,
+        releaseDaemonLock: () => releaseDaemonLock(daemonLockHandle),
+      });
+
+      if (shutdownResult === 'retry') {
+        isCleanupInProgress = false;
+        isShutdownRetryPending = true;
+        logger.warn('[DAEMON RUN] Daemon shutdown is pending shared Codex app-server retry; control endpoint, state, and lock remain active');
       }
 
-      // Kill all tracked child sessions and tmux sessions created by this daemon
-      try {
-        await sessionManager.killAllSessions();
-      } catch (error) {
-        logger.warn('[DAEMON RUN] Session cleanup was not confirmed; refusing clean daemon exit', error);
-        throw error;
-      }
-
-      // Stop shared Codex app-server if it was started by this daemon
-      if (codexAppServerHost) {
-        try {
-          await codexAppServerHost.stop();
-          logger.debug('[DAEMON RUN] Shared Codex app-server stopped');
-        } catch (error) {
-          logger.debug('[DAEMON RUN] Failed to stop shared Codex app-server:', error);
-        }
-      }
-
-      // Stop cloudflared tunnel if running
-      if (tunnelStop) {
-        try {
-          tunnelStop();
-          logger.debug('[DAEMON RUN] Tunnel stopped');
-        } catch (error) {
-          logger.debug('[DAEMON RUN] Failed to stop tunnel:', error);
-        }
-      }
-
-      // Free Whisper native resources
-      try {
-        await freeWhisper();
-        logger.debug('[DAEMON RUN] Whisper native resources freed');
-      } catch (error) {
-        logger.debug('[DAEMON RUN] Failed to free Whisper resources:', error);
-      }
-
-      // Stop TTS provider
-      try {
-        await stopTts();
-        logger.debug('[DAEMON RUN] TTS provider stopped');
-      } catch (error) {
-        logger.debug('[DAEMON RUN] Failed to stop TTS provider:', error);
-      }
-
-      // Flush pending KV mutations to disk (debounce timer is unref-ed and may not fire before exit)
-      p2pStore.flushKvToDisk();
-      logger.debug('[DAEMON RUN] KV store flushed to disk');
-
-      // Stop P2P server
-      try {
-        await p2pServer.stop();
-        logger.debug('[DAEMON RUN] P2P server stopped');
-      } catch (error) {
-        logger.debug('[DAEMON RUN] Failed to stop P2P server:', error);
-      }
-
-      await stopControlServer();
-      await cleanupDaemonState();
-      await stopCaffeinate();
-      await releaseDaemonLock(daemonLockHandle);
-
-      logger.debug('[DAEMON RUN] Cleanup completed, exiting process');
-      process.exit(0);
+      return shutdownResult;
     };
 
     logger.debug('[DAEMON RUN] Daemon started successfully, waiting for shutdown request');
 
-    // Wait for shutdown request
-    const shutdownRequest = await resolvesWhenShutdownRequested;
-    await cleanupAndShutdown(shutdownRequest.source, shutdownRequest.errorMessage);
+    // A failed shared Codex app-server stop preserves ownership and waits for
+    // the next control/signal request instead of falling through to fatal exit.
+    await runDaemonShutdownLifecycle({
+      waitForShutdownRequest: shutdownRequestChannel.waitForShutdownRequest,
+      cleanupAndShutdown: (shutdownRequest) => cleanupAndShutdown(
+        shutdownRequest.source,
+        shutdownRequest.errorMessage,
+      ),
+    });
   } catch (error) {
-    const errorMessage = error instanceof Error ? `${error.message}\n${error.stack}` : String(error);
-    logger.debug(`[DAEMON RUN][FATAL] Failed somewhere unexpectedly - exiting with code 1: ${errorMessage}`);
+    logger.debug('[DAEMON RUN][FATAL] Failed somewhere unexpectedly - exiting with code 1:', redactDiagnosticData(error));
     process.exit(1);
   }
 }

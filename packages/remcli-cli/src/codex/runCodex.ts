@@ -26,6 +26,7 @@ import { CodexDisplay } from "@/ui/ink/CodexDisplay";
 import {
     bindDaemonCodexThread,
     openDaemonCodexRemoteTui,
+    preflightDaemonCursorRunner,
 } from "@/daemon/controlClient";
 import { registerKillSessionHandler } from "@/claude/registerKillSessionHandler";
 import { stopCaffeinate } from "@/utils/caffeinate";
@@ -45,9 +46,14 @@ import {
 import { replayCodexSessionHistory } from './utils/replayCodexSessionHistory';
 import type { CodexApprovalPolicy, CodexSandbox, CodexToolResponse } from './types';
 import {
-    CODEX_DEFAULT_REASONING_EFFORT,
     isCodexAppServerStateUsable,
 } from './codexAppServerHost';
+import {
+    CodexCapabilitiesError,
+    fetchCodexCapabilities,
+    validateCodexExecution,
+    type CodexExecutionConfig,
+} from './codexCapabilities';
 
 type ReadyEventOptions = {
     pending: unknown;
@@ -63,6 +69,7 @@ const CODEX_DELIVERY_RECOVERY_DELAYS_MS = [250, 1_000, 3_000] as const;
 const CODEX_APP_SERVER_OVERLOADED_ERROR_CODE = -32001;
 const CODEX_APP_SERVER_OVERLOADED_ERROR_MESSAGE = 'Server overloaded; retry later.';
 const CODEX_INTERRUPTED_TURN_SETTLE_TIMEOUT_MS = 10_000;
+const DAEMON_EXECUTION_SELECTION_REQUIRED_ERROR = 'Codex daemon runner requires a validated execution and permission mode.';
 
 interface CodexPermissionConfig {
     approvalPolicy: CodexApprovalPolicy;
@@ -80,7 +87,7 @@ interface ScheduledDeliveryRecovery {
     timeout: ReturnType<typeof setTimeout>;
 }
 
-function isCodexPermissionMode(permissionMode: PermissionMode): permissionMode is CodexSandbox {
+function isCodexPermissionMode(permissionMode: unknown): permissionMode is CodexSandbox {
     return permissionMode === 'read-only'
         || permissionMode === 'workspace-write'
         || permissionMode === 'danger-full-access';
@@ -197,6 +204,86 @@ async function createCodexAppServerClient(): Promise<CodexAppServerClientSelecti
 }
 
 /**
+ * Connect to the transport that will receive the first native turn. A stale
+ * shared endpoint may fall back to a private app-server, which must be the
+ * transport validated for daemon-provided execution selection.
+ */
+async function connectCodexAppServerWithSharedFallback(): Promise<CodexAppServerClientSelection> {
+    const selection = await createCodexAppServerClient();
+
+    try {
+        await selection.client.connect();
+        return selection;
+    } catch (error) {
+        if (!selection.usesSharedEndpoint || !isCodexAppServerTransientTransportError(error)) {
+            await selection.client.disconnect().catch(() => undefined);
+            throw error;
+        }
+
+        logger.warn(
+            '[Codex] Shared daemon Codex app-server connect failed; retrying with private stdio app-server:',
+            redactDiagnosticData(error),
+        );
+        await selection.client.disconnect().catch(() => undefined);
+
+        const privateClient = new CodexAppServerClient();
+        try {
+            await privateClient.connect();
+            return { client: privateClient, usesSharedEndpoint: false };
+        } catch (privateError) {
+            await privateClient.disconnect().catch(() => undefined);
+            throw privateError;
+        }
+    }
+}
+
+async function validateCodexAppServerSelectionWithSharedFallback(
+    selection: CodexAppServerClientSelection,
+    execution: CodexExecutionConfig,
+    permissionConfig: CodexPermissionConfig,
+): Promise<CodexAppServerClientSelection> {
+    const validateSelection = async (candidate: CodexAppServerClientSelection): Promise<CodexAppServerClientSelection> => {
+        await candidate.client.connect();
+        const capabilities = await fetchCodexCapabilities(candidate.client);
+        validateCodexExecution(
+            capabilities,
+            execution,
+            permissionConfig.sandbox,
+            permissionConfig.approvalPolicy,
+        );
+        return candidate;
+    };
+
+    try {
+        return await validateSelection(selection);
+    } catch (error) {
+        if (!selection.usesSharedEndpoint || !isCodexAppServerTransientTransportError(error)) {
+            await selection.client.disconnect().catch(() => undefined);
+            throw error;
+        }
+
+        logger.warn(
+            '[Codex] Shared daemon Codex app-server connect failed; retrying with private stdio app-server:',
+            redactDiagnosticData(error),
+        );
+        await selection.client.disconnect().catch((disconnectError) => {
+            logger.debug(
+                '[Codex] Failed to disconnect stale shared app-server client:',
+                redactDiagnosticData(disconnectError),
+            );
+        });
+
+        const privateClient = new CodexAppServerClient();
+        try {
+            return await validateSelection({ client: privateClient, usesSharedEndpoint: false });
+        } catch (privateError) {
+            await privateClient.disconnect().catch(() => undefined);
+            throw privateError;
+        }
+    }
+}
+
+/**
  * Main entry point for the codex command with ink UI
  */
 export async function runCodex(opts: {
@@ -204,6 +291,8 @@ export async function runCodex(opts: {
     startedBy?: 'daemon' | 'terminal';
     resumeSessionId?: string;
     reasoningEffort?: string;
+    execution?: CodexExecutionConfig;
+    permissionMode?: CodexSandbox;
 }): Promise<void> {
     interface EnhancedMode {
         permissionMode: CodexSandbox;
@@ -229,6 +318,73 @@ export async function runCodex(opts: {
     //
 
     const sessionTag = randomUUID();
+
+    let daemonPreflightAppServerSelection: CodexAppServerClientSelection | undefined;
+    if (opts.startedBy === 'daemon') {
+        if (!opts.execution || !isCodexPermissionMode(opts.permissionMode)) {
+            logger.warn(`[Codex] ${DAEMON_EXECUTION_SELECTION_REQUIRED_ERROR}`);
+            return;
+        }
+
+        const permissionConfig = resolveCodexPermissionConfig(opts.permissionMode);
+        let preflightSelection: CodexAppServerClientSelection | undefined;
+        try {
+            preflightSelection = await connectCodexAppServerWithSharedFallback();
+            preflightSelection = await validateCodexAppServerSelectionWithSharedFallback(
+                preflightSelection,
+                opts.execution,
+                permissionConfig,
+            );
+        } catch (error) {
+            logger.warn(
+                '[Codex] Daemon runner rejected its execution selection before P2P session creation:',
+                redactDiagnosticData(error),
+            );
+            await preflightSelection?.client.disconnect().catch(() => undefined);
+            return;
+        }
+
+        const validatedPreflightSelection = preflightSelection;
+        if (!validatedPreflightSelection) {
+            return;
+        }
+
+        try {
+            const runnerPreflight = await preflightDaemonCursorRunner({
+                agent: 'codex',
+                nativeResumeSessionId: opts.resumeSessionId,
+                pid: process.pid,
+            });
+            if (!runnerPreflight.ok || runnerPreflight.data.type !== 'verified') {
+                logger.warn('[Codex] Daemon runner preflight rejected before P2P session creation.');
+                await validatedPreflightSelection.client.disconnect().catch(() => undefined);
+                return;
+            }
+        } catch (error) {
+            logger.warn(
+                '[Codex] Daemon runner preflight failed before P2P session creation:',
+                redactDiagnosticData(error),
+            );
+            await validatedPreflightSelection.client.disconnect().catch(() => undefined);
+            return;
+        }
+
+        try {
+            preflightSelection = await validateCodexAppServerSelectionWithSharedFallback(
+                validatedPreflightSelection,
+                opts.execution,
+                permissionConfig,
+            );
+        } catch (error) {
+            logger.warn(
+                '[Codex] Daemon runner transport changed before P2P session creation:',
+                redactDiagnosticData(error),
+            );
+            return;
+        }
+
+        daemonPreflightAppServerSelection = preflightSelection;
+    }
 
     // Set backend for offline warnings (before any API calls)
     connectionState.setBackend('Codex');
@@ -271,10 +427,16 @@ export async function runCodex(opts: {
     if (opts.startedBy === 'daemon') {
         if (!response) {
             logger.warn('[Codex] Daemon-owned runner cannot start without a P2P session for credential handoff.');
+            if (!daemonPreflightAppServerSelection?.usesSharedEndpoint) {
+                await daemonPreflightAppServerSelection?.client.disconnect().catch(() => undefined);
+            }
             return;
         }
 
         if (!await acquireDaemonRunnerCredential({ agentName: 'Codex', sessionId: response.id, metadata })) {
+            if (!daemonPreflightAppServerSelection?.usesSharedEndpoint) {
+                await daemonPreflightAppServerSelection?.client.disconnect().catch(() => undefined);
+            }
             return;
         }
     } else if (response) {
@@ -362,9 +524,11 @@ export async function runCodex(opts: {
 
     // Track current overrides to apply per message
     // Use shared PermissionMode type from api/types for cross-agent compatibility
-    let currentPermissionMode: CodexSandbox | undefined = undefined;
-    let currentModel: string | undefined = undefined;
-    const currentReasoningEffort = opts.reasoningEffort ?? CODEX_DEFAULT_REASONING_EFFORT;
+    let currentPermissionMode: CodexSandbox | undefined = opts.permissionMode;
+    let currentModel: string | undefined = opts.execution?.model;
+    const currentReasoningEffort = opts.execution
+        ? opts.execution.reasoningEffort
+        : opts.reasoningEffort;
 
     userMessageConsumer = async (message) => {
         if (message.meta?.sentFrom === 'history' || message.meta?.sentFrom === 'native-app-server') {
@@ -372,9 +536,15 @@ export async function runCodex(opts: {
             return;
         }
 
-        // Resolve permission mode (accept all modes, will be mapped in switch statement)
+        // A daemon-created session receives a capability-validated permission
+        // selection before its first turn. In-chat switching needs its own
+        // capability flow and must not be accepted from untrusted metadata.
         let messagePermissionMode = currentPermissionMode;
-        if (message.meta?.permissionMode) {
+        if (opts.execution) {
+            if (message.meta?.permissionMode && message.meta.permissionMode !== currentPermissionMode) {
+                logger.warn('[Codex] Ignoring unvalidated per-message permission override.');
+            }
+        } else if (message.meta?.permissionMode) {
             const requestedPermissionMode = message.meta.permissionMode as PermissionMode;
             if (isCodexPermissionMode(requestedPermissionMode)) {
                 messagePermissionMode = requestedPermissionMode;
@@ -391,20 +561,17 @@ export async function runCodex(opts: {
             logger.debug(`[Codex] User message received with no permission mode override, using current: ${effectivePermissionMode}`);
         }
 
-        // Resolve model; explicit null resets to undefined (let Codex choose)
-        let messageModel = currentModel;
-        if (message.meta?.hasOwnProperty('model')) {
-            const raw = message.meta.model;
-            messageModel = raw ? raw : undefined;
-            currentModel = messageModel;
-            logger.debug(`[Codex] Model updated from user message: ${messageModel || 'reset to default'}`);
-        } else {
-            logger.debug(`[Codex] User message received with no model override, using current: ${currentModel || 'default'}`);
+        // A raw per-message model string is not a valid Codex execution
+        // selection. New Session passes the daemon-validated atomic config to
+        // the runner before the first turn; in-chat switching is a later,
+        // capability-validated control and must not accept forged metadata.
+        if (Object.prototype.hasOwnProperty.call(message.meta ?? {}, 'model')) {
+            logger.warn('[Codex] Ignoring unvalidated per-message model override.');
         }
 
         const enhancedMode: EnhancedMode = {
             permissionMode: messagePermissionMode || CODEX_DEFAULT_PERMISSION_MODE,
-            model: messageModel,
+            model: currentModel,
             reasoningEffort: currentReasoningEffort,
             clientUserMessageId: message.deliveryId,
             abortGeneration,
@@ -584,7 +751,7 @@ export async function runCodex(opts: {
     // Start Context 
     //
 
-    const appServerSelection = await createCodexAppServerClient();
+    const appServerSelection = daemonPreflightAppServerSelection ?? await createCodexAppServerClient();
     let appServerClient = appServerSelection.client;
     let usesSharedAppServer = appServerSelection.usesSharedEndpoint;
     let remoteTuiEndpoint = appServerSelection.remoteTuiEndpoint;
@@ -749,37 +916,70 @@ export async function runCodex(opts: {
     };
     appServerClient.setHandler(handleCodexClientMessage);
 
+    const replaceAppServerClient = (selection: CodexAppServerClientSelection): void => {
+        appServerClient = selection.client;
+        usesSharedAppServer = selection.usesSharedEndpoint;
+        remoteTuiEndpoint = selection.remoteTuiEndpoint;
+        activeClient = appServerClient;
+        activeCodexThreadId = opts.resumeSessionId ?? appServerClient.getActiveThreadId();
+        appServerClient.setThreadIdChangeHandler(handleThreadIdChange);
+        appServerClient.setPermissionHandler(permissionHandler);
+        appServerClient.setHandler(handleCodexClientMessage);
+    };
+
     const autoSetTitle = createAutoTitleSetter(session);
 
     try {
-        logger.debug('[codex]: client.connect begin');
-        try {
-            await activeClient.connect();
-        } catch (error) {
-            if (!usesSharedAppServer || !isCodexAppServerTransientTransportError(error)) throw error;
-            logger.warn(
-                '[Codex] Shared daemon Codex app-server connect failed; retrying with private stdio app-server:',
-                redactDiagnosticData(error),
-            );
+        if (!daemonPreflightAppServerSelection) {
+            logger.debug('[codex]: client.connect begin');
             try {
-                await activeClient.disconnect();
-            } catch (disconnectError) {
-                logger.debug(
-                    '[Codex] Failed to disconnect stale shared app-server client:',
-                    redactDiagnosticData(disconnectError),
+                await activeClient.connect();
+            } catch (error) {
+                if (!usesSharedAppServer || !isCodexAppServerTransientTransportError(error)) throw error;
+                logger.warn(
+                    '[Codex] Shared daemon Codex app-server connect failed; retrying with private stdio app-server:',
+                    redactDiagnosticData(error),
                 );
+                try {
+                    await activeClient.disconnect();
+                } catch (disconnectError) {
+                    logger.debug(
+                        '[Codex] Failed to disconnect stale shared app-server client:',
+                        redactDiagnosticData(disconnectError),
+                    );
+                }
+                replaceAppServerClient({
+                    client: new CodexAppServerClient(),
+                    usesSharedEndpoint: false,
+                });
+                await activeClient.connect();
             }
-            appServerClient = new CodexAppServerClient();
-            usesSharedAppServer = false;
-            remoteTuiEndpoint = undefined;
-            activeClient = appServerClient;
-            activeCodexThreadId = opts.resumeSessionId ?? appServerClient.getActiveThreadId();
-            appServerClient.setThreadIdChangeHandler(handleThreadIdChange);
-            appServerClient.setPermissionHandler(permissionHandler);
-            appServerClient.setHandler(handleCodexClientMessage);
-            await activeClient.connect();
+            logger.debug('[codex]: client.connect done');
         }
-        logger.debug('[codex]: client.connect done');
+        if (opts.execution && !daemonPreflightAppServerSelection) {
+            // The runner may have fallen back from the shared daemon endpoint
+            // to a private app-server. Validate the selected pair against the
+            // transport that will actually receive the first native turn.
+            try {
+                if (!opts.permissionMode) {
+                    throw new CodexCapabilitiesError('unsupported_selection');
+                }
+                const permissionConfig = resolveCodexPermissionConfig(opts.permissionMode);
+                const capabilities = await fetchCodexCapabilities(appServerClient);
+                validateCodexExecution(
+                    capabilities,
+                    opts.execution,
+                    permissionConfig.sandbox,
+                    permissionConfig.approvalPolicy,
+                );
+            } catch (error) {
+                const safeError = error instanceof CodexCapabilitiesError
+                    ? error
+                    : new Error('Codex capability discovery is unavailable. Refresh and try again.');
+                publishSessionError(safeError, 'Codex capability selection could not be validated.');
+                return;
+            }
+        }
         let nativeThreadBootstrap: NativeThreadBootstrap = opts.resumeSessionId
             ? { state: 'resume-pending', threadId: opts.resumeSessionId }
             : { state: 'unstarted' };
@@ -886,7 +1086,7 @@ export async function runCodex(opts: {
                         nativeThreadId,
                         remcliSessionId: session.sessionId,
                         endpoint,
-                        reasoningEffort: currentReasoningEffort,
+                        reasoningEffort: currentReasoningEffort ?? null,
                         model: currentModel,
                     });
                     if (
@@ -1183,6 +1383,24 @@ export async function runCodex(opts: {
                     throw bootstrapError;
                 }
                 const permissionConfig = resolveCodexPermissionConfig(message.mode.permissionMode);
+                if (
+                    opts.startedBy === 'daemon'
+                    && opts.execution
+                    && nativeThreadBootstrap.state !== 'ready'
+                ) {
+                    const validatedSelection = await validateCodexAppServerSelectionWithSharedFallback(
+                        {
+                            client: appServerClient,
+                            usesSharedEndpoint: usesSharedAppServer,
+                            ...(remoteTuiEndpoint ? { remoteTuiEndpoint } : {}),
+                        },
+                        opts.execution,
+                        permissionConfig,
+                    );
+                    if (validatedSelection.client !== appServerClient) {
+                        replaceAppServerClient(validatedSelection);
+                    }
+                }
                 const turnSignal = abortController.signal;
                 let didSteerActiveTurn = false;
 

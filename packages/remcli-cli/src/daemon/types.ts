@@ -60,7 +60,8 @@ export interface CodexRemoteTuiOpenRequest {
   nativeThreadId: string;
   remcliSessionId: string;
   endpoint: string;
-  reasoningEffort?: string;
+  /** `null` explicitly omits an unsupported reasoning option from the native TUI command. */
+  reasoningEffort: string | null;
   model?: string;
 }
 

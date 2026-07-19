@@ -64,7 +64,7 @@ const cursorRunnerPreflightResponseSchema = z.object({
 
 const codexRemoteTuiOpenRequestSchema = nativeCodexThreadBindingSchema.extend({
   endpoint: z.string().url(),
-  reasoningEffort: z.string().min(1).optional(),
+  reasoningEffort: z.string().trim().min(1).nullable(),
   model: z.string().min(1).optional(),
 });
 

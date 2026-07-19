@@ -118,14 +118,17 @@ agent --print --output-format stream-json --trust \
 
 - Unit/native fixture: success, no init/result, result error, malformed NDJSON,
   auth redaction, missing binary, resume mismatch, abort process tree.
-- Daemon: capability-bound preflight до P2P creation, forged `--started-by`,
-  credential-protected native-ID binding, concurrent binding/reuse/release,
-  duplicate active resume, cross-workspace reject, redacted diagnostics и
-  daemon-lifetime parent lineage после stop -> resume.
-- Real gate: `agent --print --output-format stream-json --mode ask` и
-  `agent --resume <id>` сохраняют контекст.
-- Remcli acceptance: create -> prompt -> stop -> resume в daemon и Browser на
-  `390x844` и `1280x800`.
+- `D`: native fixture покрывает success, no init/result, result error,
+  malformed NDJSON, auth redaction, missing binary, resume mismatch и abort
+  process tree.
+- `I`: encrypted machine-RPC проходит real SessionManager/tmux/compiled runner
+  до controlled native `agent`; проверяются exact argv, ACK no-replay, active
+  native stop с SIGTERM, same-native resume и cleanup.
+- `UI-F`: Cursor-labelled Browser fixture проверяет bind/resume error и retry
+  в том же drawer на `390x844` и `1280x800`.
+- `L`: opt-in `REMCLI_REAL_CURSOR=1` create -> prompt -> stop -> resume context
+  gate остаётся pending; отдельно нужны disconnect-before-ACK, concurrent/pre-init
+  duplicate, workspace mismatch и exact owned tmux pane cleanup cases.
 
 ## Явная граница
 

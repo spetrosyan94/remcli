@@ -43,6 +43,7 @@ export {
     loadSessionMessages,
     sendSessionMessage,
     // fixture-aware обёртки над socket.ts (в fixture-режиме — локальный ответ)
+    machineGetCodexCapabilities,
     machineSpawnNewSession,
     machineListAgentSessions,
     machineListDirectory,
@@ -84,6 +85,10 @@ export {
     machineRpc,
     waitForSocketConnection,
     type ConnectionStatus,
+    type CodexCapabilitiesSnapshot,
+    type CodexExecutionConfig,
+    type CodexModelCapability,
+    type CodexReasoningEffort,
     type DirectoryEntry,
     type DirectoryHome,
     type DirectoryListing,

@@ -35,7 +35,12 @@ import {
     type FixtureConciergeFeedEntry
 } from '@/lib/fixtures/data';
 import type { NormalizedMessage } from '@/lib/protocol/messages';
-import type { DirectoryListing, SpawnSessionOptions, SpawnSessionResult } from '@/lib/protocol/socket';
+import type {
+    CodexCapabilitiesSnapshot,
+    DirectoryListing,
+    SpawnSessionOptions,
+    SpawnSessionResult,
+} from '@/lib/protocol/socket';
 import { useProtocolStore } from '@/lib/protocol/store';
 import type { AgentKind, AgentSessionInfo, Session, SessionMetadata } from '@/lib/protocol/types';
 
@@ -83,6 +88,8 @@ let zenTasksValue = JSON.stringify(FIXTURE_ZEN_TASKS);
 let zenTasksVersion = 1;
 let spawnedSessionCounter = 0;
 let fixtureResumeRetryAttempts = 0;
+let fixtureCodexCapabilityRejectionAttempts = 0;
+let fixtureCursorResumeSpawnAttempts = 0;
 
 interface FixtureLineageMetricsState {
     refreshSessionsCalls: number;
@@ -97,6 +104,17 @@ const FIXTURE_RESUME_RESPONSE_DELAY_MS = 1_000;
 const FIXTURE_LONG_RESUME_ROW_COUNT = 24;
 const FIXTURE_LONG_CHAT_PATH = `/Users/dev/projects/remcli/${'nested-directory/'.repeat(36)}calculate.js:195`;
 const FIXTURE_LONG_CHAT_LINK = `https://en.wikipedia.org/wiki/Function_(mathematics)?trace=${'trace-segment-'.repeat(36)}`;
+const FIXTURE_CURSOR_RESUME_NATIVE_SESSION_ID = 'fixture-cursor-native-lifecycle';
+const FIXTURE_CURSOR_RESUME_SESSION: AgentSessionInfo = {
+    sessionId: FIXTURE_CURSOR_RESUME_NATIVE_SESSION_ID,
+    agent: 'cursor',
+    projectPath: '/Users/dev/projects/remcli',
+    lastModified: FIXTURE_BASE_TIME - 30_000,
+    firstMessage: 'Проверить Cursor lifecycle и продолжить с тем же контекстом',
+    messageCount: 8,
+    createdAt: FIXTURE_BASE_TIME - 6 * 60_000,
+    sessionName: 'Cursor lifecycle review',
+};
 
 function fixtureQueryParameter(name: string): string | null {
     if (typeof window === 'undefined') return null;
@@ -380,6 +398,8 @@ export function initFixturesIfEnabled(): boolean {
     if (!readFixtureFlag()) return false;
     installFetchInterceptor();
     fixtureResumeRetryAttempts = 0;
+    fixtureCodexCapabilityRejectionAttempts = 0;
+    fixtureCursorResumeSpawnAttempts = 0;
     getFixtureLineageMetricsState();
     const store = useProtocolStore.getState();
     store.applyMachines(FIXTURE_MACHINES);
@@ -461,6 +481,118 @@ export function fixtureRecordSentSession(sessionId: string): void {
 /** REST-конфиг fixture-режима: все запросы уйдут в fetch-перехватчик. */
 export function fixtureRestConfig(): { endpoint: string; token: string } {
     return { endpoint: FIXTURE_ENDPOINT, token: 'fixtures' };
+}
+
+/** Deterministic capability contract for visual/browser fixtures only. */
+export async function fixtureGetCodexCapabilities(): Promise<CodexCapabilitiesSnapshot> {
+    const scenario = typeof window === 'undefined'
+        ? null
+        : new URLSearchParams(window.location.search).get('codexCapabilities');
+    if (scenario === 'capability-rejection' && fixtureCodexCapabilityRejectionAttempts > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    if (scenario === 'unavailable') {
+        return {
+            agent: 'codex',
+            status: 'unavailable',
+            fetchedAt: null,
+            expiresAt: null,
+            catalogVersion: null,
+            models: [],
+            permissionModes: [],
+            errorCode: 'unavailable',
+        };
+    }
+    if (scenario === 'choose-required') {
+        return {
+            agent: 'codex',
+            status: 'ready',
+            fetchedAt: FIXTURE_BASE_TIME,
+            expiresAt: FIXTURE_BASE_TIME + (5 * 60 * 1_000),
+            catalogVersion: 'fixture-codex-choose-required-v1',
+            models: [{
+                id: 'gpt-5.6-choose-required',
+                displayName: 'GPT-5.6 Choose Required',
+                supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+                isDefault: true,
+            }],
+            permissionModes: ['read-only', 'workspace-write', 'danger-full-access'],
+        };
+    }
+    if (scenario === 'no-reasoning') {
+        return {
+            agent: 'codex',
+            status: 'ready',
+            fetchedAt: FIXTURE_BASE_TIME,
+            expiresAt: FIXTURE_BASE_TIME + (5 * 60 * 1_000),
+            catalogVersion: 'fixture-codex-no-reasoning-v1',
+            models: [{
+                id: 'gpt-5.6-no-reasoning',
+                displayName: 'GPT-5.6 No Reasoning',
+                supportedReasoningEfforts: [],
+                isDefault: true,
+            }],
+            permissionModes: ['read-only', 'workspace-write', 'danger-full-access'],
+        };
+    }
+    if (scenario === 'capability-rejection' && fixtureCodexCapabilityRejectionAttempts > 0) {
+        return {
+            agent: 'codex',
+            status: 'ready',
+            fetchedAt: FIXTURE_BASE_TIME + 1_000,
+            expiresAt: FIXTURE_BASE_TIME + (5 * 60 * 1_000),
+            catalogVersion: 'fixture-codex-refreshed-v2',
+            models: [{
+                id: 'gpt-5.6-refreshed',
+                displayName: 'GPT-5.6-Refreshed',
+                defaultReasoningEffort: 'high',
+                supportedReasoningEfforts: ['low', 'high', 'ultra'],
+                isDefault: true,
+            }],
+            permissionModes: ['read-only', 'workspace-write', 'danger-full-access'],
+        };
+    }
+    if (scenario === 'capability-rejection') {
+        return {
+            agent: 'codex',
+            status: 'ready',
+            fetchedAt: FIXTURE_BASE_TIME,
+            expiresAt: FIXTURE_BASE_TIME + (5 * 60 * 1_000),
+            catalogVersion: 'fixture-codex-stale-v1',
+            models: [{
+                id: 'gpt-5.6-stale',
+                displayName: 'GPT-5.6-Stale',
+                defaultReasoningEffort: 'xhigh',
+                supportedReasoningEfforts: ['low', 'xhigh'],
+                isDefault: true,
+            }],
+            permissionModes: ['read-only', 'workspace-write', 'danger-full-access'],
+        };
+    }
+    return {
+        agent: 'codex',
+        status: 'ready',
+        fetchedAt: FIXTURE_BASE_TIME,
+        expiresAt: FIXTURE_BASE_TIME + (5 * 60 * 1_000),
+        catalogVersion: 'fixture-codex-v1',
+        models: [
+            {
+                id: 'gpt-5.6-luna',
+                displayName: 'GPT-5.6-Luna',
+                defaultReasoningEffort: 'xhigh',
+                supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+                isDefault: true,
+            },
+            {
+                id: 'gpt-5.6-terra',
+                displayName: 'GPT-5.6-Terra',
+                defaultReasoningEffort: 'high',
+                supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+                isDefault: false,
+            },
+        ],
+        permissionModes: ['read-only', 'workspace-write', 'danger-full-access'],
+    };
 }
 
 export function isFixtureRestEndpoint(endpoint: string): boolean {
@@ -559,6 +691,11 @@ export async function fixtureListAgentSessions(
     directory?: string,
     limit = 20
 ): Promise<AgentSessionInfo[]> {
+    if (fixtureQueryParameter('resumeFixture') === 'cursor-lifecycle') {
+        await waitForFixtureResumeResponse();
+        return agent === 'cursor' ? [FIXTURE_CURSOR_RESUME_SESSION] : [];
+    }
+
     if (fixtureQueryParameter('resumeFixture') === 'retry-long') {
         await waitForFixtureResumeResponse();
         fixtureResumeRetryAttempts += 1;
@@ -599,10 +736,38 @@ export async function fixtureListAgentSessions(
 }
 
 /** Локальный spawn/remcli-session для fixture-mode: без machine encryption и daemon RPC. */
-export function fixtureSpawnNewSession(options: SpawnSessionOptions): SpawnSessionResult {
+export async function fixtureSpawnNewSession(options: SpawnSessionOptions): Promise<SpawnSessionResult> {
     const machine = FIXTURE_MACHINES.find((item) => item.id === options.machineId);
     if (!machine?.metadata) {
         return { type: 'error', errorMessage: `Fixture machine not found: ${options.machineId}` };
+    }
+
+    const capabilityScenario = fixtureQueryParameter('codexCapabilities');
+    if (capabilityScenario === 'capability-rejection'
+        && options.agent === 'codex'
+        && fixtureCodexCapabilityRejectionAttempts === 0) {
+        fixtureCodexCapabilityRejectionAttempts += 1;
+        return {
+            type: 'error',
+            errorMessage: 'Codex capability selection rejected: unsupported_selection.',
+        };
+    }
+
+    if (
+        fixtureQueryParameter('resumeFixture') === 'cursor-lifecycle'
+        && options.agent === 'cursor'
+        && options.resumeSessionId === FIXTURE_CURSOR_RESUME_NATIVE_SESSION_ID
+    ) {
+        // A real daemon RPC is asynchronous. Keep the retry state observable
+        // in Browser tests instead of collapsing it into one render frame.
+        await waitForFixtureResumeResponse();
+        if (fixtureCursorResumeSpawnAttempts === 0) {
+            fixtureCursorResumeSpawnAttempts += 1;
+            return {
+                type: 'error',
+                errorMessage: 'Cursor could not bind this native session. Retry the same session.',
+            };
+        }
     }
 
     const directory = normalizeFixtureDirectoryPath(options.directory, machine.metadata.homeDir);

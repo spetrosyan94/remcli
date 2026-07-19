@@ -134,6 +134,80 @@ describe('codexSandboxToAppServerPolicy', () => {
     });
 });
 
+describe('CodexAppServerClient capability calls', () => {
+    it('normalizes sandbox and approval policy restrictions from configRequirements/read', async () => {
+        const { client, ws } = await connectFakeClient();
+
+        const requirements = client.readConfigRequirements();
+        await waitForSent(ws, 3);
+        const request = JSON.parse(ws.sent[2]) as { id: number; method: string; params: unknown };
+        expect(request).toEqual({
+            id: request.id,
+            method: 'configRequirements/read',
+            params: null,
+        });
+        ws.message(JSON.stringify({
+            id: request.id,
+            result: {
+                allowedApprovalPolicies: ['on-request', 'never'],
+                allowedSandboxModes: ['readOnly', 'workspaceWrite'],
+            },
+        }));
+
+        await expect(requirements).resolves.toEqual({
+            allowedApprovalPolicies: ['on-request', 'never'],
+            allowedSandboxModes: ['readOnly', 'workspaceWrite'],
+        });
+
+        await client.disconnect();
+    });
+
+    it('normalizes the documented paginated model/list response without filtering provider efforts', async () => {
+        const { client, ws } = await connectFakeClient();
+
+        const models = client.listModels();
+        await waitForSent(ws, 3);
+        const request = JSON.parse(ws.sent[2]) as { id: number; method: string; params: Record<string, unknown> };
+        expect(request).toEqual({
+            id: request.id,
+            method: 'model/list',
+            params: { includeHidden: false },
+        });
+        ws.message(JSON.stringify({
+            id: request.id,
+            result: {
+                data: [{
+                    id: 'gpt-5.6-luna',
+                    displayName: 'GPT-5.6-Luna',
+                    defaultReasoningEffort: 'xhigh',
+                    supportedReasoningEfforts: [
+                        { reasoningEffort: 'xhigh', description: 'Extra high' },
+                        { reasoningEffort: 'ultra', description: 'Automatic delegation' },
+                    ],
+                    isDefault: true,
+                }],
+                nextCursor: 'next-page',
+            },
+        }));
+
+        await expect(models).resolves.toEqual({
+            data: [{
+                id: 'gpt-5.6-luna',
+                displayName: 'GPT-5.6-Luna',
+                defaultReasoningEffort: 'xhigh',
+                supportedReasoningEfforts: [
+                    { reasoningEffort: 'xhigh', description: 'Extra high' },
+                    { reasoningEffort: 'ultra', description: 'Automatic delegation' },
+                ],
+                isDefault: true,
+            }],
+            nextCursor: 'next-page',
+        });
+
+        await client.disconnect();
+    });
+});
+
 describe('CodexAppServerClient websocket transport', () => {
     it('initializes against a shared websocket endpoint', async () => {
         const { client, ws } = await connectFakeClient();
@@ -556,6 +630,7 @@ describe('CodexAppServerClient websocket transport', () => {
         expect(startTurn.params.threadId).toBe('thread-1');
         expect(startTurn.params.input[0].text).toBe('Тест');
         expect(startTurn.params.model).toBe('gpt-5.3-codex-spark');
+        expect(startTurn.params).not.toHaveProperty('effort');
         expect(startTurn.params.clientUserMessageId).toEqual(expect.any(String));
 
         ws.message(JSON.stringify({ id: startTurn.id, result: { turn: { id: 'turn-1' } } }));

@@ -227,12 +227,43 @@ export type SpawnSessionResult =
     | { type: 'requestToApproveDirectoryCreation'; directory: string }
     | { type: 'error'; errorMessage: string };
 
+/** Provider-defined value, validated against the daemon's live model snapshot. */
+export type CodexReasoningEffort = string;
+
+export interface CodexExecutionConfig {
+    model: string;
+    /** Omitted only when the selected provider model exposes no reasoning choices. */
+    reasoningEffort?: CodexReasoningEffort;
+    catalogVersion: string;
+}
+
+export interface CodexModelCapability {
+    id: string;
+    displayName: string;
+    defaultReasoningEffort?: CodexReasoningEffort;
+    supportedReasoningEfforts: CodexReasoningEffort[];
+    isDefault: boolean;
+}
+
+export interface CodexCapabilitiesSnapshot {
+    agent: 'codex';
+    status: 'ready' | 'unavailable';
+    fetchedAt: number | null;
+    expiresAt: number | null;
+    catalogVersion: string | null;
+    models: CodexModelCapability[];
+    permissionModes: Array<Extract<PermissionMode, 'read-only' | 'workspace-write' | 'danger-full-access'>>;
+    errorCode?: 'unavailable' | 'expired' | 'unsupported_selection' | 'policy_denied';
+}
+
 export interface SpawnSessionOptions {
     machineId: string;
     directory: string;
     approvedNewDirectoryCreation?: boolean;
     token?: string;
     agent?: AgentKind;
+    permissionMode?: PermissionMode;
+    codexExecution?: CodexExecutionConfig;
     resumeSessionId?: string;
     resumeSessionName?: string;
     environmentVariables?: Record<string, string>;
@@ -401,7 +432,18 @@ function isPairingRekeyCancellationResult(value: unknown): value is PairingRekey
 
 /** Spawn a new agent session on a machine (daemon RPC `spawn-remcli-session`). */
 export async function machineSpawnNewSession(options: SpawnSessionOptions): Promise<SpawnSessionResult> {
-    const { machineId, directory, approvedNewDirectoryCreation = false, token, agent, resumeSessionId, resumeSessionName, environmentVariables } = options;
+    const {
+        machineId,
+        directory,
+        approvedNewDirectoryCreation = false,
+        token,
+        agent,
+        resumeSessionId,
+        resumeSessionName,
+        environmentVariables,
+        permissionMode,
+        codexExecution,
+    } = options;
     try {
         const result = await machineRpc<SpawnSessionResult | null, {
             type: 'spawn-in-directory';
@@ -412,10 +454,23 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
             resumeSessionId?: string;
             resumeSessionName?: string;
             environmentVariables?: Record<string, string>;
+            permissionMode?: PermissionMode;
+            codexExecution?: CodexExecutionConfig;
         }>(
             machineId,
             'spawn-remcli-session',
-            { type: 'spawn-in-directory', directory, approvedNewDirectoryCreation, token, agent, resumeSessionId, resumeSessionName, environmentVariables }
+            {
+                type: 'spawn-in-directory',
+                directory,
+                approvedNewDirectoryCreation,
+                token,
+                agent,
+                resumeSessionId,
+                resumeSessionName,
+                environmentVariables,
+                permissionMode,
+                codexExecution,
+            }
         );
         if (!result) {
             return { type: 'error', errorMessage: 'RPC returned null — decryption likely failed' };
@@ -427,6 +482,18 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
             errorMessage: error instanceof Error ? error.message : 'Failed to spawn session'
         };
     }
+}
+
+/** Read the daemon-normalized, account-specific Codex capability snapshot. */
+export async function machineGetCodexCapabilities(
+    machineId: string,
+    forceRefresh: boolean = false,
+): Promise<CodexCapabilitiesSnapshot> {
+    return await machineRpc<CodexCapabilitiesSnapshot, { forceRefresh?: boolean }>(
+        machineId,
+        'get-codex-capabilities',
+        forceRefresh ? { forceRefresh: true } : {},
+    );
 }
 
 /** List child directories on a machine (daemon RPC `list-directory`). */

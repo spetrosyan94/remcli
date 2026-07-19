@@ -4,11 +4,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentState, DeliveredUserMessage, Metadata } from '@/api/types';
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
+import * as codexAppServerHost from '@/codex/codexAppServerHost';
+import * as codexCapabilities from '@/codex/codexCapabilities';
+import type {
+    CodexCapabilitiesSnapshot,
+    CodexExecutionConfig,
+} from '@/codex/codexCapabilities';
+import { resolveCodexPermissionConfig } from '@/codex/runCodex';
+import type { CodexSandbox } from '@/codex/types';
 import {
     forgetSessionRunnerCredential,
     getSessionRunnerCredential,
     rememberSessionRunnerCredential,
 } from '@/daemon/p2p/p2pRunnerCredentials';
+import type { DaemonLocallyPersistedState } from '@/persistence';
 import {
     expectTurnSucceeded,
     getRealCodexModel,
@@ -22,6 +31,10 @@ const TEST_RUNNER_CREDENTIAL = 'real-resume-runner-credential';
 const REAL_DELIVERY_ID = `p2p:${REMCLI_SESSION_ID}:1`;
 const DELIVERY_GATE_TIMEOUT_MS = 8_000;
 
+const fakeDaemonState = vi.hoisted(() => ({
+    state: undefined as DaemonLocallyPersistedState | undefined,
+}));
+
 interface CapturedSessionEvent {
     type: string;
     message?: string;
@@ -31,6 +44,80 @@ interface CapturedSessionEvent {
 interface CapturedCodexMessage {
     type?: string;
     message?: string;
+}
+
+interface CapturedRemoteTuiRequest {
+    endpoint: string;
+    model?: string;
+    reasoningEffort: string | null;
+}
+
+interface CapturedRunnerPreflightRequest {
+    agent: 'codex';
+    nativeResumeSessionId?: string;
+    pid: number;
+}
+
+interface LiveRequestedCodexSelection {
+    execution: CodexExecutionConfig;
+    permissionMode: CodexSandbox;
+}
+
+interface UnavailableRequestedCodexSelection {
+    skipReason: string;
+}
+
+function selectLiveRequestedCodexSelection(
+    snapshot: CodexCapabilitiesSnapshot,
+    model: string,
+    reasoningEffort: string,
+): LiveRequestedCodexSelection | UnavailableRequestedCodexSelection {
+    if (snapshot.status !== 'ready' || !snapshot.catalogVersion) {
+        throw new Error('Live Codex capability discovery did not return a current catalog.');
+    }
+
+    const permissionMode: CodexSandbox = 'read-only';
+    if (!snapshot.permissionModes.includes(permissionMode)) {
+        return {
+            skipReason: `Live Codex provider does not advertise the required ${permissionMode} permission mode.`,
+        };
+    }
+
+    const selectedModel = snapshot.models.find((candidate) => candidate.id === model);
+    if (!selectedModel) {
+        return {
+            skipReason: `Live Codex provider does not advertise requested model ${model}.`,
+        };
+    }
+
+    if (!selectedModel.supportedReasoningEfforts.includes(reasoningEffort)) {
+        return {
+            skipReason: `Live Codex provider does not advertise requested reasoning effort ${reasoningEffort} for ${model}.`,
+        };
+    }
+
+    const permission = resolveCodexPermissionConfig(permissionMode);
+    if (!snapshot.approvalPolicies.includes(permission.approvalPolicy)) {
+        return {
+            skipReason: `Live Codex provider does not advertise the required ${permission.approvalPolicy} approval policy.`,
+        };
+    }
+
+    const selection: LiveRequestedCodexSelection = {
+        execution: {
+            model,
+            reasoningEffort,
+            catalogVersion: snapshot.catalogVersion,
+        },
+        permissionMode,
+    };
+    codexCapabilities.validateCodexExecution(
+        snapshot,
+        selection.execution,
+        permission.sandbox,
+        permission.approvalPolicy,
+    );
+    return selection;
 }
 
 const fakeSessionState = vi.hoisted(() => ({
@@ -46,6 +133,8 @@ const fakeSessionState = vi.hoisted(() => ({
     hasObservedAgentOutput: false,
     sentCodexMessages: [] as string[],
     sentSessionEvents: [] as CapturedSessionEvent[],
+    remoteTuiRequests: [] as CapturedRemoteTuiRequest[],
+    runnerPreflightRequests: [] as CapturedRunnerPreflightRequest[],
     recordSuccessfulAgentOutput: vi.fn(),
     agentState: {
         requests: {},
@@ -76,6 +165,8 @@ const fakeSessionState = vi.hoisted(() => ({
         });
         this.sentCodexMessages = [];
         this.sentSessionEvents = [];
+        this.remoteTuiRequests = [];
+        this.runnerPreflightRequests = [];
         this.recordSuccessfulAgentOutput.mockReset();
         this.recordSuccessfulAgentOutput.mockImplementation(() => {
             this.hasObservedAgentOutput = true;
@@ -224,13 +315,27 @@ vi.mock('@/daemon/controlClient', () => ({
             wrapper: binding,
         },
     })),
+    preflightDaemonCursorRunner: vi.fn(async (request: CapturedRunnerPreflightRequest) => {
+        fakeSessionState.runnerPreflightRequests.push(request);
+        return {
+            ok: true as const,
+            data: { type: 'verified' as const },
+        };
+    }),
+    openDaemonCodexRemoteTui: vi.fn(async (request: CapturedRemoteTuiRequest) => {
+        fakeSessionState.remoteTuiRequests.push(request);
+        return {
+            ok: true as const,
+            data: { type: 'already-open' as const },
+        };
+    }),
 }));
 
 vi.mock('@/persistence', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/persistence')>();
     return {
         ...actual,
-        readDaemonState: vi.fn(async () => undefined),
+        readDaemonState: vi.fn(async () => fakeDaemonState.state),
         readSettings: vi.fn(async () => ({
             onboardingCompleted: true,
             profiles: [],
@@ -350,50 +455,238 @@ vi.mock('@/utils/MessageQueue2', () => {
 });
 
 const threadIdsToDelete: string[] = [];
+let sharedAppServerHost: codexAppServerHost.CodexAppServerHostHandle | null = null;
+let hasCreatedManagedResource = false;
+let hasPrimaryLifecycleFailure = false;
+let deferredSkipReason: string | null = null;
 
-afterEach(() => {
+function formatCleanupFailure(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+async function finalizeLiveSmokeCleanup(markSkipped: (reason: string) => void): Promise<void> {
+    const cleanupFailures: string[] = [];
+    fakeDaemonState.state = undefined;
+
+    if (sharedAppServerHost) {
+        try {
+            await sharedAppServerHost.stop();
+        } catch (error) {
+            cleanupFailures.push(`Failed to stop shared Codex app-server: ${formatCleanupFailure(error)}`);
+        }
+        sharedAppServerHost = null;
+    }
+
     forgetSessionRunnerCredential(REMCLI_SESSION_ID);
     while (threadIdsToDelete.length > 0) {
         const threadId = threadIdsToDelete.pop();
         if (!threadId) continue;
         try {
             execFileSync('codex', ['delete', threadId, '--force'], { stdio: 'ignore' });
-        } catch {
-            // Best effort cleanup: lifecycle assertions are more important than cleanup noise.
+        } catch (error) {
+            cleanupFailures.push(`Failed to delete real Codex thread ${threadId}: ${formatCleanupFailure(error)}`);
         }
+    }
+
+    const primaryLifecycleFailure = hasPrimaryLifecycleFailure;
+    const mustReportCleanupFailure = hasCreatedManagedResource && !primaryLifecycleFailure;
+    const skipReason = deferredSkipReason;
+    hasCreatedManagedResource = false;
+    hasPrimaryLifecycleFailure = false;
+    deferredSkipReason = null;
+    if (mustReportCleanupFailure && cleanupFailures.length > 0) {
+        throw new Error(cleanupFailures.join('\n'));
+    }
+    if (!primaryLifecycleFailure && skipReason) {
+        markSkipped(skipReason);
+    }
+}
+
+afterEach(async (context) => {
+    await finalizeLiveSmokeCleanup((reason) => context.skip(reason));
+});
+
+it('selects a live-compatible read-only execution with on-request approval', () => {
+    const snapshot = {
+        agent: 'codex',
+        status: 'ready',
+        fetchedAt: 1,
+        expiresAt: 2,
+        catalogVersion: 'selection-test',
+        models: [{
+            id: 'gpt-5.6-luna',
+            displayName: 'GPT-5.6 Luna',
+            supportedReasoningEfforts: ['xhigh'],
+            isDefault: true,
+        }],
+        permissionModes: ['read-only'],
+        approvalPolicies: ['on-request'],
+    } satisfies CodexCapabilitiesSnapshot;
+
+    const selection = selectLiveRequestedCodexSelection(snapshot, 'gpt-5.6-luna', 'xhigh');
+
+    expect(selection).toEqual({
+        execution: {
+            model: 'gpt-5.6-luna',
+            reasoningEffort: 'xhigh',
+            catalogVersion: 'selection-test',
+        },
+        permissionMode: 'read-only',
+    });
+    expect(resolveCodexPermissionConfig(selection.permissionMode)).toEqual({
+        sandbox: 'read-only',
+        approvalPolicy: 'on-request',
+    });
+});
+
+it('skips the live gate when read-only lacks its required approval policy', () => {
+    const snapshot = {
+        agent: 'codex',
+        status: 'ready',
+        fetchedAt: 1,
+        expiresAt: 2,
+        catalogVersion: 'selection-test',
+        models: [{
+            id: 'gpt-5.6-luna',
+            displayName: 'GPT-5.6 Luna',
+            supportedReasoningEfforts: ['xhigh'],
+            isDefault: true,
+        }],
+        permissionModes: ['read-only'],
+        approvalPolicies: ['never'],
+    } satisfies CodexCapabilitiesSnapshot;
+
+    expect(selectLiveRequestedCodexSelection(snapshot, 'gpt-5.6-luna', 'xhigh')).toEqual({
+        skipReason: 'Live Codex provider does not advertise the required on-request approval policy.',
+    });
+});
+
+it('does not mark a deferred live skip until managed cleanup succeeds', async () => {
+    sharedAppServerHost = {
+        endpoint: 'ws://127.0.0.1:45123',
+        processId: 12345,
+        stop: async () => {
+            throw new Error('intentional cleanup failure');
+        },
+    };
+    hasCreatedManagedResource = true;
+    deferredSkipReason = 'Live Codex provider does not advertise the requested selection.';
+
+    const markSkipped = vi.fn();
+    await expect(finalizeLiveSmokeCleanup(markSkipped)).rejects.toThrow('intentional cleanup failure');
+    expect(markSkipped).not.toHaveBeenCalled();
+});
+
+it('returns an unavailable capability skip for afterEach without a Vitest context', async () => {
+    const stop = vi.fn(async () => undefined);
+    const host: codexAppServerHost.CodexAppServerHostHandle = {
+        endpoint: 'ws://127.0.0.1:45123',
+        processId: 45123,
+        stop,
+    };
+    const startHostSpy = vi
+        .spyOn(codexAppServerHost, 'startCodexAppServerHost')
+        .mockResolvedValue(host);
+    const fetchCapabilitiesSpy = vi
+        .spyOn(codexCapabilities, 'fetchCodexCapabilities')
+        .mockResolvedValue({
+            agent: 'codex',
+            status: 'ready',
+            fetchedAt: 1,
+            expiresAt: 2,
+            catalogVersion: 'unavailable-selection-test',
+            models: [{
+                id: 'gpt-5.6-available',
+                displayName: 'GPT-5.6 Available',
+                supportedReasoningEfforts: ['xhigh'],
+                isDefault: true,
+            }],
+            permissionModes: ['read-only'],
+            approvalPolicies: ['on-request'],
+        } satisfies CodexCapabilitiesSnapshot);
+
+    try {
+        const skipReason = await runRunCodexResumeSmoke('gpt-5.6-unavailable', 'xhigh');
+
+        expect(startHostSpy).toHaveBeenCalledOnce();
+        expect(fetchCapabilitiesSpy).toHaveBeenCalledOnce();
+        expect(skipReason).toBe('Live Codex provider does not advertise requested model gpt-5.6-unavailable.');
+        expect(stop).not.toHaveBeenCalled();
+        expect(fakeSessionState.remoteTuiRequests).toEqual([]);
+    } finally {
+        fetchCapabilitiesSpy.mockRestore();
+        startHostSpy.mockRestore();
     }
 });
 
 realCodexDescribe('runCodex real Codex resume smoke', { timeout: 180_000 }, () => {
     it('resumes a real Codex thread through the Remcli runCodex message path', async () => {
-        await runRunCodexResumeSmoke(getRealCodexModel(), getRealCodexReasoningEffort());
+        hasCreatedManagedResource = false;
+        hasPrimaryLifecycleFailure = false;
+        try {
+            const skipReason = await runRunCodexResumeSmoke(
+                getRealCodexModel(),
+                getRealCodexReasoningEffort(),
+            );
+            deferredSkipReason = skipReason;
+        } catch (error) {
+            hasPrimaryLifecycleFailure = true;
+            throw error;
+        }
     });
 });
 
-async function runRunCodexResumeSmoke(model: string, effort: string): Promise<void> {
+async function runRunCodexResumeSmoke(
+    model: string,
+    effort: string,
+): Promise<string | null> {
     const contextMarker = `REMCLI_CONTEXT_MARKER_${Date.now()}`;
-    const realTurnSettings = { model, effort };
-    const seedClient = new CodexAppServerClient();
+    sharedAppServerHost = await codexAppServerHost.startCodexAppServerHost();
+    hasCreatedManagedResource = true;
+    const sharedEndpoint = sharedAppServerHost.endpoint;
+    fakeDaemonState.state = {
+        pid: process.pid,
+        httpPort: 1,
+        startTime: new Date().toISOString(),
+        startedWithCliVersion: '0.0.0-test',
+        codexAppServerEndpoint: sharedEndpoint,
+        codexAppServerPid: sharedAppServerHost.processId,
+    };
+    const seedClient = new CodexAppServerClient({ endpoint: sharedEndpoint });
     const beginTurnSpy = vi.spyOn(CodexAppServerClient.prototype, 'beginTurn');
+    const resumeThreadSpy = vi.spyOn(CodexAppServerClient.prototype, 'resumeThread');
     try {
+        const snapshot = await codexCapabilities.fetchCodexCapabilities(seedClient);
+        const selection = selectLiveRequestedCodexSelection(snapshot, model, effort);
+        if ('skipReason' in selection) {
+            return selection.skipReason;
+        }
+
+        const permission = resolveCodexPermissionConfig(selection.permissionMode);
+        const realTurnSettings = {
+            model: selection.execution.model,
+            effort: selection.execution.reasoningEffort,
+            sandbox: permission.sandbox,
+            approvalPolicy: permission.approvalPolicy,
+        };
         const threadId = await seedClient.startThread({
             cwd: process.cwd(),
-            sandbox: 'read-only',
-            approvalPolicy: 'never',
-            model,
+            sandbox: permission.sandbox,
+            approvalPolicy: permission.approvalPolicy,
+            model: selection.execution.model,
         });
         threadIdsToDelete.push(threadId);
         const seedTurn = await seedClient.startTurn({
             threadId,
             prompt: `Запомни для следующего сообщения кодовую метку: ${contextMarker}. Не используй инструменты. Ответь ровно OK.`,
-            sandbox: 'read-only',
-            approvalPolicy: 'on-request',
+            sandbox: permission.sandbox,
+            approvalPolicy: permission.approvalPolicy,
             ...realTurnSettings,
         });
-        expectTurnSucceeded(seedTurn, 'seed turn', model);
+        expectTurnSucceeded(seedTurn, 'seed turn', selection.execution.model);
         await seedClient.disconnect();
 
-        fakeSessionState.reset('Какую кодовую метку нужно вернуть из предыдущего сообщения? Не используй инструменты. Ответь только меткой.', model);
+        fakeSessionState.reset('Какую кодовую метку нужно вернуть из предыдущего сообщения? Не используй инструменты. Ответь только меткой.', selection.execution.model);
 
         const { runCodex } = await import('@/codex/runCodex');
         await runCodex({
@@ -403,7 +696,8 @@ async function runRunCodexResumeSmoke(model: string, effort: string): Promise<vo
             },
             startedBy: 'daemon',
             resumeSessionId: threadId,
-            reasoningEffort: effort,
+            execution: selection.execution,
+            permissionMode: selection.permissionMode,
         });
 
         const answer = fakeSessionState.sentCodexMessages.join('\n');
@@ -421,13 +715,36 @@ async function runRunCodexResumeSmoke(model: string, effort: string): Promise<vo
         expect(fakeSessionState.hasObservedAgentOutput).toBe(true);
         expect(fakeSessionState.recordSuccessfulAgentOutput).toHaveBeenCalled();
         expect(getSessionRunnerCredential(REMCLI_SESSION_ID)).toBe(TEST_RUNNER_CREDENTIAL);
+        expect(fakeSessionState.runnerPreflightRequests).toEqual([
+            expect.objectContaining({
+                agent: 'codex',
+                nativeResumeSessionId: threadId,
+                pid: process.pid,
+            }),
+        ]);
+        expect(fakeSessionState.remoteTuiRequests).toEqual([
+            expect.objectContaining({
+                endpoint: sharedEndpoint,
+                model: selection.execution.model,
+                reasoningEffort: selection.execution.reasoningEffort,
+            }),
+        ]);
+        expect(resumeThreadSpy).toHaveBeenCalledOnce();
+        expect(resumeThreadSpy).toHaveBeenCalledWith(expect.objectContaining({
+            threadId,
+            model: selection.execution.model,
+            sandbox: permission.sandbox,
+            approvalPolicy: permission.approvalPolicy,
+        }));
         expect(beginTurnSpy).toHaveBeenCalledTimes(2);
         expect(beginTurnSpy).toHaveBeenNthCalledWith(1, expect.objectContaining(realTurnSettings));
         expect(beginTurnSpy).toHaveBeenNthCalledWith(2, expect.objectContaining({
             ...realTurnSettings,
             clientUserMessageId: REAL_DELIVERY_ID,
         }));
+        return null;
     } finally {
+        resumeThreadSpy.mockRestore();
         beginTurnSpy.mockRestore();
         await seedClient.disconnect().catch(() => undefined);
     }

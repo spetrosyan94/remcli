@@ -6,6 +6,7 @@ import {
     rememberSessionRunnerCredential,
 } from '@/daemon/p2p/p2pRunnerCredentials';
 import { logger } from '@/ui/logger';
+import { fetchCodexCapabilities, getDefaultCodexExecution } from './codexCapabilities';
 
 const testAppServerErrors = vi.hoisted(() => {
     class TransportError extends Error {
@@ -71,6 +72,14 @@ type TestAppServerEvent =
     | { type: 'agent_message'; message: string; origin: 'live' | 'replay' }
     | { type: 'exec_command_begin'; command: string };
 
+interface TestCapabilityModel {
+    id: string;
+    displayName: string;
+    defaultReasoningEffort?: string;
+    supportedReasoningEfforts: Array<{ reasoningEffort: string }>;
+    isDefault: boolean;
+}
+
 interface InterruptedTurnCompletedNotification {
     threadId: string;
     turnId: string;
@@ -94,12 +103,27 @@ interface TestState {
         nativeThreadId: string;
         remcliSessionId: string;
         endpoint: string;
-        reasoningEffort: string;
+        reasoningEffort: string | null;
         model?: string;
     }>;
+    capabilityModels: TestCapabilityModel[] | null;
+    allowedApprovalPolicies: string[];
+    allowedSandboxModes: string[];
     callOrder: string[];
     startupCallOrder: string[];
+    p2pSessionCreateCalls: number;
+    p2pSessionConnectCallCounts: number[];
     sessionStartedResults: Array<{ error?: string }>;
+    daemonRunnerPreflightCalls: Array<{
+        agent: 'codex';
+        nativeResumeSessionId?: string;
+        pid: number;
+    }>;
+    daemonRunnerPreflightResults: Array<{
+        ok: boolean;
+        data?: { type: 'verified' };
+        error?: string;
+    }>;
     startedThreads: number;
     resumedThreads: number;
     nativeThreadId: string;
@@ -118,7 +142,9 @@ interface TestState {
     interruptedTurnCompletionEvents: InterruptedTurnCompletedNotification[];
     emitInterruptedTurnCompleted: ((notification: InterruptedTurnCompletedNotification) => void) | null;
     connectCalls: number;
-    connectFailures: Error[];
+    connectFailures: Array<Error | null>;
+    disconnectSharedAfterConfigRead: boolean;
+    privateDisconnectCalls: number;
     deferConnectAfterCalls: number | null;
     resolveDeferredConnect: (() => void) | null;
     startThreadFailures: Error[];
@@ -186,9 +212,16 @@ const testState = vi.hoisted(() => {
         successfulAgentOutputCalls: 0,
         bindingCalls: [],
         remoteTuiOpenCalls: [],
+        capabilityModels: null,
+        allowedApprovalPolicies: ['untrusted', 'on-request', 'never'],
+        allowedSandboxModes: ['readOnly', 'workspaceWrite', 'dangerFullAccess'],
         callOrder: [],
         startupCallOrder: [],
+        p2pSessionCreateCalls: 0,
+        p2pSessionConnectCallCounts: [],
         sessionStartedResults: [],
+        daemonRunnerPreflightCalls: [],
+        daemonRunnerPreflightResults: [],
         startedThreads: 0,
         resumedThreads: 0,
         nativeThreadId: 'native-thread',
@@ -208,6 +241,8 @@ const testState = vi.hoisted(() => {
         emitInterruptedTurnCompleted: null,
         connectCalls: 0,
         connectFailures: [],
+        disconnectSharedAfterConfigRead: false,
+        privateDisconnectCalls: 0,
         deferConnectAfterCalls: null,
         resolveDeferredConnect: null,
         startThreadFailures: [],
@@ -264,9 +299,16 @@ const testState = vi.hoisted(() => {
             state.successfulAgentOutputCalls = 0;
             state.bindingCalls = [];
             state.remoteTuiOpenCalls = [];
+            state.capabilityModels = null;
+            state.allowedApprovalPolicies = ['untrusted', 'on-request', 'never'];
+            state.allowedSandboxModes = ['readOnly', 'workspaceWrite', 'dangerFullAccess'];
             state.callOrder = [];
             state.startupCallOrder = [];
+            state.p2pSessionCreateCalls = 0;
+            state.p2pSessionConnectCallCounts = [];
             state.sessionStartedResults = [];
+            state.daemonRunnerPreflightCalls = [];
+            state.daemonRunnerPreflightResults = [];
             state.startedThreads = 0;
             state.resumedThreads = 0;
             state.nativeThreadId = 'native-thread';
@@ -286,6 +328,8 @@ const testState = vi.hoisted(() => {
             state.emitInterruptedTurnCompleted = null;
             state.connectCalls = 0;
             state.connectFailures = [];
+            state.disconnectSharedAfterConfigRead = false;
+            state.privateDisconnectCalls = 0;
             state.deferConnectAfterCalls = null;
             state.resolveDeferredConnect = null;
             state.startThreadFailures = [];
@@ -332,7 +376,10 @@ const testState = vi.hoisted(() => {
 vi.mock('@/api/api', () => ({
     ApiClient: {
         create: vi.fn(async () => ({
-            getOrCreateSession: vi.fn(async () => ({
+        getOrCreateSession: vi.fn(async () => {
+            testState.state.p2pSessionCreateCalls += 1;
+            testState.state.p2pSessionConnectCallCounts.push(testState.state.connectCalls);
+            return {
                 id: 'remcli-session',
                 seq: 1,
                 metadata: testState.state.executionOutcome
@@ -343,7 +390,8 @@ vi.mock('@/api/api', () => ({
                 agentStateVersion: 1,
                 encryptionKey: new Uint8Array(32),
                 encryptionVariant: 'legacy',
-            })),
+            };
+        }),
             sessionSyncClient: vi.fn(() => {
                 testState.state.startupCallOrder.push('session-sync');
                 return {
@@ -438,12 +486,23 @@ vi.mock('@/daemon/controlClient', () => ({
         testState.state.callOrder.push('bind');
         return testState.state.bindingResult;
     }),
+    preflightDaemonCursorRunner: vi.fn(async (request: {
+        agent: 'codex';
+        nativeResumeSessionId?: string;
+        pid: number;
+    }) => {
+        testState.state.daemonRunnerPreflightCalls.push(request);
+        return testState.state.daemonRunnerPreflightResults.shift() ?? {
+            ok: true,
+            data: { type: 'verified' as const },
+        };
+    }),
     openDaemonCodexRemoteTui: vi.fn(async (request: {
         agent: string;
         nativeThreadId: string;
         remcliSessionId: string;
         endpoint: string;
-        reasoningEffort: string;
+        reasoningEffort: string | null;
         model?: string;
     }) => {
         testState.state.remoteTuiOpenCalls.push(request);
@@ -458,7 +517,6 @@ vi.mock('./utils/replayCodexSessionHistory', () => ({
 
 
 vi.mock('./codexAppServerHost', () => ({
-    CODEX_DEFAULT_REASONING_EFFORT: 'xhigh',
     isCodexAppServerStateUsable: vi.fn(async () => true),
 }));
 
@@ -477,8 +535,15 @@ vi.mock('./codexAppServerClient', () => ({
     CodexAppServerClient: class {
         private handler: ((event: TestAppServerEvent) => void) | null = null;
         private threadIdChangeHandler: ((threadId: string) => void) | null = null;
+        private isConnected = false;
+        private readonly usesSharedEndpoint: boolean;
+
+        constructor(options: { endpoint?: string } = {}) {
+            this.usesSharedEndpoint = options.endpoint !== undefined;
+        }
 
         async connect(): Promise<void> {
+            if (this.isConnected) return;
             testState.state.connectCalls += 1;
             const failure = testState.state.connectFailures.shift();
             if (failure) {
@@ -492,9 +557,15 @@ vi.mock('./codexAppServerClient', () => ({
                     testState.state.resolveDeferredConnect = resolve;
                 });
             }
+            this.isConnected = true;
         }
 
-        async disconnect(): Promise<void> {}
+        async disconnect(): Promise<void> {
+            this.isConnected = false;
+            if (!this.usesSharedEndpoint) {
+                testState.state.privateDisconnectCalls += 1;
+            }
+        }
 
         async forceCloseSession(): Promise<void> {}
 
@@ -557,6 +628,38 @@ vi.mock('./codexAppServerClient', () => ({
 
         setPermissionHandler(): void {}
 
+        async listModels(): Promise<{ data: TestCapabilityModel[] }> {
+            return {
+                data: testState.state.capabilityModels ?? [{
+                    id: 'gpt-5.6-luna',
+                    displayName: 'GPT-5.6-Luna',
+                    defaultReasoningEffort: 'xhigh',
+                    supportedReasoningEfforts: [
+                        { reasoningEffort: 'low' },
+                        { reasoningEffort: 'high' },
+                        { reasoningEffort: 'xhigh' },
+                        { reasoningEffort: 'ultra' },
+                    ],
+                    isDefault: true,
+                }],
+            };
+        }
+
+        async readConfigRequirements(): Promise<{
+            allowedApprovalPolicies: string[];
+            allowedSandboxModes: string[];
+        }> {
+            const requirements = {
+                allowedApprovalPolicies: testState.state.allowedApprovalPolicies,
+                allowedSandboxModes: testState.state.allowedSandboxModes,
+            };
+            if (this.usesSharedEndpoint && testState.state.disconnectSharedAfterConfigRead) {
+                testState.state.disconnectSharedAfterConfigRead = false;
+                this.isConnected = false;
+            }
+            return requirements;
+        }
+
         async startThread(): Promise<string> {
             testState.state.startedThreads += 1;
             testState.state.callOrder.push('start');
@@ -611,6 +714,9 @@ vi.mock('./codexAppServerClient', () => ({
                 if (failure instanceof testAppServerErrors.ActiveTurnHandoffError) {
                     testState.state.activeThreadId = failure.threadId;
                     testState.state.activeTurnId = failure.turnId;
+                }
+                if (failure instanceof testAppServerErrors.TransportError) {
+                    this.isConnected = false;
                 }
                 throw failure;
             }
@@ -849,7 +955,6 @@ function createIncomingMessage(
         content: { type: 'text', text: 'remote prompt' },
         meta: {
             permissionMode: 'read-only',
-            model: 'gpt-test',
             ...overrides,
         },
         ...(deliveryId ? { deliveryId } : {}),
@@ -860,6 +965,12 @@ async function runTestCodex(options: {
     startedBy?: 'daemon' | 'terminal';
     resumeSessionId?: string;
     reasoningEffort?: string;
+    execution?: {
+        model: string;
+        reasoningEffort?: string;
+        catalogVersion: string;
+    };
+    permissionMode?: 'read-only' | 'workspace-write' | 'danger-full-access';
 } = {}): Promise<void> {
     const { runCodex } = await import('./runCodex');
     await runCodex({
@@ -869,6 +980,62 @@ async function runTestCodex(options: {
         },
         ...options,
     });
+}
+
+async function createRunnerExecution(
+    reasoningEffort: string = 'xhigh',
+    allowedApprovalPolicies: string[] = ['untrusted', 'on-request', 'never'],
+): Promise<{
+    model: string;
+    reasoningEffort?: string;
+    catalogVersion: string;
+}> {
+    const capabilities = await fetchCodexCapabilities({
+        listModels: async () => ({
+            data: [{
+                id: 'gpt-5.6-luna',
+                displayName: 'GPT-5.6-Luna',
+                defaultReasoningEffort: 'xhigh',
+                supportedReasoningEfforts: [
+                    { reasoningEffort: 'low' },
+                    { reasoningEffort: 'high' },
+                    { reasoningEffort: 'xhigh' },
+                    { reasoningEffort: 'ultra' },
+                ],
+                isDefault: true,
+            }],
+        }),
+        readConfigRequirements: async () => ({
+            allowedApprovalPolicies,
+            allowedSandboxModes: ['readOnly', 'workspaceWrite', 'dangerFullAccess'],
+        }),
+    });
+    const execution = getDefaultCodexExecution(capabilities);
+    if (!execution) throw new Error('Expected test Codex execution.');
+    return { ...execution, reasoningEffort };
+}
+
+async function createNoReasoningRunnerExecution(): Promise<{
+    model: string;
+    reasoningEffort?: string;
+    catalogVersion: string;
+}> {
+    const capabilities = await fetchCodexCapabilities({
+        listModels: async () => ({
+            data: [{
+                id: 'gpt-5.6-no-reasoning',
+                displayName: 'GPT-5.6 No Reasoning',
+                supportedReasoningEfforts: [],
+                isDefault: true,
+            }],
+        }),
+        readConfigRequirements: async () => ({
+            allowedSandboxModes: ['readOnly', 'workspaceWrite', 'dangerFullAccess'],
+        }),
+    });
+    const execution = getDefaultCodexExecution(capabilities);
+    if (!execution) throw new Error('Expected no-reasoning test Codex execution.');
+    return execution;
 }
 
 function expectExactlyOneSessionError(message: string): void {
@@ -1012,6 +1179,8 @@ describe('runCodex app-server integration', () => {
         await runTestCodex({
             startedBy: 'daemon',
             resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
         });
 
         expect(testState.state.startupCallOrder).toEqual(['session-started', 'session-sync']);
@@ -1030,6 +1199,8 @@ describe('runCodex app-server integration', () => {
         await runTestCodex({
             startedBy: 'daemon',
             resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
         });
 
         expect(testState.state.startupCallOrder).toEqual([
@@ -1040,6 +1211,30 @@ describe('runCodex app-server integration', () => {
         expect(testState.state.startupCallOrder).not.toContain('session-sync');
         expect(testState.state.beginTurns).toEqual([]);
         expect(testState.state.resumedThreads).toBe(0);
+    });
+
+    it('disconnects a private fallback when daemon credential handoff rejects the runner', async () => {
+        testState.state.connectFailures = [
+            new testAppServerErrors.TransportError('Codex app-server websocket closed before connection opened.'),
+        ];
+        testState.state.incomingMessages = [createIncomingMessage()];
+        testState.state.sessionStartedResults = [
+            { error: 'session-webhook-rejected' },
+            { error: 'session-webhook-rejected' },
+            { error: 'session-webhook-rejected' },
+        ];
+
+        await runTestCodex({
+            startedBy: 'daemon',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
+
+        expect(testState.state.connectCalls).toBe(2);
+        expect(testState.state.p2pSessionCreateCalls).toBe(1);
+        expect(testState.state.privateDisconnectCalls).toBe(1);
+        expect(testState.state.startupCallOrder).not.toContain('session-sync');
+        expect(testState.state.beginTurns).toEqual([]);
     });
 
     it('does not echo an own app-server user item into the P2P feed', async () => {
@@ -1079,7 +1274,12 @@ describe('runCodex app-server integration', () => {
         testState.state.resumedActiveTurnId = 'terminal-turn-after-resume';
         testState.state.incomingMessages = [createIncomingMessage({}, deliveryId)];
 
-        await runTestCodex({ startedBy: 'daemon', resumeSessionId: 'native-resume-thread' });
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
 
         expect(testState.state.resumedThreads).toBe(1);
         expect(testState.state.steeredTurns).toEqual([{
@@ -1101,7 +1301,12 @@ describe('runCodex app-server integration', () => {
         testState.state.hydratedExternalUserText = 'Prompt entered in native terminal while Remcli was offline';
         testState.state.incomingMessages = [createIncomingMessage({}, deliveryId)];
 
-        await runTestCodex({ startedBy: 'daemon', resumeSessionId: 'native-resume-thread' });
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
 
         expect(testState.state.callOrder).toContain('hydrate');
         expect(testState.state.resumedThreads).toBe(0);
@@ -1133,7 +1338,12 @@ describe('runCodex app-server integration', () => {
         ];
         testState.state.incomingMessages = [createIncomingMessage({}, deliveryId)];
 
-        await runTestCodex({ startedBy: 'daemon', resumeSessionId: 'native-resume-thread' });
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
 
         expect(testState.state.hydrationCalls).toBe(1);
         expect(testState.state.callOrder).toContain('hydrate');
@@ -1164,7 +1374,12 @@ describe('runCodex app-server integration', () => {
         testState.state.hydrationFailures = [hydrationError];
         testState.state.incomingMessages = [createIncomingMessage({}, deliveryId)];
 
-        await runTestCodex({ startedBy: 'daemon', resumeSessionId: 'native-resume-thread' });
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
 
         expect(testState.state.hydrationCalls).toBe(1);
         expect(testState.state.resumedThreads).toBe(0);
@@ -1183,7 +1398,12 @@ describe('runCodex app-server integration', () => {
         ];
         testState.state.incomingMessages = [createIncomingMessage({}, deliveryId)];
 
-        await runTestCodex({ startedBy: 'daemon', resumeSessionId: 'native-resume-thread' });
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
 
         expect(testState.state.hydrationCalls).toBe(2);
         expect(testState.state.callOrder.indexOf('resume')).toBeGreaterThan(
@@ -1206,6 +1426,50 @@ describe('runCodex app-server integration', () => {
         await runTestCodex({ startedBy: 'terminal' });
 
         expect(testState.state.connectCalls).toBe(2);
+        expect(testState.state.beginTurns).toHaveLength(1);
+    });
+
+    it('validates a daemon selection against the private fallback before creating its P2P session', async () => {
+        testState.state.connectFailures = [
+            new testAppServerErrors.TransportError('Codex app-server websocket closed before connection opened.'),
+        ];
+        testState.state.incomingMessages = [createIncomingMessage()];
+
+        await runTestCodex({
+            startedBy: 'daemon',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
+
+        expect(testState.state.connectCalls).toBe(2);
+        expect(testState.state.daemonRunnerPreflightCalls).toEqual([{
+            agent: 'codex',
+            pid: process.pid,
+        }]);
+        expect(testState.state.p2pSessionCreateCalls).toBe(1);
+        expect(testState.state.beginTurns).toHaveLength(1);
+    });
+
+    it('reselects and validates a private fallback before P2P metadata when the shared transport drops', async () => {
+        testState.state.disconnectSharedAfterConfigRead = true;
+        testState.state.connectFailures = [
+            null,
+            new testAppServerErrors.TransportError('Codex app-server websocket disconnected.'),
+        ];
+        testState.state.incomingMessages = [createIncomingMessage()];
+
+        await runTestCodex({
+            startedBy: 'daemon',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
+
+        expect(testState.state.connectCalls).toBe(3);
+        expect(testState.state.p2pSessionConnectCallCounts).toEqual([3]);
+        expect(testState.state.daemonRunnerPreflightCalls).toEqual([{
+            agent: 'codex',
+            pid: process.pid,
+        }]);
         expect(testState.state.beginTurns).toHaveLength(1);
     });
 
@@ -1500,29 +1764,60 @@ describe('runCodex app-server integration', () => {
         expect(testState.state.sessionEvents).toEqual([{ type: 'ready' }]);
     });
 
-    it('never starts a second native thread after an ambiguous thread/start receipt', async () => {
-        const firstDeliveryId = 'p2p:remcli-session:ambiguous-start-1';
-        const secondDeliveryId = 'p2p:remcli-session:ambiguous-start-2';
-        const ambiguousError = new testAppServerErrors.AmbiguousThreadStartError(
-            'Codex app-server may have created a thread, but its id was not confirmed.',
-        );
-        testState.state.incomingMessages = [
-            createIncomingMessage({}, firstDeliveryId),
-            createIncomingMessage({}, secondDeliveryId),
-        ];
-        testState.state.startThreadFailures = [ambiguousError];
+    it.each([
+        {
+            name: 'execution is missing',
+            hasExecution: false,
+            permissionMode: 'read-only',
+        },
+        {
+            name: 'permission mode is missing',
+            hasExecution: true,
+            permissionMode: undefined,
+        },
+        {
+            name: 'permission mode is forged at runtime',
+            hasExecution: true,
+            permissionMode: 'forged' as never,
+        },
+    ] satisfies Array<{
+        name: string;
+        hasExecution: boolean;
+        permissionMode?: 'read-only' | 'workspace-write' | 'danger-full-access';
+    }>)('fails closed before P2P session creation when daemon $name', async ({ hasExecution, permissionMode }) => {
+        testState.state.incomingMessages = [createIncomingMessage()];
 
-        await runTestCodex({ startedBy: 'daemon' });
+        await runTestCodex({
+            startedBy: 'daemon',
+            execution: hasExecution ? await createRunnerExecution() : undefined,
+            permissionMode,
+        });
 
-        expect(testState.state.startedThreads).toBe(1);
+        expect(testState.state.startedThreads).toBe(0);
+        expect(testState.state.resumedThreads).toBe(0);
         expect(testState.state.bindingCalls).toEqual([]);
         expect(testState.state.remoteTuiOpenCalls).toEqual([]);
         expect(testState.state.beginTurns).toEqual([]);
-        expect(testState.state.acknowledgedDeliveryIds).toEqual([]);
-        expect(testState.state.rejectedDeliveryErrors).toEqual([
-            ambiguousError,
-            ambiguousError,
-        ]);
+        expect(testState.state.p2pSessionCreateCalls).toBe(0);
+        expect(testState.state.startupCallOrder).not.toContain('session-started');
+        expect(testState.state.daemonRunnerPreflightCalls).toEqual([]);
+        expect(testState.state.sessionEvents).toEqual([]);
+    });
+
+    it('rejects a daemon permission mode when its resolved approval policy is no longer allowed', async () => {
+        testState.state.incomingMessages = [createIncomingMessage()];
+        testState.state.allowedApprovalPolicies = ['never'];
+
+        await runTestCodex({
+            startedBy: 'daemon',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution('xhigh', ['never']),
+        });
+
+        expect(testState.state.p2pSessionCreateCalls).toBe(0);
+        expect(testState.state.startupCallOrder).not.toContain('session-started');
+        expect(testState.state.daemonRunnerPreflightCalls).toEqual([]);
+        expect(testState.state.beginTurns).toEqual([]);
     });
 
     it('waits for a successor turn after a steer conflict before starting the same delivery once', async () => {
@@ -1582,14 +1877,22 @@ describe('runCodex app-server integration', () => {
 
         expect(testState.state.bindingCalls).toEqual([]);
         expect(testState.state.remoteTuiOpenCalls).toEqual([]);
-        expect(testState.state.beginTurns).toHaveLength(1);
+        expect(testState.state.beginTurns).toEqual([expect.objectContaining({
+            model: undefined,
+            effort: undefined,
+        })]);
     });
 
     it('binds a resumed native thread once before opening its remote TUI', async () => {
         testState.state.nativeThreadId = 'native-resume-thread';
         testState.state.incomingMessages = [createIncomingMessage()];
 
-        await runTestCodex({ startedBy: 'daemon', resumeSessionId: 'native-resume-thread' });
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
 
         expect(testState.state.bindingCalls).toEqual([{
             agent: 'codex',
@@ -1602,7 +1905,7 @@ describe('runCodex app-server integration', () => {
             remcliSessionId: 'remcli-session',
             endpoint: 'ws://127.0.0.1:45123',
             reasoningEffort: 'xhigh',
-            model: 'gpt-test',
+            model: 'gpt-5.6-luna',
         }]);
         expect(testState.state.callOrder.indexOf('bind')).toBeLessThan(testState.state.callOrder.indexOf('resume'));
         expect(testState.state.callOrder.indexOf('resume')).toBeLessThan(testState.state.callOrder.indexOf('open-tui'));
@@ -1621,7 +1924,12 @@ describe('runCodex app-server integration', () => {
             },
         };
 
-        await runTestCodex({ startedBy: 'daemon', resumeSessionId: 'native-resume-thread' });
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
 
         expect(testState.state.bindingCalls).toHaveLength(1);
         expect(testState.state.remoteTuiOpenCalls).toEqual([]);
@@ -1644,7 +1952,11 @@ describe('runCodex app-server integration', () => {
             },
         };
 
-        await runTestCodex({ startedBy: 'daemon' });
+        await runTestCodex({
+            startedBy: 'daemon',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
 
         expect(testState.state.remoteTuiOpenCalls).toEqual([]);
         expect(testState.state.beginTurns).toEqual([]);
@@ -1699,7 +2011,12 @@ describe('runCodex app-server integration', () => {
         testState.state.incomingMessages = [createIncomingMessage()];
         testState.state.bindingResult = bindingResult;
 
-        await runTestCodex({ startedBy: 'daemon', resumeSessionId: 'native-resume-thread' });
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
 
         expect(testState.state.remoteTuiOpenCalls).toEqual([]);
         expect(testState.state.beginTurns).toEqual([]);
@@ -1727,9 +2044,13 @@ describe('runCodex app-server integration', () => {
         startedThreads,
         resumedThreads,
     }) => {
-        testState.state.incomingMessages = [createIncomingMessage({ model: 'gpt-5.6-luna' })];
+        testState.state.incomingMessages = [createIncomingMessage()];
 
-        await runTestCodex({ ...options, reasoningEffort: 'xhigh' });
+        await runTestCodex({
+            ...options,
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution('xhigh'),
+        });
 
         expect(testState.state.beginTurns).toEqual([expect.objectContaining({
             model: 'gpt-5.6-luna',
@@ -1740,14 +2061,135 @@ describe('runCodex app-server integration', () => {
     });
 
     it('uses xhigh for a browser-created Luna turn when no effort override is provided', async () => {
-        testState.state.incomingMessages = [createIncomingMessage({ model: 'gpt-5.6-luna' })];
+        testState.state.incomingMessages = [createIncomingMessage()];
 
-        await runTestCodex();
+        await runTestCodex({
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution('xhigh'),
+        });
 
         expect(testState.state.beginTurns).toEqual([expect.objectContaining({
             model: 'gpt-5.6-luna',
             effort: 'xhigh',
         })]);
+    });
+
+    it('does not synthesize reasoning for a provider model without a reasoning selector', async () => {
+        testState.state.incomingMessages = [createIncomingMessage()];
+        testState.state.capabilityModels = [{
+            id: 'gpt-5.6-no-reasoning',
+            displayName: 'GPT-5.6 No Reasoning',
+            supportedReasoningEfforts: [],
+            isDefault: true,
+        }];
+
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-thread',
+            permissionMode: 'read-only',
+            execution: await createNoReasoningRunnerExecution(),
+        });
+
+        expect(testState.state.beginTurns).toEqual([expect.objectContaining({
+            model: 'gpt-5.6-no-reasoning',
+            effort: undefined,
+        })]);
+        expect(testState.state.remoteTuiOpenCalls).toEqual([expect.objectContaining({
+            reasoningEffort: null,
+            model: 'gpt-5.6-no-reasoning',
+        })]);
+    });
+
+    it('uses the daemon-validated execution instead of forged message metadata', async () => {
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+        testState.state.incomingMessages = [createIncomingMessage({
+            model: 'untrusted-model',
+            permissionMode: 'danger-full-access',
+        })];
+
+        try {
+            await runTestCodex({
+                permissionMode: 'read-only',
+                execution: await createRunnerExecution('ultra'),
+            });
+
+            expect(testState.state.beginTurns).toEqual([expect.objectContaining({
+                model: 'gpt-5.6-luna',
+                effort: 'ultra',
+                sandbox: 'read-only',
+            })]);
+            expect(warn).toHaveBeenCalledWith('[Codex] Ignoring unvalidated per-message permission override.');
+            expect(warn).toHaveBeenCalledWith('[Codex] Ignoring unvalidated per-message model override.');
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it.each([
+        {
+            name: 'catalog is stale',
+            mutateExecution: (execution: Awaited<ReturnType<typeof createRunnerExecution>>) => ({
+                ...execution,
+                catalogVersion: 'stale-catalog',
+            }),
+            permissionMode: 'read-only',
+        },
+        {
+            name: 'model is no longer available',
+            mutateExecution: (execution: Awaited<ReturnType<typeof createRunnerExecution>>) => ({
+                ...execution,
+                model: 'unavailable-model',
+            }),
+            permissionMode: 'read-only',
+        },
+        {
+            name: 'reasoning effort is no longer available',
+            mutateExecution: (execution: Awaited<ReturnType<typeof createRunnerExecution>>) => ({
+                ...execution,
+                reasoningEffort: 'unavailable-effort',
+            }),
+            permissionMode: 'read-only',
+        },
+        {
+            name: 'permission is no longer allowed',
+            mutateExecution: (execution: Awaited<ReturnType<typeof createRunnerExecution>>) => execution,
+            permissionMode: 'danger-full-access',
+            beforeRun: () => {
+                testState.state.allowedSandboxModes = ['readOnly', 'workspaceWrite'];
+            },
+        },
+    ] satisfies Array<{
+        name: string;
+        mutateExecution: (
+            execution: Awaited<ReturnType<typeof createRunnerExecution>>,
+        ) => Awaited<ReturnType<typeof createRunnerExecution>>;
+        permissionMode: 'read-only' | 'workspace-write' | 'danger-full-access';
+        beforeRun?: () => void;
+    }>)('rejects a daemon selection when $name before P2P session, credential handoff, and native turn', async ({
+        mutateExecution,
+        permissionMode,
+        beforeRun,
+    }) => {
+        testState.state.incomingMessages = [createIncomingMessage()];
+        const execution = await createRunnerExecution();
+        beforeRun?.();
+
+        await runTestCodex({
+            startedBy: 'daemon',
+            permissionMode,
+            execution: mutateExecution(execution),
+        });
+
+        expect(testState.state.connectCalls).toBe(1);
+        expect(testState.state.p2pSessionCreateCalls).toBe(0);
+        expect(testState.state.startupCallOrder).not.toContain('session-started');
+        expect(testState.state.daemonRunnerPreflightCalls).toEqual([]);
+        expect(testState.state.startedThreads).toBe(0);
+        expect(testState.state.resumedThreads).toBe(0);
+        expect(testState.state.bindingCalls).toEqual([]);
+        expect(testState.state.remoteTuiOpenCalls).toEqual([]);
+        expect(testState.state.beginTurns).toEqual([]);
+        expect(testState.state.sessionEvents).toEqual([]);
     });
 
     it('publishes an unsupported permission error when a queued delivery drains during handler registration', async () => {
@@ -1774,19 +2216,19 @@ describe('runCodex app-server integration', () => {
     });
 
     it.each([
-        { name: 'the default', options: {}, effort: 'xhigh' },
-        { name: 'an explicit override', options: { reasoningEffort: 'high' }, effort: 'high' },
+        { name: 'xhigh', effort: 'xhigh' },
+        { name: 'ultra', effort: 'ultra' },
     ] satisfies Array<{
         name: string;
-        options: { reasoningEffort?: string };
         effort: string;
-    }>)('passes $name selected model and reasoning effort to both phone turns and the daemon remote TUI', async ({ options, effort }) => {
-        testState.state.incomingMessages = [createIncomingMessage({ model: 'gpt-5.6-luna' })];
+    }>)('passes the provider-selected $name effort to both phone turns and the daemon remote TUI', async ({ effort }) => {
+        testState.state.incomingMessages = [createIncomingMessage()];
 
         await runTestCodex({
             startedBy: 'daemon',
             resumeSessionId: 'native-thread',
-            ...options,
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(effort),
         });
 
         expect(testState.state.beginTurns).toEqual([expect.objectContaining({
@@ -1806,7 +2248,12 @@ describe('runCodex app-server integration', () => {
             data: { type: 'host-unavailable', error: 'tmux host is unavailable' },
         };
 
-        await runTestCodex({ startedBy: 'daemon', resumeSessionId: 'native-thread' });
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
 
         expect(testState.state.remoteTuiOpenCalls).toEqual(Array.from({ length: 3 }, () => ({
             agent: 'codex',
@@ -1814,14 +2261,17 @@ describe('runCodex app-server integration', () => {
             remcliSessionId: 'remcli-session',
             endpoint: 'ws://127.0.0.1:45123',
             reasoningEffort: 'xhigh',
-            model: 'gpt-test',
+            model: 'gpt-5.6-luna',
         })));
         expect(testState.state.sessionEvents).toContainEqual({
             type: 'message',
             message: 'Could not open Codex remote TUI for thread native-thread: tmux host is unavailable',
             isError: true,
         });
-        expect(testState.state.beginTurns).toHaveLength(1);
+        expect(testState.state.beginTurns).toEqual([expect.objectContaining({
+            model: 'gpt-5.6-luna',
+            effort: 'xhigh',
+        })]);
     });
 
     it('retries a transient remote TUI host failure before starting the Codex turn', async () => {
@@ -1837,7 +2287,12 @@ describe('runCodex app-server integration', () => {
             },
         ];
 
-        await runTestCodex({ startedBy: 'daemon', resumeSessionId: 'native-thread' });
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
 
         expect(testState.state.remoteTuiOpenCalls).toHaveLength(2);
         expect(testState.state.sessionEvents).not.toContainEqual(expect.objectContaining({ isError: true }));

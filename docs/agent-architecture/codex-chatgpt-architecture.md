@@ -180,6 +180,46 @@ Approval policy:
 - `read-only`, `workspace-write` -> `on-request`;
 - `danger-full-access` -> `never`.
 
+## Provider capability catalog
+
+New Session не содержит локального allowlist моделей или reasoning Codex.
+Daemon читает account-visible picker catalog из shared app-server через
+пагинированный `model/list` и ограничения sandbox через
+`configRequirements/read`. В web передаётся только typed snapshot:
+
+- models: `id`, display name, provider default и supported reasoning efforts;
+- допустимые native sandbox values;
+- `catalogVersion`, timestamps freshness и безопасный state `unavailable`.
+
+Сохраняется каждое provider-advertised значение модели и reasoning, включая
+`max` и `ultra`, если их вернул provider. Модель без
+`supportedReasoningEfforts` остаётся selectable: UI отключает только её control
+reasoning, а native turn/TUI не передаёт effort override.
+
+Web отправляет `codexExecution { model, reasoningEffort?, catalogVersion }`
+вместе с выбранным `permissionMode` в `spawn-remcli-session`. Daemon валидирует
+эту атомарную пару по текущему snapshot до spawn runner. Runner повторно читает
+и валидирует тот же selection на app-server transport, который примет первый
+native turn, включая shared-to-private fallback. Stale catalog, unsupported
+model/effort или permission отклоняются до `thread/start`, `thread/resume` и
+`turn/start`.
+
+RPC принимает только own plain object с `model`, `catalogVersion` и необязательным
+`reasoningEffort`; extra fields, accessors, массивы и prototype-pollution payload
+отклоняются до capability validator и spawn. При typed rejection `expired`,
+`unsupported_selection` или `policy_denied` web сохраняет видимую ошибку,
+очищает selection и принудительно обновляет catalog; до новой валидной пары
+Start и Resume заблокированы.
+
+Проверки разделены по уровню: deterministic capability tests и encrypted
+machine-RPC integration используют fake app-server client и mocked spawn
+boundary; это не real-provider gate. Реальный `thread/start + turn/start` gate
+запускается только opt-in с действующими credentials, не в обычном CI.
+
+Переключения model, reasoning и permission внутри открытого чата пока нет.
+Raw per-message metadata намеренно игнорируется daemon-created Codex session и
+не может обойти этот contract.
+
 ## Terminal / TUI parity
 
 Официальный CLI поддерживает remote TUI:
@@ -194,9 +234,10 @@ codex -c 'model_reasoning_effort="xhigh"' [--model <selected-model>] resume <thr
 Daemon-spawned Codex runner остаётся headless в tmux. После успешной привязки
 native `threadId` Remcli открывает TUI через
 `codex -c 'model_reasoning_effort="<effective-effort>"' --model <selected-model> resume <threadId> --remote <endpoint>`.
-Default effort — `xhigh`; выбранные model и effort идут одинаково в phone turn
-и TUI command. Если model не выбрана явно, `--model` не передаётся и Codex
-использует свой default без изменения `~/.codex/config.toml`.
+Выбранные provider model и effort идут одинаково в phone turn и TUI command.
+Если model не выбрана явно, `--model` не передаётся; если provider не выдал
+reasoning choices для выбранной модели, `-c model_reasoning_effort=...` также
+не передаётся. Это не изменяет `~/.codex/config.toml`.
 
 - Одна native Codex thread имеет одну активную Remcli wrapper-сессию: повторный
   resume возвращает существующую wrapper-сессию.
@@ -276,6 +317,11 @@ P2P session consumer. Повторный authenticated handoff того же own
   delivery без нового native prompt.
 - Unit: daemon запускает `codex app-server --listen ws://127.0.0.1:<port>` и ждёт
   `/readyz`.
+- Unit: paginated `model/list` сохраняет все provider values, модель без
+  reasoning selector не скрывается, stale/forged selection и raw per-message
+  override fail closed.
+- Unit/integration: spawn передаёт atomic `codexExecution` через daemon и
+  повторно валидируется runner до первого native turn.
 - CLI: `npm -w remcli run typecheck`, `npm -w remcli run build`,
   `npm -w remcli run test`.
 - Real AI opt-in: create -> prompt -> stop -> reopen/resume -> context check.

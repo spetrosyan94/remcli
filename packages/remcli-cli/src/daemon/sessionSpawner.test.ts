@@ -302,7 +302,8 @@ function openTrackedCodexRemoteTui(
         remcliSessionId: string;
         nativeThreadId: string;
         endpoint: string;
-        reasoningEffort?: string;
+        reasoningEffort: string | null;
+        model?: string;
     },
 ) {
     mockTrackedDaemonTmuxOwnership(manager, request.remcliSessionId);
@@ -371,6 +372,69 @@ describe('buildSafeSpawnSessionLogPayload', () => {
 });
 
 describe('createSessionManager resume deduplication', () => {
+    it('uses an injected CLI entrypoint for an isolated subprocess integration runner', async () => {
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-isolated-cli-artifact',
+            windowId: '@619',
+            paneId: '%619',
+            pid: process.pid,
+        });
+        const runnerEntrypointPath = '/private/remcli-test-artifact/dist/index.mjs';
+        const manager = createSessionManager({ runnerEntrypointPath });
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'codex',
+        });
+
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        const command = tmuxMocks.spawnInTmux.mock.calls[0]?.[0]?.[0];
+        expect(command).toContain(`'${runnerEntrypointPath}'`);
+        expect(command).not.toContain("packages/remcli-cli/dist/index.mjs");
+
+        manager.onRemcliSessionWebhook('remcli-isolated-cli-artifact', createSessionMetadata(process.pid, {
+            startedBy: 'daemon',
+            flavor: 'codex',
+        }), getDaemonRunnerToken());
+        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-isolated-cli-artifact' });
+    });
+
+    it('passes the daemon-validated Codex execution config to the runner before its first turn', async () => {
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-codex-capability',
+            windowId: '@620',
+            paneId: '%620',
+            pid: process.pid,
+        });
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'codex',
+            permissionMode: 'workspace-write',
+            codexExecution: {
+                model: 'gpt-5.6-luna',
+                reasoningEffort: 'ultra',
+                catalogVersion: 'catalog-1',
+            },
+        });
+
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        const environment = tmuxMocks.spawnInTmux.mock.calls[0]?.[2] as Record<string, string>;
+        expect(environment).toMatchObject({
+            REMCLI_CODEX_MODEL: 'gpt-5.6-luna',
+            REMCLI_CODEX_REASONING_EFFORT: 'ultra',
+            REMCLI_CODEX_CATALOG_VERSION: 'catalog-1',
+            REMCLI_CODEX_PERMISSION_MODE: 'workspace-write',
+        });
+
+        manager.onRemcliSessionWebhook('remcli-codex-capability', createSessionMetadata(process.pid, {
+            startedBy: 'daemon',
+            flavor: 'codex',
+        }), getDaemonRunnerToken());
+        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-codex-capability' });
+    });
+
     it('does not spawn a Codex resume after shutdown starts during async resume resolution', async () => {
         const manager = createSessionManager();
         const spawning = manager.spawnSession({
@@ -1017,6 +1081,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-respawned-tui',
             nativeThreadId: 'codex-thread-respawned-tui',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         })).resolves.toMatchObject({ type: 'opened', tmuxWindowId: remoteTuiWindowId });
 
         tmuxMocks.ownedPanes.set('%215', {
@@ -1059,6 +1124,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-foreign-pane',
             nativeThreadId: 'codex-thread-foreign-pane',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         })).resolves.toMatchObject({ type: 'opened', tmuxWindowId: remoteTuiWindowId });
 
         tmuxMocks.ownedPanes.set('%foreign', {
@@ -1111,6 +1177,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-host-takeover',
             nativeThreadId: 'codex-thread-host-takeover',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         })).resolves.toMatchObject({ type: 'host-unavailable' });
 
         expect(openTerminalMocks.openTerminalWithCommand).not.toHaveBeenCalled();
@@ -1161,6 +1228,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-host-recovery',
             nativeThreadId: 'codex-thread-host-recovery',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         };
         await expect(openTrackedCodexRemoteTui(manager, request)).resolves.toMatchObject({
             type: 'host-unavailable',
@@ -1207,6 +1275,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-cleanup-failure',
             nativeThreadId: 'codex-thread-cleanup-failure',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         })).resolves.toMatchObject({ type: 'opened', tmuxWindowId: '@223' });
 
         tmuxMocks.releaseOwnedPane.mockResolvedValueOnce('unknown');
@@ -1218,6 +1287,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-cleanup-failure',
             nativeThreadId: 'codex-thread-cleanup-failure',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         })).resolves.toMatchObject({ type: 'already-open', tmuxWindowId: '@223' });
 
         await expect(manager.stopSession('remcli-session-cleanup-failure')).resolves.toEqual({
@@ -1340,6 +1410,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-stale-open-wrapper',
             nativeThreadId: 'codex-thread-stale-open-wrapper',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         })).resolves.toMatchObject({ type: 'wrapper-not-tracked' });
 
         expect(manager.getChildren()).toHaveLength(1);
@@ -1377,6 +1448,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-concurrent-tui',
             nativeThreadId: 'codex-thread-concurrent-tui',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         };
         const [firstOpen, secondOpen] = await Promise.all([
             openTrackedCodexRemoteTui(manager, request),
@@ -1440,6 +1512,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-host-interrupted',
             nativeThreadId: 'codex-thread-host-interrupted',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         };
         await expect(openTrackedCodexRemoteTui(manager, request)).resolves.toMatchObject({
             type: 'opened',
@@ -1487,6 +1560,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-window-interrupted',
             nativeThreadId: 'codex-thread-window-interrupted',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         };
         await expect(openTrackedCodexRemoteTui(manager, request)).resolves.toMatchObject({
             type: 'opened',
@@ -1649,6 +1723,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-terminal-tui',
             nativeThreadId: 'codex-thread-terminal-tui',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         })).resolves.toMatchObject({ type: 'wrapper-not-daemon-owned' });
         expect(openTerminalMocks.openTerminalWithCommand).not.toHaveBeenCalled();
         expect(tmuxMocks.spawnInTmux).not.toHaveBeenCalled();
@@ -1685,6 +1760,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-late-tui',
             nativeThreadId: 'codex-thread-late-tui',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
         const stopping = manager.stopSession('remcli-session-late-tui');
@@ -1730,6 +1806,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-invalid-endpoint',
             nativeThreadId: 'codex-thread-invalid-endpoint',
             endpoint: 'ws://example.test:45123',
+            reasoningEffort: null,
         })).resolves.toMatchObject({ type: 'host-unavailable' });
 
         expect(openTerminalMocks.openTerminalWithCommand).not.toHaveBeenCalled();
@@ -1763,6 +1840,7 @@ describe('createSessionManager resume deduplication', () => {
             remcliSessionId: 'remcli-session-tui-shutdown',
             nativeThreadId: 'codex-thread-tui-shutdown',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         })).resolves.toMatchObject({ type: 'opened', tmuxWindowId: remoteTuiWindowId });
 
         await expect(manager.killAllSessions()).resolves.toBeUndefined();
@@ -2219,6 +2297,38 @@ describe('createSessionManager resume deduplication', () => {
         await expect(spawning).resolves.toEqual({
             type: 'success',
             sessionId: 'remcli-cursor-fresh-preflight',
+        });
+    });
+
+    it('verifies a tracked Codex runner before it can create P2P metadata', async () => {
+        const runnerPid = 21_034;
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-codex-fresh-preflight',
+            pid: runnerPid,
+        });
+
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        const runnerToken = getDaemonRunnerToken();
+
+        await expect(manager.preflightCursorRunner({
+            agent: 'codex',
+            pid: runnerPid,
+            runnerToken,
+        })).resolves.toEqual({ type: 'verified' });
+        const trackedRunner = manager.getChildren().find((session) => session.pid === runnerPid);
+        expect(trackedRunner).toBeDefined();
+        expect(trackedRunner).not.toHaveProperty('remcliSessionId');
+
+        manager.onRemcliSessionWebhook('remcli-codex-fresh-preflight', createSessionMetadata(runnerPid, {
+            startedBy: 'daemon',
+            flavor: 'codex',
+        }), runnerToken);
+        await expect(spawning).resolves.toEqual({
+            type: 'success',
+            sessionId: 'remcli-codex-fresh-preflight',
         });
     });
 

@@ -17,6 +17,7 @@ const MAX_RECENT_TURN_THREAD_IDS = 512;
 const WEBSOCKET_RECOVERY_DELAYS_MS = [0, 100, 500] as const;
 const RECOVERY_REQUEST_TIMEOUT = 10_000;
 const THREAD_START_RESPONSE_TIMEOUT = 10_000;
+const CAPABILITY_REQUEST_TIMEOUT = 10_000;
 
 type JsonRpcId = number;
 
@@ -106,6 +107,29 @@ class BoundedIdSet {
 export interface CodexAppServerClientOptions {
     endpoint?: string;
     webSocketFactory?: (endpoint: string) => WebSocketLike;
+}
+
+export interface CodexAppServerReasoningEffort {
+    reasoningEffort: string;
+    description?: string;
+}
+
+export interface CodexAppServerModel {
+    id: string;
+    displayName: string;
+    defaultReasoningEffort?: string;
+    supportedReasoningEfforts: CodexAppServerReasoningEffort[];
+    isDefault: boolean;
+}
+
+export interface CodexAppServerModelListPage {
+    data: CodexAppServerModel[];
+    nextCursor?: string;
+}
+
+export interface CodexAppServerConfigRequirements {
+    allowedApprovalPolicies?: string[];
+    allowedSandboxModes?: string[];
 }
 
 export type CodexUserMessageSource = 'own' | 'external';
@@ -377,6 +401,90 @@ function webSocketDataToString(data: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readString(record: Record<string, unknown>, key: string): string | undefined {
+    const value = record[key];
+    return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+function readStringArray(record: Record<string, unknown>, key: string): string[] | undefined {
+    const value = record[key];
+    if (!Array.isArray(value)) {
+        return undefined;
+    }
+    return value.filter((item): item is string => typeof item === 'string');
+}
+
+function normalizeReasoningEfforts(value: unknown): CodexAppServerReasoningEffort[] {
+    if (!Array.isArray(value)) return [];
+
+    const efforts: CodexAppServerReasoningEffort[] = [];
+    for (const entry of value) {
+        if (typeof entry === 'string' && entry !== '') {
+            efforts.push({ reasoningEffort: entry });
+            continue;
+        }
+        if (!isRecord(entry)) continue;
+        const reasoningEffort = readString(entry, 'reasoningEffort');
+        if (!reasoningEffort) continue;
+        efforts.push({
+            reasoningEffort,
+            ...(readString(entry, 'description') ? { description: readString(entry, 'description') } : {}),
+        });
+    }
+    return efforts;
+}
+
+function normalizeModelListPage(result: unknown): CodexAppServerModelListPage {
+    if (!isRecord(result)) {
+        throw new Error('Codex app-server returned an invalid model list response.');
+    }
+
+    const rawModels = Array.isArray(result.data)
+        ? result.data
+        : Array.isArray(result.models)
+            ? result.models
+            : Array.isArray(result.items)
+                ? result.items
+                : null;
+    if (!rawModels) {
+        throw new Error('Codex app-server model list response is missing data.');
+    }
+
+    const data: CodexAppServerModel[] = [];
+    for (const rawModel of rawModels) {
+        if (!isRecord(rawModel)) continue;
+        const id = readString(rawModel, 'id') ?? readString(rawModel, 'model');
+        if (!id) continue;
+        data.push({
+            id,
+            displayName: readString(rawModel, 'displayName') ?? id,
+            ...(readString(rawModel, 'defaultReasoningEffort')
+                ? { defaultReasoningEffort: readString(rawModel, 'defaultReasoningEffort') }
+                : {}),
+            supportedReasoningEfforts: normalizeReasoningEfforts(rawModel.supportedReasoningEfforts),
+            isDefault: rawModel.isDefault === true,
+        });
+    }
+
+    return {
+        data,
+        ...(readString(result, 'nextCursor') ? { nextCursor: readString(result, 'nextCursor') } : {}),
+    };
+}
+
+function normalizeConfigRequirements(result: unknown): CodexAppServerConfigRequirements {
+    if (!isRecord(result)) {
+        throw new Error('Codex app-server returned invalid configuration requirements.');
+    }
+    const requirements = isRecord(result.requirements) ? result.requirements : result;
+    const allowedApprovalPolicies = readStringArray(requirements, 'allowedApprovalPolicies');
+    const allowedSandboxModes = readStringArray(requirements, 'allowedSandboxModes');
+    return {
+        ...(allowedApprovalPolicies ? { allowedApprovalPolicies } : {}),
+        ...(allowedSandboxModes ? { allowedSandboxModes } : {}),
+    };
 }
 
 function getNotificationThreadId(params: unknown): string | null {
@@ -654,6 +762,36 @@ export class CodexAppServerClient {
                 this.connectionPromise = null;
             }
         }
+    }
+
+    /**
+     * Reads the account-visible model picker catalog. The daemon projects this
+     * response into a small, safe capability snapshot before it reaches web UI.
+     */
+    async listModels(cursor?: string): Promise<CodexAppServerModelListPage> {
+        await this.connect();
+        const result = await this.request(
+            'model/list',
+            {
+                includeHidden: false,
+                ...(cursor ? { cursor } : {}),
+            },
+            undefined,
+            CAPABILITY_REQUEST_TIMEOUT,
+        );
+        return normalizeModelListPage(result);
+    }
+
+    /** Reads managed sandbox restrictions without exposing raw app-server config. */
+    async readConfigRequirements(): Promise<CodexAppServerConfigRequirements> {
+        await this.connect();
+        const result = await this.request(
+            'configRequirements/read',
+            null,
+            undefined,
+            CAPABILITY_REQUEST_TIMEOUT,
+        );
+        return normalizeConfigRequirements(result);
     }
 
     private async connectTransport(): Promise<void> {

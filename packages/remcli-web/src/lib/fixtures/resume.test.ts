@@ -25,7 +25,7 @@ function messageTexts(messages: NormalizedMessage[]): string[] {
     });
 }
 
-function getSpawnedSessionId(result: ReturnType<typeof fixtureSpawnNewSession>): string {
+function getSpawnedSessionId(result: Awaited<ReturnType<typeof fixtureSpawnNewSession>>): string {
     expect(result.type).toBe('success');
     if (result.type !== 'success') throw new Error('Fixture session was not spawned');
     return result.sessionId;
@@ -56,8 +56,8 @@ describe('fixture resume history', () => {
         vi.unstubAllGlobals();
     });
 
-    it('copies prior fixture-created history into the resumed ChatPage feed without mutating the source', () => {
-        const sourceSessionId = getSpawnedSessionId(fixtureSpawnNewSession({
+    it('copies prior fixture-created history into the resumed ChatPage feed without mutating the source', async () => {
+        const sourceSessionId = getSpawnedSessionId(await fixtureSpawnNewSession({
             machineId: 'fx-machine-online',
             directory: FIXTURE_DIRECTORY,
             agent: 'codex',
@@ -95,7 +95,7 @@ describe('fixture resume history', () => {
         const nativeSessionId = useProtocolStore.getState().sessions[sourceSessionId]?.metadata?.codexSessionId;
 
         expect(nativeSessionId).toBeTruthy();
-        const resumedSessionId = getSpawnedSessionId(fixtureSpawnNewSession({
+        const resumedSessionId = getSpawnedSessionId(await fixtureSpawnNewSession({
             machineId: 'fx-machine-online',
             directory: FIXTURE_DIRECTORY,
             agent: 'codex',
@@ -118,7 +118,7 @@ describe('fixture resume history', () => {
         ]));
     });
 
-    it('copies seeded history for both direct-chat and resume-sheet session ids', () => {
+    it('copies seeded history for both direct-chat and resume-sheet session ids', async () => {
         const sourceSession = useProtocolStore.getState().sessions[FIXTURE_CHAT_SESSION_ID];
         const resumeSessionIds = [
             sourceSession?.metadata?.claudeSessionId,
@@ -129,7 +129,7 @@ describe('fixture resume history', () => {
             expect(resumeSessionId).toBeTruthy();
             if (!resumeSessionId) continue;
 
-            const resumedSessionId = getSpawnedSessionId(fixtureSpawnNewSession({
+            const resumedSessionId = getSpawnedSessionId(await fixtureSpawnNewSession({
                 machineId: 'fx-machine-online',
                 directory: FIXTURE_DIRECTORY,
                 agent: 'claude',
@@ -141,8 +141,8 @@ describe('fixture resume history', () => {
         }
     });
 
-    it('shows deterministic initial context when the fixture resume id is unknown', () => {
-        const resumedSessionId = getSpawnedSessionId(fixtureSpawnNewSession({
+    it('shows deterministic initial context when the fixture resume id is unknown', async () => {
+        const resumedSessionId = getSpawnedSessionId(await fixtureSpawnNewSession({
             machineId: 'fx-machine-online',
             directory: FIXTURE_DIRECTORY,
             agent: 'claude',

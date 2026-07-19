@@ -157,7 +157,7 @@ export interface SessionManager {
     bindNativeCodexThread: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
     /** Bind a native Cursor session to its already-created Remcli wrapper session. */
     bindNativeCursorSession: (binding: NativeCursorSessionBinding) => Promise<NativeCursorSessionBindingResult>;
-    /** Validate a daemon-owned Cursor runner before it creates P2P metadata. */
+    /** Validate a daemon-owned Cursor or Codex runner before it creates P2P metadata. */
     preflightCursorRunner: (
         request: CursorRunnerPreflightRequest,
     ) => Promise<CursorRunnerPreflightResult>;
@@ -183,6 +183,11 @@ export interface SessionManager {
 
 export interface SessionManagerOptions {
     onSessionStopped?: (sessionId: string) => void;
+    /**
+     * Isolated compiled CLI entrypoint for subprocess integration tests. Normal
+     * daemon sessions always use this package's current `dist/index.mjs`.
+     */
+    runnerEntrypointPath?: string;
 }
 
 // Get environment variables for a profile, filtered for agent compatibility
@@ -278,6 +283,7 @@ function buildCodexRemoteTuiWindowName(nativeThreadId: string): string {
 }
 
 export function createSessionManager(options: SessionManagerOptions = {}): SessionManager {
+    const runnerEntrypointPath = options.runnerEntrypointPath;
     // PID indexes only the currently active session in a process slot. A session
     // displaced by PID reuse remains separately tracked until its immutable
     // cleanup is confirmed.
@@ -1184,7 +1190,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     const preflightCursorRunner = async (
         request: CursorRunnerPreflightRequest,
     ): Promise<CursorRunnerPreflightResult> => {
-        if (request.agent !== 'cursor') {
+        if (request.agent !== 'cursor' && request.agent !== 'codex') {
             return { type: 'rejected' };
         }
 
@@ -1194,7 +1200,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             || !isReadyTrackedSession(request.pid, session)
             || session.startedBy !== 'daemon'
             || !session.tmuxRunner
-            || session.expectedAgent !== 'cursor'
+            || session.expectedAgent !== request.agent
             || session.expectedResumeSessionId !== request.nativeResumeSessionId
             || !hasMatchingRunnerControlToken(session.runnerControlToken, request.runnerToken)
         ) {
@@ -1206,7 +1212,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             return { type: 'rejected' };
         }
 
-        const lineage = session.cursorResumeLineage;
+        const lineage = request.agent === 'cursor' ? session.cursorResumeLineage : undefined;
         if (
             !request.nativeResumeSessionId
             || !lineage
@@ -1758,7 +1764,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             const tmux = getTmuxUtilities(tmuxSessionName);
 
             // Construct command for the CLI
-            const cliPath = join(projectPath(), 'dist', 'index.mjs');
+            const cliPath = runnerEntrypointPath ?? join(projectPath(), 'dist', 'index.mjs');
             const resumeArg = options.resumeSessionId ? ` --resume ${shellQuote(options.resumeSessionId)}` : '';
             const fullCommand = `node --no-warnings --no-deprecation ${shellQuote(cliPath)} ${shellQuote(agent)} --remcli-starting-mode remote --started-by daemon${resumeArg}`;
 
@@ -1778,6 +1784,17 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             // Pass session name for resumed sessions (used by runClaude to set P2P metadata)
             if (options.resumeSessionName) {
                 tmuxEnv.REMCLI_SESSION_NAME = options.resumeSessionName;
+            }
+
+            if (agent === 'codex' && options.codexExecution) {
+                tmuxEnv.REMCLI_CODEX_MODEL = options.codexExecution.model;
+                if (options.codexExecution.reasoningEffort) {
+                    tmuxEnv.REMCLI_CODEX_REASONING_EFFORT = options.codexExecution.reasoningEffort;
+                }
+                tmuxEnv.REMCLI_CODEX_CATALOG_VERSION = options.codexExecution.catalogVersion;
+                if (options.permissionMode) {
+                    tmuxEnv.REMCLI_CODEX_PERMISSION_MODE = options.permissionMode;
+                }
             }
 
             const runnerControlToken = createRunnerControlToken();

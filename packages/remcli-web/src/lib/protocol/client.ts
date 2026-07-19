@@ -8,6 +8,7 @@
 
 import {
     fixtureAnswerPermission,
+    fixtureGetCodexCapabilities,
     fixtureListAgentSessions,
     fixtureListDirectory,
     fixtureLoadSessionMessages,
@@ -44,6 +45,7 @@ import {
 } from '@/lib/protocol/rest';
 import {
     machineListAgentSessions as socketMachineListAgentSessions,
+    machineGetCodexCapabilities as socketMachineGetCodexCapabilities,
     machineListDirectory as socketMachineListDirectory,
     machineCancelPairingRekey as socketMachineCancelPairingRekey,
     machineRequestPairingRekey as socketMachineRequestPairingRekey,
@@ -61,6 +63,7 @@ import {
     socketEmitWithAck,
     waitForSocketConnection,
     type DirectoryListing,
+    type CodexCapabilitiesSnapshot,
     type SpawnSessionOptions,
     type SpawnSessionResult,
     type PairingRekeyCancellationResult,
@@ -380,6 +383,17 @@ export async function machineListDirectory(machineId: string, path?: string): Pr
         return fixtureListDirectory(machineId, path);
     }
     return socketMachineListDirectory(machineId, path);
+}
+
+/** Read the normalized Codex model/reasoning catalog for New Session. */
+export async function machineGetCodexCapabilities(
+    machineId: string,
+    forceRefresh: boolean = false,
+): Promise<CodexCapabilitiesSnapshot> {
+    if (isFixturesActive) {
+        return fixtureGetCodexCapabilities();
+    }
+    return await socketMachineGetCodexCapabilities(machineId, forceRefresh);
 }
 
 /** Spawn a new agent session on a machine; fixture mode creates a local store session. */

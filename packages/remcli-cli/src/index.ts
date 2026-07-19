@@ -28,6 +28,10 @@ import { spawnRemcliCLI } from './utils/spawnRemcliCLI'
 import { getCleanEnv, getDefaultClaudeCodePath } from './claude/sdk/utils'
 import { parseAgentRunArgs } from './agentRunArgs'
 import { execFileSync } from 'node:child_process'
+import {
+    type CodexExecutionConfig,
+} from './codex/codexCapabilities'
+import type { CodexSandbox } from './codex/types'
 
 /**
  * Print a subcommand error consistently and terminate the process.
@@ -61,6 +65,33 @@ function resolveFirstExecutable(candidates: string[]): string {
         }
     }
     return candidates[0];
+}
+
+function isCodexSandbox(value: string | undefined): value is CodexSandbox {
+    return value === 'read-only'
+        || value === 'workspace-write'
+        || value === 'danger-full-access';
+}
+
+function readDaemonCodexExecution(): {
+    execution?: CodexExecutionConfig;
+    permissionMode?: CodexSandbox;
+} {
+    const model = process.env.REMCLI_CODEX_MODEL;
+    const reasoningEffort = process.env.REMCLI_CODEX_REASONING_EFFORT;
+    const catalogVersion = process.env.REMCLI_CODEX_CATALOG_VERSION;
+    const permissionMode = process.env.REMCLI_CODEX_PERMISSION_MODE;
+    const execution = model && catalogVersion
+        ? {
+            model,
+            catalogVersion,
+            ...(reasoningEffort ? { reasoningEffort } : {}),
+        }
+        : undefined;
+    return {
+        ...(execution ? { execution } : {}),
+        ...(isCodexSandbox(permissionMode) ? { permissionMode } : {}),
+    };
 }
 
 async function ensureDaemonRunning(): Promise<void> {
@@ -149,7 +180,8 @@ async function ensureDaemonRunning(): Promise<void> {
       const {
         credentials
       } = await setupP2PForSession();
-      await runCodex({credentials, startedBy, resumeSessionId});
+      const daemonCodexExecution = startedBy === 'daemon' ? readDaemonCodexExecution() : {};
+      await runCodex({credentials, startedBy, resumeSessionId, ...daemonCodexExecution});
       // Do not force exit here; allow instrumentation to show lingering handles
     } catch (error) {
       exitWithSubcommandError(error)

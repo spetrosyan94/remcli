@@ -7,9 +7,9 @@ import { redactSensitiveText } from '@/utils/redaction';
 
 const LOOPBACK_HOST = '127.0.0.1';
 const DEFAULT_READY_TIMEOUT_MS = 10_000;
+const DEFAULT_READY_REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_READY_POLL_MS = 100;
 const DEFAULT_STOP_TIMEOUT_MS = 2_000;
-export const CODEX_DEFAULT_REASONING_EFFORT = 'xhigh';
 
 type CodexAppServerProcess = ChildProcessByStdio<null, Readable, Readable>;
 
@@ -24,6 +24,7 @@ interface StartCodexAppServerHostDeps {
     spawnAppServer?: (port: number) => CodexAppServerProcess;
     fetchReady?: (url: string) => Promise<boolean>;
     readyTimeoutMs?: number;
+    readyRequestTimeoutMs?: number;
     readyPollMs?: number;
     stopTimeoutMs?: number;
 }
@@ -44,17 +45,22 @@ export function buildCodexAppServerEndpoint(port: number): string {
 
 export function buildCodexRemoteTuiCommand(
     endpoint: string,
-    threadId?: string,
-    reasoningEffort: string = CODEX_DEFAULT_REASONING_EFFORT,
+    threadId: string | undefined,
+    reasoningEffort: string | null,
     model?: string,
 ): string {
+    if (reasoningEffort !== null && (typeof reasoningEffort !== 'string' || reasoningEffort.trim() === '')) {
+        throw new Error('Codex remote TUI reasoning effort must be a non-empty string or null.');
+    }
     const quotedEndpoint = shellQuote(endpoint);
-    const quotedReasoningEffort = shellQuote(`model_reasoning_effort=${JSON.stringify(reasoningEffort)}`);
+    const reasoningArgument = reasoningEffort === null
+        ? ''
+        : ` -c ${shellQuote(`model_reasoning_effort=${JSON.stringify(reasoningEffort)}`)}`;
     const modelArgument = model ? ` --model ${shellQuote(model)}` : '';
     if (threadId) {
-        return `codex -c ${quotedReasoningEffort}${modelArgument} resume ${shellQuote(threadId)} --remote ${quotedEndpoint}`;
+        return `codex${reasoningArgument}${modelArgument} resume ${shellQuote(threadId)} --remote ${quotedEndpoint}`;
     }
-    return `codex -c ${quotedReasoningEffort}${modelArgument} --remote ${quotedEndpoint}`;
+    return `codex${reasoningArgument}${modelArgument} --remote ${quotedEndpoint}`;
 }
 
 export function buildCodexAppServerReadyUrl(endpoint: string): string | null {
@@ -114,13 +120,25 @@ export async function startCodexAppServerHost(deps: StartCodexAppServerHostDeps 
         if (text) logger.debug('[CodexAppServerHost][stderr]', redactSensitiveText(text));
     });
 
-    await waitUntilReady({
-        proc,
-        readyUrl,
-        fetchReady: deps.fetchReady ?? fetchReadyUrl,
-        timeoutMs: deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
-        pollMs: deps.readyPollMs ?? DEFAULT_READY_POLL_MS,
-    });
+    try {
+        await waitUntilReady({
+            proc,
+            readyUrl,
+            fetchReady: deps.fetchReady ?? fetchReadyUrl,
+            timeoutMs: deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+            requestTimeoutMs: deps.readyRequestTimeoutMs ?? DEFAULT_READY_REQUEST_TIMEOUT_MS,
+            pollMs: deps.readyPollMs ?? DEFAULT_READY_POLL_MS,
+        });
+    } catch (startupError) {
+        try {
+            await stopProcess(proc, deps.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS);
+        } catch (cleanupError) {
+            throw new Error(
+                `Codex app-server failed readiness and cleanup failed: ${formatError(startupError)}; ${formatError(cleanupError)}`,
+            );
+        }
+        throw startupError;
+    }
 
     logger.debug(`[CodexAppServerHost] Started shared Codex app-server at ${endpoint} pid=${processId}`);
 
@@ -180,63 +198,169 @@ async function waitUntilReady(options: {
     readyUrl: string;
     fetchReady: (url: string) => Promise<boolean>;
     timeoutMs: number;
+    requestTimeoutMs: number;
     pollMs: number;
 }): Promise<void> {
     const deadline = Date.now() + options.timeoutMs;
-    let exited = false;
-    let exitText = '';
+    let exited = hasProcessCompleted(options.proc);
+    let exitText = exited
+        ? `code=${options.proc.exitCode ?? 'null'} signal=${options.proc.signalCode ?? 'null'}`
+        : '';
+    let startupError: Error | undefined;
+    let notifyExit: (exitText: string) => void = () => undefined;
+    let notifyStartupError: (error: Error) => void = () => undefined;
+    const processExitPromise = new Promise<{ kind: 'exit'; exitText: string }>((resolve) => {
+        notifyExit = (nextExitText) => resolve({ kind: 'exit', exitText: nextExitText });
+    });
+    const startupErrorPromise = new Promise<Error>((resolve) => {
+        notifyStartupError = resolve;
+    });
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
         exited = true;
         exitText = `code=${code ?? 'null'} signal=${signal ?? 'null'}`;
+        notifyExit(exitText);
+    };
+    const onError = (error: Error) => {
+        startupError = error;
+        notifyStartupError(error);
     };
     options.proc.once('exit', onExit);
+    options.proc.once('error', onError);
 
     try {
         while (Date.now() < deadline) {
+            if (startupError) {
+                throw new Error(`Codex app-server failed to start: ${formatError(startupError)}.`);
+            }
             if (exited) {
                 throw new Error(`Codex app-server exited before ready (${exitText}).`);
             }
-            if (await options.fetchReady(options.readyUrl)) {
+            const remainingTimeoutMs = Math.max(0, deadline - Date.now());
+            if (remainingTimeoutMs === 0) break;
+
+            let readinessRequestTimeout: ReturnType<typeof setTimeout> | undefined;
+            let readiness: ReadinessOutcome;
+            try {
+                readiness = await Promise.race([
+                    Promise.resolve()
+                        .then(() => options.fetchReady(options.readyUrl))
+                        .then((isReady) => ({ kind: 'ready' as const, isReady }))
+                        .catch((error: unknown) => ({ kind: 'probe-error' as const, error })),
+                    processExitPromise,
+                    startupErrorPromise.then((error) => ({ kind: 'error' as const, error })),
+                    new Promise<{ kind: 'timeout' }>((resolve) => {
+                        readinessRequestTimeout = setTimeout(
+                            () => resolve({ kind: 'timeout' }),
+                            Math.min(options.requestTimeoutMs, remainingTimeoutMs),
+                        );
+                    }),
+                ]);
+            } finally {
+                if (readinessRequestTimeout !== undefined) clearTimeout(readinessRequestTimeout);
+            }
+
+            if (readiness.kind === 'exit') {
+                throw new Error(`Codex app-server exited before ready (${readiness.exitText}).`);
+            }
+            if (readiness.kind === 'error') {
+                throw new Error(`Codex app-server failed to start: ${formatError(readiness.error)}.`);
+            }
+            if (readiness.kind === 'probe-error') {
+                throw new Error(`Codex app-server readiness probe failed: ${formatError(readiness.error)}.`);
+            }
+            if (readiness.kind === 'timeout') {
+                throw new Error(`Timed out waiting for Codex app-server readiness at ${options.readyUrl}.`);
+            }
+            if (readiness.isReady) {
                 return;
             }
-            await sleep(options.pollMs);
+            const pollTimeoutMs = Math.min(options.pollMs, Math.max(0, deadline - Date.now()));
+            let pollTimeout: ReturnType<typeof setTimeout> | undefined;
+            let poll: ReadinessWaitOutcome;
+            try {
+                poll = await Promise.race<ReadinessWaitOutcome>([
+                    new Promise<{ kind: 'poll' }>((resolve) => {
+                        pollTimeout = setTimeout(() => resolve({ kind: 'poll' }), pollTimeoutMs);
+                    }),
+                    processExitPromise,
+                    startupErrorPromise.then((error) => ({ kind: 'error' as const, error })),
+                ]);
+            } finally {
+                if (pollTimeout !== undefined) clearTimeout(pollTimeout);
+            }
+            if (poll.kind === 'exit') {
+                throw new Error(`Codex app-server exited before ready (${poll.exitText}).`);
+            }
+            if (poll.kind === 'error') {
+                throw new Error(`Codex app-server failed to start: ${formatError(poll.error)}.`);
+            }
+        }
+        if (startupError) {
+            throw new Error(`Codex app-server failed to start: ${formatError(startupError)}.`);
         }
         throw new Error(`Timed out waiting for Codex app-server readiness at ${options.readyUrl}.`);
     } finally {
         options.proc.off('exit', onExit);
+        options.proc.off('error', onError);
+    }
+}
+
+type ReadinessOutcome =
+    | { kind: 'ready'; isReady: boolean }
+    | { kind: 'probe-error'; error: unknown }
+    | { kind: 'exit'; exitText: string }
+    | { kind: 'error'; error: Error }
+    | { kind: 'timeout' };
+
+type ReadinessWaitOutcome =
+    | { kind: 'poll' }
+    | { kind: 'exit'; exitText: string }
+    | { kind: 'error'; error: Error };
+
+function formatError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+function hasProcessCompleted(proc: CodexAppServerProcess): boolean {
+    return proc.exitCode !== null || proc.signalCode !== null;
+}
+
+function waitForProcessExit(proc: CodexAppServerProcess, timeoutMs: number): Promise<boolean> {
+    if (hasProcessCompleted(proc)) return Promise.resolve(true);
+
+    return new Promise((resolve) => {
+        const timeout = setTimeout(finish, timeoutMs);
+        const onExit = () => finish(true);
+
+        function finish(didExit: boolean = false): void {
+            clearTimeout(timeout);
+            proc.off('exit', onExit);
+            resolve(didExit || hasProcessCompleted(proc));
+        }
+
+        proc.once('exit', onExit);
+        if (hasProcessCompleted(proc)) finish(true);
+    });
+}
+
+function sendProcessSignal(proc: CodexAppServerProcess, signal: NodeJS.Signals): string | null {
+    try {
+        return proc.kill(signal) ? null : `signal ${signal} was not delivered`;
+    } catch (error) {
+        return `signal ${signal} failed: ${formatError(error)}`;
     }
 }
 
 async function stopProcess(proc: CodexAppServerProcess, timeoutMs: number): Promise<void> {
-    if (proc.exitCode !== null || proc.killed) return;
+    if (hasProcessCompleted(proc)) return;
 
-    await new Promise<void>((resolve) => {
-        let settled = false;
-        const finish = () => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            proc.off('exit', finish);
-            resolve();
-        };
-        const timeout = setTimeout(() => {
-            try {
-                proc.kill('SIGKILL');
-            } catch {
-                // best effort
-            }
-            finish();
-        }, timeoutMs);
+    const terminateFailure = sendProcessSignal(proc, 'SIGTERM');
+    if (await waitForProcessExit(proc, timeoutMs)) return;
 
-        proc.once('exit', finish);
-        try {
-            proc.kill('SIGTERM');
-        } catch {
-            finish();
-        }
-    });
-}
+    const forceKillFailure = sendProcessSignal(proc, 'SIGKILL');
+    if (await waitForProcessExit(proc, timeoutMs)) return;
 
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    const failures = [terminateFailure, forceKillFailure].filter((failure): failure is string => failure !== null);
+    const details = failures.length > 0 ? ` (${failures.join('; ')})` : '';
+    throw new Error(`Codex app-server process did not exit after SIGTERM and SIGKILL${details}.`);
 }

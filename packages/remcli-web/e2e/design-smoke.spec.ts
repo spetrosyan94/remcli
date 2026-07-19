@@ -775,6 +775,36 @@ test("resume history keeps loading and error visible, retries, and reaches the f
     expect(pageIssues).toEqual([]);
 });
 
+test("Cursor native resume keeps its binding error and retry inside the same sheet", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/new?fixtures=1&resumeFixture=cursor-lifecycle");
+    await page.getByRole("button", { name: /cursor agent/i }).click();
+    await page.getByRole("button", { name: /resume a previous cursor session/i }).click();
+
+    const resumeRegion = page.getByRole("region", { name: "Resume session", exact: true });
+    const lifecycleSession = resumeRegion.getByRole("button", { name: /^Cursor lifecycle review/ });
+    await expect(lifecycleSession).toBeVisible();
+    await lifecycleSession.click();
+
+    await expect(resumeRegion.getByRole("alert")).toContainText("Cursor could not bind this native session");
+    await expect(resumeRegion.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+    await expect(resumeRegion).toHaveAttribute("aria-busy", "false");
+
+    await resumeRegion.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(resumeRegion).toHaveAttribute("aria-busy", "true");
+    await page.waitForURL(/\/session\/fx-resume-cursor-/);
+    await expect(page.locator("header")).toContainText("cursor");
+
+    await assertNoHorizontalOverflow(page);
+    await assertNoBottomToastOverlap(page);
+    if (isMobileProject(testInfo)) {
+        await assertMobileTouchTargets(page);
+    }
+    expect(pageIssues).toEqual([]);
+});
+
 test("directory keeps its content region stable and reduces motion to the design token", async ({ page }, testInfo) => {
     const pageIssues = collectPageIssues(page);
 
@@ -848,5 +878,176 @@ test("directory drawer follows the design-system motion tokens", async ({ page }
         overlayDuration: "0.2s",
         overlayTiming: "cubic-bezier(0.22, 1, 0.36, 1)",
     });
+    expect(pageIssues).toEqual([]);
+});
+
+type CapabilityControlName = "model" | "permission" | "reasoning";
+
+function capabilityControl(page: Page, name: CapabilityControlName): Locator {
+    return page.locator(`[data-capability-control="${name}"]`);
+}
+
+async function openCodexCapabilityFixture(page: Page, testInfo: TestInfo, path: string, expectedModel: string | null = "GPT-5.6-Luna"): Promise<PageIssue[]> {
+    const pageIssues = collectPageIssues(page);
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, path);
+    await expect(page.locator('[data-capability-layout="two-row"]')).toBeVisible();
+
+    const codex = page.getByRole("button", { name: /codex cli/i });
+    await codex.click();
+    await expect(codex).toHaveClass(/border-accent/);
+    if (expectedModel) {
+        await expect(capabilityControl(page, "model").locator("button")).toContainText(expectedModel);
+    } else {
+        await expect(capabilityControl(page, "model").getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+    }
+    return pageIssues;
+}
+
+test("runtime new-session capability controls keep the accepted two-row contract", async ({ page }, testInfo) => {
+    const pageIssues = await openCodexCapabilityFixture(page, testInfo, "/new?fixtures=1");
+    const boxes = await Promise.all((["model", "permission", "reasoning"] as const).map(async (name) => {
+        const box = await capabilityControl(page, name).boundingBox();
+        expect(box, `${name} control box`).not.toBeNull();
+        return box!;
+    }));
+
+    expect(Math.abs(boxes[0].y - boxes[1].y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(boxes[0].x - boxes[2].x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(boxes[0].width - boxes[2].width)).toBeLessThanOrEqual(1);
+    expect(boxes[2].y).toBeGreaterThan(boxes[0].y);
+
+    for (const name of ["model", "permission", "reasoning"] as const) {
+        const button = capabilityControl(page, name).locator("button");
+        await expect(button).toBeVisible();
+        const box = await button.boundingBox();
+        expect(box, `${name} interactive control box`).not.toBeNull();
+        expect(box!.height).toBeGreaterThanOrEqual(MOBILE_TOUCH_TARGET_MIN_PX);
+    }
+
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("runtime Codex model switch preserves advertised efforts through the reasoning sheet", async ({ page }, testInfo) => {
+    const pageIssues = await openCodexCapabilityFixture(page, testInfo, "/new?fixtures=1");
+    await capabilityControl(page, "model").locator("button").click();
+    await expect(page.getByRole("button", { name: "GPT-5.6-Terra", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "GPT-5.6-Terra", exact: true }).click();
+    await expect(capabilityControl(page, "model").locator("button")).toContainText("GPT-5.6-Terra");
+    await expect(page.locator('[data-slot="drawer-overlay"]')).toHaveCount(0);
+
+    await capabilityControl(page, "reasoning").locator("button").click();
+    await expect(page.getByRole("button", { name: "ultra", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "ultra", exact: true }).click();
+    await expect(capabilityControl(page, "reasoning").locator("button")).toContainText("ultra");
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("runtime reopened model drawer ignores a late close from its previous Vaul instance", async ({ page }, testInfo) => {
+    const pageIssues = await openCodexCapabilityFixture(page, testInfo, "/new?fixtures=1");
+    const modelControl = capabilityControl(page, "model").locator("button");
+    const terraOption = page.getByRole("button", { name: "GPT-5.6-Terra", exact: true });
+
+    await modelControl.click();
+    await expect(terraOption).toBeVisible();
+    await terraOption.click();
+    await expect(page.locator('[data-slot="drawer-overlay"]')).toHaveCount(0);
+
+    await modelControl.click();
+    await expect(terraOption).toBeVisible();
+    // Vaul emits its close callback after its fixed 500ms transition. Keep the
+    // reopened drawer alive past that point to catch a stale callback.
+    await page.waitForTimeout(600);
+    await expect(terraOption).toBeVisible();
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("runtime no-reasoning Codex fixture keeps start executable", async ({ page }, testInfo) => {
+    const pageIssues = await openCodexCapabilityFixture(
+        page,
+        testInfo,
+        "/new?fixtures=1&codexCapabilities=no-reasoning",
+        "GPT-5.6 No Reasoning",
+    );
+    await expect(capabilityControl(page, "reasoning")).toContainText("no configurable reasoning for this model");
+    await expect(page.getByRole("button", { name: /Start codex/i })).toBeEnabled();
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("runtime Codex choose-required fixture enables start only after an explicit effort choice", async ({ page }, testInfo) => {
+    const pageIssues = await openCodexCapabilityFixture(
+        page,
+        testInfo,
+        "/new?fixtures=1&codexCapabilities=choose-required",
+        "GPT-5.6 Choose Required",
+    );
+    const startButton = page.getByRole("button", { name: /Start codex/i });
+    await expect(capabilityControl(page, "reasoning")).toContainText("choose a reasoning level");
+    await expect(startButton).toBeDisabled();
+
+    await capabilityControl(page, "reasoning").locator("button").click();
+    await expect(page.getByRole("button", { name: "ultra", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "ultra", exact: true }).click();
+    await expect(capabilityControl(page, "reasoning").locator("button")).toContainText("ultra");
+    await expect(startButton).toBeEnabled();
+
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("runtime Cursor keeps reasoning as a separate unsupported status", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/new?fixtures=1");
+    await page.getByRole("button", { name: /cursor agent/i }).click();
+    await expect(capabilityControl(page, "reasoning")).toContainText("reasoning not configured separately");
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("runtime Codex capability failure retains a retry control", async ({ page }, testInfo) => {
+    const pageIssues = await openCodexCapabilityFixture(
+        page,
+        testInfo,
+        "/new?fixtures=1&codexCapabilities=unavailable",
+        null,
+    );
+    const modelRetry = capabilityControl(page, "model").getByRole("button", { name: "Retry", exact: true });
+    await modelRetry.click();
+    await expect(modelRetry).toBeVisible();
+    await expect(capabilityControl(page, "reasoning")).toContainText("Retry");
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("runtime Codex capability rejection clears stale selection and recovers through refreshed catalog", async ({ page }, testInfo) => {
+    const pageIssues = await openCodexCapabilityFixture(
+        page,
+        testInfo,
+        "/new?fixtures=1&codexCapabilities=capability-rejection",
+        "GPT-5.6-Stale",
+    );
+    const startButton = page.getByRole("button", { name: /Start codex/i });
+
+    await expect(startButton).toBeEnabled();
+    await startButton.click();
+    await expect(page.getByText("Codex capability selection rejected: unsupported_selection.", { exact: true })).toBeVisible();
+    await expect(startButton).toBeDisabled();
+    await expect(capabilityControl(page, "model").locator("button")).toContainText("GPT-5.6-Refreshed");
+    await expect(startButton).toBeEnabled();
+
+    await capabilityControl(page, "reasoning").locator("button").click();
+    await expect(page.getByRole("button", { name: "ultra", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "ultra", exact: true }).click();
+    await expect(capabilityControl(page, "reasoning").locator("button")).toContainText("ultra");
+    await Promise.all([
+        page.waitForURL(/\/session\//),
+        startButton.click(),
+    ]);
+    await assertNoHorizontalOverflow(page);
     expect(pageIssues).toEqual([]);
 });

@@ -501,6 +501,21 @@ describe('startDaemonControlServer', () => {
         expect(response.status).toBe(200);
         await expect(response.json()).resolves.toEqual(remoteTuiResult);
         expect(openCodexRemoteTui).toHaveBeenCalledWith(request);
+
+        const noReasoningRequest: CodexRemoteTuiOpenRequest = {
+            ...request,
+            reasoningEffort: null,
+            model: 'gpt-5.6-no-reasoning',
+        };
+        const noReasoningResponse = await fetch(`http://127.0.0.1:${controlServer.port}/codex-remote-tui-open`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...noReasoningRequest, runnerCredential: sessionStartedBody.runnerCredential }),
+        });
+
+        expect(noReasoningResponse.status).toBe(200);
+        await expect(noReasoningResponse.json()).resolves.toEqual(remoteTuiResult);
+        expect(openCodexRemoteTui).toHaveBeenLastCalledWith(noReasoningRequest);
     });
 
     it('does not let a valid runner credential for session A control session B', async () => {
@@ -529,6 +544,7 @@ describe('startDaemonControlServer', () => {
         const remoteTuiRequest: CodexRemoteTuiOpenRequest = {
             ...binding,
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         };
 
         const bindingResponse = await fetch(`http://127.0.0.1:${controlServer.port}/codex-thread-bound`, {
@@ -665,6 +681,7 @@ describe('startDaemonControlServer', () => {
             nativeThreadId: 'thread-123',
             remcliSessionId: 'remcli-123',
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         };
         const missingCredentialResponse = await fetch(`http://127.0.0.1:${controlServer.port}/codex-remote-tui-open`, {
             method: 'POST',
@@ -711,6 +728,45 @@ describe('startDaemonControlServer', () => {
         expect(openCodexRemoteTui).not.toHaveBeenCalled();
     });
 
+    it('rejects missing or malformed remote TUI reasoning effort before it reaches the session manager', async () => {
+        const openCodexRemoteTui = vi.fn();
+        const verifySessionRunnerCredential = vi.fn(() => true);
+        const controlServer = await startControlServerForTest({
+            verifySessionRunnerCredential,
+            openCodexRemoteTui,
+        });
+        stopServer = controlServer.stop;
+
+        const baseRequest = {
+            agent: 'codex',
+            nativeThreadId: 'thread-123',
+            remcliSessionId: 'remcli-123',
+            runnerCredential: 'valid-credential',
+            endpoint: 'ws://127.0.0.1:45123',
+        };
+        const responses = await Promise.all([
+            fetch(`http://127.0.0.1:${controlServer.port}/codex-remote-tui-open`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(baseRequest),
+            }),
+            fetch(`http://127.0.0.1:${controlServer.port}/codex-remote-tui-open`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...baseRequest, reasoningEffort: '   ' }),
+            }),
+            fetch(`http://127.0.0.1:${controlServer.port}/codex-remote-tui-open`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...baseRequest, reasoningEffort: 1 }),
+            }),
+        ]);
+
+        expect(responses.map((response) => response.status)).toEqual([400, 400, 400]);
+        expect(verifySessionRunnerCredential).not.toHaveBeenCalled();
+        expect(openCodexRemoteTui).not.toHaveBeenCalled();
+    });
+
     it('fails protected client calls locally when their session has no runner credential', async () => {
         const sessionId = 'client-without-runner-credential';
         forgetSessionRunnerCredential(sessionId);
@@ -725,6 +781,7 @@ describe('startDaemonControlServer', () => {
             nativeThreadId: 'thread-123',
             remcliSessionId: sessionId,
             endpoint: 'ws://127.0.0.1:45123',
+            reasoningEffort: null,
         });
 
         expect(bindingResult).toEqual({ ok: false, error: 'Missing session runner credential' });

@@ -19,8 +19,16 @@ import type {
     ListDirectoryResponse,
 } from '@/daemon/directoryBrowser/types';
 import { listAllAgentSessions } from '@/daemon/sessions/listAgentSessions';
+import {
+    CodexCapabilitiesError,
+    CodexCapabilitiesService,
+    type CodexExecutionConfig,
+} from '@/codex/codexCapabilities';
+import type { CodexSandbox } from '@/codex/types';
 import type { StopSessionResult } from '@/daemon/types';
 import type { PairingRekeyCoordinator } from './p2p/pairingRekey';
+
+const CODEX_EXECUTION_KEYS = new Set(['model', 'catalogVersion', 'reasoningEffort']);
 
 export interface MachineSocketDeps {
     p2pPort: number;
@@ -28,9 +36,50 @@ export interface MachineSocketDeps {
     bearerToken: string;
     contentSecret: Uint8Array;
     pairingRekeyCoordinator: PairingRekeyCoordinator;
+    codexCapabilities: CodexCapabilitiesService;
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
     stopSession: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
     requestShutdown: () => void;
+}
+
+function isCodexSandbox(value: unknown): value is CodexSandbox {
+    return value === 'read-only'
+        || value === 'workspace-write'
+        || value === 'danger-full-access';
+}
+
+function isNonEmptyStringDataProperty(value: object, key: string): boolean {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor !== undefined
+        && descriptor.enumerable === true
+        && 'value' in descriptor
+        && typeof descriptor.value === 'string'
+        && descriptor.value !== '';
+}
+
+function isOptionalNonEmptyStringDataProperty(value: object, key: string): boolean {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor === undefined
+        || (descriptor.enumerable === true
+            && 'value' in descriptor
+            && typeof descriptor.value === 'string'
+            && descriptor.value !== '');
+}
+
+function isCodexExecutionConfig(value: unknown): value is CodexExecutionConfig {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+
+    try {
+        if (Object.getPrototypeOf(value) !== Object.prototype) return false;
+        if (!Reflect.ownKeys(value).every((key) =>
+            typeof key === 'string' && CODEX_EXECUTION_KEYS.has(key))) return false;
+
+        return isNonEmptyStringDataProperty(value, 'model')
+            && isNonEmptyStringDataProperty(value, 'catalogVersion')
+            && isOptionalNonEmptyStringDataProperty(value, 'reasoningEffort');
+    } catch {
+        return false;
+    }
 }
 
 export interface MachineSocketHandle {
@@ -45,6 +94,7 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         bearerToken,
         contentSecret,
         pairingRekeyCoordinator,
+        codexCapabilities,
         spawnSession,
         stopSession,
         requestShutdown,
@@ -75,11 +125,37 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
 
     // Register daemon-specific RPC handlers
     machineRpcManager.registerHandler('spawn-remcli-session', async (params: Partial<SpawnSessionOptions> & { directory: string }) => {
-        const { directory, sessionId: sid, machineId: targetMachineId, approvedNewDirectoryCreation, agent, token, environmentVariables, resumeSessionId, resumeSessionName } = params || {};
+        const {
+            directory,
+            sessionId: sid,
+            machineId: targetMachineId,
+            approvedNewDirectoryCreation,
+            agent,
+            token,
+            environmentVariables,
+            resumeSessionId,
+            resumeSessionName,
+            permissionMode,
+            codexExecution,
+        } = params || {};
         logger.debugLargeJson('[DAEMON RUN] RPC spawn-remcli-session', buildSafeSpawnSessionLogPayload(params));
 
         if (!directory) {
             throw new Error('Directory is required');
+        }
+
+        if (agent === 'codex') {
+            if (!isCodexSandbox(permissionMode) || !isCodexExecutionConfig(codexExecution)) {
+                throw new Error('Codex requires a current model, reasoning, and permission selection.');
+            }
+            try {
+                await codexCapabilities.validateSelection(codexExecution, permissionMode);
+            } catch (error) {
+                if (error instanceof CodexCapabilitiesError) {
+                    throw new Error(`Codex capability selection rejected: ${error.code}.`);
+                }
+                throw new Error('Codex capability discovery is unavailable. Refresh and try again.');
+            }
         }
 
         const result = await spawnSession({
@@ -92,6 +168,8 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
             environmentVariables,
             resumeSessionId,
             resumeSessionName,
+            permissionMode,
+            codexExecution,
         });
 
         switch (result.type) {
@@ -104,6 +182,11 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
             case 'error':
                 throw new Error(result.errorMessage);
         }
+    });
+
+    machineRpcManager.registerHandler('get-codex-capabilities', async (params: { forceRefresh?: unknown }) => {
+        const forceRefresh = params?.forceRefresh === true;
+        return await codexCapabilities.getCapabilities(forceRefresh);
     });
 
     machineRpcManager.registerHandler('stop-session', async (params: { sessionId?: string }) => {

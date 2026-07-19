@@ -8,6 +8,8 @@ import { run as runRipgrep } from '@/modules/ripgrep/index';
 import { run as runDifftastic } from '@/modules/difftastic/index';
 import { RpcHandlerManager } from '../../api/rpc/RpcHandlerManager';
 import { validatePath } from './pathSecurity';
+import type { PermissionMode } from '@/api/types';
+import type { CodexExecutionConfig } from '@/codex/codexCapabilities';
 
 const execAsync = promisify(exec);
 
@@ -125,6 +127,10 @@ export interface SpawnSessionOptions {
     resumeSessionName?: string;
     approvedNewDirectoryCreation?: boolean;
     agent?: 'claude' | 'codex' | 'cursor' | 'gemini';
+    /** Provider-specific permission selection validated by the daemon before spawn. */
+    permissionMode?: PermissionMode;
+    /** Atomic, daemon-validated Codex model + reasoning selection. */
+    codexExecution?: CodexExecutionConfig;
     token?: string;
     environmentVariables?: {
         // Anthropic Claude API configuration
