@@ -50,3 +50,8 @@ design/
 packages/remcli-cli/web-dist/
 packages/remcli-web/playwright-report/
 packages/remcli-web/test-results/
+
+# Local test output
+/packages/remcli-cli/coverage/
+/packages/remcli-web/coverage/
+/test-results/
