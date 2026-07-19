@@ -3,7 +3,14 @@
 Короткая карта документов. Если меняется архитектура агента, протокол, daemon
 state или UX-контракт, обновлять соответствующий документ в этом разделе.
 
-## Core
+## Начать отсюда
+
+| Документ | Что содержит |
+|----------|--------------|
+| [README](../README.md) | Назначение Remcli, поддерживаемые providers, быстрый старт и команды |
+| [PROMO](../PROMO.md) | Короткий текст для анонса проекта |
+
+## Основное
 
 | Документ | Что описывает |
 |----------|---------------|
@@ -11,18 +18,10 @@ state или UX-контракт, обновлять соответствующ�
 | [encryption.md](encryption.md) | Wire encryption, keys, binary formats |
 | [cli-architecture.md](cli-architecture.md) | CLI/daemon lifecycle, session spawning, machine RPC |
 
-## AI Agents
+## AI-агенты
 
 | Документ | Что описывает |
 |----------|---------------|
 | [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) | Codex app-server, native resume/TUI и capability-driven model/reasoning contract |
 | [agent-architecture/cursor-cli-architecture.md](agent-architecture/cursor-cli-architecture.md) | Native Cursor Agent CLI: turn boundary, resume identity, уровень доступа и lifecycle |
 | [agent-architecture/agent-remote-control-template.md](agent-architecture/agent-remote-control-template.md) | Шаблон для следующих provider-specific архитектур |
-
-## Local Rules
-
-| Документ | Что описывает |
-|----------|---------------|
-| [../CLAUDE.md](../CLAUDE.md) | Основные проектные правила, агентская оркестрация, docs routing |
-| [../AGENTS.md](../AGENTS.md) | Codex-адаптация правил проекта |
-| [../.claude/LESSONS.md](../.claude/LESSONS.md) | Накопленные ошибки и обязательные уроки |

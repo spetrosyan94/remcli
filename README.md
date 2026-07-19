@@ -1,245 +1,115 @@
 # Remcli
 
-> Remote CLI for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex) & [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Cursor](https://cursor.com/cli)
+**P2P web/PWA-клиент для управления AI coding-agent сессиями с телефона или браузера.**
 
-Open-source Remote CLI для удалённого управления AI агентами. Управляйте сессиями Claude Code, Cursor, Codex и Gemini CLI прямо с телефона — со сквозным шифрованием и без облачных серверов.
+Запустите агент на Mac или Linux, отсканируйте QR-код и продолжайте работу из Remcli. У проекта нет собственного cloud backend: web-клиент подключается напрямую к локальному daemon по LAN или через опциональный cloudflared tunnel.
 
-Проект вдохновлён [Happy](https://github.com/slopus/happy) — open-source решением той же задачи, но реализует другой подход: вместо облачной архитектуры Remcli использует прямое P2P-соединение, где демон на вашей машине выступает сервером.
+<p align="center">
+  <img src="docs/assets/screenshots/desktop-chat-dark.jpg" alt="Remcli: чат с агентом на desktop" width="960" />
+</p>
 
+## Что даёт Remcli
+
+- Управление сессиями AI coding agents из PWA и терминала.
+- Для Codex: одна нативная сессия в терминале и на телефоне, создание, остановка и resume без потери контекста.
+- QR pairing, прямое LAN-подключение и опциональный доступ извне через tunnel.
+- Выбор доступных моделей, уровней размышления и доступа из реальных данных provider там, где CLI их предоставляет.
+- Шифрование содержимого сообщений между web-клиентом и daemon на уровне приложения.
+
+## Архитектура
+
+```text
+Телефон / браузер  <── HTTP/WebSocket + шифрование payload ──>  Remcli daemon  <──>  provider CLI
+                                   LAN / cloudflared
 ```
-Телефон  ←── WebSocket (LAN / cloudflared) ──→  CLI Daemon  ←──→  Claude Code / Cursor / Codex / Gemini CLI
+
+Daemon работает на вашей машине, раздаёт web-клиент и запускает provider CLI. QR-код используется для pairing; tunnel нужен для доступа вне локальной сети и для HTTPS-микрофона на телефоне.
+
+**Стек:** TypeScript, React 19, Vite, Tailwind CSS, Radix UI, Zustand, Fastify, Socket.IO, Zod, Ink, ACP/MCP.
+
+## Провайдеры
+
+| Провайдер | Статус | Что доступно сейчас |
+| --- | :---: | --- |
+| Codex CLI | ✅ | Проверенный core lifecycle: create/resume, общий native thread и синхронизация сообщений, модели, reasoning и уровни доступа из provider capabilities |
+| Cursor CLI | ✅ | Создание, native resume и account-visible models; история и отдельные native controls продолжают дорабатываться |
+| Claude Code | ❌ | Runner есть, но provider-specific acceptance ещё не завершён |
+| Gemini CLI | ❌ | ACP runner есть, но provider-specific acceptance ещё не завершён |
+
+Статус отражает готовность интеграции Remcli, а не наличие аккаунта или подписки у провайдера.
+
+## Опционально: голос и Джарвис
+
+Whisper и TTS настраиваются через `npm run setup`. Для Джарвиса запустите модель в LM Studio и вручную включите `conciergeEnabled` с `conciergeUrl` в `~/.remcli/setup.json`.
+
+| Возможность | Назначение | Требования |
+| --- | --- | --- |
+| Джарвис | Локальный помощник для статуса и запуска сессий через LM Studio или другой OpenAI-compatible endpoint | Модель в LM Studio, выключен по умолчанию |
+| Whisper STT | Голосовой ввод в чат | Локальная Whisper-модель, `ffmpeg` и HTTPS tunnel для микрофона на телефоне |
+| Edge TTS | Озвучивание ответов | `ffmpeg`; использует Edge TTS |
+| Qwen3 TTS | Локальная озвучка и voice profiles | Apple Silicon и локальное окружение для модели |
+
+## Установка и быстрый старт
+
+**Нужно:** Node.js 20+, `tmux` и установленный/авторизованный Codex CLI. Для голосовых функций потребуется `ffmpeg`.
+
+```bash
+# macOS
+brew install tmux
+
+# Debian / Ubuntu
+sudo apt install tmux
 ```
-
----
-
-## Как это работает
-
-1. На Mac (или Linux) запускается демон — локальный P2P-сервер
-2. В терминале появляется QR-код (это URL)
-3. Сканируете QR камерой телефона — открывается браузер
-4. Нажимаете **Accept** — подключено! Все данные зашифрованы end-to-end
-5. Видите и управляете AI-сессиями прямо с телефона
-
-Демон работает на вашей машине. Никаких облачных серверов.
-
----
-
-## Быстрый старт
-
-### Требования
-
-- **Node.js** 20+
-- **tmux** (`brew install tmux` на macOS, `apt install tmux` на Linux)
-- **Claude Code** (`npm install -g @anthropic-ai/claude-code`) и/или [Cursor CLI](https://cursor.com/cli) / [Codex](https://github.com/openai/codex) / [Gemini CLI](https://github.com/google-gemini/gemini-cli)
-- **macOS** или **Linux** (Windows через WSL)
-
-> Docker и Linux Playwright image не нужны пользователю Remcli: они применяются
-> только разработчиками и GitHub CI для детерминированной визуальной проверки.
-> Установка, daemon, web/PWA-клиент и обычный запуск Remcli их не скачивают.
-
-### 1. Установка и сборка
 
 ```bash
 git clone https://github.com/spetrosyan94/remcli.git
 cd remcli
 npm run setup
-```
-
-### 2. Запуск
-
-```bash
 npm start
 ```
 
-В терминале появится QR-код. Не закрывайте этот терминал — демон работает в нём.
+После запуска отсканируйте QR-код телефоном в той же сети и создайте **Codex**-сессию из Remcli.
 
-### 3. Подключение с телефона
+Для голосового ввода с телефона запускайте `npm run start:tunnel`: браузер не даёт доступ к микрофону на обычном HTTP LAN-адресе.
 
-1. Телефон должен быть в **той же Wi-Fi сети**
-2. Откройте камеру и наведите на QR-код
-3. Нажмите на ссылку — откроется браузер с веб-приложением
-4. Нажмите **Accept** — подключено!
-
-> Демон сам раздаёт веб-приложение. Никакой отдельный сервер не нужен.
-
-### 4. Запуск AI-сессии
-
-Можно запускать сессии с телефона (через веб-интерфейс) — терминал с tmux откроется автоматически. Каждая новая сессия появится как отдельное окно в tmux (переключение: `Ctrl-B n` / `Ctrl-B p`).
-
-Или запустите сессию из терминала вручную:
-
-```bash
-npm run claude              # Claude Code
-npm run cursor              # Cursor
-npm run codex               # Codex
-npm run gemini              # Gemini CLI
-```
-
-Сессия появится и в терминале Mac, и на телефоне. Управлять можно с обоих устройств.
-
-### Возобновление сессий (Resume)
-
-| Агент | Resume |
-|-------|--------|
-| Claude Code | Реализован путь `--resume`; provider-specific acceptance (daemon boundary, real CLI и Browser fixture) ещё не завершена |
-| Cursor | Native `agent --resume` и lifecycle D/I/L/UI-F приняты; модель выбирается только из account-visible `agent models` catalog, а более глубокое разделение native controls остаётся в плане |
-| Gemini | Реализован ACP-путь `session/load` с фолбэком на новую сессию; provider-specific acceptance ещё не завершена |
-| Codex | Поддерживается — Remcli использует официальный Codex app-server: shared daemon WebSocket endpoint предпочтителен; при stale state или initial transient WebSocket connect failure используется typed private stdio fallback. `thread/start`/`thread/resume`, `turn/start` и `turn/steer` работают с тем же `threadId`. Capability boundary, fixture UI, узкий opt-in app-server gate и daemon/P2P lifecycle gate проверены; visual-baseline reconciliation остаётся в плане. `codex mcp-server` и `codex-reply` не используются для chat/resume transport; `remcli-mcp` остаётся отдельным tool bridge |
-
----
-
-## Доступ через интернет
-
-Для подключения за пределами локальной сети (через cloudflared-туннель):
-
-```bash
-npm run start:tunnel
-```
-
----
-
-## Команды
-
-| Команда | Описание |
-|---------|----------|
-| `npm run setup` | Первоначальная установка (install + сборка) |
-| `npm run build:web` | Пересборка CLI + веб-приложения |
-| `npm start` | Запуск демона (LAN) |
-| `npm run start:tunnel` | Запуск демона через интернет (cloudflared) |
-| `npm run claude` | Сессия Claude Code (видна на Mac и телефоне) |
-| `npm run cursor` | Сессия Cursor |
-| `npm run codex` | Сессия Codex |
-| `npm run gemini` | Сессия Gemini CLI |
-| `npm run stop` | Остановить демон |
-| `npm run status` | Статус демона |
+| Команда | Назначение |
+| --- | --- |
+| `npm run setup` | Установить зависимости, собрать проект и пройти мастер настройки |
+| `npm start` | Собрать проект и запустить daemon в LAN |
+| `npm run start:tunnel` | Запустить daemon с cloudflared tunnel |
+| `npm run codex` | Запустить Codex-сессию из терминала |
+| `npm run status` | Показать статус daemon |
 | `npm run qr` | Показать QR-код повторно |
+| `npm run doctor` | Проверить окружение |
+| `npm run stop` | Остановить daemon |
+| `npm run dev:web` | Запустить Vite dev server для web-клиента |
 
-### CLI (после глобальной установки)
+## Интерфейс
 
-```bash
-remcli setup                  # Мастер настройки (Whisper, TTS, агенты, cloudflared)
-remcli                        # Сессия Claude Code
-remcli cursor                 # Сессия Cursor
-remcli codex                  # Сессия Codex
-remcli gemini                 # Сессия Gemini CLI
-remcli daemon start           # Запустить демон
-remcli daemon start --tunnel  # Запустить с cloudflared
-remcli daemon stop            # Остановить демон
-remcli daemon status          # Статус
-remcli daemon qr              # Показать QR повторно
-remcli doctor                 # Диагностика
-remcli doctor clean           # Убить зависшие процессы
-```
+<p align="center">
+  <img src="docs/assets/screenshots/mobile-new-session-codex.jpg" alt="Создание Codex-сессии на телефоне" width="220" />
+  <img src="docs/assets/screenshots/mobile-chat-dark.jpg" alt="Чат с агентом на телефоне" width="220" />
+  <img src="docs/assets/screenshots/mobile-settings-dark.jpg" alt="Настройки Remcli на телефоне" width="220" />
+  <img src="docs/assets/screenshots/mobile-sessions-light.jpg" alt="Светлая тема Remcli на телефоне" width="220" />
+</p>
 
----
+Все screenshots сняты с работающего fixture-режима Remcli: мобильные — `390×844`, desktop — `1280×800`.
 
-## Глобальная установка (опционально)
+## Roadmap
 
-Чтобы команда `remcli` работала из любой директории:
-
-```bash
-npm run build
-cd packages/remcli-cli && npm link
-```
-
----
-
-## Структура проекта
-
-```
-packages/
-  remcli-cli/     CLI + демон (публикуется как remcli в npm)
-  remcli-web/     Web-клиент — Vite + React + shadcn/ui, PWA
-docs/             Документация (протокол, шифрование, архитектура)
-```
-
-> **Направление:** клиентская часть теперь web-only: активный UI живёт в `packages/remcli-web`.
-
----
-
-## Разработка
-
-| Команда | Описание |
-|---------|----------|
-| `npm run dev:web` | Vite dev server для web-клиента |
-| `npm run build` | Сборка web-клиента и CLI |
-| `npm run typecheck` | Проверка типов web-клиента и CLI |
-| `npm run test` | Тесты web-клиента и CLI |
-
-### Пакетные команды
-
-```bash
-npm run dev --workspace=remcli             # CLI dev-режим (TSX, без сборки)
-npm run test --workspace=remcli            # CLI тесты
-npm -w remcli-web run dev                  # Web UI
-npm -w remcli-web run test                 # Web тесты
-```
-
-### Структура CLI-тестов
-
-- Unit-тесты остаются рядом с исходным кодом: `packages/remcli-cli/src/**/*.test.ts`
-- Integration-тесты находятся отдельно: `packages/remcli-cli/tests/integration/**/*.test.ts`
-- E2E-тесты добавляются в `packages/remcli-cli/tests/e2e/**/*.test.ts`
-
-## Голосовой ввод (Whisper STT)
-
-Remcli поддерживает голосовой ввод — нажмите кнопку микрофона в сессии, произнесите команду, и транскрибированный текст отправится AI-агенту.
-
-- **Полностью локальная** транскрипция — данные не покидают вашу машину
-- **whisper.cpp** через native N-API bindings (`smart-whisper`) — скорость ~1-3 сек на модели `base`
-- Модель `ggml-base.bin` (~142MB) скачивается автоматически при первом использовании в `~/.remcli/models/`
-- **ffmpeg** необходим для конвертации аудио (`brew install ffmpeg`)
-
-Голосовые сообщения отмечаются в чате иконкой 🎤 и фиолетовым пузырём.
-
----
-
-## Озвучка ответов (TTS)
-
-Кнопка **Listen** на сообщении агента синтезирует речь на стороне демона (формат OGG Opus):
-
-- **edge-tts** (по умолчанию) — Microsoft Edge TTS, бесплатно, без настройки. Голос выбирается автоматически по языку ответа (`ttsEdgeVoice: 'auto'`), нужен ffmpeg
-- **qwen3-tts** — локальный синтез с клонированием голоса (только Apple Silicon, ~1.7GB RAM)
-
-Провайдер выбирается в `remcli setup`.
-
----
-
-## Локальный консьерж (LM Studio)
-
-Опциональный LLM-ассистент «Джарвис» внутри демона (выключен по умолчанию: `conciergeEnabled` в `~/.remcli/setup.json`). Подключается к LM Studio (или любому OpenAI-совместимому API, по умолчанию `http://127.0.0.1:1234/v1`) и через function calling умеет:
-
-- показать статус сессий и демона
-- запустить агент-сессию — только по явной просьбе пользователя
-
-**Промт, правила и ограничения** — `packages/remcli-cli/src/daemon/concierge/conciergeService.ts`:
-
-- `CONCIERGE_SYSTEM_PROMPT` — персона (Джарвис) и мягкие правила: отвечать на языке пользователя, не выдумывать данные, только статус/запуск/помощь
-- Жёсткие ограничения зашиты в код и промтом не обходятся: белый список из 3 инструментов (`CONCIERGE_TOOLS`), валидация агента и директории до запуска, максимум 4 LLM-раунда × 5 tool-вызовов, один запуск сессии на диалог
-- Своя добавка к промту без правки кода: `"conciergeExtraPrompt"` в `~/.remcli/setup.json` — добавляется после базовых правил и не может их отменить
-
-Детали API — в `docs/protocol.md`.
-
----
-
-## Безопасность
-
-- **QR-код** — демон создаёт или переиспользует persistent pairing: 32-байтный секрет и preferred port в `~/.remcli/p2p-pairing.json` с правами 0600. QR нужен для первого сопряжения или после `remcli daemon rekey`
-- **Аутентификация** — обе стороны вычисляют Bearer-токен через `HMAC-SHA512(secret, "p2p-auth").digest("hex")`. Секрет никогда не передаётся по сети; `daemon.state.json` тоже пишется с правами 0600, потому что содержит активный `p2pSharedSecret` для локальных CLI-сессий
-- **Шифрование** — все данные сессий зашифрованы AES-256-GCM (ключи на сессию) или XSalsa20-Poly1305
-- **Локальность** — P2P-сервер работает на вашей машине. Данные не покидают локальную сеть (кроме режима `--tunnel`)
-
-Подробнее: [docs/encryption.md](docs/encryption.md)
-
----
+- Завершить provider-specific acceptance для Claude Code и Gemini CLI.
+- Довести Cursor capabilities, названия и сортировку resume-истории.
+- Добавить lifecycle persistence daemon и безопасный cleanup процессов.
+- Развить Zen: удаление задач; отдельно спроектировать live web terminal.
 
 ## Документация
 
-- [Протокол](docs/protocol.md) — WebSocket/HTTP API, формат сообщений, sequencing
-- [Шифрование](docs/encryption.md) — схемы шифрования, binary layouts, key wrapping
-- [Архитектура CLI](docs/cli-architecture.md) — устройство демона, сессий, RPC
-
----
+- [Индекс документации](docs/index.md)
+- [Протокол](docs/protocol.md)
+- [Шифрование](docs/encryption.md)
+- [CLI и daemon](docs/cli-architecture.md)
+- [Архитектура Codex](docs/agent-architecture/codex-chatgpt-architecture.md)
+- [Архитектура Cursor](docs/agent-architecture/cursor-cli-architecture.md)
 
 ## Лицензия
 
