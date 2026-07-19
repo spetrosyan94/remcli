@@ -8,6 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { copyFileSync, cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
@@ -27,11 +28,16 @@ const TEST_MACHINE_ID = 'controlled-cursor-machine-rpc';
 const FIXTURE_MODEL = 'controlled-cursor-model';
 const TEST_NATIVE_SESSION_ID = 'controlled-cursor-native-session';
 const FIRST_CONTEXT_PROMPT = 'fixture seed context';
+const IN_FLIGHT_DELIVERY_PROMPT = 'fixture delivery disconnect before acknowledgement';
 const ACTIVE_STOP_PROMPT = 'fixture active Cursor turn to stop';
 const RESUME_CONTEXT_PROMPT = 'fixture resume context';
 const PACKAGE_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const CLI_ARTIFACT_SNAPSHOT_ATTEMPTS = 30;
 const CLI_ARTIFACT_SNAPSHOT_RETRY_MS = 250;
+const RUNNER_DELIVERY_PROBE_WINDOW_MS = 250;
+const TEST_SESSION_MESSAGE_ACK_VERSION = 1;
+const TMUX_SIBLING_SENTINEL_COMMAND = 'sleep 60';
+const CURSOR_WORKSPACE_MISMATCH_ERROR = 'Cursor session belongs to a different working directory. Select its original workspace before resuming.';
 
 interface RpcCallAck {
     ok: boolean;
@@ -54,12 +60,19 @@ interface PhoneAssistantMessage {
     text: string;
 }
 
+interface InFlightDeliveryReplay {
+    deliveredSequences: number[];
+    replayedSequences: number[];
+}
+
 interface LifecycleHarness {
     fixture: ControlledCursorAgent;
     callMachineRpc: (method: string, params: unknown) => Promise<unknown>;
+    createTmuxSiblingPane: (sessionId: string) => { runnerPaneId: string; siblingPaneId: string };
     getChildren: () => Array<{ remcliSessionId?: string }>;
     getPhoneAssistantTexts: (sessionId: string) => string[];
-    probeAcknowledgedRunnerReconnect: (sessionId: string) => Promise<number[]>;
+    probeReplacementRunnerDelivery: (sessionId: string) => Promise<number[]>;
+    verifyInFlightDeliveryReplay: (sessionId: string, text: string) => Promise<InFlightDeliveryReplay>;
     sendPhonePrompt: (sessionId: string, text: string) => void;
     close: () => Promise<void>;
 }
@@ -91,6 +104,41 @@ function readString(value: unknown): string | null {
 
 function toError(value: unknown): Error {
     return value instanceof Error ? value : new Error(String(value));
+}
+
+function runTmux(args: string[]): string {
+    const result = spawnSync('tmux', args, { encoding: 'utf8' });
+    if (result.error) {
+        throw result.error;
+    }
+    if (result.status !== 0) {
+        throw new Error(`tmux ${args[0] ?? 'command'} failed: ${result.stderr}`);
+    }
+    return result.stdout;
+}
+
+function doesTmuxPaneExist(paneId: string): boolean {
+    const result = spawnSync('tmux', [
+        'display-message',
+        '-p',
+        '-t',
+        paneId,
+        '#{pane_id}',
+    ], { encoding: 'utf8' });
+    if (result.error) {
+        throw result.error;
+    }
+    return result.status === 0 && result.stdout.trim() === paneId;
+}
+
+function releaseTmuxPane(paneId: string): void {
+    const result = spawnSync('tmux', ['kill-pane', '-t', paneId], { encoding: 'utf8' });
+    if (result.error) {
+        throw result.error;
+    }
+    if (result.status !== 0 && result.status !== 1) {
+        throw new Error(`tmux kill-pane failed for ${paneId}: ${result.stderr}`);
+    }
 }
 
 async function createCliArtifactSnapshot(): Promise<string> {
@@ -218,6 +266,24 @@ function createSocketConnection(
     });
 }
 
+function waitForSocketDisconnect(socket: Socket, description: string): Promise<void> {
+    if (!socket.connected) {
+        return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            socket.off('disconnect', onDisconnect);
+            reject(new Error(`Timed out waiting for ${description} to disconnect.`));
+        }, SOCKET_TIMEOUT_MS);
+        const onDisconnect = (): void => {
+            clearTimeout(timeout);
+            resolve();
+        };
+        socket.once('disconnect', onDisconnect);
+    });
+}
+
 async function emitRpcCall(socket: Socket, method: string, params: string): Promise<RpcCallAck> {
     const response = await socket
         .timeout(SOCKET_TIMEOUT_MS)
@@ -253,11 +319,14 @@ function getAssistantText(value: unknown): string | null {
         : null;
 }
 
-function createSpawnParams(resumeSessionId?: string): Record<string, unknown> {
+function createSpawnParams(
+    resumeSessionId?: string,
+    directory: string = process.cwd(),
+): Record<string, unknown> {
     return {
         type: 'spawn-in-directory',
         machineId: TEST_MACHINE_ID,
-        directory: process.cwd(),
+        directory,
         approvedNewDirectoryCreation: false,
         agent: 'cursor',
         permissionMode: 'agent',
@@ -459,14 +528,138 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
             );
         };
 
+        const createTmuxSiblingPane = (sessionId: string): { runnerPaneId: string; siblingPaneId: string } => {
+            const trackedSession = sessionManager.getChildren().find((session) => session.remcliSessionId === sessionId);
+            const runnerPaneId = trackedSession?.tmuxRunner?.paneId;
+            if (!runnerPaneId) {
+                throw new Error(`Controlled Cursor runner ${sessionId} has no owned tmux pane.`);
+            }
+
+            const siblingPaneId = runTmux([
+                'split-window',
+                '-d',
+                '-P',
+                '-F',
+                '#{pane_id}',
+                '-t',
+                runnerPaneId,
+                TMUX_SIBLING_SENTINEL_COMMAND,
+            ]).trim();
+            if (!siblingPaneId || siblingPaneId === runnerPaneId) {
+                throw new Error('Controlled Cursor tmux sibling pane was not created.');
+            }
+
+            cleanupTasks.push({
+                label: 'controlled Cursor tmux sibling pane',
+                run: () => releaseTmuxPane(siblingPaneId),
+            });
+
+            return { runnerPaneId, siblingPaneId };
+        };
+
+        const sendPhonePrompt = (sessionId: string, text: string): void => {
+            appSocket.emit('message', {
+                sid: sessionId,
+                message: encryption.encodeBase64(encryption.encrypt(contentSecret, 'legacy', {
+                    role: 'user',
+                    content: { type: 'text', text },
+                    meta: {
+                        sentFrom: 'phone',
+                        permissionMode: 'agent',
+                        model: FIXTURE_MODEL,
+                    },
+                })),
+            });
+        };
+
+        const verifyInFlightDeliveryReplay = async (
+            sessionId: string,
+            text: string,
+        ): Promise<InFlightDeliveryReplay> => {
+            const runnerCredential = issuedRunnerCredentials.get(sessionId);
+            if (!runnerCredential) {
+                throw new Error(`Controlled Cursor runner credential was not issued for ${sessionId}.`);
+            }
+
+            const deliveredSequences: number[] = [];
+            const unacknowledgedRunner = await createSocketConnection(
+                p2pServer.port,
+                {
+                    token: bearerToken,
+                    clientType: 'session-scoped',
+                    sessionId,
+                    messageAckVersion: TEST_SESSION_MESSAGE_ACK_VERSION,
+                    runnerCredential,
+                },
+                (update) => {
+                    const body = isRecord(update) && isRecord(update.body) ? update.body : null;
+                    const message = body?.t === 'new-message' && isRecord(body.message) ? body.message : null;
+                    const sequence = message?.seq;
+                    if (body?.sid === sessionId && typeof sequence === 'number') {
+                        deliveredSequences.push(sequence);
+                    }
+                },
+            );
+
+            try {
+                sendPhonePrompt(sessionId, text);
+                await waitForCondition(
+                    () => deliveredSequences.length === 1,
+                    'the unacknowledged controlled Cursor delivery',
+                );
+
+                const unacknowledgedRunnerDisconnected = waitForSocketDisconnect(
+                    unacknowledgedRunner,
+                    'the unacknowledged controlled Cursor runner',
+                );
+                const replayedSequences: number[] = [];
+                const replacementRunner = await createSocketConnection(
+                    p2pServer.port,
+                    {
+                        token: bearerToken,
+                        clientType: 'session-scoped',
+                        sessionId,
+                        messageAckVersion: TEST_SESSION_MESSAGE_ACK_VERSION,
+                        runnerCredential,
+                    },
+                    (update) => {
+                        const body = isRecord(update) && isRecord(update.body) ? update.body : null;
+                        const message = body?.t === 'new-message' && isRecord(body.message) ? body.message : null;
+                        const sequence = message?.seq;
+                        if (body?.sid === sessionId && typeof sequence === 'number') {
+                            replayedSequences.push(sequence);
+                        }
+                    },
+                );
+
+                try {
+                    await unacknowledgedRunnerDisconnected;
+                    await waitForCondition(
+                        () => replayedSequences.length === 1,
+                        'the replacement controlled Cursor delivery replay',
+                    );
+                    replacementRunner.emit('message-ack', {
+                        sid: sessionId,
+                        seq: replayedSequences[0],
+                    });
+                    return { deliveredSequences, replayedSequences };
+                } finally {
+                    replacementRunner.close();
+                }
+            } finally {
+                unacknowledgedRunner.close();
+            }
+        };
+
         return {
             fixture,
             callMachineRpc,
+            createTmuxSiblingPane,
             getChildren: () => sessionManager.getChildren(),
             getPhoneAssistantTexts: (sessionId) => phoneAssistantMessages
                 .filter((message) => message.sessionId === sessionId)
                 .map((message) => message.text),
-            probeAcknowledgedRunnerReconnect: async (sessionId) => {
+            probeReplacementRunnerDelivery: async (sessionId) => {
                 const runnerCredential = issuedRunnerCredentials.get(sessionId);
                 if (!runnerCredential) {
                     throw new Error(`Controlled Cursor runner credential was not issued for ${sessionId}.`);
@@ -479,7 +672,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
                         token: bearerToken,
                         clientType: 'session-scoped',
                         sessionId,
-                        messageAckVersion: 1,
+                        messageAckVersion: TEST_SESSION_MESSAGE_ACK_VERSION,
                         runnerCredential,
                     },
                     (update) => {
@@ -492,26 +685,14 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
                     },
                 );
                 try {
-                    await new Promise((resolve) => setTimeout(resolve, 250));
+                    await new Promise((resolve) => setTimeout(resolve, RUNNER_DELIVERY_PROBE_WINDOW_MS));
                     return replayedDeliverySequences;
                 } finally {
                     probeSocket.close();
                 }
             },
-            sendPhonePrompt: (sessionId, text) => {
-                appSocket.emit('message', {
-                    sid: sessionId,
-                    message: encryption.encodeBase64(encryption.encrypt(contentSecret, 'legacy', {
-                        role: 'user',
-                        content: { type: 'text', text },
-                        meta: {
-                            sentFrom: 'phone',
-                            permissionMode: 'agent',
-                            model: FIXTURE_MODEL,
-                        },
-                    })),
-                });
-            },
+            verifyInFlightDeliveryReplay,
+            sendPhonePrompt,
             close,
         };
     } catch (error) {
@@ -593,9 +774,21 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
             sessionId: TEST_NATIVE_SESSION_ID,
         }]);
 
-        // The reconnect probe replaces the live ACK-capable runner socket. A
-        // processed phone prompt must not be replayed to that replacement.
-        expect(await harness.probeAcknowledgedRunnerReconnect(firstRemcliSessionId)).toEqual([]);
+        // A processed phone prompt must not replay to a credential-bound
+        // replacement runner once the live runner has acknowledged it.
+        expect(await harness.probeReplacementRunnerDelivery(firstRemcliSessionId)).toEqual([]);
+        expect(harness.fixture.getInvocations()).toHaveLength(1);
+
+        // Server-side disconnect is deliberately tested with an explicit
+        // credential-bound replacement, not an assumption that the original
+        // runner will auto-reconnect. The replacement receives the one durable
+        // delivery that the disconnected runner left unacknowledged.
+        const inFlightDeliveryReplay = await harness.verifyInFlightDeliveryReplay(
+            firstRemcliSessionId,
+            IN_FLIGHT_DELIVERY_PROMPT,
+        );
+        expect(inFlightDeliveryReplay.deliveredSequences).toHaveLength(1);
+        expect(inFlightDeliveryReplay.replayedSequences).toEqual(inFlightDeliveryReplay.deliveredSequences);
         expect(harness.fixture.getInvocations()).toHaveLength(1);
 
         const duplicateResume = await harness.callMachineRpc(
@@ -631,6 +824,10 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
             'the active Cursor native turn to start before stop',
         );
 
+        const { runnerPaneId, siblingPaneId } = harness.createTmuxSiblingPane(activeStopRemcliSessionId);
+        expect(doesTmuxPaneExist(runnerPaneId)).toBe(true);
+        expect(doesTmuxPaneExist(siblingPaneId)).toBe(true);
+
         const stoppedActiveTurn = await harness.callMachineRpc('stop-session', { sessionId: activeStopRemcliSessionId });
         expect(stoppedActiveTurn).toEqual({ message: 'Session stopped', sessionId: activeStopRemcliSessionId });
         await waitForCondition(
@@ -643,6 +840,8 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
             'the active Cursor native child to receive a termination signal',
             LIFECYCLE_TIMEOUT_MS,
         );
+        expect(doesTmuxPaneExist(runnerPaneId)).toBe(false);
+        expect(doesTmuxPaneExist(siblingPaneId)).toBe(true);
 
         const resumed = await harness.callMachineRpc(
             'spawn-remcli-session',
@@ -713,6 +912,73 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
         await waitForCondition(
             () => harness!.getChildren().length === 0,
             'the resumed daemon-owned Cursor runner to stop',
+            LIFECYCLE_TIMEOUT_MS,
+        );
+    });
+
+    it('deduplicates concurrent pre-init Cursor resumes and rejects a workspace mismatch', async () => {
+        harness = await createLifecycleHarness();
+
+        const [firstResume, duplicateResume] = await Promise.all([
+            harness.callMachineRpc('spawn-remcli-session', createSpawnParams(TEST_NATIVE_SESSION_ID)),
+            harness.callMachineRpc('spawn-remcli-session', createSpawnParams(TEST_NATIVE_SESSION_ID)),
+        ]);
+        expect(firstResume).toEqual({ type: 'success', sessionId: expect.any(String) });
+        expect(duplicateResume).toEqual({ type: 'success', sessionId: expect.any(String) });
+        if (!isSpawnResult(firstResume) || !firstResume.sessionId) {
+            throw new Error('Controlled Cursor first pre-init resume did not return a Remcli session ID.');
+        }
+        if (!isSpawnResult(duplicateResume) || !duplicateResume.sessionId) {
+            throw new Error('Controlled Cursor duplicate pre-init resume did not return a Remcli session ID.');
+        }
+        const resumedRemcliSessionId = firstResume.sessionId;
+
+        expect(duplicateResume.sessionId).toBe(resumedRemcliSessionId);
+        expect(harness.getChildren()).toHaveLength(1);
+        expect(harness.fixture.getInvocations()).toEqual([]);
+
+        const workspaceMismatch = await harness.callMachineRpc(
+            'spawn-remcli-session',
+            createSpawnParams(TEST_NATIVE_SESSION_ID, remcliHomeDir),
+        );
+        expect(workspaceMismatch).toEqual({
+            error: CURSOR_WORKSPACE_MISMATCH_ERROR,
+        });
+        expect(harness.getChildren()).toHaveLength(1);
+        expect(harness.fixture.getInvocations()).toEqual([]);
+
+        harness.sendPhonePrompt(resumedRemcliSessionId, FIRST_CONTEXT_PROMPT);
+        await waitForCondition(
+            () => harness!.fixture.getInvocations().length === 1,
+            'the pre-init Cursor native resume turn to start',
+        );
+        await waitForCondition(
+            () => harness!.getPhoneAssistantTexts(resumedRemcliSessionId).includes(`fixture accepted: ${FIRST_CONTEXT_PROMPT}`),
+            'the pre-init Cursor native resume phone response',
+        );
+        expect(harness.fixture.getInvocations()).toEqual([{
+            args: [
+                '--print',
+                '--output-format',
+                'stream-json',
+                '--trust',
+                '--model',
+                FIXTURE_MODEL,
+                '--resume',
+                TEST_NATIVE_SESSION_ID,
+                FIRST_CONTEXT_PROMPT,
+            ],
+            prompt: FIRST_CONTEXT_PROMPT,
+            resumeSessionId: TEST_NATIVE_SESSION_ID,
+            sessionId: TEST_NATIVE_SESSION_ID,
+        }]);
+        expect(harness.fixture.getProtocolViolations()).toEqual([]);
+
+        const stopped = await harness.callMachineRpc('stop-session', { sessionId: resumedRemcliSessionId });
+        expect(stopped).toEqual({ message: 'Session stopped', sessionId: resumedRemcliSessionId });
+        await waitForCondition(
+            () => harness!.getChildren().length === 0,
+            'the pre-init Cursor resume runner to stop',
             LIFECYCLE_TIMEOUT_MS,
         );
     });
