@@ -64,7 +64,7 @@ export const ca: Dictionary = {
     "connect.tagline1": "Un comandament per als teus agents d'IA.",
     "connect.tagline2": "El mòbil a la mà, el codi a casa.",
     "connect.feature.p2p": "P2P: mòbil ↔ el teu ordinador, directament",
-    "connect.feature.e2e": "Xifratge E2E de tot el trànsit",
+    "connect.feature.e2e": "Xifratge E2E de dades i missatges",
     "connect.feature.noCloud": "Sense núvol ni comptes — el QR és el teu accés",
     "connect.scanQr": "Escaneja el codi QR",
     "connect.enterManually": "Introdueix l'adreça manualment",

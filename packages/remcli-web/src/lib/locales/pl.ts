@@ -64,7 +64,7 @@ export const pl: Dictionary = {
     "connect.tagline1": "Pilot do twoich agentów AI.",
     "connect.tagline2": "Telefon w dłoni, kod w domu.",
     "connect.feature.p2p": "P2P: telefon ↔ twój komputer, bezpośrednio",
-    "connect.feature.e2e": "Szyfrowanie E2E całego ruchu",
+    "connect.feature.e2e": "Szyfrowanie E2E danych i wiadomości",
     "connect.feature.noCloud": "Bez chmury i kont — QR to twój login",
     "connect.scanQr": "Zeskanuj kod QR",
     "connect.enterManually": "Wpisz adres ręcznie",

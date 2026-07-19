@@ -64,7 +64,7 @@ export const zhHans: Dictionary = {
     "connect.tagline1": "你的 AI 智能体遥控器。",
     "connect.tagline2": "手机在手，代码在家。",
     "connect.feature.p2p": "P2P：手机 ↔ 你的电脑，直接连接",
-    "connect.feature.e2e": "全部流量 E2E 加密",
+    "connect.feature.e2e": "数据和消息的端到端加密",
     "connect.feature.noCloud": "无云端无账号 — QR 就是登录",
     "connect.scanQr": "扫描二维码",
     "connect.enterManually": "手动输入地址",

@@ -65,7 +65,7 @@ export const ru = {
     "connect.tagline1": "Пульт для ваших AI-агентов.",
     "connect.tagline2": "Телефон — в руке, код — дома.",
     "connect.feature.p2p": "P2P: телефон ↔ ваш компьютер, напрямую",
-    "connect.feature.e2e": "E2E-шифрование всего трафика",
+    "connect.feature.e2e": "E2E-шифрование данных и сообщений",
     "connect.feature.noCloud": "Без облака и аккаунтов — QR и есть логин",
     "connect.scanQr": "Сканировать QR-код",
     "connect.enterManually": "Ввести адрес вручную",

@@ -64,7 +64,7 @@ export const pt: Dictionary = {
     "connect.tagline1": "Um controle remoto para seus agentes de IA.",
     "connect.tagline2": "O celular na mão, o código em casa.",
     "connect.feature.p2p": "P2P: celular ↔ seu computador, diretamente",
-    "connect.feature.e2e": "Criptografia E2E de todo o tráfego",
+    "connect.feature.e2e": "Criptografia E2E de dados e mensagens",
     "connect.feature.noCloud": "Sem nuvem nem contas — o QR é o seu login",
     "connect.scanQr": "Escanear código QR",
     "connect.enterManually": "Inserir endereço manualmente",

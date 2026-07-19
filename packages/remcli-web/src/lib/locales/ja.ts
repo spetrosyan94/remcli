@@ -64,7 +64,7 @@ export const ja: Dictionary = {
     "connect.tagline1": "AI エージェントのためのリモコン。",
     "connect.tagline2": "手にはスマホ、コードは家に。",
     "connect.feature.p2p": "P2P: スマホ ↔ あなたのコンピュータに直結",
-    "connect.feature.e2e": "全トラフィックを E2E 暗号化",
+    "connect.feature.e2e": "データとメッセージの E2E 暗号化",
     "connect.feature.noCloud": "クラウドもアカウントも不要 — QR がログイン",
     "connect.scanQr": "QR コードをスキャン",
     "connect.enterManually": "アドレスを手動で入力",

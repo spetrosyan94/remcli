@@ -64,7 +64,7 @@ export const zhHant: Dictionary = {
     "connect.tagline1": "你的 AI 智慧代理遙控器。",
     "connect.tagline2": "手機在手，程式碼在家。",
     "connect.feature.p2p": "P2P：手機 ↔ 你的電腦，直接連線",
-    "connect.feature.e2e": "全部流量 E2E 加密",
+    "connect.feature.e2e": "資料和訊息的端對端加密",
     "connect.feature.noCloud": "無雲端無帳號 — QR 就是登入",
     "connect.scanQr": "掃描 QR 碼",
     "connect.enterManually": "手動輸入位址",
