@@ -154,14 +154,42 @@ button {
     animation-timing-function: var(--ease-out) !important;
 }
 
+@keyframes remcli-reduced-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes remcli-reduced-fade-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
     [data-vaul-drawer][data-vaul-snap-points="false"],
-    [data-vaul-drawer][data-vaul-snap-points="false"][data-state="closed"],
     [data-vaul-overlay][data-vaul-snap-points="false"] {
+        transition: opacity var(--dur-micro) var(--ease-out) !important;
+    }
+
+    [data-vaul-drawer][data-vaul-snap-points="false"],
+    [data-vaul-drawer][data-vaul-snap-points="false"][data-state="closed"] {
+        transform: translate3d(0, 0, 0) !important;
+    }
+
+    [data-vaul-drawer][data-vaul-snap-points="false"][data-state="closed"] {
         transition-duration: var(--dur-micro) !important;
-        transition-timing-function: var(--ease-out) !important;
-        animation-duration: var(--dur-micro) !important;
-        animation-timing-function: var(--ease-out) !important;
+        animation: remcli-reduced-fade-out var(--dur-micro) var(--ease-out) both !important;
+    }
+
+    [data-vaul-drawer][data-vaul-snap-points="false"][data-state="open"] {
+        animation: remcli-reduced-fade-in var(--dur-micro) var(--ease-out) both !important;
+    }
+
+    [data-vaul-overlay][data-vaul-snap-points="false"][data-state="closed"] {
+        animation: remcli-reduced-fade-out var(--dur-micro) var(--ease-out) both !important;
+    }
+
+    [data-vaul-overlay][data-vaul-snap-points="false"][data-state="open"] {
+        animation: remcli-reduced-fade-in var(--dur-micro) var(--ease-out) both !important;
     }
 
     *,

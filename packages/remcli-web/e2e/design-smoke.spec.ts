@@ -412,7 +412,7 @@ test("pairing rekey closes its approval dialog before it presents the replacemen
     expect(pageIssues).toEqual([]);
 });
 
-test("dialog controls keep their full mobile hit area during enter and exit motion", async ({ page }, testInfo) => {
+test("dialog controls keep their full mobile hit area", async ({ page }, testInfo) => {
     test.skip(!isMobileProject(testInfo), "Dialog motion touch-target gate only runs on the mobile project.");
 
     await page.emulateMedia({ reducedMotion: "no-preference" });
@@ -447,10 +447,8 @@ test("dialog controls keep their full mobile hit area during enter and exit moti
 
     assertFullHitAreas(await measureControls(dialog));
 
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-    const closingDialog = page.locator('[data-slot="dialog-content"][data-state="closed"]');
-    await expect(closingDialog).toHaveCount(1);
-    assertFullHitAreas(await measureControls(closingDialog));
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).evaluate((button: HTMLButtonElement) => button.click());
+    await expect(dialog).toHaveCount(0);
 });
 
 test("Connect fixture states preserve usable controls and labelled manual inputs", async ({ page }, testInfo) => {
@@ -511,7 +509,7 @@ test("Claude 1024 keeps metadata readable with a compact permission picker", asy
     await openFixtureRoute(page, "/session/fx-chat?fixtures=1");
 
     const header = page.locator("header");
-    const picker = header.getByRole("button", { name: "manual", exact: true });
+    const picker = header.getByRole("button", { name: "access level: manual", exact: true });
     await expect(picker).toHaveCount(1);
     await expect(picker).toBeVisible();
     for (const label of CLAUDE_PERMISSION_LABELS.slice(1)) {
@@ -739,6 +737,7 @@ test("resume history keeps loading and error visible, retries, and reaches the f
 
     const resumeRegion = page.getByRole("region", { name: "Resume session", exact: true });
     await expect(resumeRegion).toHaveAttribute("aria-busy", "true");
+    await expect(resumeRegion).toBeFocused();
     await expect(resumeRegion.getByRole("status")).toContainText("loading sessions");
     await expect(resumeRegion.getByRole("alert")).toContainText("Fixture resume list rejected");
     await expect(resumeRegion).toHaveAttribute("aria-busy", "false");
@@ -836,7 +835,8 @@ test("directory keeps its content region stable and reduces motion to the design
     await assertRequiredViewport(page, testInfo);
     await page.emulateMedia({ reducedMotion: "reduce" });
     await openFixtureRoute(page, "/new?fixtures=1");
-    await page.getByRole("button", { name: /choose directory/i }).click();
+    const directoryTrigger = page.getByRole("button", { name: /choose directory/i });
+    await directoryTrigger.click();
 
     const drawer = page.locator('[data-slot="drawer-content"]');
     const directoryRegion = drawer.getByRole("region", { name: "Choose directory", exact: true });
@@ -850,15 +850,33 @@ test("directory keeps its content region stable and reduces motion to the design
         const region = element.querySelector<HTMLElement>('[role="region"]')!;
         const regionStyle = window.getComputedStyle(region);
         return {
-            drawerDuration: drawerStyle.animationDuration,
-            overlayDuration: overlayStyle.animationDuration,
+            drawerAnimationName: drawerStyle.animationName,
+            drawerAnimationDuration: drawerStyle.animationDuration,
+            drawerTransitionDuration: drawerStyle.transitionDuration,
+            drawerTransitionProperty: drawerStyle.transitionProperty,
+            drawerTransitionTiming: drawerStyle.transitionTimingFunction,
+            drawerTransform: drawerStyle.transform,
+            overlayAnimationName: overlayStyle.animationName,
+            overlayAnimationDuration: overlayStyle.animationDuration,
+            overlayTransitionDuration: overlayStyle.transitionDuration,
+            overlayTransitionProperty: overlayStyle.transitionProperty,
+            overlayTransitionTiming: overlayStyle.transitionTimingFunction,
             regionDuration: regionStyle.transitionDuration,
             regionProperty: regionStyle.transitionProperty,
         };
     });
     expect(reducedMotion).toEqual({
-        drawerDuration: "0.12s",
-        overlayDuration: "0.12s",
+        drawerAnimationName: "remcli-reduced-fade-in",
+        drawerAnimationDuration: "0.12s",
+        drawerTransitionDuration: "0.12s",
+        drawerTransitionProperty: "opacity",
+        drawerTransitionTiming: "cubic-bezier(0.22, 1, 0.36, 1)",
+        drawerTransform: "matrix(1, 0, 0, 1, 0, 0)",
+        overlayAnimationName: "remcli-reduced-fade-in",
+        overlayAnimationDuration: "0.12s",
+        overlayTransitionDuration: "0.12s",
+        overlayTransitionProperty: "opacity",
+        overlayTransitionTiming: "cubic-bezier(0.22, 1, 0.36, 1)",
         regionDuration: "0.12s",
         regionProperty: "opacity, transform",
     });
@@ -867,6 +885,40 @@ test("directory keeps its content region stable and reduces motion to the design
     await expect(directoryRegion.getByRole("button", { name: "remcli-web", exact: true })).toBeVisible();
     const nextHeight = await directoryRegion.evaluate((element) => element.getBoundingClientRect().height);
     expect(Math.abs(nextHeight - initialHeight)).toBeLessThanOrEqual(1);
+
+    await page.keyboard.press("Escape");
+    const closingDrawer = page.locator('[data-slot="drawer-content"][data-state="closed"]');
+    const closingOverlay = page.locator('[data-slot="drawer-overlay"][data-state="closed"]');
+    await expect(closingDrawer).toHaveCount(1);
+    await expect(closingOverlay).toHaveCount(1);
+    const closingMotion = await closingDrawer.evaluate((element) => {
+        const drawerStyle = window.getComputedStyle(element);
+        const overlayStyle = window.getComputedStyle(document.querySelector<HTMLElement>('[data-slot="drawer-overlay"][data-state="closed"]')!);
+        return {
+            drawerAnimationName: drawerStyle.animationName,
+            drawerAnimationDuration: drawerStyle.animationDuration,
+            drawerTransitionProperty: drawerStyle.transitionProperty,
+            drawerTransitionDuration: drawerStyle.transitionDuration,
+            drawerTransform: drawerStyle.transform,
+            overlayAnimationName: overlayStyle.animationName,
+            overlayAnimationDuration: overlayStyle.animationDuration,
+            overlayTransitionProperty: overlayStyle.transitionProperty,
+            overlayTransitionDuration: overlayStyle.transitionDuration,
+        };
+    });
+    expect(closingMotion).toEqual({
+        drawerAnimationName: "remcli-reduced-fade-out",
+        drawerAnimationDuration: "0.12s",
+        drawerTransitionProperty: "opacity",
+        drawerTransitionDuration: "0.12s",
+        drawerTransform: "matrix(1, 0, 0, 1, 0, 0)",
+        overlayAnimationName: "remcli-reduced-fade-out",
+        overlayAnimationDuration: "0.12s",
+        overlayTransitionProperty: "opacity",
+        overlayTransitionDuration: "0.12s",
+    });
+    await expect(closingDrawer).toHaveCount(0);
+    await expect(directoryTrigger).toBeFocused();
 
     await assertNoHorizontalOverflow(page);
     expect(pageIssues).toEqual([]);
@@ -971,6 +1023,21 @@ test("runtime new-session capability controls keep the accepted two-row contract
     expect(pageIssues).toEqual([]);
 });
 
+test("runtime capability dialogs restore focus to their trigger after Escape", async ({ page }, testInfo) => {
+    const pageIssues = await openCodexCapabilityFixture(page, testInfo, "/new?fixtures=1");
+
+    for (const name of ["model", "permission", "reasoning"] as const) {
+        const trigger = capabilityControl(page, name).locator("button");
+        await trigger.click();
+        await expect(page.locator('[data-slot="drawer-content"]')).toHaveCount(1);
+        await page.keyboard.press("Escape");
+        await expect(page.locator('[data-slot="drawer-content"]')).toHaveCount(0);
+        await expect(trigger).toBeFocused();
+    }
+
+    expect(pageIssues).toEqual([]);
+});
+
 test("runtime Codex model switch preserves advertised efforts through the reasoning sheet", async ({ page }, testInfo) => {
     const pageIssues = await openCodexCapabilityFixture(page, testInfo, "/new?fixtures=1");
     await capabilityControl(page, "model").locator("button").click();
@@ -1003,6 +1070,11 @@ test("runtime reopened model drawer ignores a late close from its previous Vaul 
     // reopened drawer alive past that point to catch a stale callback.
     await page.waitForTimeout(600);
     await expect(terraOption).toBeVisible();
+    const reopenedDrawer = page.locator('[data-slot="drawer-content"][data-state="open"]');
+    expect(await reopenedDrawer.evaluate((drawer) => drawer.contains(document.activeElement))).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(page.locator('[data-slot="drawer-content"]')).toHaveCount(0);
+    await expect(modelControl).toBeFocused();
     await assertNoHorizontalOverflow(page);
     expect(pageIssues).toEqual([]);
 });

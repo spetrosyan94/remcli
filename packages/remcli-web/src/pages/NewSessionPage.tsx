@@ -54,6 +54,11 @@ interface SheetState {
     generation: number;
 }
 
+interface SheetFocusTarget {
+    generation: number;
+    trigger: HTMLButtonElement;
+}
+
 export function resolveSheetOpenChange(
     renderedSheet: SheetState | null,
     currentSheet: SheetState | null,
@@ -410,7 +415,7 @@ function SheetRow({
             onClick={onClick}
             disabled={disabled}
             aria-pressed={showSelectionIndicator ? isActive : undefined}
-            className={`flex min-h-11 w-full min-w-0 items-center gap-[11px] border-t px-[18px] py-3 text-left transition-[background-color,border-color,transform] duration-[var(--dur-micro)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 ${isSelected ? "border-accent/30 bg-accent/10" : "border-border bg-card"}`}
+            className={`flex min-h-11 w-full min-w-0 items-center gap-[11px] border-t px-[18px] py-3 text-left transition-[background-color,border-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 ${isSelected ? "border-accent/30 bg-accent/10" : "border-border bg-card"}`}
         >
             <span className={`${labelLayoutClassName} font-mono text-[12.5px] ${isActive ? `${isSelected ? "font-semibold " : ""}text-foreground` : "text-muted-foreground"}`}>{label}</span>
             {meta}
@@ -467,7 +472,7 @@ export function ResumeSheetContent({
                             <button
                                 type="button"
                                 onClick={onRetry}
-                                className="min-h-11 rounded-[9px] border border-border px-3 font-mono text-[11.5px] transition-[background-color,border-color,color,transform] active:scale-[0.96]"
+                                className="min-h-11 rounded-[9px] border border-border px-3 font-mono text-[11.5px] transition-[background-color,border-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]"
                             >
                                 {t("connect.retry")}
                             </button>
@@ -554,6 +559,8 @@ export function NewSessionPage() {
     const [isDirectoryLoading, setIsDirectoryLoading] = React.useState(false);
     const [sheet, setSheet] = React.useState<SheetState | null>(null);
     const sheetGenerationRef = React.useRef(0);
+    const directoryTriggerRef = React.useRef<HTMLButtonElement>(null);
+    const sheetFocusTargetRef = React.useRef<SheetFocusTarget | null>(null);
     const [isSpawning, setIsSpawning] = React.useState(false);
     const [isApprovingDirectory, setIsApprovingDirectory] = React.useState(false);
     const [pendingDirectoryCreation, setPendingDirectoryCreation] = React.useState<PendingDirectoryCreation | null>(null);
@@ -837,9 +844,10 @@ export function NewSessionPage() {
         setDirDisplayPath(displayPath ?? null);
     };
 
-    const openSheet = (kind: SheetKind) => {
+    const openSheet = (kind: SheetKind, trigger: HTMLButtonElement | null = null) => {
         const generation = sheetGenerationRef.current + 1;
         sheetGenerationRef.current = generation;
+        sheetFocusTargetRef.current = trigger ? { generation, trigger } : null;
         setSheet({ kind, generation });
     };
 
@@ -858,7 +866,7 @@ export function NewSessionPage() {
         setDirectoryListing(null);
         setDirectoryError(null);
         setDirectoryBackTarget(null);
-        openSheet("directory");
+        openSheet("directory", directoryTriggerRef.current);
     };
 
     const navigateDirectory = (path: string) => {
@@ -1019,14 +1027,14 @@ export function NewSessionPage() {
             <header className="flex items-center px-5 pb-3 pt-1.5">
                 <h1 className="text-xl font-semibold">{t("new.title")}</h1>
                 <button aria-label={t("new.close")} onClick={() => navigate(-1)}
-                    className="ml-auto flex size-11 items-center justify-center rounded-[10px] border border-border transition-[background-color,border-color,transform] active:scale-[0.96]">
+                    className="ml-auto flex size-11 items-center justify-center rounded-[10px] border border-border transition-[background-color,border-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]">
                     <X className="size-4 text-muted-foreground" />
                 </button>
             </header>
 
             <main className="flex min-h-0 flex-1 flex-col gap-4.5 overflow-y-auto px-5 [&>*]:shrink-0">
                 {/* машина */}
-                <button onClick={() => openSheet("machine")} disabled={machines.length === 0}
+                <button onClick={(event) => openSheet("machine", event?.currentTarget ?? null)} disabled={machines.length === 0}
                     className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-3.5 py-3">
                     <span className="w-[52px] text-left font-mono text-[10px] text-muted-foreground">{t("new.machine")}</span>
                     {machine ? (
@@ -1072,19 +1080,19 @@ export function NewSessionPage() {
                                 </div>
                             ) : isActiveCapabilityUnavailable ? (
                                 <button type="button" onClick={retryActiveCapabilities}
-                                    className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-destructive/40 bg-destructive/[0.06] px-2.5 font-mono text-[11px] text-destructive transition-[border-color,background-color,transform] active:scale-[0.96]">
+                                    className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-destructive/40 bg-destructive/[0.06] px-2.5 font-mono text-[11px] text-destructive transition-[border-color,background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]">
                                     <span className="min-w-0 truncate">{t("new.capabilitiesRetry")}</span>
                                 </button>
                             ) : (
                                 <button
                                     type="button"
-                                    onClick={() => openSheet("model")}
+                                    onClick={(event) => openSheet("model", event?.currentTarget ?? null)}
                                     disabled={isCapabilityDrivenAgent && !isActiveCapabilityCatalogReady}
                                     aria-label={`${t("new.model")}: ${activeModelLabel}`}
                                     aria-haspopup="dialog"
                                     aria-expanded={sheetKind === "model"}
                                     aria-controls="new-session-sheet"
-                                    className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] active:scale-[0.96] disabled:opacity-50">
+                                    className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:opacity-50">
                                     <span className="min-w-0 truncate">{activeModelLabel}</span>
                                     <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
                                 </button>
@@ -1094,13 +1102,13 @@ export function NewSessionPage() {
                             <span className="flex min-h-[22px] items-end font-mono text-[10px] text-muted-foreground">{t(getPrimarySelectorLabelKey(agent))}</span>
                             <button
                                 type="button"
-                                onClick={() => openSheet("permission")}
+                                onClick={(event) => openSheet("permission", event?.currentTarget ?? null)}
                                 disabled={(agent === "codex" && codexCapabilities?.status !== "ready") || (agent === "cursor" && cursorCapabilities?.status !== "ready")}
                                 aria-label={`${t(getPrimarySelectorLabelKey(agent))}: ${activeModeLabel}`}
                                 aria-haspopup="dialog"
                                 aria-expanded={sheetKind === "permission"}
                                 aria-controls="new-session-sheet"
-                                className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] active:scale-[0.96] disabled:opacity-50">
+                                className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:opacity-50">
                                 <span className="min-w-0 truncate">{activeModeLabel}</span>
                                 <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
                             </button>
@@ -1121,7 +1129,7 @@ export function NewSessionPage() {
                                 </div>
                             ) : reasoningControlState === "unavailable" ? (
                                 <button type="button" onClick={retryActiveCapabilities}
-                                    className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-destructive/40 bg-destructive/[0.06] px-2.5 font-mono text-[11px] text-destructive transition-[border-color,background-color,transform] active:scale-[0.96]">
+                                    className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-destructive/40 bg-destructive/[0.06] px-2.5 font-mono text-[11px] text-destructive transition-[border-color,background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]">
                                     <span className="min-w-0 truncate">{t("new.capabilitiesRetry")}</span>
                                 </button>
                             ) : reasoningControlState === "no-options" ? (
@@ -1131,25 +1139,25 @@ export function NewSessionPage() {
                             ) : reasoningControlState === "choose-required" ? (
                                 <button
                                     type="button"
-                                    onClick={() => openSheet("reasoning")}
+                                    onClick={(event) => openSheet("reasoning", event?.currentTarget ?? null)}
                                     aria-label={`${t("new.reasoning")}: ${t("new.reasoningChoose")}`}
                                     aria-haspopup="dialog"
                                     aria-expanded={sheetKind === "reasoning"}
                                     aria-controls="new-session-sheet"
-                                    className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] active:scale-[0.96]">
+                                    className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]">
                                     <span className="min-w-0 truncate">{t("new.reasoningChoose")}</span>
                                     <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
                                 </button>
                             ) : (
                                 <button
                                     type="button"
-                                    onClick={() => openSheet("reasoning")}
+                                    onClick={(event) => openSheet("reasoning", event?.currentTarget ?? null)}
                                     disabled={reasoningControlState !== "ready"}
                                     aria-label={`${t("new.reasoning")}: ${codexExecution?.reasoningEffort ?? ""}`}
                                     aria-haspopup="dialog"
                                     aria-expanded={sheetKind === "reasoning"}
                                     aria-controls="new-session-sheet"
-                                    className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] active:scale-[0.96] disabled:opacity-50">
+                                    className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:opacity-50">
                                     <span className="min-w-0 truncate">{codexExecution?.reasoningEffort}</span>
                                     <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
                                 </button>
@@ -1159,12 +1167,12 @@ export function NewSessionPage() {
                     {agent === "cursor" && (
                         <button
                             type="button"
-                            onClick={() => openSheet("cursor-launch")}
+                            onClick={(event) => openSheet("cursor-launch", event?.currentTarget ?? null)}
                             aria-haspopup="dialog"
                             aria-expanded={sheetKind === "cursor-launch"}
                             aria-controls="new-session-sheet"
                             aria-label={`${t("new.cursorAdvanced")}${cursorLaunchControlsSummary ? ` · ${cursorLaunchControlsSummary}` : ""}`}
-                            className={`inline-flex min-h-11 max-w-full self-start items-center gap-1.5 rounded-[10px] border px-2.5 font-mono text-[11px] transition-[border-color,background-color,transform] active:scale-[0.96] ${cursorLaunchControlsSummary ? "border-accent/40 bg-accent/[0.06] text-foreground" : "border-border bg-card text-muted-foreground"}`}
+                            className={`inline-flex min-h-11 max-w-full self-start items-center gap-1.5 rounded-[10px] border px-2.5 font-mono text-[11px] transition-[border-color,background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] ${cursorLaunchControlsSummary ? "border-accent/40 bg-accent/[0.06] text-foreground" : "border-border bg-card text-muted-foreground"}`}
                         >
                             <SlidersHorizontal className="size-3 shrink-0" aria-hidden="true" />
                             <span className="min-w-0 truncate">
@@ -1197,8 +1205,8 @@ export function NewSessionPage() {
                                 </button>
                             );
                         })}
-                        <button onClick={openDirectoryPicker} disabled={!machine}
-                            className={`flex min-h-11 w-full items-center gap-2.5 bg-card px-3.5 py-3 font-mono text-[12.5px] text-muted-foreground transition-[background-color,color,transform] active:scale-[0.96] disabled:opacity-50 ${(recentDirs.length > 0 || shouldShowSelectedDir) ? "border-t border-border" : ""}`}>
+                        <button ref={directoryTriggerRef} onClick={openDirectoryPicker} disabled={!machine}
+                            className={`flex min-h-11 w-full items-center gap-2.5 bg-card px-3.5 py-3 font-mono text-[12.5px] text-muted-foreground transition-[background-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:opacity-50 ${(recentDirs.length > 0 || shouldShowSelectedDir) ? "border-t border-border" : ""}`}>
                             <FolderOpen className="size-3.5 shrink-0" /> {t("new.dirBrowse")}
                         </button>
                     </div>
@@ -1228,8 +1236,8 @@ export function NewSessionPage() {
                 )}
 
                 {/* resume: bottom-sheet со списком прошлых сессий агента (RPC list-agent-sessions) */}
-                <button onClick={() => openSheet("resume")} disabled={!machine || (agent === "codex" && !isCodexCapabilityReady) || (agent === "cursor" && !isCursorCapabilityReady)}
-                    className="flex h-11 items-center justify-center gap-2 rounded-[10px] border border-dashed border-border font-mono text-[11.5px] text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96]">
+                <button onClick={(event) => openSheet("resume", event?.currentTarget ?? null)} disabled={!machine || (agent === "codex" && !isCodexCapabilityReady) || (agent === "cursor" && !isCursorCapabilityReady)}
+                    className="flex h-11 items-center justify-center gap-2 rounded-[10px] border border-dashed border-border font-mono text-[11.5px] text-muted-foreground transition-[background-color,border-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]">
                     <RotateCcw className="size-3" /> {t("new.resume", { agent })}
                 </button>
             </main>
@@ -1252,7 +1260,27 @@ export function NewSessionPage() {
                     setSheet((currentSheet) => resolveSheetOpenChange(sheet, currentSheet, isOpen));
                 }}
             >
-                <DrawerContent id="new-session-sheet" className={drawerContentClassName}>
+                <DrawerContent
+                    id="new-session-sheet"
+                    className={drawerContentClassName}
+                    onOpenAutoFocus={(event) => {
+                        event.preventDefault();
+                        const content = event.currentTarget;
+                        if (content instanceof HTMLElement) {
+                            const focusTarget = content.querySelector<HTMLButtonElement>("button:not([disabled])")
+                                ?? content.querySelector<HTMLElement>("[tabindex=\"0\"]")
+                                ?? content;
+                            focusTarget.focus();
+                        }
+                    }}
+                    onCloseAutoFocus={(event) => {
+                        event.preventDefault();
+                        const target = sheetFocusTargetRef.current;
+                        if (!target || target.generation !== drawerInstanceKey || !target.trigger.isConnected) return;
+                        sheetFocusTargetRef.current = null;
+                        target.trigger.focus();
+                    }}
+                >
                     {sheetKind === "machine" && (
                         <>
                             <SheetHeader title={t("new.machineTitle")} tag={t("new.machine")} />
@@ -1347,14 +1375,14 @@ export function NewSessionPage() {
                                     role="switch"
                                     aria-checked={cursorLaunchControls.force}
                                     onClick={() => setCursorLaunchControls((current) => ({ ...current, force: !current.force }))}
-                                    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left transition-[background-color,transform] active:scale-[0.96]"
+                                    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]"
                                 >
                                     <span className="min-w-0 flex-1">
                                         <span className="block font-mono text-[12.5px] text-foreground">{t("new.cursorForce")}</span>
                                         <span className="mt-0.5 block font-mono text-[9.5px] leading-[1.35] text-muted-foreground">--force</span>
                                     </span>
-                                    <span aria-hidden="true" className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-[var(--dur-micro)] ${cursorLaunchControls.force ? "bg-accent" : "bg-muted-foreground/30"}`}>
-                                        <span className={`absolute top-1 size-4 rounded-full bg-card shadow-sm transition-transform duration-[var(--dur-micro)] ${cursorLaunchControls.force ? "translate-x-6" : "translate-x-1"}`} />
+                                    <span aria-hidden="true" className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-[var(--dur-micro)] ease-[var(--ease-out)] ${cursorLaunchControls.force ? "bg-accent" : "bg-muted-foreground/30"}`}>
+                                        <span className={`absolute top-1 size-4 rounded-full bg-card shadow-sm transition-transform duration-[var(--dur-micro)] ease-[var(--ease-out)] ${cursorLaunchControls.force ? "translate-x-6" : "translate-x-1"}`} />
                                     </span>
                                 </button>
                                 <button
@@ -1362,14 +1390,14 @@ export function NewSessionPage() {
                                     role="switch"
                                     aria-checked={cursorLaunchControls.autoReview}
                                     onClick={() => setCursorLaunchControls((current) => ({ ...current, autoReview: !current.autoReview }))}
-                                    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left transition-[background-color,transform] active:scale-[0.96]"
+                                    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]"
                                 >
                                     <span className="min-w-0 flex-1">
                                         <span className="block font-mono text-[12.5px] text-foreground">{t("new.cursorAutoReview")}</span>
                                         <span className="mt-0.5 block font-mono text-[9.5px] leading-[1.35] text-muted-foreground">--auto-review</span>
                                     </span>
-                                    <span aria-hidden="true" className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-[var(--dur-micro)] ${cursorLaunchControls.autoReview ? "bg-accent" : "bg-muted-foreground/30"}`}>
-                                        <span className={`absolute top-1 size-4 rounded-full bg-card shadow-sm transition-transform duration-[var(--dur-micro)] ${cursorLaunchControls.autoReview ? "translate-x-6" : "translate-x-1"}`} />
+                                    <span aria-hidden="true" className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-[var(--dur-micro)] ease-[var(--ease-out)] ${cursorLaunchControls.autoReview ? "bg-accent" : "bg-muted-foreground/30"}`}>
+                                        <span className={`absolute top-1 size-4 rounded-full bg-card shadow-sm transition-transform duration-[var(--dur-micro)] ease-[var(--ease-out)] ${cursorLaunchControls.autoReview ? "translate-x-6" : "translate-x-1"}`} />
                                     </span>
                                 </button>
                                 <div className="border-t border-border px-[18px] pb-2 pt-3">
@@ -1389,14 +1417,14 @@ export function NewSessionPage() {
                                     role="switch"
                                     aria-checked={cursorLaunchControls.approveMcps}
                                     onClick={() => setCursorLaunchControls((current) => ({ ...current, approveMcps: !current.approveMcps }))}
-                                    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left transition-[background-color,transform] active:scale-[0.96]"
+                                    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]"
                                 >
                                     <span className="min-w-0 flex-1">
                                         <span className="block font-mono text-[12.5px] text-foreground">{t("new.cursorApproveMcps")}</span>
                                         <span className="mt-0.5 block font-mono text-[9.5px] leading-[1.35] text-muted-foreground">--approve-mcps</span>
                                     </span>
-                                    <span aria-hidden="true" className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-[var(--dur-micro)] ${cursorLaunchControls.approveMcps ? "bg-accent" : "bg-muted-foreground/30"}`}>
-                                        <span className={`absolute top-1 size-4 rounded-full bg-card shadow-sm transition-transform duration-[var(--dur-micro)] ${cursorLaunchControls.approveMcps ? "translate-x-6" : "translate-x-1"}`} />
+                                    <span aria-hidden="true" className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-[var(--dur-micro)] ease-[var(--ease-out)] ${cursorLaunchControls.approveMcps ? "bg-accent" : "bg-muted-foreground/30"}`}>
+                                        <span className={`absolute top-1 size-4 rounded-full bg-card shadow-sm transition-transform duration-[var(--dur-micro)] ease-[var(--ease-out)] ${cursorLaunchControls.approveMcps ? "translate-x-6" : "translate-x-1"}`} />
                                     </span>
                                 </button>
                                 <div className="border-t border-border px-[18px] py-3 font-mono text-[9.5px] leading-[1.45] text-muted-foreground">
@@ -1438,7 +1466,7 @@ export function NewSessionPage() {
                                     onClick={() => {
                                         if (directoryParentPath) navigateDirectory(directoryParentPath);
                                     }}
-                                    className="flex min-h-11 w-full items-center gap-3 px-[18px] py-3 text-left font-mono text-[12.5px] text-muted-foreground transition-[background-color,color,transform] active:scale-[0.96] disabled:opacity-40"
+                                    className="flex min-h-11 w-full items-center gap-3 px-[18px] py-3 text-left font-mono text-[12.5px] text-muted-foreground transition-[background-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:opacity-40"
                                 >
                                     <ArrowUp className="size-3.5 shrink-0" />
                                     <span className="shrink-0">{t("new.dirParent")}</span>
@@ -1464,7 +1492,7 @@ export function NewSessionPage() {
                                         <button
                                             type="button"
                                             onClick={() => setDirectoryReloadKey((value) => value + 1)}
-                                            className="min-h-11 rounded-[9px] border border-border px-3 font-mono text-[11.5px] transition-[background-color,border-color,color,transform] active:scale-[0.96]"
+                                            className="min-h-11 rounded-[9px] border border-border px-3 font-mono text-[11.5px] transition-[background-color,border-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]"
                                         >
                                             {t("new.dirRetry")}
                                         </button>
@@ -1480,7 +1508,7 @@ export function NewSessionPage() {
                                         key={entry.path}
                                         type="button"
                                         onClick={() => navigateDirectory(entry.path)}
-                                        className={`flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left font-mono text-[12.5px] transition-[background-color,color,transform] active:scale-[0.96] ${entry.hidden ? "text-muted-foreground" : "text-foreground"}`}
+                                        className={`flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left font-mono text-[12.5px] transition-[background-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] ${entry.hidden ? "text-muted-foreground" : "text-foreground"}`}
                                     >
                                         <Folder className="size-3.5 shrink-0 text-accent" />
                                         <span className="min-w-0 flex-1 truncate">{entry.name}</span>
@@ -1499,7 +1527,7 @@ export function NewSessionPage() {
                                         selectDir(directoryHeaderPath, directoryHeaderDisplayPath);
                                         setSheet(null);
                                     }}
-                                    className="min-h-[52px] w-full rounded-xl bg-accent px-3 text-[14px] font-semibold text-accent-foreground transition-[background-color,transform] active:scale-[0.96] disabled:opacity-50"
+                                    className="min-h-[52px] w-full rounded-xl bg-accent px-3 text-[14px] font-semibold text-accent-foreground transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:opacity-50"
                                 >
                                     {t("new.dirSelectCurrent")}
                                 </button>
@@ -1540,7 +1568,7 @@ export function NewSessionPage() {
                             type="button"
                             disabled={isApprovingDirectory}
                             onClick={() => setPendingDirectoryCreation(null)}
-                            className="h-11 w-full rounded-[9px] border border-border text-[13px] font-medium text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96] disabled:opacity-50 lg:h-10 lg:flex-1"
+                            className="h-11 w-full rounded-[9px] border border-border text-[13px] font-medium text-muted-foreground transition-[background-color,border-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:opacity-50 lg:h-10 lg:flex-1"
                         >
                             {t("common.cancel")}
                         </button>
@@ -1548,7 +1576,7 @@ export function NewSessionPage() {
                             type="button"
                             disabled={isApprovingDirectory}
                             onClick={() => void approveDirectoryCreation()}
-                            className="h-11 w-full rounded-[9px] bg-accent text-[13px] font-semibold text-accent-foreground transition-[background-color,transform] active:scale-[0.96] disabled:opacity-50 lg:h-10 lg:flex-1"
+                            className="h-11 w-full rounded-[9px] bg-accent text-[13px] font-semibold text-accent-foreground transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:opacity-50 lg:h-10 lg:flex-1"
                         >
                             {isApprovingDirectory ? t("new.spawning") : t("common.create")}
                         </button>
