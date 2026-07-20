@@ -114,6 +114,8 @@ const testState = vi.hoisted(() => {
         reportTerminalSessionStarted: vi.fn(),
         bindDaemonCursorSession: vi.fn(),
         preflightDaemonCursorRunner: vi.fn(),
+        reportDaemonRunnerStopping: vi.fn(),
+        reportDaemonRunnerStopped: vi.fn(),
         verifyCursorRunnerIdentity: vi.fn(),
         createSessionMetadata: vi.fn(createSessionMetadataResult),
         runCursorTurn: vi.fn(),
@@ -132,6 +134,10 @@ const testState = vi.hoisted(() => {
             this.reportTerminalSessionStarted.mockReset();
             this.bindDaemonCursorSession.mockReset();
             this.preflightDaemonCursorRunner.mockReset();
+            this.reportDaemonRunnerStopping.mockReset();
+            this.reportDaemonRunnerStopped.mockReset();
+            this.reportDaemonRunnerStopping.mockResolvedValue({ ok: false, error: 'test runner lifecycle unavailable' });
+            this.reportDaemonRunnerStopped.mockResolvedValue({ ok: false, error: 'test runner lifecycle unavailable' });
             this.verifyCursorRunnerIdentity.mockReset();
             this.verifyCursorRunnerIdentity.mockResolvedValue(true);
             this.createSessionMetadata.mockReset();
@@ -169,6 +175,8 @@ vi.mock('@/utils/daemonRunnerCredentialBootstrap', () => ({
 vi.mock('@/daemon/controlClient', () => ({
     bindDaemonCursorSession: testState.bindDaemonCursorSession,
     preflightDaemonCursorRunner: testState.preflightDaemonCursorRunner,
+    reportDaemonRunnerStopping: testState.reportDaemonRunnerStopping,
+    reportDaemonRunnerStopped: testState.reportDaemonRunnerStopped,
 }));
 
 vi.mock('./cursorCapabilities', async (importOriginal) => {
@@ -570,6 +578,31 @@ describe('runCursor lifecycle', () => {
         expect(session.flush).toHaveBeenCalledOnce();
         expect(session.close).toHaveBeenCalledOnce();
         expect(testState.reconnectionCancel).toHaveBeenCalledOnce();
+    });
+
+    it('notifies the daemon before and after a graceful daemon-owned Cursor runner cleanup', async () => {
+        const session = createTestSession('daemon-owned-session');
+        testState.response = { id: session.sessionId };
+        testState.initialSession = session;
+        testState.acquireDaemonRunnerCredential.mockResolvedValue(true);
+        testState.reportDaemonRunnerStopping.mockResolvedValue({ ok: true, data: { accepted: true } });
+        testState.reportDaemonRunnerStopped.mockResolvedValue({ ok: true, data: { accepted: true } });
+
+        const runPromise = runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+        });
+        await waitForMessageQueue();
+
+        process.emit('SIGINT');
+        await runPromise;
+
+        expect(testState.reportDaemonRunnerStopping).toHaveBeenCalledWith(session.sessionId);
+        expect(testState.reportDaemonRunnerStopped).toHaveBeenCalledWith(session.sessionId);
+        expect(testState.reportDaemonRunnerStopping.mock.invocationCallOrder[0])
+            .toBeLessThan(session.sendSessionDeath.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
+        expect(testState.reportDaemonRunnerStopped.mock.invocationCallOrder[0])
+            .toBeGreaterThan(session.close.mock.invocationCallOrder[0] ?? 0);
     });
 
     it('titles the swapped session after reconnect and keeps title assignment one-shot', async () => {

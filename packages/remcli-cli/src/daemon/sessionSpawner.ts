@@ -18,6 +18,7 @@ import {
     CodexRemoteTuiOpenResult,
     CursorRunnerPreflightRequest,
     CursorRunnerPreflightResult,
+    DaemonRunnerLifecycleResult,
     DaemonSessionWebhookResult,
     NativeCodexThreadBinding,
     NativeCodexThreadBindingResult,
@@ -47,6 +48,7 @@ const CODEX_RESUME_SHUTDOWN_CANCELLATION_MESSAGE = 'Daemon shut down before Code
 const DAEMON_SHUTTING_DOWN_SPAWN_ERROR_MESSAGE = 'Daemon is shutting down and cannot start a new session.';
 const CURSOR_RESUME_OWNERSHIP_UNCONFIRMED_ERROR = 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.';
 const RUNNER_CONTROL_TOKEN_BYTES = 32;
+const GRACEFUL_DAEMON_RUNNER_SHUTDOWN_TIMEOUT_MS = 10_000;
 const CURSOR_LEGACY_PERMISSION_ENV_KEY = 'REMCLI_CURSOR_PERMISSION_MODE';
 const CURSOR_DAEMON_SELECTION_ENV_KEYS = [
     'REMCLI_CURSOR_MODEL',
@@ -81,6 +83,11 @@ interface PendingSpawnTask {
 interface DaemonTmuxRunner {
     ownership: TmuxPaneOwnership;
     tmuxSessionId?: string;
+}
+
+interface DaemonRunnerStoppingFence {
+    completion: Promise<void>;
+    complete: () => void;
 }
 
 type OwnedPaneStatus = 'exists' | 'missing' | 'mismatch' | 'unknown';
@@ -165,6 +172,14 @@ function createPendingSpawnTask(nativeThreadId?: string): PendingSpawnTask {
     };
 }
 
+function createDaemonRunnerStoppingFence(): DaemonRunnerStoppingFence {
+    let complete: () => void = () => {};
+    const completion = new Promise<void>((resolve) => {
+        complete = resolve;
+    });
+    return { completion, complete };
+}
+
 export interface SessionManager {
     /** Snapshot of currently tracked sessions. */
     getChildren: () => TrackedSession[];
@@ -176,6 +191,10 @@ export interface SessionManager {
     preflightCursorRunner: (
         request: CursorRunnerPreflightRequest,
     ) => Promise<CursorRunnerPreflightResult>;
+    /** Prevent a graceful daemon-owned runner from being resumed while it exits. */
+    markDaemonRunnerStopping: (sessionId: string) => DaemonRunnerLifecycleResult;
+    /** Release a graceful daemon-owned runner after it flushed its final P2P lifecycle event. */
+    completeDaemonRunnerStopping: (sessionId: string) => Promise<DaemonRunnerLifecycleResult>;
     /** Open one daemon-owned tmux window for a bound Codex remote TUI. */
     openCodexRemoteTui: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
     /** Resolve whether a Codex thread already has an active wrapper session. */
@@ -315,6 +334,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     const orphanedCodexRemoteTuiPanes = new Map<string, TmuxPaneOwnership>();
     const sessionCleanupPromises = new Map<TrackedSession, Promise<boolean>>();
     const sessionCleanupFailureReasons = new Map<TrackedSession, string>();
+    const daemonRunnerStoppingFences = new WeakMap<TrackedSession, DaemonRunnerStoppingFence>();
     let codexRemoteTuiHostPromise: Promise<{ ok: true } | { ok: false; error: string }> | null = null;
 
     // Session spawning awaiter system
@@ -479,8 +499,38 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         sessionCleanupPromises.has(session)
     );
 
+    const isGracefullyStoppingDaemonRunner = (session: TrackedSession): boolean => (
+        daemonRunnerStoppingFences.has(session)
+    );
+
+    const waitForGracefulDaemonRunnerCompletion = async (session: TrackedSession): Promise<boolean> => {
+        const fence = daemonRunnerStoppingFences.get(session);
+        if (!fence) {
+            return true;
+        }
+
+        let timeout: NodeJS.Timeout | undefined;
+        try {
+            await Promise.race([
+                fence.completion,
+                new Promise<void>((_, reject) => {
+                    timeout = setTimeout(() => reject(new Error('Timed out waiting for graceful daemon runner completion.')), GRACEFUL_DAEMON_RUNNER_SHUTDOWN_TIMEOUT_MS);
+                }),
+            ]);
+            return true;
+        } catch {
+            return false;
+        } finally {
+            if (timeout) {
+                clearTimeout(timeout);
+            }
+        }
+    };
+
     const isReadyTrackedSession = (pid: number, session: TrackedSession): boolean => (
-        isCurrentTrackedSession(pid, session) && !isStoppingSession(session)
+        isCurrentTrackedSession(pid, session)
+        && !isStoppingSession(session)
+        && !isGracefullyStoppingDaemonRunner(session)
     );
 
     const isExactTrackedSession = (pid: number, session: TrackedSession): boolean => (
@@ -594,6 +644,16 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             return true;
         }
 
+        if (
+            releaseResult === 'unknown'
+            && isGracefullyStoppingDaemonRunner(session)
+            && await getTmuxUtilities(ownership.sessionName).getSessionStatus(ownership.sessionName) === 'missing'
+        ) {
+            // The pane lookup was inconclusive, but tmux confirmed the uniquely
+            // daemon-created session itself no longer exists, so nothing can be released.
+            return true;
+        }
+
         const reason = releaseResult === 'mismatch'
             ? 'ownership no longer matches the original runner'
             : 'immutable pane target is unknown';
@@ -631,6 +691,8 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             pidToTrackedSession.delete(pid);
         }
         displacedTrackedSessionPids.delete(expectedSession);
+        daemonRunnerStoppingFences.get(expectedSession)?.complete();
+        daemonRunnerStoppingFences.delete(expectedSession);
 
         retireDaemonTmuxRunner(expectedSession);
 
@@ -659,7 +721,11 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         trackedSession: TrackedSession,
         shouldAwaitRemoteTuiOpening = true,
         shouldPublishStopped = true,
+        allowGracefulDaemonRunnerCleanup = false,
     ): Promise<boolean> => {
+        if (isGracefullyStoppingDaemonRunner(trackedSession) && !allowGracefulDaemonRunnerCleanup) {
+            return false;
+        }
         const inFlightCleanup = sessionCleanupPromises.get(trackedSession);
         if (inFlightCleanup) {
             return inFlightCleanup;
@@ -1200,6 +1266,46 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         }
 
         return { type: 'not-found' };
+    };
+
+    const findDaemonOwnedTrackedSession = (sessionId: string): { pid: number; session: TrackedSession } | null => {
+        for (const [pid, session] of pidToTrackedSession.entries()) {
+            if (
+                session.remcliSessionId === sessionId
+                && isCurrentTrackedSession(pid, session)
+                && session.startedBy === 'daemon'
+                && session.tmuxRunner
+            ) {
+                return { pid, session };
+            }
+        }
+        return null;
+    };
+
+    const markDaemonRunnerStopping = (sessionId: string): DaemonRunnerLifecycleResult => {
+        const tracked = findDaemonOwnedTrackedSession(sessionId);
+        if (!tracked) {
+            return { accepted: false };
+        }
+
+        if (!daemonRunnerStoppingFences.has(tracked.session)) {
+            daemonRunnerStoppingFences.set(tracked.session, createDaemonRunnerStoppingFence());
+        }
+        return { accepted: true };
+    };
+
+    const completeDaemonRunnerStopping = async (sessionId: string): Promise<DaemonRunnerLifecycleResult> => {
+        const tracked = findDaemonOwnedTrackedSession(sessionId);
+        if (!tracked) {
+            return { accepted: false };
+        }
+
+        if (!daemonRunnerStoppingFences.has(tracked.session)) {
+            daemonRunnerStoppingFences.set(tracked.session, createDaemonRunnerStoppingFence());
+        }
+        return {
+            accepted: await releaseAndRemoveTrackedSession(tracked.pid, tracked.session, true, true, true),
+        };
     };
 
     const preflightCursorRunner = async (
@@ -2179,6 +2285,11 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 }
                 const tmuxRunner = session.tmuxRunner;
 
+                if (isGracefullyStoppingDaemonRunner(session)) {
+                    logger.debug(`[DAEMON RUN] Session ${sessionId} is already completing a credential-confirmed graceful shutdown.`);
+                    return { success: false };
+                }
+
                 const inFlightCleanup = sessionCleanupPromises.get(session);
                 if (!inFlightCleanup) {
                     const paneStatus = await getOwnedPaneStatus(tmuxRunner);
@@ -2234,7 +2345,10 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
             if (!isProcessAlive(pid)) {
                 logger.debug(`[DAEMON RUN] Removing stale session with PID ${pid} (process no longer exists)`);
-                void releaseAndRemoveTrackedSession(pid, session).then((didRemove) => {
+                // A dead runner cannot deliver /daemon-runner-stopped. The
+                // release path still requires the immutable pane tuple (or a
+                // confirmed missing owned tmux session) before retiring it.
+                void releaseAndRemoveTrackedSession(pid, session, true, true, true).then((didRemove) => {
                     if (!didRemove) {
                         logger.warn(`[DAEMON RUN] Keeping stale session ${session.remcliSessionId ?? pid} tracked because remote TUI cleanup was not confirmed.`);
                     }
@@ -2252,7 +2366,10 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 }
                 if (paneStatus === 'missing') {
                     logger.debug(`[DAEMON RUN] Removing stale daemon session ${session.remcliSessionId ?? pid}: immutable tmux target is gone.`);
-                    void releaseAndRemoveTrackedSession(pid, session).then((didRemove) => {
+                    // The runner is no longer attached to its owned pane, so
+                    // only immutable tmux evidence can reconcile a graceful
+                    // stop that could not send its final control callback.
+                    void releaseAndRemoveTrackedSession(pid, session, true, true, true).then((didRemove) => {
                         if (!didRemove) {
                             logger.warn(`[DAEMON RUN] Keeping stale daemon session ${session.remcliSessionId ?? pid} tracked because remote TUI cleanup was not confirmed.`);
                         }
@@ -2324,6 +2441,12 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
             const cleanupResults = await Promise.allSettled([
                 ...trackedSessionSnapshot.map(async ([pid, session]) => {
+                    if (isGracefullyStoppingDaemonRunner(session)) {
+                        if (!await waitForGracefulDaemonRunnerCompletion(session)) {
+                            throw new Error(`Timed out waiting for graceful cleanup of tracked session ${session.remcliSessionId ?? session.pid}.`);
+                        }
+                        return;
+                    }
                     if (!await releaseAndRemoveTrackedSession(pid, session, true, session.startedBy === 'daemon')) {
                         throw new Error(
                             sessionCleanupFailureReasons.get(session)
@@ -2384,6 +2507,8 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         bindNativeCodexThread,
         bindNativeCursorSession,
         preflightCursorRunner,
+        markDaemonRunnerStopping,
+        completeDaemonRunnerStopping,
         openCodexRemoteTui,
         resolveCodexThreadResume,
         spawnSession,

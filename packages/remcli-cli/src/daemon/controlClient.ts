@@ -15,6 +15,7 @@ import {
   type CodexRemoteTuiOpenResult,
   type CursorRunnerPreflightRequest,
   type CursorRunnerPreflightResponse,
+  type DaemonRunnerLifecycleResult,
   type NativeCodexThreadBinding,
   type NativeCodexThreadBindingResult,
   type NativeCursorSessionBinding,
@@ -144,6 +145,30 @@ export async function preflightDaemonCursorRunner(
     ...request,
     runnerToken,
   });
+}
+
+async function reportDaemonRunnerLifecycle(
+  path: '/daemon-runner-stopping' | '/daemon-runner-stopped',
+  sessionId: string,
+): Promise<DaemonResponse<DaemonRunnerLifecycleResult>> {
+  const runnerCredential = getSessionRunnerCredential(sessionId);
+  if (!runnerCredential) {
+    return { ok: false, error: MISSING_SESSION_RUNNER_CREDENTIAL_ERROR };
+  }
+
+  return daemonPost<DaemonRunnerLifecycleResult>(path, { sessionId, runnerCredential });
+}
+
+export async function reportDaemonRunnerStopping(
+  sessionId: string,
+): Promise<DaemonResponse<DaemonRunnerLifecycleResult>> {
+  return reportDaemonRunnerLifecycle('/daemon-runner-stopping', sessionId);
+}
+
+export async function reportDaemonRunnerStopped(
+  sessionId: string,
+): Promise<DaemonResponse<DaemonRunnerLifecycleResult>> {
+  return reportDaemonRunnerLifecycle('/daemon-runner-stopped', sessionId);
 }
 
 export async function openDaemonCodexRemoteTui(

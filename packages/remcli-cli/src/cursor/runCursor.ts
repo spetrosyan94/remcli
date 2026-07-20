@@ -32,6 +32,8 @@ import { redactDiagnosticData } from '@/utils/redaction';
 import {
     bindDaemonCursorSession,
     preflightDaemonCursorRunner,
+    reportDaemonRunnerStopped,
+    reportDaemonRunnerStopping,
 } from '@/daemon/controlClient';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { Metadata } from '@/api/types';
@@ -406,6 +408,12 @@ export async function runCursor(opts: {
 
         cleanupPromise = (async () => {
             shouldExit = true;
+            if (trustedStartedBy === 'daemon') {
+                const stoppingResult = await reportDaemonRunnerStopping(session.sessionId);
+                if (!stoppingResult.ok || !stoppingResult.data.accepted) {
+                    logger.debug('[Cursor] Daemon did not accept runner stopping signal.');
+                }
+            }
             try {
                 reconnectionHandle?.cancel();
             } catch (error) {
@@ -452,6 +460,13 @@ export async function runCursor(opts: {
                 await targetSession.close();
             } catch (error) {
                 logger.debug('[Cursor] Error while closing session:', redactDiagnosticData(error));
+            }
+
+            if (trustedStartedBy === 'daemon') {
+                const stoppedResult = await reportDaemonRunnerStopped(targetSession.sessionId);
+                if (!stoppedResult.ok || !stoppedResult.data.accepted) {
+                    logger.debug('[Cursor] Daemon could not confirm runner cleanup; it will remain fail-closed for retry.');
+                }
             }
 
             try {
@@ -516,8 +531,7 @@ export async function runCursor(opts: {
             agentLabel: 'Cursor Agent',
             onExit: async () => {
                 logger.debug('[cursor]: Exiting agent via Ctrl-C');
-                shouldExit = true;
-                await handleAbort();
+                await cleanupSession();
             },
         }), {
             exitOnCtrlC: false,

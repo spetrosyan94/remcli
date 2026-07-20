@@ -13,6 +13,7 @@ import type {
   CodexRemoteTuiOpenResult,
   CursorRunnerPreflightRequest,
   CursorRunnerPreflightResult,
+  DaemonRunnerLifecycleResult,
   DaemonSessionWebhookResult,
   NativeCodexThreadBinding,
   NativeCodexThreadBindingResult,
@@ -70,6 +71,15 @@ const codexRemoteTuiOpenRequestSchema = nativeCodexThreadBindingSchema.extend({
 
 const protectedCodexRemoteTuiOpenRequestSchema = codexRemoteTuiOpenRequestSchema.extend({
   runnerCredential: runnerCredentialSchema,
+});
+
+const daemonRunnerLifecycleRequestSchema = z.object({
+  sessionId: z.string().min(1),
+  runnerCredential: z.string().min(1),
+});
+
+const daemonRunnerLifecycleResultSchema = z.object({
+  accepted: z.boolean(),
 });
 
 const metadataSchema = z.object({
@@ -211,6 +221,8 @@ export function startDaemonControlServer({
   bindNativeCodexThread,
   bindNativeCursorSession,
   preflightCursorRunner,
+  markDaemonRunnerStopping,
+  completeDaemonRunnerStopping,
   openCodexRemoteTui,
   approvePairingRekey,
 }: {
@@ -224,6 +236,8 @@ export function startDaemonControlServer({
   bindNativeCodexThread: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
   bindNativeCursorSession: (binding: NativeCursorSessionBinding) => Promise<NativeCursorSessionBindingResult>;
   preflightCursorRunner: (request: CursorRunnerPreflightRequest) => Promise<CursorRunnerPreflightResult>;
+  markDaemonRunnerStopping: (sessionId: string) => DaemonRunnerLifecycleResult;
+  completeDaemonRunnerStopping: (sessionId: string) => Promise<DaemonRunnerLifecycleResult>;
   openCodexRemoteTui: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
   approvePairingRekey: (requestId: string, approvalCode: string) => Promise<PairingRekeyApprovalResult>;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
@@ -296,6 +310,32 @@ export function startDaemonControlServer({
 
       return result;
     });
+
+    const registerDaemonRunnerLifecycleRoute = (
+      path: '/daemon-runner-stopping' | '/daemon-runner-stopped',
+      lifecycleHandler: (sessionId: string) => DaemonRunnerLifecycleResult | Promise<DaemonRunnerLifecycleResult>,
+    ): void => {
+      typed.post(path, {
+        schema: {
+          body: daemonRunnerLifecycleRequestSchema,
+          response: {
+            200: daemonRunnerLifecycleResultSchema,
+            403: runnerCredentialDeniedResponseSchema,
+          },
+        },
+      }, async (request, reply) => {
+        const { sessionId, runnerCredential } = request.body;
+        if (!verifySessionRunnerCredential(sessionId, runnerCredential)) {
+          reply.code(403);
+          return { error: INVALID_SESSION_RUNNER_CREDENTIAL_ERROR } as const;
+        }
+
+        return await lifecycleHandler(sessionId);
+      });
+    };
+
+    registerDaemonRunnerLifecycleRoute('/daemon-runner-stopping', markDaemonRunnerStopping);
+    registerDaemonRunnerLifecycleRoute('/daemon-runner-stopped', completeDaemonRunnerStopping);
 
     typed.post('/codex-thread-bound', {
       schema: {

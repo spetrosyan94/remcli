@@ -12,6 +12,7 @@ import type {
     CodexRemoteTuiOpenResult,
     CursorRunnerPreflightRequest,
     CursorRunnerPreflightResult,
+    DaemonRunnerLifecycleResult,
     NativeCodexThreadBinding,
     NativeCodexThreadBindingResult,
     NativeCursorSessionBinding,
@@ -47,6 +48,8 @@ interface ControlServerTestOptions {
     preflightCursorRunner?: (
         request: CursorRunnerPreflightRequest,
     ) => Promise<CursorRunnerPreflightResult>;
+    markDaemonRunnerStopping?: (sessionId: string) => DaemonRunnerLifecycleResult;
+    completeDaemonRunnerStopping?: (sessionId: string) => Promise<DaemonRunnerLifecycleResult>;
     openCodexRemoteTui?: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
     approvePairingRekey?: (requestId: string, approvalCode: string) => Promise<PairingRekeyApprovalResult>;
 }
@@ -87,6 +90,8 @@ async function startControlServerForTest(options: ControlServerTestOptions = {})
             binding,
         })),
         preflightCursorRunner: options.preflightCursorRunner ?? (async () => ({ type: 'rejected' })),
+        markDaemonRunnerStopping: options.markDaemonRunnerStopping ?? (() => ({ accepted: false })),
+        completeDaemonRunnerStopping: options.completeDaemonRunnerStopping ?? (async () => ({ accepted: false })),
         openCodexRemoteTui: options.openCodexRemoteTui ?? (async (request) => ({
             type: 'wrapper-not-tracked',
             request,
@@ -220,6 +225,45 @@ describe('startDaemonControlServer', () => {
             ...request,
             runnerToken: 'forged-runner-token',
         });
+    });
+
+    it('accepts daemon runner lifecycle transitions only with the runner credential', async () => {
+        const markDaemonRunnerStopping = vi.fn(() => ({ accepted: true }));
+        const completeDaemonRunnerStopping = vi.fn(async () => ({ accepted: true }));
+        const verifySessionRunnerCredential = vi.fn((sessionId: string, credential: string) => (
+            sessionId === 'remcli-runner' && credential === 'runner-credential'
+        ));
+        const controlServer = await startControlServerForTest({
+            verifySessionRunnerCredential,
+            markDaemonRunnerStopping,
+            completeDaemonRunnerStopping,
+        });
+        stopServer = controlServer.stop;
+
+        const stoppingResponse = await fetch(`http://127.0.0.1:${controlServer.port}/daemon-runner-stopping`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: 'remcli-runner', runnerCredential: 'runner-credential' }),
+        });
+        const stoppedResponse = await fetch(`http://127.0.0.1:${controlServer.port}/daemon-runner-stopped`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: 'remcli-runner', runnerCredential: 'runner-credential' }),
+        });
+        const rejectedResponse = await fetch(`http://127.0.0.1:${controlServer.port}/daemon-runner-stopped`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: 'remcli-runner', runnerCredential: 'forged-credential' }),
+        });
+
+        expect(stoppingResponse.status).toBe(200);
+        await expect(stoppingResponse.json()).resolves.toEqual({ accepted: true });
+        expect(stoppedResponse.status).toBe(200);
+        await expect(stoppedResponse.json()).resolves.toEqual({ accepted: true });
+        expect(rejectedResponse.status).toBe(403);
+        await expect(rejectedResponse.json()).resolves.toEqual({ error: 'invalid-runner-credential' });
+        expect(markDaemonRunnerStopping).toHaveBeenCalledWith('remcli-runner');
+        expect(completeDaemonRunnerStopping).toHaveBeenCalledWith('remcli-runner');
     });
 
     it('issues a daemon-owned runner credential and verifies it before binding a Codex thread', async () => {

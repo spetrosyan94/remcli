@@ -99,6 +99,25 @@ agent --print --output-format stream-json --trust \
    отправляет typed `cursorExecution` + `cursorLaunchControls` + native resume ID.
    URL не содержит native ID или выбор controls.
 
+### Корректное завершение daemon runner
+
+Когда пользователь завершает daemon-owned Cursor wrapper через `Ctrl+C`, runner
+сначала с credential-подтверждением сообщает локальному control server, что
+закрывается. Пока этот переход не завершён, новый `agent --resume` с тем же
+native ID не запускается. После archive, `session-end`, flush и закрытия P2P
+сессии runner отдельно подтверждает completion; только тогда daemon освобождает
+свой immutable tmux pane.
+
+Если `tmux` не может подтвердить конкретный pane, cleanup по-прежнему
+fail-closed. Исключение возможно только для уже credential-подтверждённого
+graceful shutdown, когда `tmux` отдельно подтвердил отсутствие именно
+daemon-owned session. Это не даёт удалить чужой pane и не превращает PID в proof
+of ownership. Если runner уже умер до final callback, daemon также может
+reconcile tracking только по этому независимому immutable tmux proof: мёртвый
+процесс не способен отправить completion. Повторный Stop отклоняется, а shutdown
+daemon ждёт normal completion ограниченное время и при таймауте завершается
+ошибкой вместо преждевременного уничтожения живого pane.
+
 ## Execution и controls
 
 | Поверхность | Нативное соответствие |

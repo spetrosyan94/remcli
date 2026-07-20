@@ -2123,6 +2123,105 @@ describe('createSessionManager resume deduplication', () => {
         expect(manager.getChildren()).toHaveLength(0);
     });
 
+    it('blocks a Cursor resume while its daemon runner is closing, then starts exactly one new wrapper after confirmed cleanup', async () => {
+        const runnerPid = 21_041;
+        const nativeSessionId = 'cursor-native-graceful-stop';
+        const sessionId = 'remcli-cursor-graceful-stop';
+        vi.spyOn(process, 'kill').mockReturnValue(true);
+        tmuxMocks.spawnInTmux
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-graceful-stop:main', windowId: '@441', paneId: '%441', pid: runnerPid })
+            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-graceful-resume:main', windowId: '@442', paneId: '%442', pid: runnerPid + 1 });
+
+        const manager = createSessionManager();
+        const initialSpawn = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook(sessionId, createSessionMetadata(runnerPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+        await expect(initialSpawn).resolves.toEqual({ type: 'success', sessionId });
+        await expect(manager.bindNativeCursorSession({
+            agent: 'cursor',
+            nativeSessionId,
+            remcliSessionId: sessionId,
+        })).resolves.toMatchObject({ type: 'bound' });
+
+        expect(manager.markDaemonRunnerStopping(sessionId)).toEqual({ accepted: true });
+        manager.pruneDeadSessions();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(tmuxMocks.releaseOwnedPane).not.toHaveBeenCalled();
+        expect(manager.getChildren()).toHaveLength(1);
+
+        await expect(manager.stopSession(sessionId)).resolves.toEqual({ success: false });
+        expect(tmuxMocks.releaseOwnedPane).not.toHaveBeenCalled();
+
+        await expect(manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId: nativeSessionId,
+            ...CONTROLLED_CURSOR_SELECTION,
+        })).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.',
+        });
+        expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+
+        await expect(manager.completeDaemonRunnerStopping(sessionId)).resolves.toEqual({ accepted: true });
+        expect(manager.getChildren()).toHaveLength(0);
+
+        const resumed = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            resumeSessionId: nativeSessionId,
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+        manager.onRemcliSessionWebhook('remcli-cursor-graceful-resume', createSessionMetadata(runnerPid + 1, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken(1));
+        await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-graceful-resume' });
+    });
+
+    it('waits for a credential-confirmed Cursor graceful shutdown during daemon teardown without releasing its pane early', async () => {
+        const runnerPid = 21_043;
+        const sessionId = 'remcli-cursor-graceful-daemon-shutdown';
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-cursor-graceful-daemon-shutdown:main',
+            windowId: '@443',
+            paneId: '%443',
+            pid: runnerPid,
+        });
+
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook(sessionId, createSessionMetadata(runnerPid, {
+            startedBy: 'daemon',
+            flavor: 'cursor',
+        }), getDaemonRunnerToken());
+        await expect(spawning).resolves.toEqual({ type: 'success', sessionId });
+
+        expect(manager.markDaemonRunnerStopping(sessionId)).toEqual({ accepted: true });
+        const shutdown = manager.killAllSessions();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(tmuxMocks.releaseOwnedPane).not.toHaveBeenCalled();
+        expect(manager.getChildren()).toHaveLength(1);
+
+        await expect(manager.completeDaemonRunnerStopping(sessionId)).resolves.toEqual({ accepted: true });
+        await expect(shutdown).resolves.toBeUndefined();
+        expect(manager.getChildren()).toHaveLength(0);
+    });
+
     it('reuses a fresh Cursor wrapper only after its authenticated repeat webhook confirms the native session ID', async () => {
         const workspace = await mkdtemp(join(tmpdir(), 'remcli-cursor-workspace-'));
         const otherWorkspace = await mkdtemp(join(tmpdir(), 'remcli-cursor-other-workspace-'));
@@ -3490,6 +3589,9 @@ describe('createSessionManager resume deduplication', () => {
                 pid: runnerPid,
             });
             tmuxMocks.releaseOwnedPane.mockResolvedValueOnce(releaseResult);
+            if (releaseResult === 'unknown') {
+                tmuxMocks.getSessionStatus.mockResolvedValueOnce('unknown');
+            }
 
             const manager = createSessionManager({ onSessionStopped });
             const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
@@ -3514,6 +3616,48 @@ describe('createSessionManager resume deduplication', () => {
             expect(onSessionStopped).not.toHaveBeenCalled();
         },
     );
+
+    it('retires a dead daemon runner when its pane lookup is unknown but its owned tmux session is gone', async () => {
+        const runnerPid = 10_044_1;
+        const activePids = new Set([runnerPid]);
+        const onSessionStopped = vi.fn();
+        vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+            if (signal === 0 && !activePids.has(pid)) {
+                throw new Error('process is not running');
+            }
+            return true;
+        });
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-session-root-unknown-missing:main',
+            windowId: '@244',
+            paneId: '%244',
+            pid: runnerPid,
+        });
+        tmuxMocks.releaseOwnedPane.mockResolvedValueOnce('unknown');
+        tmuxMocks.getSessionStatus.mockResolvedValueOnce('missing');
+
+        const manager = createSessionManager({ onSessionStopped });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'cursor', ...CONTROLLED_CURSOR_SELECTION });
+        await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
+        const rootRunner = manager.getChildren()[0]?.tmuxRunner;
+        expect(rootRunner).toBeDefined();
+        manager.onRemcliSessionWebhook(
+            'remcli-session-pruned-root-unknown-missing',
+            createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
+            getDaemonRunnerToken(),
+        );
+        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-pruned-root-unknown-missing' });
+
+        expect(manager.markDaemonRunnerStopping('remcli-session-pruned-root-unknown-missing')).toEqual({ accepted: true });
+        activePids.delete(runnerPid);
+        manager.pruneDeadSessions();
+
+        await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(0));
+        expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(rootRunner);
+        expect(tmuxMocks.getSessionStatus).toHaveBeenCalledWith(rootRunner?.sessionName);
+        expect(onSessionStopped).toHaveBeenCalledWith('remcli-session-pruned-root-unknown-missing');
+    });
 
     it('retries dead daemon runner pruning after an unknown root cleanup result', async () => {
         const runnerPid = 10_043;

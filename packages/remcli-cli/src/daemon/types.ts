@@ -129,6 +129,11 @@ export interface DaemonSessionWebhookResult {
   error?: string;
 }
 
+/** A daemon-owned runner acknowledged a graceful local shutdown transition. */
+export interface DaemonRunnerLifecycleResult {
+  accepted: boolean;
+}
+
 export type CodexThreadResumeResult =
   | { type: 'reuse-active-wrapper'; wrapper: NativeCodexThreadWrapper }
   | { type: 'wrapper-starting'; nativeThreadId: string }

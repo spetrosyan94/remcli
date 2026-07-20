@@ -67,6 +67,7 @@ interface LifecycleHarness {
     getChildrenCount: () => number;
     getExecutionOutcome: (sessionId: string) => 'error' | 'success' | null;
     getNativeCursorSessionId: (sessionId: string) => string | null;
+    interruptRunner: (sessionId: string) => void;
     sendPhonePrompt: (sessionId: string, prompt: string) => void;
     verifyAcknowledgedDelivery: (sessionId: string) => Promise<void>;
     close: () => Promise<void>;
@@ -393,6 +394,8 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
             bindNativeCodexThread: sessionManager.bindNativeCodexThread,
             bindNativeCursorSession: sessionManager.bindNativeCursorSession,
             preflightCursorRunner: sessionManager.preflightCursorRunner,
+            markDaemonRunnerStopping: sessionManager.markDaemonRunnerStopping,
+            completeDaemonRunnerStopping: sessionManager.completeDaemonRunnerStopping,
             openCodexRemoteTui: async (request) => ({
                 type: 'already-open',
                 wrapper: {
@@ -549,6 +552,13 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
                     : null;
             },
             getNativeCursorSessionId: (sessionId) => readString(getSessionMetadata(sessionId)?.cursorSessionId),
+            interruptRunner: (sessionId) => {
+                const runner = sessionManager.getChildren().find((child) => child.remcliSessionId === sessionId);
+                if (!runner) {
+                    throw new Error(`Real Cursor runner ${sessionId} is not tracked for SIGINT.`);
+                }
+                process.kill(runner.pid, 'SIGINT');
+            },
             sendPhonePrompt: (sessionId, prompt) => {
                 appSocket.emit('message', {
                     sid: sessionId,
@@ -607,7 +617,7 @@ afterEach(async () => {
 });
 
 realCursorDescribe('Cursor real lifecycle gate (skipped unless REMCLI_REAL_CURSOR=1)', { timeout: REAL_GATE_TIMEOUT_MS }, () => {
-    it('creates, stops, resumes and proves native Cursor context through the real Remcli runner', async () => {
+    it('creates, handles external SIGINT, resumes and proves native Cursor context through the real Remcli runner', async () => {
         const marker = `remcli-cursor-lifecycle-${randomUUID()}`;
         const initialResponse = 'INITIAL_ACK';
         const markerPrompt = `Запомни маркер ${marker} для следующего вопроса. Не используй инструменты. Ответь только ${initialResponse}.`;
@@ -640,11 +650,10 @@ realCursorDescribe('Cursor real lifecycle gate (skipped unless REMCLI_REAL_CURSO
             throw new Error('Real Cursor did not confirm a native session ID.');
         }
 
-        const stopped = await harness.callMachineRpc('stop-session', { sessionId: firstRemcliSessionId });
-        expect(isStoppedSession(stopped, firstRemcliSessionId)).toBe(true);
+        harness.interruptRunner(firstRemcliSessionId);
         await waitForCondition(
             () => harness!.getChildrenCount() === 0,
-            'the first real daemon-owned Cursor runner to stop',
+            'the externally interrupted real daemon-owned Cursor runner to reconcile',
         );
 
         const resumed = await harness.callMachineRpc(

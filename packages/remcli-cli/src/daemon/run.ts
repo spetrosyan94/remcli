@@ -458,6 +458,8 @@ export async function startDaemon(): Promise<void> {
       bindNativeCodexThread: sessionManager.bindNativeCodexThread,
       bindNativeCursorSession: sessionManager.bindNativeCursorSession,
       preflightCursorRunner: sessionManager.preflightCursorRunner,
+      markDaemonRunnerStopping: sessionManager.markDaemonRunnerStopping,
+      completeDaemonRunnerStopping: sessionManager.completeDaemonRunnerStopping,
       openCodexRemoteTui: sessionManager.openCodexRemoteTui,
       approvePairingRekey: (requestId, approvalCode) => pairingRekeyCoordinator.approve(requestId, approvalCode),
     });
