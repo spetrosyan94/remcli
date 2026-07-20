@@ -25,6 +25,13 @@ export interface CursorTurnArgumentsOptions {
     trustWorkspace?: boolean;
 }
 
+export interface CursorInteractiveTuiCommandOptions {
+    executable: CursorExecutable;
+    resumeSessionId: string;
+    model?: string;
+    launchControls: CursorLaunchControls;
+}
+
 export interface CursorExecutableProbe {
     (executable: string): boolean;
 }
@@ -68,6 +75,48 @@ export function buildCursorTurnArguments(options: CursorTurnArgumentsOptions): s
 
     args.push(options.prompt);
     return args;
+}
+
+/** Build the shell command for a daemon-owned interactive Cursor TUI pane. */
+export function buildCursorInteractiveTuiCommand(
+    options: CursorInteractiveTuiCommandOptions,
+): string {
+    if (!isCursorExecutable(options.executable)) {
+        throw new Error('Cursor executable is invalid.');
+    }
+    if (typeof options.resumeSessionId !== 'string' || options.resumeSessionId.trim() === '') {
+        throw new Error('Cursor resume session ID must be a non-empty string.');
+    }
+    if (options.model !== undefined
+        && (typeof options.model !== 'string' || options.model.trim() === '')) {
+        throw new Error('Cursor interactive TUI model must be a non-empty string when provided.');
+    }
+    if (!isCursorLaunchControls(options.launchControls)) {
+        throw new Error('Cursor launch controls are invalid.');
+    }
+
+    const args = [
+        shellQuote(options.executable),
+        '--resume',
+        shellQuote(options.resumeSessionId),
+    ];
+
+    if (options.model !== undefined) args.push('--model', shellQuote(options.model));
+    if (options.launchControls.executionMode === 'plan' || options.launchControls.executionMode === 'ask') {
+        args.push('--mode', options.launchControls.executionMode);
+    }
+    if (options.launchControls.force) args.push('--force');
+    if (options.launchControls.autoReview) args.push('--auto-review');
+    if (options.launchControls.sandbox === 'enabled' || options.launchControls.sandbox === 'disabled') {
+        args.push('--sandbox', options.launchControls.sandbox);
+    }
+    if (options.launchControls.approveMcps) args.push('--approve-mcps');
+
+    return args.join(' ');
+}
+
+function shellQuote(value: string): string {
+    return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function canRunCursorExecutable(executable: string): boolean {

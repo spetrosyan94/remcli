@@ -231,3 +231,27 @@ Daemon-owned tmux pane для Cursor сейчас является lifecycle hos
 безопасно завершить wrapper; параллельный `agent --resume` не запускается.
 Полноценный terminal/phone mirror возможен только после отдельного решения для
 PTY streaming, изоляции сессии и host-side confirmation.
+
+## Интерактивный native TUI: подтверждённая база
+
+Проверено 2026-07-20 на установленном `agent 2026.07.16-899851b` в отдельном
+временном tmux server с disposable native chat:
+
+- `agent --resume <native-session-id>` действительно открывает интерактивный
+  Cursor TUI в TTY/tmux;
+- локальный ввод достигает TUI, а bounded `capture-pane` отражает его результат;
+- official CLI surface документирует interactive default и `--resume`, но не
+  документирует app-server, remote attach или structured terminal transport;
+- `--print --output-format stream-json` и `--trust` относятся к headless path и
+  не должны попадать в interactive command;
+- один `Ctrl+C` был перехвачен самим TUI и не подтвердил его корректное
+  завершение. Поэтому exact stop/cleanup пока не считается принятым.
+
+Это доказывает только возможность native TUI. До отдельного exclusive writer
+lease нельзя запускать для одного native Cursor ID одновременно interactive
+`agent --resume` и существующий headless `agent --print --resume`.
+
+Следующий технический шаг - чистый тестируемый command builder, затем typed
+runtime handle с immutable tmux ownership tuple. Только после этого допускается
+отдельный terminal bridge; screen scrape не становится P2P chat-message или
+provider tool event.
