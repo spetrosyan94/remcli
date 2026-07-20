@@ -73,6 +73,7 @@ const componentHooks = vi.hoisted(() => {
 
 const machineSpawnNewSessionMock = vi.hoisted(() => vi.fn());
 const machineGetCursorCapabilitiesMock = vi.hoisted(() => vi.fn());
+const machineListRecentDirectoriesMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
 const protocolSessions = vi.hoisted(() => ({ current: [] as unknown[] }));
 const navigationState = vi.hoisted(() => ({ current: null as unknown }));
@@ -134,6 +135,7 @@ vi.mock('@/lib/i18n', () => ({
 vi.mock('@/lib/protocol', () => ({
     machineListAgentSessions: vi.fn(),
     machineListDirectory: vi.fn(),
+    machineListRecentDirectories: machineListRecentDirectoriesMock,
     machineGetCodexCapabilities: vi.fn(),
     machineGetCursorCapabilities: machineGetCursorCapabilitiesMock,
     machineSpawnNewSession: machineSpawnNewSessionMock,
@@ -166,6 +168,7 @@ interface TestElement {
     type: unknown;
     props: {
         children?: unknown;
+        meta?: unknown;
         disabled?: boolean;
         label?: string;
         onClick?: () => void;
@@ -262,6 +265,7 @@ let isCursorCapabilityRejection: typeof import('@/pages/NewSessionPage').isCurso
 let resolveSheetOpenChange: typeof import('@/pages/NewSessionPage').resolveSheetOpenChange = (_renderedSheet, currentSheet) => currentSheet;
 let NewSessionPage: typeof import('@/pages/NewSessionPage').NewSessionPage;
 let ResumeSheetContent: typeof import('@/pages/NewSessionPage').ResumeSheetContent;
+let RecentDirectoryList: typeof import('@/pages/NewSessionPage').RecentDirectoryList;
 let directorySheetContentClass = '';
 let resumeSheetContentClass = '';
 
@@ -296,6 +300,7 @@ beforeAll(async () => {
     resolveSheetOpenChange = pageModule.resolveSheetOpenChange;
     NewSessionPage = pageModule.NewSessionPage;
     ResumeSheetContent = pageModule.ResumeSheetContent;
+    RecentDirectoryList = pageModule.RecentDirectoryList;
     directorySheetContentClass = pageModule.DIRECTORY_SHEET_CONTENT_CLASS;
     resumeSheetContentClass = pageModule.RESUME_SHEET_CONTENT_CLASS;
 });
@@ -307,6 +312,8 @@ afterAll(() => {
 beforeEach(() => {
     componentHooks.reset();
     machineGetCursorCapabilitiesMock.mockReset();
+    machineListRecentDirectoriesMock.mockReset();
+    machineListRecentDirectoriesMock.mockResolvedValue([]);
     machineSpawnNewSessionMock.mockReset();
     machineSpawnNewSessionMock.mockResolvedValue({ type: 'success', sessionId: 'session-1' });
     navigateMock.mockReset();
@@ -903,20 +910,50 @@ describe('NewSessionPage directory and resume sheets', () => {
         expect(getResumeDirectory('/workspace/cursor', '/workspace/remcli')).toBe('/workspace/cursor');
     });
 
-    it('left-aligns a long recent directory path inside its row', () => {
+    it('renders daemon-provided canonical/display paths and selects the canonical value', () => {
         const path = '/Users/solidhard1/Projects/pet-projects/remcli/packages/remcli-web/src/pages';
-        protocolSessions.current = [{
-            metadata: { machineId: 'machine-1', path },
-            updatedAt: 1,
-        }];
+        const onSelect = vi.fn();
+        const directory = { canonicalPath: path, displayPath: '~/Projects/remcli/packages/remcli-web/src/pages', lastUsedAt: 10 };
+        const content = RecentDirectoryList({
+            directories: [directory],
+            activePath: path,
+            error: null,
+            isLoading: false,
+            isBrowseDisabled: false,
+            onSelect,
+            onRetry: vi.fn(),
+            onBrowse: vi.fn(),
+        });
+        const pathRow = findElement(content, (element) => element.type === 'button' && elementText(element).includes(directory.displayPath));
+        const pathLabel = findElement(content, (element) => element.type === 'span' && elementText(element) === directory.displayPath);
 
-        const page = renderNewSessionPage();
-        const pathLabel = findElement(page, (element) => element.type === 'span' && elementText(element) === path);
-        const pathRow = findElement(page, (element) => element.type === 'button' && elementText(element).includes(path));
-
-        expect(pathLabel.props.className).toContain('text-left');
-        expect(pathRow.props.className).toContain('text-left');
         expect(pathLabel.props.className).toContain('truncate');
+        pathRow.props.onClick?.();
+        expect(onSelect).toHaveBeenCalledWith(directory);
+    });
+
+    it('keeps the recent-directory error retryable while retaining the directory browser fallback', () => {
+        const onRetry = vi.fn();
+        const onBrowse = vi.fn();
+        const content = RecentDirectoryList({
+            directories: null,
+            activePath: '/workspace',
+            error: 'Recent directories are unavailable.',
+            isLoading: false,
+            isBrowseDisabled: false,
+            onSelect: vi.fn(),
+            onRetry,
+            onBrowse,
+        });
+        const errorState = findElement(content, (element) => element.props.role === 'alert');
+        const retryButton = findElement(content, (element) => element.type === 'button' && elementText(element) === 'new.dirRetry');
+        const browseButton = findElement(content, (element) => element.type === 'button' && elementText(element) === 'new.dirBrowse');
+
+        expect(elementText(errorState)).toContain('Recent directories are unavailable.');
+        retryButton.props.onClick?.();
+        browseButton.props.onClick?.();
+        expect(onRetry).toHaveBeenCalledOnce();
+        expect(onBrowse).toHaveBeenCalledOnce();
     });
 
     it('keeps directory and resume drawer surfaces at a stable height without disabling the shared reduced-motion token', () => {
@@ -1007,5 +1044,24 @@ describe('NewSessionPage directory and resume sheets', () => {
         expect(row.props.disabled).toBe(true);
         row.props.onClick?.();
         expect(onResume).toHaveBeenCalledWith(item);
+    });
+
+    it('never uses UUID metadata as the resume primary label', () => {
+        const item = {
+            sessionId: '019f7dd8-9c4c-7b7c-9a89-abcdef123456',
+            agent: 'cursor' as const,
+            projectPath: '/Users/dev/projects/remcli',
+            lastModified: 1,
+            firstMessage: '019f7dd8-9c4c-7b7c-9a89-abcdef123457',
+            messageCount: 1,
+            createdAt: 1,
+            sessionName: '019f7dd8-9c4c-7b7c-9a89-abcdef123458',
+        };
+        const content = ResumeSheetContent({ agent: 'cursor', items: [item], onResume: vi.fn() });
+        const row = findElement(content, (element) => element.props.label === 'new.resumeProviderTitle');
+
+        expect(elementText(row.props.meta)).toContain('019f7dd8…');
+        expect(elementText(row)).not.toContain(item.sessionName);
+        expect(elementText(row)).not.toContain(item.firstMessage);
     });
 });

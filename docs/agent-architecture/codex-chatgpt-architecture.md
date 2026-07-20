@@ -53,13 +53,18 @@ codex app-server --listen ws://127.0.0.1:<port>
 runCodex -> app-server initialize -> thread/start -> turn/start(prompt)
 ```
 
-Resume:
+Attach существующей сессии:
 
 ```text
-runCodex --resume <threadId> -> app-server initialize -> thread/resume -> turn/start(prompt)
+runCodex --resume <threadId> -> app-server initialize -> thread/resume -> shared remote TUI
 ```
 
-Продолжение:
+Для daemon-owned resume это attach-only путь: `thread/resume` восстанавливает
+тот же native thread и открывает один managed TUI, но не создаёт `turn/start` и
+не добавляет фиктивный prompt. Первый реальный prompt с телефона или терминала
+создаёт следующий turn.
+
+Продолжение после attach:
 
 ```text
 idle threadId -> turn/start(prompt)
@@ -160,10 +165,12 @@ watermark; summary, history replay, reasoning и status events его не за�
   `/readyz` отвечает успешно.
 - При stale shared endpoint `runCodex.ts` запускает private local app-server по
   stdio. Это всё ещё app-server transport, не MCP.
-- При transient ошибке первоначального подключения к уже проверенному shared endpoint
-  `runCodex.ts` отключает этот client и один раз переключается на private
-  app-server по stdio. Для private transport remote TUI не открывается, потому
-  что WebSocket endpoint отсутствует.
+- При transient ошибке первоначального подключения или attach `thread/resume`
+  к уже проверенному shared endpoint `runCodex.ts` отключает этот client и один
+  раз переключается на private app-server по stdio. Private fallback сохраняет
+  native context, но remote TUI не открывается, потому что WebSocket endpoint
+  отсутствует. Если private attach тоже не проходит, P2P-чат получает typed
+  session error; silent fresh thread не создаётся.
 - Heartbeat удаляет stale `codexAppServerEndpoint` и `codexAppServerPid` из
   `daemon.state.json`.
 
@@ -238,6 +245,10 @@ native `threadId` Remcli открывает TUI через
 Если model не выбрана явно, `--model` не передаётся; если provider не выдал
 reasoning choices для выбранной модели, `-c model_reasoning_effort=...` также
 не передаётся. Это не изменяет `~/.codex/config.toml`.
+
+Если daemon получает resume без первого P2P prompt, он сначала делает
+attach-only `thread/resume`, а затем открывает этот TUI. Это устраняет ожидание
+первого сообщения с телефона и не создаёт лишний turn.
 
 - Одна native Codex thread имеет одну активную Remcli wrapper-сессию: повторный
   resume возвращает существующую wrapper-сессию.

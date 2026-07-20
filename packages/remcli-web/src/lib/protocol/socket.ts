@@ -347,6 +347,35 @@ export interface DirectoryListing {
     entries: DirectoryEntry[];
 }
 
+export type RecentDirectoriesErrorCode = 'unavailable' | 'invalid_machine_id';
+
+export interface RecentDirectory {
+    canonicalPath: string;
+    displayPath: string;
+    lastUsedAt: number;
+}
+
+interface RecentDirectoriesResponse {
+    directories: RecentDirectory[];
+}
+
+interface RecentDirectoriesErrorResponse {
+    error: {
+        code: RecentDirectoriesErrorCode;
+        message: string;
+    };
+}
+
+export class RecentDirectoriesRpcError extends Error {
+    readonly code: RecentDirectoriesErrorCode;
+
+    constructor(code: RecentDirectoriesErrorCode, message: string) {
+        super(message);
+        this.code = code;
+        this.name = 'RecentDirectoriesRpcError';
+    }
+}
+
 interface RpcErrorEnvelope {
     error: string;
 }
@@ -424,6 +453,34 @@ function isDirectoryListing(value: unknown): value is DirectoryListing {
         Array.isArray(value.entries) &&
         value.entries.every(isDirectoryEntry)
     );
+}
+
+function isRecentDirectoriesErrorCode(value: unknown): value is RecentDirectoriesErrorCode {
+    return value === 'unavailable' || value === 'invalid_machine_id';
+}
+
+function isRecentDirectory(value: unknown): value is RecentDirectory {
+    if (!isRecord(value)) return false;
+    return typeof value.canonicalPath === 'string'
+        && value.canonicalPath.trim().length > 0
+        && typeof value.displayPath === 'string'
+        && value.displayPath.trim().length > 0
+        && typeof value.lastUsedAt === 'number'
+        && Number.isFinite(value.lastUsedAt)
+        && value.lastUsedAt >= 0;
+}
+
+function isRecentDirectoriesResponse(value: unknown): value is RecentDirectoriesResponse {
+    return isRecord(value)
+        && Array.isArray(value.directories)
+        && value.directories.every(isRecentDirectory);
+}
+
+function isRecentDirectoriesErrorResponse(value: unknown): value is RecentDirectoriesErrorResponse {
+    if (!isRecord(value) || !isRecord(value.error)) return false;
+    return isRecentDirectoriesErrorCode(value.error.code)
+        && typeof value.error.message === 'string'
+        && value.error.message.trim().length > 0;
 }
 
 function isAgentKind(value: unknown): value is AgentKind {
@@ -619,6 +676,22 @@ export async function machineListDirectory(machineId: string, path?: string): Pr
         throw new Error('Directory list RPC returned invalid response');
     }
     return result;
+}
+
+/** List daemon-owned, machine-scoped recent directories (RPC `list-recent-directories`). */
+export async function machineListRecentDirectories(machineId: string): Promise<RecentDirectory[]> {
+    const result = await machineRpc<unknown, Record<string, never>>(
+        machineId,
+        'list-recent-directories',
+        {},
+    );
+    if (isRecentDirectoriesErrorResponse(result)) {
+        throw new RecentDirectoriesRpcError(result.error.code, result.error.message);
+    }
+    if (!isRecentDirectoriesResponse(result)) {
+        throw new Error('Recent directories RPC returned invalid response');
+    }
+    return result.directories;
 }
 
 /** List past agent sessions on a machine (resume feature, RPC `list-agent-sessions`). */

@@ -13,6 +13,12 @@ import { logger } from '@/ui/logger';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import { registerCommonHandlers, SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 import { listDirectoryForBrowser } from '@/daemon/directoryBrowser/directoryBrowserService';
+import {
+    createRecentDirectoriesStore,
+    RecentDirectoriesError,
+    type ListRecentDirectoriesRpcResponse,
+    type RecentDirectoriesStore,
+} from '@/daemon/recentDirectories';
 import { buildSafeSpawnSessionLogPayload } from '@/daemon/spawnSessionLog';
 import type {
     ListDirectoryParams,
@@ -49,6 +55,7 @@ export interface MachineSocketDeps {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
     stopSession: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
     requestShutdown: () => void;
+    recentDirectories?: RecentDirectoriesStore;
 }
 
 function isCodexSandbox(value: unknown): value is CodexSandbox {
@@ -123,6 +130,7 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         spawnSession,
         stopSession,
         requestShutdown,
+        recentDirectories = createRecentDirectoriesStore({ machineId }),
     } = deps;
 
     const machineSocket: ClientSocket = ioClient(`http://127.0.0.1:${p2pPort}`, {
@@ -226,6 +234,12 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
 
         switch (result.type) {
             case 'success':
+                try {
+                    recentDirectories.recordSuccessfulSpawn(directory);
+                } catch (error) {
+                    const code = error instanceof RecentDirectoriesError ? error.code : 'unavailable';
+                    logger.warn(`[DAEMON RUN] Recent directory persistence failed: ${code}`);
+                }
                 logger.debug(`[DAEMON RUN] RPC spawned session ${result.sessionId}`);
                 return { type: 'success', sessionId: result.sessionId };
             case 'requestToApproveDirectoryCreation':
@@ -275,6 +289,28 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
 
     machineRpcManager.registerHandler<ListDirectoryParams, ListDirectoryResponse>('list-directory', async (params) => {
         return await listDirectoryForBrowser(params);
+    });
+
+    machineRpcManager.registerHandler<unknown, ListRecentDirectoriesRpcResponse>('list-recent-directories', () => {
+        try {
+            return recentDirectories.list();
+        } catch (error) {
+            if (error instanceof RecentDirectoriesError) {
+                return {
+                    error: {
+                        code: error.code,
+                        message: error.message,
+                    },
+                };
+            }
+
+            return {
+                error: {
+                    code: 'unavailable',
+                    message: 'Recent directories are unavailable.',
+                },
+            };
+        }
     });
 
     machineRpcManager.registerHandler('show-pairing-qr', async (params: { clientPublicKey?: string }) => {

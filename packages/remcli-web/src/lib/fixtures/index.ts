@@ -39,9 +39,11 @@ import type {
     CodexCapabilitiesSnapshot,
     CursorCapabilitiesSnapshot,
     DirectoryListing,
+    RecentDirectory,
     SpawnSessionOptions,
     SpawnSessionResult,
 } from '@/lib/protocol/socket';
+import { RecentDirectoriesRpcError } from '@/lib/protocol/socket';
 import { useProtocolStore } from '@/lib/protocol/store';
 import type { AgentKind, AgentSessionInfo, Session, SessionMetadata } from '@/lib/protocol/types';
 
@@ -54,6 +56,17 @@ const FIXTURE_FLAG_KEY = 'remcli-fixtures';
 
 /** Псевдо-эндпоинт REST: запросы к нему перехватываются installFetchInterceptor. */
 const FIXTURE_ENDPOINT = 'http://remcli-fixtures.invalid';
+
+const CURSOR_ACCOUNT_MODEL_LABELS = [
+    'Cursor account model · fixture 01',
+    'Cursor account model · fixture 02',
+    'Cursor account model · fixture 03',
+    'Cursor account model · fixture 04',
+    'Cursor account model · fixture 05',
+    'Cursor account model · fixture 06',
+    'Cursor account model · fixture 07',
+    'Cursor account model · fixture 08',
+] as const;
 
 // ─── Детект флага (?fixtures=1 / localStorage) ───────────────────
 
@@ -243,6 +256,40 @@ const FIXTURE_DIRECTORY_CHILDREN: Record<string, string[]> = {
     '/home/ci/releases': ['pipeline'],
     '/home/ci/releases/pipeline': ['jobs', 'logs']
 };
+
+const FIXTURE_RECENT_DIRECTORIES: readonly RecentDirectory[] = [
+    {
+        canonicalPath: '/Users/dev/projects/remcli',
+        displayPath: '~/projects/remcli',
+        lastUsedAt: FIXTURE_BASE_TIME,
+    },
+    {
+        canonicalPath: '/Users/dev/projects/webapp',
+        displayPath: '~/projects/webapp',
+        lastUsedAt: FIXTURE_BASE_TIME - 1 * 60_000,
+    },
+    {
+        canonicalPath: '/Users/dev/projects/api-server',
+        displayPath: '~/projects/api-server',
+        lastUsedAt: FIXTURE_BASE_TIME - 2 * 60_000,
+    },
+    {
+        canonicalPath: '/Users/dev/projects/docs',
+        displayPath: '~/projects/docs',
+        lastUsedAt: FIXTURE_BASE_TIME - 30 * 60_000,
+    },
+];
+
+function createFixtureRecentDirectoriesByMachine(): Map<string, RecentDirectory[]> {
+    return new Map(FIXTURE_MACHINES.map((machine) => [
+        machine.id,
+        machine.id === 'fx-machine-online'
+            ? FIXTURE_RECENT_DIRECTORIES.map((directory) => ({ ...directory }))
+            : [],
+    ]));
+}
+
+let fixtureRecentDirectoriesByMachine = createFixtureRecentDirectoriesByMachine();
 
 function trimTrailingSlash(path: string): string {
     if (path === '/') return path;
@@ -442,6 +489,7 @@ export function initFixturesIfEnabled(): boolean {
     fixtureResumeRetryAttempts = 0;
     fixtureCodexCapabilityRejectionAttempts = 0;
     fixtureCursorResumeSpawnAttempts = 0;
+    fixtureRecentDirectoriesByMachine = createFixtureRecentDirectoriesByMachine();
     getFixtureLineageMetricsState();
     const store = useProtocolStore.getState();
     store.applyMachines(FIXTURE_MACHINES);
@@ -659,6 +707,20 @@ export async function fixtureGetCursorCapabilities(): Promise<CursorCapabilities
             errorCode: 'unavailable',
         };
     }
+    if (scenario === 'full') {
+        return {
+            agent: 'cursor',
+            status: 'ready',
+            fetchedAt: FIXTURE_BASE_TIME,
+            expiresAt: FIXTURE_BASE_TIME + (5 * 60 * 1_000),
+            catalogVersion: 'fixture-cursor-account-models-v1',
+            models: CURSOR_ACCOUNT_MODEL_LABELS.map((displayName, index) => ({
+                id: `cursor-account-model-${index + 1}`,
+                displayName,
+                isDefault: index === 0,
+            })),
+        };
+    }
     return {
         agent: 'cursor',
         status: 'ready',
@@ -747,6 +809,25 @@ export function fixtureListDirectory(machineId: string, path?: string): Director
             };
         })
     };
+}
+
+/** Локальный machine-scoped MRU для `/new?fixtures=1`: shape совпадает с daemon RPC. */
+export async function fixtureListRecentDirectories(machineId: string): Promise<RecentDirectory[]> {
+    const machine = FIXTURE_MACHINES.find((item) => item.id === machineId);
+    if (!machine?.metadata) {
+        throw new RecentDirectoriesRpcError('unavailable', 'Recent directories are unavailable.');
+    }
+
+    const scenario = fixtureQueryParameter('recentDirectories');
+    if (scenario === 'slow') {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (scenario === 'error') {
+        throw new RecentDirectoriesRpcError('unavailable', 'Recent directories are unavailable.');
+    }
+    if (scenario === 'empty') return [];
+
+    return (fixtureRecentDirectoriesByMachine.get(machineId) ?? []).map((directory) => ({ ...directory }));
 }
 
 function fixtureLongResumeSessions(agent?: string): AgentSessionInfo[] {
@@ -919,6 +1000,15 @@ export async function fixtureSpawnNewSession(options: SpawnSessionOptions): Prom
         : [];
     store.applySessions([session]);
     store.applyMessages(sessionId, cloneFixtureHistory(resumeHistory, sessionId), { markLoaded: true });
+    const machineRecentDirectories = fixtureRecentDirectoriesByMachine.get(options.machineId) ?? [];
+    fixtureRecentDirectoriesByMachine.set(options.machineId, [
+        {
+            canonicalPath: directory,
+            displayPath: fixtureDisplayPath(directory, machine.metadata.homeDir),
+            lastUsedAt: now,
+        },
+        ...machineRecentDirectories.filter((item) => item.canonicalPath !== directory),
+    ]);
     return { type: 'success', sessionId };
 }
 

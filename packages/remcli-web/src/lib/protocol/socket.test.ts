@@ -176,4 +176,67 @@ describe('socket reconnect lifecycle', () => {
 
         socketDisconnect();
     });
+
+    it('returns validated machine-scoped recent directories', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-recent-directories' });
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const cipher = {
+            encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
+            decryptRaw: vi.fn().mockResolvedValue({
+                directories: [{
+                    canonicalPath: '/Users/dev/projects/remcli',
+                    displayPath: '~/projects/remcli',
+                    lastUsedAt: 1_700_000_000_000,
+                }],
+            }),
+        } as unknown as Cipher;
+
+        const { machineListRecentDirectories, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+
+        await expect(machineListRecentDirectories('machine-1')).resolves.toEqual([{
+            canonicalPath: '/Users/dev/projects/remcli',
+            displayPath: '~/projects/remcli',
+            lastUsedAt: 1_700_000_000_000,
+        }]);
+        expect(emitWithAck).toHaveBeenCalledWith('rpc-call', expect.objectContaining({
+            method: 'machine-1:list-recent-directories',
+        }));
+
+        socketDisconnect();
+    });
+
+    it('surfaces the typed recent-directory daemon error', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-recent-directory-error' });
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const cipher = {
+            encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
+            decryptRaw: vi.fn().mockResolvedValue({
+                error: { code: 'unavailable', message: 'Recent directories are unavailable.' },
+            }),
+        } as unknown as Cipher;
+
+        const { machineListRecentDirectories, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+
+        await expect(machineListRecentDirectories('machine-1')).rejects.toMatchObject({
+            name: 'RecentDirectoriesRpcError',
+            code: 'unavailable',
+            message: 'Recent directories are unavailable.',
+        });
+
+        socketDisconnect();
+    });
 });

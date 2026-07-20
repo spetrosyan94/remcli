@@ -9,7 +9,6 @@ import { ArrowUp, Check, ChevronDown, Folder, FolderOpen, Loader2, RotateCcw, Sl
 import { useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { AgentIcon, StatusDot, type AgentId } from "@/components/kit";
-import { formatPathRelativeToHome } from "@/components/app/sessionDisplay";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import {
@@ -24,12 +23,12 @@ import {
     machineListAgentSessions,
     machineGetCodexCapabilities,
     machineGetCursorCapabilities,
+    machineListRecentDirectories,
     machineSpawnNewSession,
     refreshSessions,
     sendSessionMessage,
     useMachines,
     useProtocolStore,
-    useSessions,
     type AgentSessionInfo,
     type CodexCapabilitiesSnapshot,
     type CodexExecutionConfig,
@@ -42,6 +41,7 @@ import {
     type DirectoryListing,
     type Machine,
     type PermissionMode,
+    type RecentDirectory,
     type SpawnSessionOptions,
     type SpawnSessionResult,
 } from "@/lib/protocol";
@@ -122,6 +122,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function nonEmptyString(value: unknown): value is string {
     return typeof value === "string" && value.trim().length > 0;
+}
+
+// Treat every canonical UUID-shaped value as an opaque identifier. Native
+// providers can issue newer UUID versions before the UI knows their version.
+const UUID_PATTERN = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+
+function humanResumeText(value: string | null | undefined): string | null {
+    if (!nonEmptyString(value) || UUID_PATTERN.test(value.trim())) return null;
+    return value.trim();
+}
+
+export function getResumePrimaryLabel(
+    item: Pick<AgentSessionInfo, "sessionId" | "sessionName" | "firstMessage">,
+    agent: AgentId,
+): string {
+    return humanResumeText(item.sessionName)
+        ?? humanResumeText(item.firstMessage)
+        ?? t("new.resumeProviderTitle", { agent });
+}
+
+export function getShortResumeId(sessionId: string): string {
+    const trimmed = sessionId.trim();
+    return UUID_PATTERN.test(trimmed) && trimmed.length > 8 ? `${trimmed.slice(0, 8)}…` : trimmed;
 }
 
 export function parseNewSessionNavigationState(state: unknown): NewSessionNavigationState {
@@ -347,15 +370,19 @@ function formatDirectoryError(error: unknown): string {
     return details ? `${t("new.dirError")} ${details}` : t("new.dirError");
 }
 
+function formatRecentDirectoriesError(error: unknown): string {
+    if (typeof error === "object" && error !== null && "code" in error && "message" in error) {
+        const message = (error as { code?: unknown; message?: unknown }).message;
+        if ((error as { code?: unknown }).code === "unavailable" && typeof message === "string" && message.trim().length > 0) {
+            return message;
+        }
+    }
+    return t("new.dirError");
+}
+
 function formatResumeError(error: unknown): string {
     const details = error instanceof Error ? error.message : String(error);
     return details || t("status.error");
-}
-
-interface RecentDir {
-    path: string;
-    displayPath: string;
-    lastUsedAt: number;
 }
 
 interface PendingDirectoryCreation {
@@ -382,7 +409,7 @@ const RESUME_LIST_LIMIT = 20;
 
 function SheetHeader({ title, tag }: { title: string; tag: string }) {
     return (
-        <div className="flex items-center px-[18px] pb-2 pt-1">
+        <div className="flex shrink-0 items-center px-[18px] pb-2 pt-1">
             <DrawerTitle className="text-[14.5px] font-semibold">{title}</DrawerTitle>
             <span className="ml-auto font-mono text-[10px] text-muted-foreground">{tag}</span>
         </div>
@@ -396,6 +423,7 @@ function SheetRow({
     onClick,
     disabled = false,
     showSelectionIndicator = false,
+    singleLine = false,
 }: {
     isActive: boolean;
     label: string;
@@ -403,9 +431,10 @@ function SheetRow({
     onClick: () => void;
     disabled?: boolean;
     showSelectionIndicator?: boolean;
+    singleLine?: boolean;
 }) {
     const isSelected = showSelectionIndicator && isActive;
-    const labelLayoutClassName = showSelectionIndicator
+    const labelLayoutClassName = showSelectionIndicator && !singleLine
         ? "min-w-0 flex-1 break-words whitespace-normal"
         : "min-w-0 flex-1 truncate";
 
@@ -415,7 +444,7 @@ function SheetRow({
             onClick={onClick}
             disabled={disabled}
             aria-pressed={showSelectionIndicator ? isActive : undefined}
-            className={`flex min-h-11 w-full min-w-0 items-center gap-[11px] border-t px-[18px] py-3 text-left transition-[background-color,border-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 ${isSelected ? "border-accent/30 bg-accent/10" : "border-border bg-card"}`}
+            className={`flex ${singleLine ? "h-11" : "min-h-11"} w-full min-w-0 items-center gap-[11px] overflow-hidden border-t px-[18px] py-3 text-left transition-[background-color,border-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] motion-reduce:active:scale-100 disabled:cursor-not-allowed disabled:opacity-50 ${isSelected ? "border-accent/30 bg-accent/10" : "border-border bg-card"}`}
         >
             <span className={`${labelLayoutClassName} font-mono text-[12.5px] ${isActive ? `${isSelected ? "font-semibold " : ""}text-foreground` : "text-muted-foreground"}`}>{label}</span>
             {meta}
@@ -436,6 +465,100 @@ export const DIRECTORY_SHEET_CONTENT_CLASS =
 
 export const RESUME_SHEET_CONTENT_CLASS =
     `${SHEET_CONTENT_CLASS} data-[vaul-drawer-direction=bottom]:h-[min(72dvh,32rem)]`;
+
+export const MODEL_SHEET_CONTENT_CLASS =
+    `${SHEET_CONTENT_CLASS} overflow-hidden data-[vaul-drawer-direction=bottom]:max-h-[min(80dvh,28rem)]`;
+
+export function RecentDirectoryList({
+    directories,
+    selectedDirectory,
+    activePath,
+    error,
+    isLoading,
+    isBrowseDisabled,
+    browseRef,
+    onSelect,
+    onRetry,
+    onBrowse,
+}: {
+    directories: RecentDirectory[] | null;
+    selectedDirectory?: { canonicalPath: string; displayPath: string } | null;
+    activePath: string;
+    error: string | null;
+    isLoading: boolean;
+    isBrowseDisabled: boolean;
+    browseRef?: React.RefObject<HTMLButtonElement | null>;
+    onSelect: (directory: { canonicalPath: string; displayPath: string }) => void;
+    onRetry: () => void;
+    onBrowse: () => void;
+}) {
+    const hasSelectedDirectory = selectedDirectory !== null && selectedDirectory !== undefined;
+    const hasRecentDirectories = directories !== null && directories.length > 0;
+
+    return (
+        <div className="overflow-hidden rounded-xl border border-border">
+            {hasSelectedDirectory && (
+                <button
+                    type="button"
+                    onClick={() => onSelect(selectedDirectory)}
+                    className="flex min-h-11 w-full min-w-0 items-center gap-2.5 overflow-hidden bg-secondary px-3.5 py-3 text-left font-mono text-[12.5px]"
+                >
+                    <FolderOpen className="size-3.5 shrink-0 text-accent" />
+                    <span className="min-w-0 flex-1 truncate">{selectedDirectory.displayPath}</span>
+                    <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{t("new.dirSelected")}</span>
+                </button>
+            )}
+            {isLoading && (
+                <div role="status" aria-live="polite" className={`flex min-h-11 items-center gap-2 border-t border-border px-3.5 py-3 font-mono text-[11.5px] text-muted-foreground motion-reduce:transition-opacity motion-reduce:duration-[120ms] ${hasSelectedDirectory ? "" : "border-t-0"}`}>
+                    <Loader2 className="size-3.5 animate-spin" />
+                    {t("new.dirLoading")}
+                </div>
+            )}
+            {!isLoading && error !== null && (
+                <div role="alert" aria-live="assertive" className={`flex min-h-11 items-center gap-2 border-t border-border px-3.5 py-2.5 font-mono text-[11.5px] text-destructive motion-reduce:transition-opacity motion-reduce:duration-[120ms] ${hasSelectedDirectory ? "" : "border-t-0"}`}>
+                    <span className="min-w-0 flex-1 break-words">{error}</span>
+                    <button
+                        type="button"
+                        onClick={onRetry}
+                        className="min-h-11 shrink-0 rounded-[9px] border border-border px-3 text-[11px] text-foreground transition-[background-color,border-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] motion-reduce:active:scale-100"
+                    >
+                        {t("new.dirRetry")}
+                    </button>
+                </div>
+            )}
+            {!isLoading && error === null && directories !== null && !hasRecentDirectories && (
+                <div className={`min-h-11 border-t border-border px-3.5 py-3 font-mono text-[11.5px] text-muted-foreground motion-reduce:transition-opacity motion-reduce:duration-[120ms] ${hasSelectedDirectory ? "" : "border-t-0"}`}>
+                    {t("new.dirRecentEmpty")}
+                </div>
+            )}
+            {!isLoading && error === null && directories?.map((directory, index) => {
+                const isActive = activePath === directory.canonicalPath;
+                return (
+                    <button
+                        key={directory.canonicalPath}
+                        type="button"
+                        onClick={() => onSelect(directory)}
+                        className={`flex min-h-11 w-full min-w-0 items-center gap-2.5 overflow-hidden px-3.5 py-3 text-left font-mono text-[12.5px] transition-[background-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] motion-reduce:active:scale-100 ${(index > 0 || hasSelectedDirectory || directories.length > 0) ? "border-t border-border " : ""}${isActive ? "bg-secondary" : "bg-card text-muted-foreground"}`}
+                    >
+                        <Folder className={`size-3.5 shrink-0 ${isActive ? "text-accent" : "text-muted-foreground/40"}`} />
+                        <span className="min-w-0 flex-1 truncate">{directory.displayPath}</span>
+                        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{formatRelativeTime(directory.lastUsedAt)}</span>
+                    </button>
+                );
+            })}
+            <button
+                type="button"
+                ref={browseRef}
+                onClick={onBrowse}
+                disabled={isBrowseDisabled}
+                className={`flex min-h-11 w-full items-center gap-2.5 bg-card px-3.5 py-3 font-mono text-[12.5px] text-muted-foreground transition-[background-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] motion-reduce:active:scale-100 disabled:opacity-50 ${(hasSelectedDirectory || hasRecentDirectories || isLoading || error !== null) ? "border-t border-border" : ""}`}
+            >
+                <FolderOpen className="size-3.5 shrink-0" />
+                {t("new.dirBrowse")}
+            </button>
+        </div>
+    );
+}
 
 export function ResumeSheetContent({
     agent,
@@ -495,14 +618,17 @@ export function ResumeSheetContent({
                                 {t("new.spawning")}
                             </div>
                         )}
-                        {items.map((item, index) => (
+                        {[...items]
+                            .sort((left, right) => right.lastModified - left.lastModified || left.sessionId.localeCompare(right.sessionId))
+                            .map((item, index) => (
                             <SheetRow
                                 key={item.sessionId}
                                 isActive={index === 0}
-                                label={item.sessionName ?? item.firstMessage ?? item.sessionId}
+                                label={getResumePrimaryLabel(item, agent)}
                                 meta={
-                                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-                                        {formatRelativeTime(item.lastModified)}
+                                    <span className="flex min-w-0 max-w-[42%] shrink-0 flex-col items-end font-mono text-[10px] text-muted-foreground">
+                                        <span className="max-w-full truncate" title={item.sessionId}>{getShortResumeId(item.sessionId)}</span>
+                                        <span>{formatRelativeTime(item.lastModified)}</span>
                                     </span>
                                 }
                                 onClick={() => onResume(item)}
@@ -522,7 +648,6 @@ export function NewSessionPage() {
     const navigationState = parseNewSessionNavigationState(location.state);
 
     const machines = useMachines();
-    const sessions = useSessions();
 
     const [cursorResumePreset, setCursorResumePreset] = React.useState<CursorResumeNavigationPreset | null>(
         () => navigationState.cursorResume ?? null,
@@ -551,6 +676,9 @@ export function NewSessionPage() {
     const [cursorCapabilitiesReloadKey, setCursorCapabilitiesReloadKey] = React.useState(0);
     const [dir, setDir] = React.useState<string | null>(() => navigationState.cursorResume?.directory ?? null);
     const [dirDisplayPath, setDirDisplayPath] = React.useState<string | null>(null);
+    const [recentDirectories, setRecentDirectories] = React.useState<RecentDirectory[] | null>(null);
+    const [recentDirectoriesError, setRecentDirectoriesError] = React.useState<string | null>(null);
+    const [recentDirectoriesReloadKey, setRecentDirectoriesReloadKey] = React.useState(0);
     const [directoryRequestPath, setDirectoryRequestPath] = React.useState<string | undefined>(undefined);
     const [directoryListing, setDirectoryListing] = React.useState<DirectoryListing | null>(null);
     const [directoryError, setDirectoryError] = React.useState<string | null>(null);
@@ -652,32 +780,10 @@ export function NewSessionPage() {
         hasReasoningSelection: hasCodexReasoningSelection,
     });
 
-    // недавние директории — из прошлых сессий выбранной машины (metadata.path)
-    const recentDirs = React.useMemo<RecentDir[]>(() => {
-        if (!machine) return [];
-        const byPath = new Map<string, RecentDir>();
-        for (const session of sessions) {
-            const meta = session.metadata;
-            if (!meta?.path) continue;
-            if (meta.machineId && meta.machineId !== machine.id) continue;
-            const known = byPath.get(meta.path);
-            if (!known || session.updatedAt > known.lastUsedAt) {
-                byPath.set(meta.path, {
-                    path: meta.path,
-                    displayPath: formatPathRelativeToHome(meta.path, meta.homeDir ?? homeDir),
-                    lastUsedAt: session.updatedAt,
-                });
-            }
-        }
-        return [...byPath.values()]
-            .sort((a, b) => b.lastUsedAt - a.lastUsedAt)
-            .slice(0, 4);
-    }, [homeDir, machine, sessions]);
-
-    const activeDir = dir ?? recentDirs[0]?.path ?? homeDir ?? "";
+    const activeDir = dir ?? recentDirectories?.[0]?.canonicalPath ?? homeDir ?? "";
     const activeDirDisplayPath = dir
-        ? (dirDisplayPath ?? formatPathRelativeToHome(dir, homeDir))
-        : (recentDirs[0]?.displayPath ?? formatPathRelativeToHome(activeDir, homeDir));
+        ? (dirDisplayPath ?? dir)
+        : (recentDirectories?.[0]?.displayPath ?? homeDir ?? "");
     const isResumePresetCompatible = isCursorResumePresetCompatible(cursorResumePreset, machine?.id, activeDir);
     const cursorResumeTarget: ResumeTarget | undefined = cursorResumePreset
         ? {
@@ -687,13 +793,21 @@ export function NewSessionPage() {
             sessionName: cursorResumePreset.resumeSessionName,
         }
         : undefined;
-    const hasActiveDirInRecent = recentDirs.some((d) => d.path === activeDir);
-    const shouldShowSelectedDir = activeDir !== "" && !hasActiveDirInRecent;
+    const cursorResumePrimaryLabel = cursorResumePreset
+        ? getResumePrimaryLabel({
+            sessionId: cursorResumePreset.resumeSessionId,
+            sessionName: cursorResumePreset.resumeSessionName,
+            firstMessage: null,
+        }, "cursor")
+        : null;
+    const hasActiveDirInRecent = recentDirectories?.some((directory) => directory.canonicalPath === activeDir) ?? false;
+    const isRecentDirectoriesLoaded = recentDirectories !== null || recentDirectoriesError !== null;
+    const shouldShowSelectedDir = isRecentDirectoriesLoaded && activeDir !== "" && !hasActiveDirInRecent;
     const directoryHeaderPath = directoryListing?.path ?? directoryRequestPath ?? activeDir;
     const directoryHeaderDisplayPath = directoryListing?.displayPath
         ?? (directoryHeaderPath === activeDir
             ? activeDirDisplayPath
-            : formatPathRelativeToHome(directoryHeaderPath, homeDir));
+            : directoryHeaderPath);
     const canSelectDirectoryHeaderPath = directoryHeaderPath !== "" && !isDirectoryLoading && !directoryError && directoryListing !== null;
     const directoryParentPath = directoryListing?.parent ?? (directoryError ? directoryBackTarget?.path ?? null : null);
     const directoryParentDisplayPath = directoryListing?.parentDisplayPath ?? (directoryError ? directoryBackTarget?.displayPath ?? null : null);
@@ -782,6 +896,27 @@ export function NewSessionPage() {
             });
         return () => { isStale = true; };
     }, [activeMachineId, agent, cursorCapabilitiesReloadKey, cursorResumePreset]);
+
+    // Recent directories are daemon-owned machine state, never session metadata.
+    React.useEffect(() => {
+        if (!activeMachineId) {
+            setRecentDirectories(null);
+            setRecentDirectoriesError(null);
+            return;
+        }
+        let isStale = false;
+        setRecentDirectories(null);
+        setRecentDirectoriesError(null);
+        void machineListRecentDirectories(activeMachineId)
+            .then((directories) => {
+                if (!isStale) setRecentDirectories(directories);
+            })
+            .catch((error: unknown) => {
+                if (isStale) return;
+                setRecentDirectoriesError(formatRecentDirectoriesError(error));
+            });
+        return () => { isStale = true; };
+    }, [activeMachineId, recentDirectoriesReloadKey]);
 
     // resume-sheet: RPC list-agent-sessions с фильтром по агенту
     React.useEffect(() => {
@@ -949,6 +1084,13 @@ export function NewSessionPage() {
             toast.error(result.errorMessage);
             return;
         }
+        try {
+            const refreshedDirectories = await machineListRecentDirectories(options.machineId);
+            setRecentDirectories(refreshedDirectories);
+            setRecentDirectoriesError(null);
+        } catch (error: unknown) {
+            setRecentDirectoriesError(formatRecentDirectoriesError(error));
+        }
         await finishSpawn(result.sessionId, resume);
     };
 
@@ -1018,6 +1160,8 @@ export function NewSessionPage() {
 
     const drawerContentClassName = sheetKind === "directory"
         ? DIRECTORY_SHEET_CONTENT_CLASS
+        : sheetKind === "model"
+            ? MODEL_SHEET_CONTENT_CLASS
         : sheetKind === "resume"
             ? RESUME_SHEET_CONTENT_CLASS
             : SHEET_CONTENT_CLASS;
@@ -1185,40 +1329,27 @@ export function NewSessionPage() {
                 {/* директория — недавние quick picks + browser/picker через RPC list-directory */}
                 <section className="flex flex-col gap-2">
                     <span className="font-mono text-[10px] text-muted-foreground">{t("new.dirRecent")}</span>
-                    <div className="overflow-hidden rounded-xl border border-border">
-                        {shouldShowSelectedDir && (
-                            <button onClick={() => selectDir(activeDir, activeDirDisplayPath)}
-                                className="flex min-h-11 w-full items-center gap-2.5 bg-secondary px-3.5 py-3 text-left font-mono text-[12.5px]">
-                                <FolderOpen className="size-3.5 shrink-0 text-accent" />
-                                <span className="min-w-0 flex-1 truncate text-left">{activeDirDisplayPath}</span>
-                                <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{t("new.dirSelected")}</span>
-                            </button>
-                        )}
-                        {recentDirs.map((d, i) => {
-                            const isActive = activeDir === d.path;
-                            return (
-                                <button key={d.path} onClick={() => selectDir(d.path, d.displayPath)}
-                                    className={`flex min-h-11 w-full items-center gap-2.5 px-3.5 py-3 text-left font-mono text-[12.5px] ${(i > 0 || shouldShowSelectedDir) ? "border-t border-border " : ""}${isActive ? "bg-secondary" : "bg-card text-muted-foreground"}`}>
-                                    <Folder className={`size-3.5 shrink-0 ${isActive ? "text-accent" : "text-muted-foreground/40"}`} />
-                                    <span className="min-w-0 flex-1 truncate text-left">{d.displayPath}</span>
-                                    <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{formatRelativeTime(d.lastUsedAt)}</span>
-                                </button>
-                            );
-                        })}
-                        <button ref={directoryTriggerRef} onClick={openDirectoryPicker} disabled={!machine}
-                            className={`flex min-h-11 w-full items-center gap-2.5 bg-card px-3.5 py-3 font-mono text-[12.5px] text-muted-foreground transition-[background-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:opacity-50 ${(recentDirs.length > 0 || shouldShowSelectedDir) ? "border-t border-border" : ""}`}>
-                            <FolderOpen className="size-3.5 shrink-0" /> {t("new.dirBrowse")}
-                        </button>
-                    </div>
+                    <RecentDirectoryList
+                        directories={recentDirectories}
+                        selectedDirectory={shouldShowSelectedDir ? { canonicalPath: activeDir, displayPath: activeDirDisplayPath } : null}
+                        activePath={activeDir}
+                        error={recentDirectoriesError}
+                        isLoading={recentDirectories === null && recentDirectoriesError === null}
+                        isBrowseDisabled={!machine}
+                        browseRef={directoryTriggerRef}
+                        onSelect={(directory) => selectDir(directory.canonicalPath, directory.displayPath)}
+                        onRetry={() => setRecentDirectoriesReloadKey((value) => value + 1)}
+                        onBrowse={openDirectoryPicker}
+                    />
                 </section>
 
                 {cursorResumePreset && (
                     <section role="status" className="flex min-w-0 flex-col gap-1 rounded-xl border border-accent/30 bg-accent/[0.06] px-3.5 py-3 font-mono text-[11.5px]">
                         <span className="font-semibold text-foreground">{t("new.resumeTitle")} · Cursor</span>
                         <span className="min-w-0 truncate text-foreground">
-                            {cursorResumePreset.resumeSessionName ?? t("new.resumeTag")}
+                            {cursorResumePrimaryLabel}
                         </span>
-                        <code className="break-all text-[10px] text-muted-foreground">{cursorResumePreset.resumeSessionId}</code>
+                        <code className="break-all text-[10px] text-muted-foreground">{getShortResumeId(cursorResumePreset.resumeSessionId)}</code>
                         {!isResumePresetCompatible && (
                             <span role="alert" className="mt-1 text-destructive">{t("new.resumePresetMismatch")}</span>
                         )}
@@ -1248,7 +1379,7 @@ export function NewSessionPage() {
                     {isSpawning
                         ? t("new.spawning")
                         : <span className="block truncate whitespace-nowrap">{cursorResumePreset
-                            ? `${t("new.resumeTitle")} · ${cursorResumePreset.resumeSessionName ?? cursorResumePreset.resumeSessionId}`
+                            ? `${t("new.resumeTitle")} · ${cursorResumePrimaryLabel}`
                             : t("new.startButton", { agent, dir: activeDirDisplayPath || "…" })}</span>}
                 </button>
             </footer>
@@ -1313,32 +1444,43 @@ export function NewSessionPage() {
                     {sheetKind === "model" && (
                         <>
                             <SheetHeader title={t("new.modelTitle")} tag={agent} />
-                            {agent === "codex" && codexCapabilities?.status === "ready" && codexCapabilities.catalogVersion
-                                ? codexCapabilities.models.map((item) => (
-                                    <SheetRow key={item.id} isActive={item.id === codexModelId} label={item.displayName} showSelectionIndicator
-                                        onClick={() => {
-                                            setCodexModelId(item.id);
-                                            setCodexExecution(createCodexExecutionForModel(codexCapabilities, item.id));
-                                            setSheet(null);
-                                        }} />
-                                ))
-                                : agent === "cursor" && cursorCapabilities?.status === "ready" && cursorCapabilities.catalogVersion
-                                    ? cursorCapabilities.models.map((item) => (
-                                        <SheetRow key={item.id} isActive={item.id === cursorModelId} label={item.displayName} showSelectionIndicator
+                            <div
+                                role="region"
+                                aria-label={`${t("new.modelTitle")} · ${agent}`}
+                                aria-describedby="model-sheet-note"
+                                data-scroll-contract="176px viewport · 44px rows"
+                                className="h-[176px] max-h-[176px] min-h-0 shrink-0 overflow-x-hidden overflow-y-auto overscroll-contain"
+                            >
+                                {agent === "codex" && codexCapabilities?.status === "ready" && codexCapabilities.catalogVersion
+                                    ? codexCapabilities.models.map((item) => (
+                                        <SheetRow key={item.id} isActive={item.id === codexModelId} label={item.displayName} showSelectionIndicator singleLine
                                             onClick={() => {
-                                                setCursorModelId(item.id);
-                                                setCursorExecution(createCursorExecutionForModel(cursorCapabilities, item.id));
+                                                setCodexModelId(item.id);
+                                                setCodexExecution(createCodexExecutionForModel(codexCapabilities, item.id));
                                                 setSheet(null);
                                             }} />
                                     ))
-                                : agentModels.map((item) => (
-                                    <SheetRow key={item} isActive={item === model} label={item} showSelectionIndicator
-                                        onClick={() => {
-                                            setModel(item);
-                                            setHasExplicitModelSelection(true);
-                                            setSheet(null);
-                                        }} />
-                                ))}
+                                    : agent === "cursor" && cursorCapabilities?.status === "ready" && cursorCapabilities.catalogVersion
+                                        ? cursorCapabilities.models.map((item) => (
+                                            <SheetRow key={item.id} isActive={item.id === cursorModelId} label={item.displayName} showSelectionIndicator singleLine
+                                                onClick={() => {
+                                                    setCursorModelId(item.id);
+                                                    setCursorExecution(createCursorExecutionForModel(cursorCapabilities, item.id));
+                                                    setSheet(null);
+                                                }} />
+                                        ))
+                                    : agentModels.map((item) => (
+                                        <SheetRow key={item} isActive={item === model} label={item} showSelectionIndicator singleLine
+                                            onClick={() => {
+                                                setModel(item);
+                                                setHasExplicitModelSelection(true);
+                                                setSheet(null);
+                                            }} />
+                                    ))}
+                            </div>
+                            <div id="model-sheet-note" className="shrink-0 border-t border-border bg-card px-[18px] py-3 font-mono text-[9.5px] leading-[1.4] text-muted-foreground">
+                                {t("new.modelDrawerNote", { count: agent === "codex" ? codexCapabilities?.models.length ?? 0 : agent === "cursor" ? cursorCapabilities?.models.length ?? 0 : agentModels.length })}
+                            </div>
                         </>
                     )}
                     {sheetKind === "permission" && (

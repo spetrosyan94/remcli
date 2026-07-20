@@ -6,7 +6,8 @@ import { configuration } from '@/configuration';
 import { startCaffeinate, stopCaffeinate } from '@/utils/caffeinate';
 import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
-import { writeDaemonState, DaemonLocallyPersistedState, acquireDaemonLock, releaseDaemonLock } from '@/persistence';
+import { writeDaemonState, DaemonLocallyPersistedState, acquireDaemonLock, releaseDaemonLock, updateSettings } from '@/persistence';
+import { randomUUID } from 'node:crypto';
 
 import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledRemcliVersion, stopDaemon } from './controlClient';
 import { findAllRemcliProcesses } from './doctor';
@@ -596,7 +597,20 @@ export async function startDaemon(): Promise<void> {
     logger.debug('[DAEMON RUN] Daemon state updated with P2P info');
 
     // Register machine in P2P store
-    machineId = `machine-${process.pid}-${Date.now()}`;
+    const settings = await updateSettings((currentSettings) => {
+        if (currentSettings.machineId) {
+            return currentSettings;
+        }
+
+        return {
+            ...currentSettings,
+            machineId: randomUUID(),
+        };
+    });
+    if (!settings.machineId) {
+        throw new Error('Daemon machine identity is unavailable.');
+    }
+    machineId = settings.machineId;
     p2pStore.getOrCreateMachine(
         machineId,
         JSON.stringify(initialMachineMetadata),

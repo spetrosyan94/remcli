@@ -225,3 +225,9 @@ Remcli передаёт в phone chat подтверждённый terminal resu
 привязанный assistant fallback, но не создаёт отдельную live-ленту
 tool/approval events. Добавление такого mirror требует отдельного
 provider-specific дизайна, контракта и real gate.
+
+Daemon-owned tmux pane для Cursor сейчас является lifecycle host для
+`agent --print`, а не интерактивным native TUI. После `Ctrl+C` он должен
+безопасно завершить wrapper; параллельный `agent --resume` не запускается.
+Полноценный terminal/phone mirror возможен только после отдельного решения для
+PTY streaming, изоляции сессии и host-side confirmation.

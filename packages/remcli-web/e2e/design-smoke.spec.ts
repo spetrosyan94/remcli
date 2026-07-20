@@ -1189,6 +1189,39 @@ test("runtime Cursor catalog renders account-visible models, native controls, an
     expect(pageIssues).toEqual([]);
 });
 
+test("runtime Cursor keeps the full account catalog in a scrollable overflow-safe drawer", async ({ page }, testInfo) => {
+    const pageIssues = await openCursorCapabilityFixture(
+        page,
+        testInfo,
+        "/new?fixtures=1&cursorCapabilities=full",
+        "Cursor account model · fixture 01",
+    );
+    const modelControl = capabilityControl(page, "model").locator("button");
+
+    await modelControl.click();
+    const modelDrawer = page.locator('[data-slot="drawer-content"]');
+    const modelList = modelDrawer.getByRole("region", { name: /model.*cursor/i });
+    await expect(modelList).toBeVisible();
+    await expect(modelList).toHaveAttribute("aria-describedby", "model-sheet-note");
+    await expect(modelList.getByRole("button")).toHaveCount(8);
+
+    const scrollMetrics = await modelList.evaluate((element) => ({
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+    }));
+    expect(scrollMetrics.clientHeight).toBe(176);
+    expect(scrollMetrics.scrollHeight).toBeGreaterThan(scrollMetrics.clientHeight);
+    expect(scrollMetrics.scrollWidth).toBeLessThanOrEqual(scrollMetrics.clientWidth + 1);
+
+    await modelList.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await expect(modelList.getByRole("button", { name: "Cursor account model · fixture 08", exact: true })).toBeVisible();
+
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
 test("runtime Cursor unavailable catalog blocks start and exposes retry", async ({ page }, testInfo) => {
     const pageIssues = await openCursorCapabilityFixture(
         page,

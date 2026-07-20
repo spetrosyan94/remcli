@@ -1125,9 +1125,74 @@ export async function runCodex(opts: {
             return openPromise;
         };
 
-        if (opts.resumeSessionId) {
-            if (await ensureNativeThreadBinding(opts.resumeSessionId) === 'stop-runner') {
+        const resumeSessionId = opts.resumeSessionId;
+        const daemonExecution = opts.execution;
+        if (resumeSessionId) {
+            if (await ensureNativeThreadBinding(resumeSessionId) === 'stop-runner') {
                 return;
+            }
+
+            // A daemon-owned thread on the shared app-server needs to be
+            // attached before the first P2P delivery arrives. Otherwise the
+            // terminal remains unopened until a phone prompt starts a turn.
+            // This is attach-only: resume the thread, but do not start a turn
+            // or synthesize a prompt.
+            if (opts.startedBy === 'daemon' && usesSharedAppServer && opts.permissionMode && daemonExecution) {
+                const permissionConfig = resolveCodexPermissionConfig(opts.permissionMode);
+                const resumeEagerThread = async (): Promise<string> => {
+                    const threadId = await appServerClient.resumeThread({
+                        threadId: resumeSessionId,
+                        cwd: process.cwd(),
+                        sandbox: permissionConfig.sandbox,
+                        approvalPolicy: permissionConfig.approvalPolicy,
+                        model: currentModel,
+                    });
+                    if (!threadId) {
+                        throw new Error('Codex app-server did not provide a thread id.');
+                    }
+                    return threadId;
+                };
+
+                try {
+                    activeCodexThreadId = await resumeEagerThread();
+                } catch (error) {
+                    if (!isCodexAppServerTransientTransportError(error)) {
+                        publishSessionError(error, 'Codex app-server could not attach resumed thread.');
+                        return;
+                    }
+
+                    logger.warn(
+                        '[Codex] Shared daemon Codex app-server resume failed; retrying with private stdio app-server:',
+                        redactDiagnosticData(error),
+                    );
+                    await appServerClient.disconnect().catch((disconnectError) => {
+                        logger.debug(
+                            '[Codex] Failed to disconnect stale shared app-server client:',
+                            redactDiagnosticData(disconnectError),
+                        );
+                    });
+
+                    try {
+                        const privateSelection = await validateCodexAppServerSelectionWithSharedFallback(
+                            { client: new CodexAppServerClient(), usesSharedEndpoint: false },
+                            daemonExecution,
+                            permissionConfig,
+                        );
+                        replaceAppServerClient(privateSelection);
+                        activeCodexThreadId = await resumeEagerThread();
+                    } catch (fallbackError) {
+                        logger.warn(
+                            '[Codex] Could not recover eager Codex thread resume with private stdio app-server:',
+                            redactDiagnosticData(fallbackError),
+                        );
+                        publishSessionError(fallbackError, 'Codex app-server recovery failed.');
+                        return;
+                    }
+                }
+                nativeThreadBootstrap = { state: 'ready', threadId: activeCodexThreadId };
+                if (usesSharedAppServer && !await openRemoteTuiAfterThreadBinding(activeCodexThreadId)) {
+                    return;
+                }
             }
         }
 

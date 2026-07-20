@@ -47,6 +47,7 @@ export {
     machineSpawnNewSession,
     machineListAgentSessions,
     machineListDirectory,
+    machineListRecentDirectories,
     machineCancelPairingRekey,
     machineShowPairingQr,
     machineRequestPairingRekey,
@@ -100,6 +101,9 @@ export {
     type DirectoryHome,
     type DirectoryListing,
     type DirectoryPathStyle,
+    type RecentDirectory,
+    type RecentDirectoriesErrorCode,
+    RecentDirectoriesRpcError,
     type SpawnSessionOptions,
     type SpawnSessionResult
 } from '@/lib/protocol/socket';

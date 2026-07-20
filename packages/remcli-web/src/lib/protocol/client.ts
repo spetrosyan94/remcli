@@ -12,6 +12,7 @@ import {
     fixtureGetCursorCapabilities,
     fixtureListAgentSessions,
     fixtureListDirectory,
+    fixtureListRecentDirectories,
     fixtureLoadSessionMessages,
     fixtureRecordProtocolReconnect,
     fixtureRecordSentSession,
@@ -49,6 +50,7 @@ import {
     machineGetCodexCapabilities as socketMachineGetCodexCapabilities,
     machineGetCursorCapabilities as socketMachineGetCursorCapabilities,
     machineListDirectory as socketMachineListDirectory,
+    machineListRecentDirectories as socketMachineListRecentDirectories,
     machineCancelPairingRekey as socketMachineCancelPairingRekey,
     machineRequestPairingRekey as socketMachineRequestPairingRekey,
     machineShowPairingQr as socketMachineShowPairingQr,
@@ -65,6 +67,7 @@ import {
     socketEmitWithAck,
     waitForSocketConnection,
     type DirectoryListing,
+    type RecentDirectory,
     type CodexCapabilitiesSnapshot,
     type CursorCapabilitiesSnapshot,
     type SpawnSessionOptions,
@@ -386,6 +389,14 @@ export async function machineListDirectory(machineId: string, path?: string): Pr
         return fixtureListDirectory(machineId, path);
     }
     return socketMachineListDirectory(machineId, path);
+}
+
+/** List daemon-owned, machine-scoped recent directories; fixture mode uses the same response shape. */
+export async function machineListRecentDirectories(machineId: string): Promise<RecentDirectory[]> {
+    if (isFixturesActive) {
+        return fixtureListRecentDirectories(machineId);
+    }
+    return socketMachineListRecentDirectories(machineId);
 }
 
 /** Read the normalized Codex model/reasoning catalog for New Session. */

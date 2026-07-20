@@ -148,6 +148,7 @@ interface TestState {
     deferConnectAfterCalls: number | null;
     resolveDeferredConnect: (() => void) | null;
     startThreadFailures: Error[];
+    resumeThreadFailures: Error[];
     beginTurnFailures: Error[];
     isBeginTurnAcceptanceDeferred: boolean;
     resolveBeginTurnAcceptance: (() => void) | null;
@@ -246,6 +247,7 @@ const testState = vi.hoisted(() => {
         deferConnectAfterCalls: null,
         resolveDeferredConnect: null,
         startThreadFailures: [],
+        resumeThreadFailures: [],
         beginTurnFailures: [],
         isBeginTurnAcceptanceDeferred: false,
         resolveBeginTurnAcceptance: null,
@@ -333,6 +335,7 @@ const testState = vi.hoisted(() => {
             state.deferConnectAfterCalls = null;
             state.resolveDeferredConnect = null;
             state.startThreadFailures = [];
+            state.resumeThreadFailures = [];
             state.beginTurnFailures = [];
             state.isBeginTurnAcceptanceDeferred = false;
             state.resolveBeginTurnAcceptance = null;
@@ -675,6 +678,13 @@ vi.mock('./codexAppServerClient', () => ({
         async resumeThread(): Promise<string> {
             testState.state.resumedThreads += 1;
             testState.state.callOrder.push('resume');
+            const failure = testState.state.resumeThreadFailures.shift();
+            if (failure) {
+                if (failure instanceof testAppServerErrors.TransportError) {
+                    this.isConnected = false;
+                }
+                throw failure;
+            }
             testState.state.activeThreadId = testState.state.nativeThreadId;
             testState.state.activeTurnId = testState.state.resumedActiveTurnId;
             this.threadIdChangeHandler?.(testState.state.nativeThreadId);
@@ -1309,7 +1319,7 @@ describe('runCodex app-server integration', () => {
         });
 
         expect(testState.state.callOrder).toContain('hydrate');
-        expect(testState.state.resumedThreads).toBe(0);
+        expect(testState.state.resumedThreads).toBe(1);
         expect(testState.state.sentUserMessages).toEqual([{
             text: 'Prompt entered in native terminal while Remcli was offline',
             sentFrom: 'native-app-server',
@@ -1367,7 +1377,7 @@ describe('runCodex app-server integration', () => {
         expect(testState.state.rejectedDeliveryErrors).toEqual([]);
     });
 
-    it('rejects an unknown hydration failure before resume or turn/start', async () => {
+    it('rejects an unknown hydration failure after eager resume and before turn/start', async () => {
         const deliveryId = 'p2p:remcli-session:hydration-invalid-response';
         const hydrationError = new Error('Codex app-server returned an invalid thread/read response.');
         testState.state.nativeThreadId = 'native-resume-thread';
@@ -1382,10 +1392,10 @@ describe('runCodex app-server integration', () => {
         });
 
         expect(testState.state.hydrationCalls).toBe(1);
-        expect(testState.state.resumedThreads).toBe(0);
+        expect(testState.state.resumedThreads).toBe(1);
         expect(testState.state.startedThreads).toBe(0);
         expect(testState.state.beginTurns).toEqual([]);
-        expect(testState.state.remoteTuiOpenCalls).toEqual([]);
+        expect(testState.state.remoteTuiOpenCalls).toHaveLength(1);
         expect(testState.state.acknowledgedDeliveryIds).toEqual([]);
         expect(testState.state.rejectedDeliveryErrors).toEqual([hydrationError]);
     });
@@ -1406,7 +1416,7 @@ describe('runCodex app-server integration', () => {
         });
 
         expect(testState.state.hydrationCalls).toBe(2);
-        expect(testState.state.callOrder.indexOf('resume')).toBeGreaterThan(
+        expect(testState.state.callOrder.indexOf('resume')).toBeLessThan(
             testState.state.callOrder.indexOf('hydrate'),
         );
         expect(testState.state.beginTurns).toHaveLength(1);
@@ -1883,9 +1893,102 @@ describe('runCodex app-server integration', () => {
         })]);
     });
 
-    it('binds a resumed native thread once before opening its remote TUI', async () => {
+    it('eagerly attaches a daemon-owned shared resume without a P2P prompt', async () => {
         testState.state.nativeThreadId = 'native-resume-thread';
-        testState.state.incomingMessages = [createIncomingMessage()];
+        testState.state.closeQueueWhenEmpty = true;
+
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
+
+        expect(testState.state.callOrder).toEqual(['bind', 'resume', 'open-tui']);
+        expect(testState.state.bindingCalls).toHaveLength(1);
+        expect(testState.state.resumedThreads).toBe(1);
+        expect(testState.state.remoteTuiOpenCalls).toHaveLength(1);
+        expect(testState.state.startedThreads).toBe(0);
+        expect(testState.state.beginTurns).toEqual([]);
+        expect(testState.state.acknowledgedDeliveryIds).toEqual([]);
+    });
+
+    it('recovers an eager shared resume through private stdio without a TUI or P2P delivery', async () => {
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+        testState.state.closeQueueWhenEmpty = true;
+        testState.state.resumeThreadFailures = [
+            new testAppServerErrors.TransportError('Codex app-server websocket disconnected before thread/resume.'),
+        ];
+
+        try {
+            await runTestCodex({
+                startedBy: 'daemon',
+                resumeSessionId: 'native-resume-thread',
+                permissionMode: 'read-only',
+                execution: await createRunnerExecution(),
+            });
+
+            expect(testState.state.connectCalls).toBe(2);
+            expect(testState.state.resumedThreads).toBe(2);
+            expect(testState.state.remoteTuiOpenCalls).toEqual([]);
+            expect(testState.state.startedThreads).toBe(0);
+            expect(testState.state.beginTurns).toEqual([]);
+            expect(testState.state.acknowledgedDeliveryIds).toEqual([]);
+            expect(testState.state.sessionEvents).not.toContainEqual(expect.objectContaining({ isError: true }));
+            expect(warn).toHaveBeenCalledWith(
+                '[Codex] Shared daemon Codex app-server resume failed; retrying with private stdio app-server:',
+                expect.anything(),
+            );
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it('publishes a session error when eager private resume fallback is exhausted', async () => {
+        testState.state.closeQueueWhenEmpty = true;
+        testState.state.resumeThreadFailures = [
+            new testAppServerErrors.TransportError('Codex app-server websocket disconnected before thread/resume.'),
+            new Error('Private Codex app-server could not resume the thread.'),
+        ];
+
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
+
+        expect(testState.state.resumedThreads).toBe(2);
+        expect(testState.state.remoteTuiOpenCalls).toEqual([]);
+        expect(testState.state.beginTurns).toEqual([]);
+        expect(testState.state.acknowledgedDeliveryIds).toEqual([]);
+        expectExactlyOneSessionError('Private Codex app-server could not resume the thread.');
+    });
+
+    it('does not open a remote TUI for a private stdio resume fallback without a P2P prompt', async () => {
+        testState.state.connectFailures = [
+            new testAppServerErrors.TransportError('Codex app-server websocket closed before connection opened.'),
+        ];
+        testState.state.closeQueueWhenEmpty = true;
+
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
+
+        expect(testState.state.resumedThreads).toBe(0);
+        expect(testState.state.remoteTuiOpenCalls).toEqual([]);
+        expect(testState.state.beginTurns).toEqual([]);
+        expect(testState.state.acknowledgedDeliveryIds).toEqual([]);
+        expect(testState.state.sessionEvents).not.toContainEqual(expect.objectContaining({ isError: true }));
+    });
+
+    it('binds a resumed native thread once before opening its remote TUI and starting the P2P prompt', async () => {
+        const deliveryId = 'p2p:remcli-session:resume-prompt';
+        testState.state.nativeThreadId = 'native-resume-thread';
+        testState.state.incomingMessages = [createIncomingMessage({}, deliveryId)];
 
         await runTestCodex({
             startedBy: 'daemon',
@@ -1909,6 +2012,12 @@ describe('runCodex app-server integration', () => {
         }]);
         expect(testState.state.callOrder.indexOf('bind')).toBeLessThan(testState.state.callOrder.indexOf('resume'));
         expect(testState.state.callOrder.indexOf('resume')).toBeLessThan(testState.state.callOrder.indexOf('open-tui'));
+        expect(testState.state.beginTurns).toEqual([expect.objectContaining({
+            threadId: 'native-resume-thread',
+            prompt: 'remote prompt',
+            clientUserMessageId: deliveryId,
+        })]);
+        expect(testState.state.acknowledgedDeliveryIds).toEqual([deliveryId]);
     });
 
     it('stops a redundant resumed runner when the daemon already owns its native thread', async () => {

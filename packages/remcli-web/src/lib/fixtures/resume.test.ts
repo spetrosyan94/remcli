@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+    fixtureListRecentDirectories,
     fixtureSpawnNewSession,
 } from '@/lib/fixtures';
 import {
@@ -159,5 +160,21 @@ describe('fixture resume history', () => {
                 texts: ['Контекст fixture-сессии недоступен. Продолжаю с чистого шага.'],
             }),
         ]));
+    });
+
+    it('keeps fixture recent directories isolated by machine after a successful spawn', async () => {
+        const offlineBefore = await fixtureListRecentDirectories('fx-machine-offline');
+        const spawnedDirectory = '/Users/dev/projects/mobile';
+
+        getSpawnedSessionId(await fixtureSpawnNewSession({
+            machineId: 'fx-machine-online',
+            directory: spawnedDirectory,
+            agent: 'codex',
+        }));
+
+        await expect(fixtureListRecentDirectories('fx-machine-online')).resolves.toEqual(expect.arrayContaining([
+            expect.objectContaining({ canonicalPath: spawnedDirectory }),
+        ]));
+        await expect(fixtureListRecentDirectories('fx-machine-offline')).resolves.toEqual(offlineBefore);
     });
 });
