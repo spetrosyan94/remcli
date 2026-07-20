@@ -458,6 +458,8 @@ export async function startDaemon(): Promise<void> {
       verifySessionRunnerCredential: (sessionId, credential) => runnerCredentialStore.verify(sessionId, credential),
       bindNativeCodexThread: sessionManager.bindNativeCodexThread,
       bindNativeCursorSession: sessionManager.bindNativeCursorSession,
+      acquireCursorHeadlessWriterLease: sessionManager.acquireCursorHeadlessWriterLease,
+      releaseCursorNativeWriterLease: sessionManager.releaseCursorNativeWriterLease,
       preflightCursorRunner: sessionManager.preflightCursorRunner,
       markDaemonRunnerStopping: sessionManager.markDaemonRunnerStopping,
       completeDaemonRunnerStopping: sessionManager.completeDaemonRunnerStopping,

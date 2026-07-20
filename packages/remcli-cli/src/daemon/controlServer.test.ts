@@ -1,15 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Metadata } from '@/api/types';
 import {
+    acquireDaemonCursorHeadlessWriterLease,
     bindDaemonCodexThread,
     bindDaemonCursorSession,
     openDaemonCodexRemoteTui,
+    releaseDaemonCursorNativeWriterLease,
 } from './controlClient';
 import { startDaemonControlServer } from './controlServer';
 import { forgetSessionRunnerCredential, P2PRunnerCredentialStore } from './p2p/p2pRunnerCredentials';
 import type {
     CodexRemoteTuiOpenRequest,
     CodexRemoteTuiOpenResult,
+    CursorHeadlessWriterLeaseAcquireRequest,
+    CursorHeadlessWriterLeaseAcquireResult,
+    CursorNativeWriterLeaseReleaseRequest,
+    CursorNativeWriterLeaseReleaseResult,
     CursorRunnerPreflightRequest,
     CursorRunnerPreflightResult,
     DaemonRunnerLifecycleResult,
@@ -45,6 +51,12 @@ interface ControlServerTestOptions {
     verifySessionRunnerCredential?: (sessionId: string, credential: string) => boolean;
     bindNativeCodexThread?: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
     bindNativeCursorSession?: (binding: NativeCursorSessionBinding) => Promise<NativeCursorSessionBindingResult>;
+    acquireCursorHeadlessWriterLease?: (
+        request: CursorHeadlessWriterLeaseAcquireRequest,
+    ) => Promise<CursorHeadlessWriterLeaseAcquireResult>;
+    releaseCursorNativeWriterLease?: (
+        request: CursorNativeWriterLeaseReleaseRequest,
+    ) => Promise<CursorNativeWriterLeaseReleaseResult>;
     preflightCursorRunner?: (
         request: CursorRunnerPreflightRequest,
     ) => Promise<CursorRunnerPreflightResult>;
@@ -89,6 +101,11 @@ async function startControlServerForTest(options: ControlServerTestOptions = {})
             type: 'wrapper-not-tracked',
             binding,
         })),
+        acquireCursorHeadlessWriterLease: options.acquireCursorHeadlessWriterLease ?? (async (request) => ({
+            type: 'wrapper-not-tracked',
+            request,
+        })),
+        releaseCursorNativeWriterLease: options.releaseCursorNativeWriterLease ?? (async () => ({ released: false })),
         preflightCursorRunner: options.preflightCursorRunner ?? (async () => ({ type: 'rejected' })),
         markDaemonRunnerStopping: options.markDaemonRunnerStopping ?? (() => ({ accepted: false })),
         completeDaemonRunnerStopping: options.completeDaemonRunnerStopping ?? (async () => ({ accepted: false })),
@@ -347,6 +364,13 @@ describe('startDaemonControlServer', () => {
                 nativeSessionId: 'cursor-native-123',
                 remcliSessionId: 'remcli-123',
             },
+            writerLease: {
+                agent: 'cursor',
+                leaseId: 'cursor-writer-lease-12345678901234567890',
+                nativeSessionId: 'cursor-native-123',
+                remcliSessionId: 'remcli-123',
+                owner: 'headless',
+            },
         } as const;
         const bindNativeCursorSession = vi.fn(async () => bindingResult);
         const controlServer = await startControlServerForTest({
@@ -386,6 +410,121 @@ describe('startDaemonControlServer', () => {
         expect(bindingResponse.status).toBe(200);
         await expect(bindingResponse.json()).resolves.toEqual(bindingResult);
         expect(bindNativeCursorSession).toHaveBeenCalledWith(binding);
+    });
+
+    it('requires the daemon-issued runner credential and exact opaque capability for Cursor writer lease operations', async () => {
+        const credentialStore = new P2PRunnerCredentialStore();
+        const acquireCursorHeadlessWriterLease = vi.fn(async (request: CursorHeadlessWriterLeaseAcquireRequest) => ({
+            type: 'acquired' as const,
+            writerLease: {
+                agent: 'cursor' as const,
+                leaseId: 'cursor-writer-lease-12345678901234567890',
+                nativeSessionId: request.nativeSessionId,
+                remcliSessionId: request.remcliSessionId,
+                owner: 'headless' as const,
+            },
+        }));
+        const releaseCursorNativeWriterLease = vi.fn(async (request: CursorNativeWriterLeaseReleaseRequest) => ({
+            released: request.leaseId === 'cursor-writer-lease-12345678901234567890',
+        }));
+        const controlServer = await startControlServerForTest({
+            verifySessionRunnerCredential: (sessionId, credential) => credentialStore.verify(sessionId, credential),
+            acquireCursorHeadlessWriterLease,
+            releaseCursorNativeWriterLease,
+        });
+        stopServer = controlServer.stop;
+
+        const runnerCredential = credentialStore.issue('remcli-lease-owner', 'cursor-runner-owner');
+        const acquireBody = {
+            agent: 'cursor',
+            nativeSessionId: 'cursor-native-lease-owner',
+            remcliSessionId: 'remcli-lease-owner',
+        } as const;
+        const rejectedAcquire = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-headless-writer-acquire`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...acquireBody, runnerCredential: 'forged-credential' }),
+        });
+        const acceptedAcquire = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-headless-writer-acquire`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...acquireBody, runnerCredential }),
+        });
+        const rejectedCredentialRelease = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-writer-release`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                agent: 'cursor',
+                leaseId: 'cursor-writer-lease-12345678901234567890',
+                nativeSessionId: 'cursor-native-lease-owner',
+                remcliSessionId: 'remcli-lease-owner',
+                runnerCredential: 'forged-credential',
+            }),
+        });
+        const crossSessionRelease = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-writer-release`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                agent: 'cursor',
+                leaseId: 'cursor-writer-lease-12345678901234567890',
+                nativeSessionId: 'cursor-native-lease-owner',
+                remcliSessionId: 'remcli-other-session',
+                runnerCredential,
+            }),
+        });
+        const rejectedRelease = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-writer-release`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                agent: 'cursor',
+                leaseId: 'forged-cursor-writer-lease-123456789012345678',
+                nativeSessionId: 'cursor-native-lease-owner',
+                remcliSessionId: 'remcli-lease-owner',
+                runnerCredential,
+            }),
+        });
+        const acceptedRelease = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-writer-release`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                agent: 'cursor',
+                leaseId: 'cursor-writer-lease-12345678901234567890',
+                nativeSessionId: 'cursor-native-lease-owner',
+                remcliSessionId: 'remcli-lease-owner',
+                runnerCredential,
+            }),
+        });
+
+        expect(rejectedAcquire.status).toBe(403);
+        expect(acceptedAcquire.status).toBe(200);
+        expect(rejectedCredentialRelease.status).toBe(403);
+        await expect(acceptedAcquire.json()).resolves.toEqual({
+            type: 'acquired',
+            writerLease: {
+                agent: 'cursor',
+                leaseId: 'cursor-writer-lease-12345678901234567890',
+                nativeSessionId: 'cursor-native-lease-owner',
+                remcliSessionId: 'remcli-lease-owner',
+                owner: 'headless',
+            },
+        });
+        expect(crossSessionRelease.status).toBe(403);
+        await expect(rejectedRelease.json()).resolves.toEqual({ released: false });
+        await expect(acceptedRelease.json()).resolves.toEqual({ released: true });
+        expect(acquireCursorHeadlessWriterLease).toHaveBeenCalledOnce();
+        expect(releaseCursorNativeWriterLease).toHaveBeenCalledTimes(2);
+        expect(releaseCursorNativeWriterLease).toHaveBeenNthCalledWith(1, {
+            agent: 'cursor',
+            leaseId: 'forged-cursor-writer-lease-123456789012345678',
+            nativeSessionId: 'cursor-native-lease-owner',
+            remcliSessionId: 'remcli-lease-owner',
+        });
+        expect(releaseCursorNativeWriterLease).toHaveBeenNthCalledWith(2, {
+            agent: 'cursor',
+            leaseId: 'cursor-writer-lease-12345678901234567890',
+            nativeSessionId: 'cursor-native-lease-owner',
+            remcliSessionId: 'remcli-lease-owner',
+        });
     });
 
     it('does not issue a credential for an accepted manual session', async () => {
@@ -834,7 +973,20 @@ describe('startDaemonControlServer', () => {
             nativeSessionId: 'cursor-native-123',
             remcliSessionId: sessionId,
         });
+        const cursorLeaseAcquireResult = await acquireDaemonCursorHeadlessWriterLease({
+            agent: 'cursor',
+            nativeSessionId: 'cursor-native-123',
+            remcliSessionId: sessionId,
+        });
+        const cursorLeaseReleaseResult = await releaseDaemonCursorNativeWriterLease({
+            agent: 'cursor',
+            leaseId: 'cursor-writer-lease-12345678901234567890',
+            nativeSessionId: 'cursor-native-123',
+            remcliSessionId: sessionId,
+        });
         expect(cursorBindingResult).toEqual({ ok: false, error: 'Missing session runner credential' });
+        expect(cursorLeaseAcquireResult).toEqual({ ok: false, error: 'Missing session runner credential' });
+        expect(cursorLeaseReleaseResult).toEqual({ ok: false, error: 'Missing session runner credential' });
         expect(remoteTuiResult).toEqual({ ok: false, error: 'Missing session runner credential' });
     });
 });

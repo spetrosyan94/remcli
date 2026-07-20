@@ -11,6 +11,10 @@ import type { Metadata } from '@/api/types';
 import type {
   CodexRemoteTuiOpenRequest,
   CodexRemoteTuiOpenResult,
+  CursorHeadlessWriterLeaseAcquireRequest,
+  CursorHeadlessWriterLeaseAcquireResult,
+  CursorNativeWriterLeaseReleaseRequest,
+  CursorNativeWriterLeaseReleaseResult,
   CursorRunnerPreflightRequest,
   CursorRunnerPreflightResult,
   DaemonRunnerLifecycleResult,
@@ -39,15 +43,38 @@ const protectedNativeCodexThreadBindingSchema = nativeCodexThreadBindingSchema.e
   runnerCredential: runnerCredentialSchema,
 });
 
-const nativeCursorSessionBindingSchema = z.object({
+const nativeCursorSessionWrapperSchema = z.object({
   agent: z.literal('cursor'),
   nativeSessionId: z.string().min(1),
   remcliSessionId: z.string().min(1),
 });
 
-const nativeCursorSessionWrapperSchema = nativeCursorSessionBindingSchema;
+const nativeCursorSessionBindingSchema = nativeCursorSessionWrapperSchema.extend({
+  writerLeaseId: z.string().min(32).optional(),
+});
 
 const protectedNativeCursorSessionBindingSchema = nativeCursorSessionBindingSchema.extend({
+  runnerCredential: runnerCredentialSchema,
+});
+
+const cursorNativeWriterOwnerSchema = z.enum(['headless', 'interactive']);
+
+const cursorNativeWriterLeaseSchema = nativeCursorSessionWrapperSchema.extend({
+  leaseId: z.string().min(32),
+  owner: cursorNativeWriterOwnerSchema,
+});
+
+const cursorHeadlessWriterLeaseAcquireRequestSchema = nativeCursorSessionWrapperSchema;
+
+const protectedCursorHeadlessWriterLeaseAcquireRequestSchema = cursorHeadlessWriterLeaseAcquireRequestSchema.extend({
+  runnerCredential: runnerCredentialSchema,
+});
+
+const cursorNativeWriterLeaseReleaseRequestSchema = nativeCursorSessionWrapperSchema.extend({
+  leaseId: z.string().min(32),
+});
+
+const protectedCursorNativeWriterLeaseReleaseRequestSchema = cursorNativeWriterLeaseReleaseRequestSchema.extend({
   runnerCredential: runnerCredentialSchema,
 });
 
@@ -169,16 +196,43 @@ const nativeCodexThreadBindingResultSchema = z.discriminatedUnion('type', [
 ]);
 
 const nativeCursorSessionBindingResultSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('bound'), wrapper: nativeCursorSessionWrapperSchema }),
-  z.object({ type: z.literal('already-bound'), wrapper: nativeCursorSessionWrapperSchema }),
+  z.object({ type: z.literal('bound'), wrapper: nativeCursorSessionWrapperSchema, writerLease: cursorNativeWriterLeaseSchema }),
+  z.object({ type: z.literal('already-bound'), wrapper: nativeCursorSessionWrapperSchema, writerLease: cursorNativeWriterLeaseSchema }),
   z.object({ type: z.literal('reuse-active-wrapper'), wrapper: nativeCursorSessionWrapperSchema }),
   z.object({ type: z.literal('wrapper-not-tracked'), binding: nativeCursorSessionBindingSchema }),
+  z.object({
+    type: z.literal('native-session-mismatch'),
+    binding: nativeCursorSessionBindingSchema,
+    expectedNativeSessionId: z.string().min(1),
+  }),
+  z.object({ type: z.literal('writer-busy'), binding: nativeCursorSessionBindingSchema, owner: cursorNativeWriterOwnerSchema }),
+  z.object({ type: z.literal('writer-lease-mismatch'), binding: nativeCursorSessionBindingSchema }),
   z.object({
     type: z.literal('agent-mismatch'),
     binding: nativeCursorSessionBindingSchema,
     trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini']),
   }),
 ]);
+
+const cursorHeadlessWriterLeaseAcquireResultSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('acquired'), writerLease: cursorNativeWriterLeaseSchema }),
+  z.object({ type: z.literal('writer-busy'), request: cursorHeadlessWriterLeaseAcquireRequestSchema, owner: cursorNativeWriterOwnerSchema }),
+  z.object({ type: z.literal('wrapper-not-tracked'), request: cursorHeadlessWriterLeaseAcquireRequestSchema }),
+  z.object({
+    type: z.literal('agent-mismatch'),
+    request: cursorHeadlessWriterLeaseAcquireRequestSchema,
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini']),
+  }),
+  z.object({
+    type: z.literal('native-session-mismatch'),
+    request: cursorHeadlessWriterLeaseAcquireRequestSchema,
+    trackedNativeSessionId: z.string().min(1).optional(),
+  }),
+]);
+
+const cursorNativeWriterLeaseReleaseResultSchema = z.object({
+  released: z.boolean(),
+});
 
 const codexRemoteTuiOpenResultSchema = z.discriminatedUnion('type', [
   z.object({
@@ -220,6 +274,8 @@ export function startDaemonControlServer({
   verifySessionRunnerCredential,
   bindNativeCodexThread,
   bindNativeCursorSession,
+  acquireCursorHeadlessWriterLease,
+  releaseCursorNativeWriterLease,
   preflightCursorRunner,
   markDaemonRunnerStopping,
   completeDaemonRunnerStopping,
@@ -235,6 +291,12 @@ export function startDaemonControlServer({
   verifySessionRunnerCredential: (sessionId: string, credential: string) => boolean;
   bindNativeCodexThread: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
   bindNativeCursorSession: (binding: NativeCursorSessionBinding) => Promise<NativeCursorSessionBindingResult>;
+  acquireCursorHeadlessWriterLease: (
+    request: CursorHeadlessWriterLeaseAcquireRequest,
+  ) => Promise<CursorHeadlessWriterLeaseAcquireResult>;
+  releaseCursorNativeWriterLease: (
+    request: CursorNativeWriterLeaseReleaseRequest,
+  ) => Promise<CursorNativeWriterLeaseReleaseResult>;
   preflightCursorRunner: (request: CursorRunnerPreflightRequest) => Promise<CursorRunnerPreflightResult>;
   markDaemonRunnerStopping: (sessionId: string) => DaemonRunnerLifecycleResult;
   completeDaemonRunnerStopping: (sessionId: string) => Promise<DaemonRunnerLifecycleResult>;
@@ -366,6 +428,32 @@ export function startDaemonControlServer({
           403: runnerCredentialDeniedResponseSchema,
         },
       },
+      }, async (request, reply) => {
+      const { agent, nativeSessionId, remcliSessionId, writerLeaseId, runnerCredential } = request.body;
+      if (!runnerCredential || !verifySessionRunnerCredential(remcliSessionId, runnerCredential)) {
+        reply.code(403);
+        return { error: INVALID_SESSION_RUNNER_CREDENTIAL_ERROR } as const;
+      }
+
+      const binding: NativeCursorSessionBinding = {
+        agent,
+        nativeSessionId,
+        remcliSessionId,
+        ...(writerLeaseId ? { writerLeaseId } : {}),
+      };
+      const result = await bindNativeCursorSession(binding);
+      logger.debug(`[CONTROL SERVER] Cursor session ${nativeSessionId} binding result: ${result.type}`);
+      return result;
+    });
+
+    typed.post('/cursor-headless-writer-acquire', {
+      schema: {
+        body: protectedCursorHeadlessWriterLeaseAcquireRequestSchema,
+        response: {
+          200: cursorHeadlessWriterLeaseAcquireResultSchema,
+          403: runnerCredentialDeniedResponseSchema,
+        },
+      },
     }, async (request, reply) => {
       const { agent, nativeSessionId, remcliSessionId, runnerCredential } = request.body;
       if (!runnerCredential || !verifySessionRunnerCredential(remcliSessionId, runnerCredential)) {
@@ -373,10 +461,25 @@ export function startDaemonControlServer({
         return { error: INVALID_SESSION_RUNNER_CREDENTIAL_ERROR } as const;
       }
 
-      const binding: NativeCursorSessionBinding = { agent, nativeSessionId, remcliSessionId };
-      const result = await bindNativeCursorSession(binding);
-      logger.debug(`[CONTROL SERVER] Cursor session ${nativeSessionId} binding result: ${result.type}`);
-      return result;
+      return await acquireCursorHeadlessWriterLease({ agent, nativeSessionId, remcliSessionId });
+    });
+
+    typed.post('/cursor-writer-release', {
+      schema: {
+        body: protectedCursorNativeWriterLeaseReleaseRequestSchema,
+        response: {
+          200: cursorNativeWriterLeaseReleaseResultSchema,
+          403: runnerCredentialDeniedResponseSchema,
+        },
+      },
+    }, async (request, reply) => {
+      const { agent, leaseId, nativeSessionId, remcliSessionId, runnerCredential } = request.body;
+      if (!runnerCredential || !verifySessionRunnerCredential(remcliSessionId, runnerCredential)) {
+        reply.code(403);
+        return { error: INVALID_SESSION_RUNNER_CREDENTIAL_ERROR } as const;
+      }
+
+      return await releaseCursorNativeWriterLease({ agent, leaseId, nativeSessionId, remcliSessionId });
     });
 
     typed.post('/codex-remote-tui-open', {

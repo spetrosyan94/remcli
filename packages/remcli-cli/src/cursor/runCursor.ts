@@ -30,11 +30,14 @@ import {
 } from '@/utils/daemonRunnerCredentialBootstrap';
 import { redactDiagnosticData } from '@/utils/redaction';
 import {
+    acquireDaemonCursorHeadlessWriterLease,
     bindDaemonCursorSession,
     preflightDaemonCursorRunner,
+    releaseDaemonCursorNativeWriterLease,
     reportDaemonRunnerStopped,
     reportDaemonRunnerStopping,
 } from '@/daemon/controlClient';
+import type { CursorNativeWriterLease } from '@/daemon/types';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { Metadata } from '@/api/types';
 import {
@@ -336,15 +339,19 @@ export async function runCursor(opts: {
         await awaitQueuedParentRelationRollback();
     };
 
-    const bindNativeCursorSession = async (nativeSessionId: string): Promise<void> => {
+    const bindNativeCursorSession = async (
+        nativeSessionId: string,
+        writerLeaseId?: string,
+    ): Promise<CursorNativeWriterLease | undefined> => {
         if (trustedStartedBy !== 'daemon') {
-            return;
+            return undefined;
         }
 
         const bindingResult = await bindDaemonCursorSession({
             agent: 'cursor',
             nativeSessionId,
             remcliSessionId: session.sessionId,
+            ...(writerLeaseId ? { writerLeaseId } : {}),
         });
         if (!bindingResult.ok) {
             throw new CursorTurnError(
@@ -356,7 +363,7 @@ export async function runCursor(opts: {
         switch (bindingResult.data.type) {
             case 'bound':
             case 'already-bound':
-                return;
+                return bindingResult.data.writerLease;
             case 'reuse-active-wrapper':
                 throw new CursorTurnError(
                     'native',
@@ -367,12 +374,78 @@ export async function runCursor(opts: {
                     'native',
                     'Cursor native session binding was rejected because this daemon wrapper is no longer tracked.',
                 );
+            case 'native-session-mismatch':
+                throw new CursorTurnError(
+                    'native',
+                    'Cursor native session binding was rejected because the selected resume no longer matches this wrapper.',
+                );
             case 'agent-mismatch':
                 throw new CursorTurnError(
                     'native',
                     `Cursor native session binding was rejected because this wrapper belongs to ${bindingResult.data.trackedAgent}.`,
                 );
+            case 'writer-busy':
+                throw new CursorTurnError(
+                    'native',
+                    `Cursor native session is already controlled by an active ${bindingResult.data.owner} writer.`,
+                );
+            case 'writer-lease-mismatch':
+                throw new CursorTurnError(
+                    'native',
+                    'Cursor native writer capability no longer matches this turn.',
+                );
         }
+    };
+
+    const acquireHeadlessTurnWriterLease = async (
+        nativeSessionId: string,
+    ): Promise<CursorNativeWriterLease> => {
+        const leaseResult = await acquireDaemonCursorHeadlessWriterLease({
+            agent: 'cursor',
+            nativeSessionId,
+            remcliSessionId: session.sessionId,
+        });
+        if (!leaseResult.ok) {
+            throw new CursorTurnError(
+                'native',
+                `Cursor native writer lease failed: ${leaseResult.error}`,
+            );
+        }
+
+        switch (leaseResult.data.type) {
+            case 'acquired':
+                return leaseResult.data.writerLease;
+            case 'writer-busy':
+                throw new CursorTurnError(
+                    'native',
+                    `Cursor native session is already controlled by an active ${leaseResult.data.owner} writer.`,
+                );
+            case 'wrapper-not-tracked':
+                throw new CursorTurnError(
+                    'native',
+                    'Cursor native writer lease was rejected because this daemon wrapper is no longer tracked.',
+                );
+            case 'agent-mismatch':
+                throw new CursorTurnError(
+                    'native',
+                    `Cursor native writer lease was rejected because this wrapper belongs to ${leaseResult.data.trackedAgent}.`,
+                );
+            case 'native-session-mismatch':
+                throw new CursorTurnError(
+                    'native',
+                    'Cursor native writer lease was rejected because the selected resume no longer matches this wrapper.',
+                );
+        }
+    };
+
+    const releaseHeadlessTurnWriterLease = async (writerLease: CursorNativeWriterLease): Promise<boolean> => {
+        const releaseResult = await releaseDaemonCursorNativeWriterLease({
+            agent: 'cursor',
+            leaseId: writerLease.leaseId,
+            nativeSessionId: writerLease.nativeSessionId,
+            remcliSessionId: writerLease.remcliSessionId,
+        });
+        return releaseResult.ok && releaseResult.data.released;
     };
 
     async function handleAbort(): Promise<void> {
@@ -608,6 +681,7 @@ export async function runCursor(opts: {
             currentModeHash = message.hash;
             messageBuffer.addMessage(message.message, 'user');
 
+            let headlessWriterLease: CursorNativeWriterLease | undefined;
             try {
                 // Build prompt (no CHANGE_TITLE_INSTRUCTION — Cursor doesn't have access to remcli MCP server)
                 const prompt = message.message;
@@ -623,6 +697,11 @@ export async function runCursor(opts: {
                         : 'Agent';
                 messageBuffer.addMessage(`Mode: ${modeLabel}`, 'system');
                 logger.debug(`[Cursor] Spawning with executionMode=${cursorMode} force=${launchControls.force} autoReview=${launchControls.autoReview} sandbox=${launchControls.sandbox} approveMcps=${launchControls.approveMcps}`);
+
+                const nativeSessionIdForLease = cursorSessionId ?? requestedResumeSessionId;
+                if (trustedStartedBy === 'daemon' && nativeSessionIdForLease) {
+                    headlessWriterLease = await acquireHeadlessTurnWriterLease(nativeSessionIdForLease);
+                }
 
                 // Send task_started
                 session.sendAgentMessage('cursor', {
@@ -649,7 +728,21 @@ export async function runCursor(opts: {
                     logger.debug(`[Cursor] Event: type=${event.type} subtype=${event.subtype ?? '-'} hasContent=${!!event.message?.content} hasTextDelta=${!!event.text_delta} hasText=${!!event.text}`);
 
                     if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
-                        await bindNativeCursorSession(event.session_id);
+                        const boundWriterLease = await bindNativeCursorSession(
+                            event.session_id,
+                            headlessWriterLease?.leaseId,
+                        );
+                        if (
+                            headlessWriterLease
+                            && boundWriterLease
+                            && headlessWriterLease.leaseId !== boundWriterLease.leaseId
+                        ) {
+                            throw new CursorTurnError(
+                                'native',
+                                'Cursor native writer capability changed while this turn was starting.',
+                            );
+                        }
+                        headlessWriterLease = boundWriterLease ?? headlessWriterLease;
                         confirmInitialParentRelation(event.session_id);
                     }
 
@@ -740,10 +833,26 @@ export async function runCursor(opts: {
                     });
                 }
             } finally {
+                if (headlessWriterLease) {
+                    const didReleaseWriterLease = await releaseHeadlessTurnWriterLease(headlessWriterLease);
+                    if (!didReleaseWriterLease) {
+                        logger.debug('[Cursor] Daemon could not confirm the headless native writer lease release; stopping this runner fail-closed.');
+                        shouldExit = true;
+                        abortController.abort();
+                        messageBuffer.addMessage('Cursor session stopped because native session ownership could not be released safely.', 'status');
+                        session.sendAgentMessage('cursor', {
+                            type: 'message',
+                            message: 'Cursor session stopped because Remcli could not safely release native session ownership. Resume it to continue.',
+                            isError: true,
+                        });
+                    }
+                }
                 activeTurn = null;
                 thinking = false;
                 session.keepAlive(thinking, 'remote');
-                sendReady();
+                if (!shouldExit) {
+                    sendReady();
+                }
             }
         }
     } finally {

@@ -21,6 +21,7 @@ interface ControlledCursorAgentState {
     invocations: ControlledCursorAgentInvocation[];
     interruptedPrompts: string[];
     protocolViolations: string[];
+    runningPids: number[];
 }
 
 export interface ControlledCursorAgent {
@@ -28,8 +29,9 @@ export interface ControlledCursorAgent {
     stateFile: string;
     getInvocations: () => ControlledCursorAgentInvocation[];
     getInterruptedPrompts: () => string[];
+    getLiveProcessIds: () => number[];
     getProtocolViolations: () => string[];
-    close: () => void;
+    close: () => Promise<void>;
 }
 
 export interface ControlledCursorAgentOptions {
@@ -41,6 +43,43 @@ export interface ControlledCursorAgentOptions {
 
 function readState(stateFile: string): ControlledCursorAgentState {
     return JSON.parse(readFileSync(stateFile, 'utf8')) as ControlledCursorAgentState;
+}
+
+function isProcessAlive(pid: number): boolean {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'EPERM';
+    }
+}
+
+async function stopFixtureProcesses(stateFile: string): Promise<void> {
+    const getLiveProcessIds = (): number[] => {
+        try {
+            return [...new Set(readState(stateFile).runningPids ?? [])]
+                .filter((pid) => Number.isInteger(pid) && pid > 0 && isProcessAlive(pid));
+        } catch {
+            return [];
+        }
+    };
+
+    const terminate = (signal: NodeJS.Signals): void => {
+        for (const pid of getLiveProcessIds()) {
+            try {
+                process.kill(pid, signal);
+            } catch {
+                // A fixture process may exit between the liveness check and signal.
+            }
+        }
+    };
+
+    terminate('SIGTERM');
+    const deadline = Date.now() + 1_000;
+    while (getLiveProcessIds().length > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    terminate('SIGKILL');
 }
 
 /**
@@ -55,7 +94,12 @@ export function createControlledCursorAgent(options: ControlledCursorAgentOption
     const serializedOptions = JSON.stringify(options);
 
     mkdirSync(binDir, { recursive: true });
-    writeFileSync(stateFile, JSON.stringify({ invocations: [], interruptedPrompts: [], protocolViolations: [] }), 'utf8');
+    writeFileSync(stateFile, JSON.stringify({
+        invocations: [],
+        interruptedPrompts: [],
+        protocolViolations: [],
+        runningPids: [],
+    }), 'utf8');
     writeFileSync(executable, `#!/usr/bin/env node
 const fs = require('node:fs');
 const options = ${serializedOptions};
@@ -75,6 +119,22 @@ if (!stateFile) {
 const readState = () => JSON.parse(fs.readFileSync(stateFile, 'utf8'));
 const writeState = (state) => fs.writeFileSync(stateFile, JSON.stringify(state), 'utf8');
 const state = readState();
+state.runningPids = state.runningPids || [];
+state.runningPids.push(process.pid);
+writeState(state);
+let removedRunningPid = false;
+const removeRunningPid = () => {
+    if (removedRunningPid) return;
+    removedRunningPid = true;
+    try {
+        const currentState = readState();
+        currentState.runningPids = (currentState.runningPids || []).filter((pid) => pid !== process.pid);
+        writeState(currentState);
+    } catch {
+        // The test fixture may already have been removed during forced cleanup.
+    }
+};
+process.once('exit', removeRunningPid);
 const outputFormatIndex = args.indexOf('--output-format');
 const resumeIndex = args.indexOf('--resume');
 const resumeSessionId = resumeIndex >= 0 ? args[resumeIndex + 1] : undefined;
@@ -162,7 +222,12 @@ if (prompt === options.holdPrompt) {
         stateFile,
         getInvocations: () => readState(stateFile).invocations,
         getInterruptedPrompts: () => readState(stateFile).interruptedPrompts,
+        getLiveProcessIds: () => [...new Set(readState(stateFile).runningPids ?? [])]
+            .filter((pid) => Number.isInteger(pid) && pid > 0 && isProcessAlive(pid)),
         getProtocolViolations: () => readState(stateFile).protocolViolations,
-        close: () => rmSync(root, { recursive: true, force: true }),
+        close: async () => {
+            await stopFixtureProcesses(stateFile);
+            rmSync(root, { recursive: true, force: true });
+        },
     };
 }

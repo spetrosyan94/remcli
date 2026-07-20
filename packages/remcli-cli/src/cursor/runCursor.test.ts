@@ -15,6 +15,13 @@ const TEST_CURSOR_RUNNER = {
     executable: 'agent' as const,
     cliFingerprint: '0123456789abcdef',
 };
+const TEST_HEADLESS_WRITER_LEASE = {
+    agent: 'cursor' as const,
+    leaseId: 'cursor-headless-writer-lease-12345678901234567890',
+    nativeSessionId: 'cursor-native-confirmed',
+    remcliSessionId: 'cursor-session',
+    owner: 'headless' as const,
+};
 
 interface TestSession {
     sessionId: string;
@@ -113,6 +120,8 @@ const testState = vi.hoisted(() => {
         acquireDaemonRunnerCredential: vi.fn(),
         reportTerminalSessionStarted: vi.fn(),
         bindDaemonCursorSession: vi.fn(),
+        acquireDaemonCursorHeadlessWriterLease: vi.fn(),
+        releaseDaemonCursorNativeWriterLease: vi.fn(),
         preflightDaemonCursorRunner: vi.fn(),
         reportDaemonRunnerStopping: vi.fn(),
         reportDaemonRunnerStopped: vi.fn(),
@@ -133,6 +142,19 @@ const testState = vi.hoisted(() => {
             this.acquireDaemonRunnerCredential.mockReset();
             this.reportTerminalSessionStarted.mockReset();
             this.bindDaemonCursorSession.mockReset();
+            this.acquireDaemonCursorHeadlessWriterLease.mockReset();
+            this.acquireDaemonCursorHeadlessWriterLease.mockResolvedValue({
+                ok: true,
+                data: {
+                    type: 'acquired',
+                    writerLease: { ...TEST_HEADLESS_WRITER_LEASE },
+                },
+            });
+            this.releaseDaemonCursorNativeWriterLease.mockReset();
+            this.releaseDaemonCursorNativeWriterLease.mockResolvedValue({
+                ok: true,
+                data: { released: true },
+            });
             this.preflightDaemonCursorRunner.mockReset();
             this.reportDaemonRunnerStopping.mockReset();
             this.reportDaemonRunnerStopped.mockReset();
@@ -173,8 +195,10 @@ vi.mock('@/utils/daemonRunnerCredentialBootstrap', () => ({
 }));
 
 vi.mock('@/daemon/controlClient', () => ({
+    acquireDaemonCursorHeadlessWriterLease: testState.acquireDaemonCursorHeadlessWriterLease,
     bindDaemonCursorSession: testState.bindDaemonCursorSession,
     preflightDaemonCursorRunner: testState.preflightDaemonCursorRunner,
+    releaseDaemonCursorNativeWriterLease: testState.releaseDaemonCursorNativeWriterLease,
     reportDaemonRunnerStopping: testState.reportDaemonRunnerStopping,
     reportDaemonRunnerStopped: testState.reportDaemonRunnerStopped,
 }));
@@ -635,7 +659,7 @@ describe('runCursor lifecycle', () => {
         await runPromise;
     });
 
-    it('binds the confirmed Cursor native ID before publishing daemon metadata without reacquiring the ACK lease', async () => {
+    it('acquires and confirms the Cursor writer lease before publishing native daemon metadata', async () => {
         const parentSessionId = 'trusted-parent-remcli-session';
         const session = createTestSession('cursor-session');
         testState.response = { id: 'cursor-session' };
@@ -655,6 +679,7 @@ describe('runCursor lifecycle', () => {
                     nativeSessionId: 'cursor-native-confirmed',
                     remcliSessionId: 'cursor-session',
                 },
+                writerLease: { ...TEST_HEADLESS_WRITER_LEASE },
             },
         });
         testState.runCursorTurn.mockImplementation(async (
@@ -692,7 +717,27 @@ describe('runCursor lifecycle', () => {
             agent: 'cursor',
             nativeSessionId: 'cursor-native-confirmed',
             remcliSessionId: 'cursor-session',
+            writerLeaseId: TEST_HEADLESS_WRITER_LEASE.leaseId,
         });
+        expect(testState.acquireDaemonCursorHeadlessWriterLease).toHaveBeenCalledWith({
+            agent: 'cursor',
+            nativeSessionId: 'cursor-native-confirmed',
+            remcliSessionId: 'cursor-session',
+        });
+        await vi.waitFor(() => expect(testState.releaseDaemonCursorNativeWriterLease).toHaveBeenCalledWith({
+            agent: 'cursor',
+            leaseId: TEST_HEADLESS_WRITER_LEASE.leaseId,
+            nativeSessionId: 'cursor-native-confirmed',
+            remcliSessionId: 'cursor-session',
+        }));
+        const acquireOrder = testState.acquireDaemonCursorHeadlessWriterLease.mock.invocationCallOrder[0];
+        const bindOrder = testState.bindDaemonCursorSession.mock.invocationCallOrder[0];
+        const turnOrder = testState.runCursorTurn.mock.invocationCallOrder[0];
+        const releaseOrder = testState.releaseDaemonCursorNativeWriterLease.mock.invocationCallOrder[0];
+        expect(acquireOrder).toBeLessThan(turnOrder!);
+        expect(turnOrder).toBeLessThan(bindOrder!);
+        expect(turnOrder).toBeLessThan(releaseOrder!);
+        expect(bindOrder).toBeLessThan(releaseOrder!);
         expect(session.metadata).toMatchObject({
             agentSessionId: 'cursor-native-confirmed',
             cursorSessionId: 'cursor-native-confirmed',
@@ -703,6 +748,109 @@ describe('runCursor lifecycle', () => {
 
         process.emit('SIGINT');
         await runPromise;
+    });
+
+    it('does not start a known Cursor resume while an interactive writer owns the native session', async () => {
+        const session = createTestSession('cursor-session');
+        testState.response = { id: 'cursor-session' };
+        testState.initialSession = session;
+        testState.acquireDaemonRunnerCredential.mockResolvedValue(true);
+        testState.preflightDaemonCursorRunner.mockResolvedValue({
+            ok: true,
+            data: { type: 'verified' },
+        });
+        testState.acquireDaemonCursorHeadlessWriterLease.mockResolvedValue({
+            ok: true,
+            data: {
+                type: 'writer-busy',
+                request: {
+                    agent: 'cursor',
+                    nativeSessionId: 'cursor-native-confirmed',
+                    remcliSessionId: 'cursor-session',
+                },
+                owner: 'interactive',
+            },
+        });
+
+        const runPromise = runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+            resumeSessionId: 'cursor-native-confirmed',
+        });
+        const queue = await waitForMessageQueue();
+        queue.resolve(createQueuedMessage('resume after terminal handoff'));
+
+        await vi.waitFor(() => expect(session.sendAgentMessage).toHaveBeenCalledWith('cursor', expect.objectContaining({
+            type: 'message',
+            isError: true,
+            message: 'Cursor native session is already controlled by an active interactive writer.',
+        })));
+        expect(session.sendAgentMessage).not.toHaveBeenCalledWith('cursor', expect.objectContaining({ type: 'task_started' }));
+        expect(testState.runCursorTurn).not.toHaveBeenCalled();
+        expect(testState.bindDaemonCursorSession).not.toHaveBeenCalled();
+
+        process.emit('SIGTERM');
+        await runPromise;
+    });
+
+    it('stops fail-closed when the daemon cannot confirm headless Cursor writer lease release', async () => {
+        const session = createTestSession('cursor-session');
+        testState.response = { id: 'cursor-session' };
+        testState.initialSession = session;
+        testState.acquireDaemonRunnerCredential.mockResolvedValue(true);
+        testState.preflightDaemonCursorRunner.mockResolvedValue({
+            ok: true,
+            data: { type: 'verified' },
+        });
+        testState.bindDaemonCursorSession.mockResolvedValue({
+            ok: true,
+            data: {
+                type: 'bound',
+                wrapper: {
+                    agent: 'cursor',
+                    nativeSessionId: 'cursor-native-confirmed',
+                    remcliSessionId: 'cursor-session',
+                },
+                writerLease: { ...TEST_HEADLESS_WRITER_LEASE },
+            },
+        });
+        testState.releaseDaemonCursorNativeWriterLease.mockResolvedValue({
+            ok: false,
+            error: 'controlled release transport failure',
+        });
+        testState.runCursorTurn.mockImplementation(async (
+            _options: unknown,
+            onEvent: (event: CursorStreamEvent) => void | Promise<void>,
+        ) => {
+            await onEvent({
+                type: 'system',
+                subtype: 'init',
+                session_id: 'cursor-native-confirmed',
+            });
+            return {
+                sessionId: 'cursor-native-confirmed',
+                response: 'Cursor response',
+                exitCode: 0,
+            };
+        });
+
+        const runPromise = runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+            resumeSessionId: 'cursor-native-confirmed',
+        });
+        const queue = await waitForMessageQueue();
+        queue.resolve(createQueuedMessage('first daemon Cursor prompt'));
+
+        await expect(runPromise).resolves.toBeUndefined();
+        expect(testState.runCursorTurn).toHaveBeenCalledOnce();
+        expect(session.sendAgentMessage).toHaveBeenCalledWith('cursor', {
+            type: 'message',
+            message: 'Cursor session stopped because Remcli could not safely release native session ownership. Resume it to continue.',
+            isError: true,
+        });
+        expect(testState.reportDaemonRunnerStopping).toHaveBeenCalledWith('cursor-session');
+        expect(testState.reportDaemonRunnerStopped).toHaveBeenCalledWith('cursor-session');
     });
 
     it('rolls back provisional lineage when daemon Cursor binding is rejected without publishing task_complete', async () => {
@@ -850,14 +998,44 @@ describe('runCursor lifecycle', () => {
             data: { type: 'verified', parentRemcliSessionId: parentSessionId },
         });
         mirrorInitialMetadata(session);
-        testState.runCursorTurn.mockRejectedValue(new CursorTurnError('resume-mismatch',
-            'Cursor resumed a different native session. The existing session was not changed.',
-        ));
+        const expectedNativeSessionId = 'expected-native-session';
+        const writerLease = { ...TEST_HEADLESS_WRITER_LEASE, nativeSessionId: expectedNativeSessionId };
+        testState.acquireDaemonCursorHeadlessWriterLease.mockResolvedValue({
+            ok: true,
+            data: { type: 'acquired', writerLease },
+        });
+        testState.bindDaemonCursorSession.mockResolvedValue({
+            ok: true,
+            data: {
+                type: 'bound',
+                wrapper: {
+                    agent: 'cursor',
+                    nativeSessionId: 'foreign-native-session',
+                    remcliSessionId: 'cursor-session',
+                },
+                writerLease,
+            },
+        });
+        testState.runCursorTurn.mockImplementation(async (
+            _options: unknown,
+            onEvent: (event: CursorStreamEvent) => void | Promise<void>,
+        ) => {
+            await onEvent({
+                type: 'system',
+                subtype: 'init',
+                session_id: 'foreign-native-session',
+            });
+            return {
+                sessionId: 'foreign-native-session',
+                response: 'must not be delivered',
+                exitCode: 0,
+            };
+        });
 
         const runPromise = runCursor({
             credentials: createCredentials(),
             startedBy: 'daemon',
-            resumeSessionId: 'expected-native-session',
+            resumeSessionId: expectedNativeSessionId,
         });
         const queue = await waitForMessageQueue();
         queue.resolve(createQueuedMessage('resume Cursor prompt'));
@@ -872,7 +1050,18 @@ describe('runCursor lifecycle', () => {
         expect(getOrCreateOptions?.metadata).toMatchObject({
             resumedFromRemcliSessionId: parentSessionId,
         });
-        expect(testState.bindDaemonCursorSession).not.toHaveBeenCalled();
+        expect(testState.bindDaemonCursorSession).toHaveBeenCalledWith({
+            agent: 'cursor',
+            nativeSessionId: 'foreign-native-session',
+            remcliSessionId: 'cursor-session',
+            writerLeaseId: writerLease.leaseId,
+        });
+        await vi.waitFor(() => expect(testState.releaseDaemonCursorNativeWriterLease).toHaveBeenCalledWith({
+            agent: 'cursor',
+            leaseId: writerLease.leaseId,
+            nativeSessionId: expectedNativeSessionId,
+            remcliSessionId: 'cursor-session',
+        }));
         expect(session.updateMetadata).toHaveBeenCalledOnce();
         expect(session.metadata).not.toHaveProperty('resumedFromRemcliSessionId');
         expect(session.metadataUpdates[0]).not.toHaveProperty('resumedFromRemcliSessionId');
@@ -1125,6 +1314,7 @@ describe('runCursor lifecycle', () => {
                     nativeSessionId,
                     remcliSessionId: 'cursor-session',
                 },
+                writerLease: { ...TEST_HEADLESS_WRITER_LEASE, nativeSessionId },
             },
         });
         testState.runCursorTurn.mockImplementation(async (
@@ -1156,7 +1346,14 @@ describe('runCursor lifecycle', () => {
             agent: 'cursor',
             nativeSessionId,
             remcliSessionId: 'cursor-session',
+            writerLeaseId: TEST_HEADLESS_WRITER_LEASE.leaseId,
         });
+        await vi.waitFor(() => expect(testState.releaseDaemonCursorNativeWriterLease).toHaveBeenCalledWith({
+            agent: 'cursor',
+            leaseId: TEST_HEADLESS_WRITER_LEASE.leaseId,
+            nativeSessionId,
+            remcliSessionId: 'cursor-session',
+        }));
         expect(session.metadataUpdates).toHaveLength(1);
         expect(session.metadata).toMatchObject({
             cursorSessionId: nativeSessionId,

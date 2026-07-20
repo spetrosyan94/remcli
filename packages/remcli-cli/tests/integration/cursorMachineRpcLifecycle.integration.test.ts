@@ -469,6 +469,8 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
             verifySessionRunnerCredential: (sessionId, credential) => runnerCredentialStore.verify(sessionId, credential),
             bindNativeCodexThread: sessionManager.bindNativeCodexThread,
             bindNativeCursorSession: sessionManager.bindNativeCursorSession,
+            acquireCursorHeadlessWriterLease: sessionManager.acquireCursorHeadlessWriterLease,
+            releaseCursorNativeWriterLease: sessionManager.releaseCursorNativeWriterLease,
             preflightCursorRunner: sessionManager.preflightCursorRunner,
             openCodexRemoteTui: async (request) => ({
                 type: 'already-open',
@@ -947,6 +949,11 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
         await waitForCondition(
             () => harness!.fixture.getInterruptedPrompts().includes(ACTIVE_STOP_PROMPT),
             'the active Cursor native child to receive a termination signal',
+            LIFECYCLE_TIMEOUT_MS,
+        );
+        await waitForCondition(
+            () => harness!.fixture.getLiveProcessIds().length === 0,
+            'the active Cursor native child to exit after the daemon-owned runner stops',
             LIFECYCLE_TIMEOUT_MS,
         );
         expect(doesTmuxPaneExist(runnerPaneId)).toBe(false);

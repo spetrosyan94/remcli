@@ -11,8 +11,12 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { configuration } from '@/configuration';
 import {
-  type CodexRemoteTuiOpenRequest,
-  type CodexRemoteTuiOpenResult,
+    type CodexRemoteTuiOpenRequest,
+    type CodexRemoteTuiOpenResult,
+    type CursorHeadlessWriterLeaseAcquireRequest,
+    type CursorHeadlessWriterLeaseAcquireResult,
+    type CursorNativeWriterLeaseReleaseRequest,
+    type CursorNativeWriterLeaseReleaseResult,
   type CursorRunnerPreflightRequest,
   type CursorRunnerPreflightResponse,
   type DaemonRunnerLifecycleResult,
@@ -129,6 +133,34 @@ export async function bindDaemonCursorSession(
 
   return daemonPost<NativeCursorSessionBindingResult>('/cursor-session-bound', {
     ...binding,
+    runnerCredential,
+  });
+}
+
+export async function acquireDaemonCursorHeadlessWriterLease(
+  request: CursorHeadlessWriterLeaseAcquireRequest,
+): Promise<DaemonResponse<CursorHeadlessWriterLeaseAcquireResult>> {
+  const runnerCredential = getSessionRunnerCredential(request.remcliSessionId);
+  if (!runnerCredential) {
+    return { ok: false, error: MISSING_SESSION_RUNNER_CREDENTIAL_ERROR };
+  }
+
+  return daemonPost<CursorHeadlessWriterLeaseAcquireResult>('/cursor-headless-writer-acquire', {
+    ...request,
+    runnerCredential,
+  });
+}
+
+export async function releaseDaemonCursorNativeWriterLease(
+  request: CursorNativeWriterLeaseReleaseRequest,
+): Promise<DaemonResponse<CursorNativeWriterLeaseReleaseResult>> {
+  const runnerCredential = getSessionRunnerCredential(request.remcliSessionId);
+  if (!runnerCredential) {
+    return { ok: false, error: MISSING_SESSION_RUNNER_CREDENTIAL_ERROR };
+  }
+
+  return daemonPost<CursorNativeWriterLeaseReleaseResult>('/cursor-writer-release', {
+    ...request,
     runnerCredential,
   });
 }

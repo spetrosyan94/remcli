@@ -279,9 +279,22 @@ daemon-validated executable, model и native launch controls, которые о�
 host есть полный immutable ownership tuple; stop и daemon shutdown сначала
 освобождают child, а при `mismatch`/`unknown` сохраняют tracking для retry.
 
-Этот handle намеренно пока не опубликован через loopback control server, P2P
-или `runCursor`. Headless `agent --print --resume` всё ещё является единственным
-writer native thread. Следующий шаг - explicit writer lease на один native
-Cursor session, затем typed bridge для bounded input/output. Открывать TUI до
-этого нельзя: два независимых Cursor CLI процесса могли бы одновременно писать
-в одну native сессию.
+### Exclusive writer lease
+
+Для одной native Cursor session daemon хранит ровно один opaque writer lease:
+`headless` либо `interactive`. Все acquire, bind и release проходят через один
+serialized state machine. Headless runner получает lease до `agent --print
+--resume`, подтверждает тот же capability на `system/init` и отдаёт его после
+turn. Если release не подтверждён, runner завершает работу fail-closed и daemon
+cleanup освобождает lease вместе с owned wrapper.
+
+Interactive host получает lease до создания child pane. После подтверждённо
+отсутствующей pane daemon снимает только совпадающий interactive lease; при
+`unknown`/`mismatch` lease и tracking сохраняются. Loopback acquire/release
+требуют credential текущего runner и exact opaque capability, поэтому body с
+`sessionId` или `nativeSessionId` не является правом writer-а.
+
+`openCursorInteractiveTui` по-прежнему намеренно не опубликован через
+loopback/P2P/`runCursor`. Writer lease устраняет конкурентный native writer, но
+не заменяет отдельный typed bridge для phone input, terminal output, host-side
+confirmation и privacy boundary.

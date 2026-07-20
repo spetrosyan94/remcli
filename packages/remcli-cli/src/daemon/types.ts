@@ -22,12 +22,45 @@ export interface NativeCursorSessionBinding {
   agent: 'cursor';
   nativeSessionId: string;
   remcliSessionId: string;
+  /** Opaque daemon-issued capability for a pre-acquired headless writer lease. */
+  writerLeaseId?: string;
 }
 
 export interface NativeCursorSessionWrapper {
   agent: 'cursor';
   nativeSessionId: string;
   remcliSessionId: string;
+}
+
+/** Cursor has no attach transport: exactly one native process may write a session at a time. */
+export type CursorNativeWriterOwner = 'headless' | 'interactive';
+
+/** Opaque daemon-issued capability; it is never derived from a native session ID. */
+export interface CursorNativeWriterLease {
+  agent: 'cursor';
+  leaseId: string;
+  nativeSessionId: string;
+  remcliSessionId: string;
+  owner: CursorNativeWriterOwner;
+}
+
+/** Authenticated daemon-runner request before a known native Cursor resume starts. */
+export interface CursorHeadlessWriterLeaseAcquireRequest {
+  agent: 'cursor';
+  nativeSessionId: string;
+  remcliSessionId: string;
+}
+
+/** Exact capability required to release a headless writer after its native turn exits. */
+export interface CursorNativeWriterLeaseReleaseRequest {
+  agent: 'cursor';
+  leaseId: string;
+  nativeSessionId: string;
+  remcliSessionId: string;
+}
+
+export interface CursorNativeWriterLeaseReleaseResult {
+  released: boolean;
 }
 
 /** Internal daemon request to prepare the one native Cursor TUI for a bound wrapper. */
@@ -93,14 +126,36 @@ export type NativeCodexThreadBindingResult =
   };
 
 export type NativeCursorSessionBindingResult =
-  | { type: 'bound'; wrapper: NativeCursorSessionWrapper }
-  | { type: 'already-bound'; wrapper: NativeCursorSessionWrapper }
+  | { type: 'bound'; wrapper: NativeCursorSessionWrapper; writerLease: CursorNativeWriterLease }
+  | { type: 'already-bound'; wrapper: NativeCursorSessionWrapper; writerLease: CursorNativeWriterLease }
   | { type: 'reuse-active-wrapper'; wrapper: NativeCursorSessionWrapper }
   | { type: 'wrapper-not-tracked'; binding: NativeCursorSessionBinding }
+  | {
+    type: 'native-session-mismatch';
+    binding: NativeCursorSessionBinding;
+    expectedNativeSessionId: string;
+  }
+  | { type: 'writer-busy'; binding: NativeCursorSessionBinding; owner: CursorNativeWriterOwner }
+  | { type: 'writer-lease-mismatch'; binding: NativeCursorSessionBinding }
   | {
     type: 'agent-mismatch';
     binding: NativeCursorSessionBinding;
     trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini';
+  };
+
+export type CursorHeadlessWriterLeaseAcquireResult =
+  | { type: 'acquired'; writerLease: CursorNativeWriterLease }
+  | { type: 'writer-busy'; request: CursorHeadlessWriterLeaseAcquireRequest; owner: CursorNativeWriterOwner }
+  | { type: 'wrapper-not-tracked'; request: CursorHeadlessWriterLeaseAcquireRequest }
+  | {
+    type: 'agent-mismatch';
+    request: CursorHeadlessWriterLeaseAcquireRequest;
+    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini';
+  }
+  | {
+    type: 'native-session-mismatch';
+    request: CursorHeadlessWriterLeaseAcquireRequest;
+    trackedNativeSessionId?: string;
   };
 
 export type CodexRemoteTuiOpenResult =
@@ -131,6 +186,7 @@ export type CursorInteractiveTuiOpenResult =
   | { type: 'opened'; wrapper: NativeCursorSessionWrapper; tmuxWindowId: string }
   | { type: 'already-open'; wrapper: NativeCursorSessionWrapper; tmuxWindowId: string }
   | { type: 'wrapper-not-tracked'; request: CursorInteractiveTuiOpenRequest }
+  | { type: 'writer-busy'; request: CursorInteractiveTuiOpenRequest; owner: CursorNativeWriterOwner }
   | {
     type: 'agent-mismatch';
     request: CursorInteractiveTuiOpenRequest;

@@ -16,8 +16,14 @@ import {
     CodexThreadResumeResult,
     CodexRemoteTuiOpenRequest,
     CodexRemoteTuiOpenResult,
+    CursorHeadlessWriterLeaseAcquireRequest,
+    CursorHeadlessWriterLeaseAcquireResult,
     CursorInteractiveTuiOpenRequest,
     CursorInteractiveTuiOpenResult,
+    CursorNativeWriterLease,
+    CursorNativeWriterLeaseReleaseRequest,
+    CursorNativeWriterLeaseReleaseResult,
+    CursorNativeWriterOwner,
     CursorRunnerPreflightRequest,
     CursorRunnerPreflightResult,
     DaemonRunnerLifecycleResult,
@@ -51,6 +57,7 @@ const CODEX_RESUME_SHUTDOWN_CANCELLATION_MESSAGE = 'Daemon shut down before Code
 const DAEMON_SHUTTING_DOWN_SPAWN_ERROR_MESSAGE = 'Daemon is shutting down and cannot start a new session.';
 const CURSOR_RESUME_OWNERSHIP_UNCONFIRMED_ERROR = 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.';
 const RUNNER_CONTROL_TOKEN_BYTES = 32;
+const CURSOR_NATIVE_WRITER_LEASE_BYTES = 32;
 const GRACEFUL_DAEMON_RUNNER_SHUTDOWN_TIMEOUT_MS = 10_000;
 const CURSOR_LEGACY_PERMISSION_ENV_KEY = 'REMCLI_CURSOR_PERMISSION_MODE';
 const CURSOR_DAEMON_SELECTION_ENV_KEYS = [
@@ -105,6 +112,22 @@ interface NativeCursorSessionMapping {
     pid: number;
     session: TrackedSession;
 }
+
+interface CursorNativeWriterLeaseState {
+    lease: CursorNativeWriterLease;
+    session: TrackedSession;
+}
+
+type CursorNativeWriterLeaseAttempt =
+    | { type: 'acquired'; writerLease: CursorNativeWriterLease }
+    | { type: 'writer-busy'; owner: CursorNativeWriterOwner }
+    | { type: 'writer-lease-mismatch' };
+
+type CursorWriterLeaseTargetLookup =
+    | { type: 'found'; pid: number; session: TrackedSession }
+    | { type: 'wrapper-not-tracked' }
+    | { type: 'agent-mismatch'; trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' }
+    | { type: 'native-session-mismatch'; trackedNativeSessionId?: string };
 
 interface NativeCodexThreadMapping {
     pid: number;
@@ -202,6 +225,14 @@ export interface SessionManager {
     bindNativeCodexThread: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
     /** Bind a native Cursor session to its already-created Remcli wrapper session. */
     bindNativeCursorSession: (binding: NativeCursorSessionBinding) => Promise<NativeCursorSessionBindingResult>;
+    /** Acquire one daemon-issued headless writer capability before a known Cursor native resume starts. */
+    acquireCursorHeadlessWriterLease: (
+        request: CursorHeadlessWriterLeaseAcquireRequest,
+    ) => Promise<CursorHeadlessWriterLeaseAcquireResult>;
+    /** Release a Cursor writer only when the exact daemon-issued capability still owns it. */
+    releaseCursorNativeWriterLease: (
+        request: CursorNativeWriterLeaseReleaseRequest,
+    ) => Promise<CursorNativeWriterLeaseReleaseResult>;
     /** Validate a daemon-owned Cursor or Codex runner before it creates P2P metadata. */
     preflightCursorRunner: (
         request: CursorRunnerPreflightRequest,
@@ -302,6 +333,10 @@ function createRunnerControlToken(): string {
     return randomBytes(RUNNER_CONTROL_TOKEN_BYTES).toString('base64url');
 }
 
+function createCursorNativeWriterLeaseId(): string {
+    return randomBytes(CURSOR_NATIVE_WRITER_LEASE_BYTES).toString('base64url');
+}
+
 function hasMatchingRunnerControlToken(expectedToken: string | undefined, receivedToken: string | undefined): boolean {
     if (!expectedToken || !receivedToken) {
         return false;
@@ -354,6 +389,8 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     const nativeCodexThreadIdToTrackedSession = new Map<string, NativeCodexThreadMapping>();
     const nativeCursorSessionIdToTrackedSession = new Map<string, NativeCursorSessionMapping>();
     const nativeCursorSessionBindingPromises = new Map<string, Promise<NativeCursorSessionBindingResult>>();
+    const cursorNativeWriterLeases = new Map<string, CursorNativeWriterLeaseState>();
+    let cursorNativeWriterStateLock = Promise.resolve();
     const cursorSessionLineageByNativeSessionId = new Map<string, CursorSessionLineage>();
     const runnerSessionIdToTrackedSession = new Map<string, RunnerSessionMapping>();
     const codexRemoteTuiOpenPromises = new Map<string, Promise<CodexRemoteTuiOpenResult>>();
@@ -419,6 +456,87 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         } catch (error) {
             logger.warn(`[DAEMON RUN] Failed to publish stopped session ${sessionId}:`, error);
         }
+    };
+
+    const withCursorNativeWriterStateLock = async <T>(
+        operation: () => Promise<T>,
+    ): Promise<T> => {
+        const previousLock = cursorNativeWriterStateLock;
+        let releaseLock: () => void = () => {};
+        const nextLock = new Promise<void>((resolve) => {
+            releaseLock = resolve;
+        });
+        cursorNativeWriterStateLock = previousLock.then(() => nextLock);
+
+        await previousLock;
+        try {
+            return await operation();
+        } finally {
+            releaseLock();
+        }
+    };
+
+    const releaseCursorNativeWriterLeaseIfOwned = (
+        request: CursorNativeWriterLeaseReleaseRequest,
+        expectedSession?: TrackedSession,
+    ): boolean => {
+        const currentLease = cursorNativeWriterLeases.get(request.nativeSessionId);
+        if (
+            !currentLease
+            || currentLease.lease.agent !== request.agent
+            || currentLease.lease.leaseId !== request.leaseId
+            || currentLease.lease.remcliSessionId !== request.remcliSessionId
+            || currentLease.lease.nativeSessionId !== request.nativeSessionId
+            || (expectedSession && currentLease.session !== expectedSession)
+        ) {
+            return false;
+        }
+
+        cursorNativeWriterLeases.delete(request.nativeSessionId);
+        return true;
+    };
+
+    const clearCursorNativeWriterLeasesForSession = (session: TrackedSession): void => {
+        for (const [nativeSessionId, state] of cursorNativeWriterLeases.entries()) {
+            if (state.session === session) {
+                cursorNativeWriterLeases.delete(nativeSessionId);
+            }
+        }
+    };
+
+    const tryAcquireCursorNativeWriterLease = (
+        request: CursorHeadlessWriterLeaseAcquireRequest,
+        session: TrackedSession,
+        owner: CursorNativeWriterOwner,
+        expectedLeaseId?: string,
+    ): CursorNativeWriterLeaseAttempt => {
+        const currentLease = cursorNativeWriterLeases.get(request.nativeSessionId);
+        if (currentLease) {
+            if (
+                expectedLeaseId
+                && currentLease.session === session
+                && currentLease.lease.owner === owner
+                && currentLease.lease.leaseId === expectedLeaseId
+                && currentLease.lease.remcliSessionId === request.remcliSessionId
+            ) {
+                return { type: 'acquired', writerLease: currentLease.lease };
+            }
+            return { type: 'writer-busy', owner: currentLease.lease.owner };
+        }
+
+        if (expectedLeaseId) {
+            return { type: 'writer-lease-mismatch' };
+        }
+
+        const writerLease: CursorNativeWriterLease = {
+            agent: 'cursor',
+            leaseId: createCursorNativeWriterLeaseId(),
+            nativeSessionId: request.nativeSessionId,
+            remcliSessionId: request.remcliSessionId,
+            owner,
+        };
+        cursorNativeWriterLeases.set(request.nativeSessionId, { lease: writerLease, session });
+        return { type: 'acquired', writerLease };
     };
 
     const detachNativeCodexThreadMapping = (session: TrackedSession): void => {
@@ -494,6 +612,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
         detachNativeCodexThreadMapping(session);
         detachNativeCursorSessionMapping(session);
+        clearCursorNativeWriterLeasesForSession(session);
         detachRunnerSessionMapping(session);
     };
 
@@ -1198,10 +1317,26 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                     return { type: 'wrapper-not-tracked', binding };
                 }
                 if (existingSession.remcliSessionId === binding.remcliSessionId) {
+                    if (!binding.writerLeaseId) {
+                        return { type: 'writer-lease-mismatch', binding };
+                    }
+                    const leaseAttempt = tryAcquireCursorNativeWriterLease(
+                        binding,
+                        existingSession,
+                        'headless',
+                        binding.writerLeaseId,
+                    );
+                    if (leaseAttempt.type === 'writer-busy') {
+                        return { type: 'writer-busy', binding, owner: leaseAttempt.owner };
+                    }
+                    if (leaseAttempt.type === 'writer-lease-mismatch') {
+                        return { type: 'writer-lease-mismatch', binding };
+                    }
                     recordCursorSessionLineage(binding.nativeSessionId, existingSession);
                     return {
                         type: 'already-bound',
                         wrapper: toNativeCursorSessionWrapper(binding.remcliSessionId, binding.nativeSessionId),
+                        writerLease: leaseAttempt.writerLease,
                     };
                 }
                 return {
@@ -1246,6 +1381,43 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         }
 
         if (
+            trackedSession.expectedResumeSessionId
+            && trackedSession.expectedResumeSessionId !== binding.nativeSessionId
+        ) {
+            return {
+                type: 'native-session-mismatch',
+                binding,
+                expectedNativeSessionId: trackedSession.expectedResumeSessionId,
+            };
+        }
+        if (trackedSession.expectedResumeSessionId && !binding.writerLeaseId) {
+            return { type: 'writer-lease-mismatch', binding };
+        }
+
+        if (
+            trackedSession.nativeCursorSessionId
+            && trackedSession.nativeCursorSessionId !== binding.nativeSessionId
+        ) {
+            const previousLease = cursorNativeWriterLeases.get(trackedSession.nativeCursorSessionId);
+            if (previousLease?.session === trackedSession) {
+                return { type: 'writer-busy', binding, owner: previousLease.lease.owner };
+            }
+        }
+
+        const leaseAttempt = tryAcquireCursorNativeWriterLease(
+            binding,
+            trackedSession,
+            'headless',
+            binding.writerLeaseId,
+        );
+        if (leaseAttempt.type === 'writer-busy') {
+            return { type: 'writer-busy', binding, owner: leaseAttempt.owner };
+        }
+        if (leaseAttempt.type === 'writer-lease-mismatch') {
+            return { type: 'writer-lease-mismatch', binding };
+        }
+
+        if (
             trackedSession.nativeCursorSessionId
             && trackedSession.nativeCursorSessionId !== binding.nativeSessionId
             && nativeCursorSessionIdToTrackedSession.get(trackedSession.nativeCursorSessionId)?.pid === trackedPid
@@ -1254,6 +1426,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             nativeCursorSessionIdToTrackedSession.delete(trackedSession.nativeCursorSessionId);
         }
         trackedSession.nativeCursorSessionId = binding.nativeSessionId;
+        trackedSession.expectedResumeSessionId = undefined;
         nativeCursorSessionIdToTrackedSession.set(binding.nativeSessionId, {
             pid: trackedPid,
             session: trackedSession,
@@ -1263,6 +1436,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         return {
             type: 'bound',
             wrapper: toNativeCursorSessionWrapper(binding.remcliSessionId, binding.nativeSessionId),
+            writerLease: leaseAttempt.writerLease,
         };
     };
 
@@ -1275,7 +1449,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             return bindNativeCursorSession(binding);
         }
 
-        const bindingPromise = bindNativeCursorSessionInternal(binding);
+        const bindingPromise = withCursorNativeWriterStateLock(() => bindNativeCursorSessionInternal(binding));
         nativeCursorSessionBindingPromises.set(binding.nativeSessionId, bindingPromise);
         try {
             return await bindingPromise;
@@ -1285,6 +1459,77 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             }
         }
     };
+
+    const findCursorWriterLeaseTarget = async (
+        request: CursorHeadlessWriterLeaseAcquireRequest,
+    ): Promise<CursorWriterLeaseTargetLookup> => {
+        for (const [pid, session] of pidToTrackedSession.entries()) {
+            if (session.remcliSessionId !== request.remcliSessionId) {
+                continue;
+            }
+            if (!isReadyTrackedSession(pid, session) || isShuttingDown) {
+                return { type: 'wrapper-not-tracked' };
+            }
+            const status = await getTrackedSessionStatus(pid, session);
+            if (!isReadyTrackedSession(pid, session) || isShuttingDown) {
+                return { type: 'wrapper-not-tracked' };
+            }
+            if (status === 'missing') {
+                await releaseAndRemoveTrackedSession(pid, session);
+                return { type: 'wrapper-not-tracked' };
+            }
+            if (status !== 'exists') {
+                return { type: 'wrapper-not-tracked' };
+            }
+
+            const trackedAgent = getTrackedAgent(session);
+            if (trackedAgent && trackedAgent !== 'cursor') {
+                return { type: 'agent-mismatch', trackedAgent };
+            }
+
+            const trackedNativeSessionId = session.nativeCursorSessionId ?? session.expectedResumeSessionId;
+            if (trackedNativeSessionId !== request.nativeSessionId) {
+                return { type: 'native-session-mismatch', trackedNativeSessionId };
+            }
+            return { type: 'found', pid, session };
+        }
+
+        return { type: 'wrapper-not-tracked' };
+    };
+
+    const acquireCursorHeadlessWriterLease = async (
+        request: CursorHeadlessWriterLeaseAcquireRequest,
+    ): Promise<CursorHeadlessWriterLeaseAcquireResult> => withCursorNativeWriterStateLock(async () => {
+        const target = await findCursorWriterLeaseTarget(request);
+        if (target.type === 'wrapper-not-tracked') {
+            return { type: 'wrapper-not-tracked', request };
+        }
+        if (target.type === 'agent-mismatch') {
+            return { type: 'agent-mismatch', request, trackedAgent: target.trackedAgent };
+        }
+        if (target.type === 'native-session-mismatch') {
+            return {
+                type: 'native-session-mismatch',
+                request,
+                trackedNativeSessionId: target.trackedNativeSessionId,
+            };
+        }
+
+        const leaseAttempt = tryAcquireCursorNativeWriterLease(request, target.session, 'headless');
+        if (leaseAttempt.type === 'acquired') {
+            return { type: 'acquired', writerLease: leaseAttempt.writerLease };
+        }
+        if (leaseAttempt.type === 'writer-busy') {
+            return { type: 'writer-busy', request, owner: leaseAttempt.owner };
+        }
+        return { type: 'wrapper-not-tracked', request };
+    });
+
+    const releaseCursorNativeWriterLease = async (
+        request: CursorNativeWriterLeaseReleaseRequest,
+    ): Promise<CursorNativeWriterLeaseReleaseResult> => withCursorNativeWriterStateLock(async () => ({
+        released: releaseCursorNativeWriterLeaseIfOwned(request),
+    }));
 
     const findBoundNativeCursorSession = async (
         nativeSessionId: string,
@@ -1811,16 +2056,50 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 };
             }
 
+            await withCursorNativeWriterStateLock(async () => {
+                const currentLease = cursorNativeWriterLeases.get(request.nativeSessionId);
+                if (currentLease?.session !== trackedSession || currentLease.lease.owner !== 'interactive') {
+                    return;
+                }
+
+                releaseCursorNativeWriterLeaseIfOwned({
+                    agent: 'cursor',
+                    leaseId: currentLease.lease.leaseId,
+                    nativeSessionId: request.nativeSessionId,
+                    remcliSessionId: request.remcliSessionId,
+                }, trackedSession);
+            });
             trackedSession.managedCursorInteractiveTui = undefined;
         }
 
+        const writerLeaseAttempt = await withCursorNativeWriterStateLock(async () => (
+            tryAcquireCursorNativeWriterLease(request, trackedSession, 'interactive')
+        ));
+        if (writerLeaseAttempt.type === 'writer-busy') {
+            return { type: 'writer-busy', request, owner: writerLeaseAttempt.owner };
+        }
+        if (writerLeaseAttempt.type === 'writer-lease-mismatch') {
+            return { type: 'launch-unavailable', request, error: 'The Cursor writer lease changed before the terminal opened.' };
+        }
+        const writerLease = writerLeaseAttempt.writerLease;
+        const releaseWriterLease = async (): Promise<void> => {
+            await releaseCursorNativeWriterLease({
+                agent: 'cursor',
+                leaseId: writerLease.leaseId,
+                nativeSessionId: writerLease.nativeSessionId,
+                remcliSessionId: writerLease.remcliSessionId,
+            });
+        };
+
         const host = await ensureCursorInteractiveTuiHost();
         if (!host.ok) {
+            await releaseWriterLease();
             return { type: 'launch-unavailable', request, error: host.error };
         }
 
         const hostAnchor = cursorInteractiveTuiHostAnchor;
         if (!hostAnchor) {
+            await releaseWriterLease();
             return {
                 type: 'launch-unavailable',
                 request,
@@ -1837,6 +2116,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 launchControls: launch.launchControls,
             });
         } catch {
+            await releaseWriterLease();
             return {
                 type: 'launch-unavailable',
                 request,
@@ -1856,6 +2136,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             },
         );
         if (!tmuxResult.success) {
+            await releaseWriterLease();
             return { type: 'launch-unavailable', request, error: tmuxResult.error };
         }
 
@@ -2869,6 +3150,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
             nativeCodexThreadIdToTrackedSession.clear();
             nativeCursorSessionIdToTrackedSession.clear();
+            cursorNativeWriterLeases.clear();
             cursorSessionLineageByNativeSessionId.clear();
             pidToAwaiter.clear();
             pidToPendingCodexThreadResume.clear();
@@ -2894,6 +3176,8 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         getChildren,
         bindNativeCodexThread,
         bindNativeCursorSession,
+        acquireCursorHeadlessWriterLease,
+        releaseCursorNativeWriterLease,
         preflightCursorRunner,
         markDaemonRunnerStopping,
         completeDaemonRunnerStopping,
