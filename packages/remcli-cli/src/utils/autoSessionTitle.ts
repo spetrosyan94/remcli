@@ -6,7 +6,6 @@
  * or as a fallback if the AI doesn't call it.
  */
 
-import { logger } from '@/ui/logger';
 import type { ApiSessionClient } from '@/api/apiSession';
 
 const MAX_TITLE_LENGTH = 60;
@@ -34,6 +33,5 @@ export function createAutoTitleSetter(sessionSource: SessionSource): (userMessag
             ...current,
             summary: { text: title, updatedAt: Date.now() },
         }));
-        logger.debug(`[autoTitle] Set session title: ${title}`);
     };
 }

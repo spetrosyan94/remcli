@@ -903,6 +903,27 @@ describe('listAgentSessions', () => {
             expect(sessions[0]!.firstMessage).toBeNull();
         });
 
+        it('should not read Cursor store.db content while listing a session', async () => {
+            const sessionId = 'bcbcbcbc-bcbc-bcbc-bcbc-bcbcbcbcbcbc';
+            createCursorSession(cursorChatsDir, 'workspace-no-read', sessionId);
+            const readFileSync = vi.fn();
+
+            vi.resetModules();
+            vi.doMock('node:fs', async () => {
+                const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+                return { ...actual, readFileSync };
+            });
+
+            try {
+                const { listCursorSessions } = await import('./listAgentSessions');
+                expect(listCursorSessions()).toEqual([expect.objectContaining({ sessionId })]);
+                expect(readFileSync).not.toHaveBeenCalled();
+            } finally {
+                vi.doUnmock('node:fs');
+                vi.resetModules();
+            }
+        });
+
         it('should return empty array when directory does not exist', async () => {
             const listCursorSessions = await getListCursorSessions();
             rmSync(cursorChatsDir, { recursive: true, force: true });
@@ -1241,11 +1262,74 @@ describe('listAgentSessions', () => {
             ]);
         });
 
+        it('should exclude every provider outside the requested directory and unknown project paths', async () => {
+            const listAllAgentSessions = await getListAllAgentSessions();
+            const requestedDirectory = '/workspace/requested';
+            const otherDirectory = '/workspace/other';
+            const codexDir = join(testDir, '.codex', 'sessions');
+            const geminiDir = join(testDir, '.gemini', 'tmp');
+            createCodexSession(codexDir, 'codex-requested', { cwd: requestedDirectory });
+            createCodexSession(codexDir, 'codex-other', { cwd: otherDirectory });
+            createGeminiSession(geminiDir, 'unknown-path', 'session-unknown.json', {
+                sessionId: 'gemini-unknown', messages: [],
+            });
+            createGeminiSession(geminiDir, 'requested-path', 'session-requested.json', {
+                sessionId: 'gemini-requested', cwd: requestedDirectory, messages: [],
+            });
+
+            expect(listAllAgentSessions(undefined, requestedDirectory).map((session) => session.sessionId).sort()).toEqual([
+                'codex-requested',
+                'gemini-requested',
+            ]);
+        });
+
+        it('should sort and limit all providers only after exact directory filtering', async () => {
+            const listAllAgentSessions = await getListAllAgentSessions();
+            const requestedDirectory = '/workspace/recent';
+            const codexDir = join(testDir, '.codex', 'sessions');
+            const geminiDir = join(testDir, '.gemini', 'tmp');
+            const cursorDir = join(testDir, '.cursor', 'chats');
+            const cursorSessionId = '12121212-3434-5656-7878-909090909090';
+
+            createCodexSession(codexDir, 'codex-scoped-earlier', {
+                cwd: requestedDirectory,
+                timestamp: '2026-07-21T10:00:00Z',
+                lastEventTimestamp: '2026-07-21T10:00:00Z',
+                threadSource: 'user',
+            });
+            createCodexSession(codexDir, 'codex-other-newer', {
+                cwd: '/workspace/other',
+                timestamp: '2026-07-21T13:00:00Z',
+                lastEventTimestamp: '2026-07-21T13:00:00Z',
+                threadSource: 'user',
+            });
+            const geminiFile = createGeminiSession(geminiDir, 'recent-project', 'session-recent.json', {
+                sessionId: 'gemini-scoped-later',
+                cwd: requestedDirectory,
+                messages: [],
+            });
+            utimesSync(geminiFile, new Date('2026-07-21T11:00:00Z'), new Date('2026-07-21T11:00:00Z'));
+            const cursorStore = createCursorSession(
+                cursorDir,
+                createHash('md5').update(requestedDirectory).digest('hex'),
+                cursorSessionId,
+            );
+            utimesSync(cursorStore, new Date('2026-07-21T12:00:00Z'), new Date('2026-07-21T12:00:00Z'));
+
+            const sessions = listAllAgentSessions(undefined, requestedDirectory, 2);
+
+            expect(sessions.map((session) => session.sessionId)).toEqual([
+                cursorSessionId,
+                'gemini-scoped-later',
+            ]);
+            expect(sessions[0]!.lastModified).toBeGreaterThan(sessions[1]!.lastModified);
+        });
+
         it('should filter by directory when specified (Claude only)', async () => {
             const listAllAgentSessions = await getListAllAgentSessions();
 
             const projectDir = join(testDir, '.claude', 'projects', 'dir-filter');
-            createClaudeSession(projectDir, '11111111-1111-1111-1111-111111111111');
+            createClaudeSession(projectDir, '11111111-1111-1111-1111-111111111111', { cwd: projectDir });
 
             const otherDir = join(testDir, '.claude', 'projects', 'other-dir');
             createClaudeSession(otherDir, '22222222-2222-2222-2222-222222222222');

@@ -984,7 +984,11 @@ export function listGeminiSessions(): AgentSessionInfo[] {
                     sessions.push({
                         sessionId,
                         agent: 'gemini',
-                        projectPath: '',
+                        projectPath: typeof data.cwd === 'string'
+                            ? data.cwd
+                            : typeof data.projectPath === 'string'
+                                ? data.projectPath
+                                : '',
                         lastModified: st.mtimeMs,
                         firstMessage: firstUserMessage,
                         messageCount,
@@ -1009,7 +1013,7 @@ export function listGeminiSessions(): AgentSessionInfo[] {
  * List sessions across all (or a specific) AI agent.
  *
  * @param agent  - Filter by agent name ('claude' | 'codex' | 'cursor' | 'gemini')
- * @param directory - Filter provider histories by working directory when supported
+ * @param directory - Filter sessions by the exact known working directory
  * @param limit - Max sessions to return (default 50), sorted by lastModified desc
  */
 export function listAllAgentSessions(
@@ -1034,8 +1038,12 @@ export function listAllAgentSessions(
         all.push(...listGeminiSessions());
     }
 
-    // Sort by lastModified descending
-    all.sort((a, b) => b.lastModified - a.lastModified);
+    const scopedSessions = directory
+        ? all.filter((session) => session.projectPath === directory)
+        : all;
 
-    return all.slice(0, limit);
+    // Sort by lastModified descending
+    scopedSessions.sort((a, b) => b.lastModified - a.lastModified);
+
+    return scopedSessions.slice(0, limit);
 }

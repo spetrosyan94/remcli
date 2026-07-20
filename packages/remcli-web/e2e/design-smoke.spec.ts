@@ -746,7 +746,7 @@ test("resume history keeps loading and error visible, retries, and reaches the f
     await expect(resumeRegion).toHaveAttribute("aria-busy", "true");
     await expect(resumeRegion.getByRole("status")).toContainText("loading sessions");
 
-    const lastRow = resumeRegion.getByRole("button", { name: /Long resume session 24/i });
+    const lastRow = resumeRegion.getByRole("button", { name: /Long resume session 20/i });
     await expect(lastRow).toBeAttached();
     const scrollMetrics = await resumeRegion.evaluate((element) => ({
         clientHeight: element.clientHeight,

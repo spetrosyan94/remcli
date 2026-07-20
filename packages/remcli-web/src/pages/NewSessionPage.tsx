@@ -127,24 +127,55 @@ function nonEmptyString(value: unknown): value is string {
 // Treat every canonical UUID-shaped value as an opaque identifier. Native
 // providers can issue newer UUID versions before the UI knows their version.
 const UUID_PATTERN = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+const MAX_VISIBLE_OPAQUE_RESUME_ID_LENGTH = 12;
 
-function humanResumeText(value: string | null | undefined): string | null {
-    if (!nonEmptyString(value) || UUID_PATTERN.test(value.trim())) return null;
-    return value.trim();
+function humanResumeText(value: string | null | undefined, sessionId?: string): string | null {
+    if (!nonEmptyString(value)) return null;
+
+    const normalized = value.trim();
+    return UUID_PATTERN.test(normalized) || normalized === sessionId?.trim()
+        ? null
+        : normalized;
+}
+
+export function getResumeProjectBasename(projectPath: string): string | null {
+    const trimmedPath = projectPath.trim().replace(/[\\/]+$/, "");
+    if (trimmedPath === "") return null;
+
+    const separatorIndex = Math.max(trimmedPath.lastIndexOf("/"), trimmedPath.lastIndexOf("\\"));
+    return trimmedPath.slice(separatorIndex + 1) || trimmedPath;
 }
 
 export function getResumePrimaryLabel(
-    item: Pick<AgentSessionInfo, "sessionId" | "sessionName" | "firstMessage">,
+    item: Pick<AgentSessionInfo, "sessionId" | "sessionName" | "firstMessage">
+        & Partial<Pick<AgentSessionInfo, "projectPath" | "lastModified">>,
     agent: AgentId,
 ): string {
-    return humanResumeText(item.sessionName)
-        ?? humanResumeText(item.firstMessage)
-        ?? t("new.resumeProviderTitle", { agent });
+    return humanResumeText(item.sessionName, item.sessionId)
+        ?? humanResumeText(item.firstMessage, item.sessionId)
+        ?? [
+            t("new.resumeProviderTitle", { agent }),
+            getResumeProjectBasename(item.projectPath ?? ""),
+            item.lastModified === undefined ? null : formatRelativeTime(item.lastModified),
+        ].filter((value): value is string => value !== null).join(" · ");
+}
+
+export function getResumePreview(item: Pick<AgentSessionInfo, "sessionId" | "sessionName" | "firstMessage">): string | null {
+    const sessionName = humanResumeText(item.sessionName, item.sessionId);
+    const firstMessage = humanResumeText(item.firstMessage, item.sessionId);
+    return sessionName !== null && firstMessage !== null && sessionName !== firstMessage
+        ? firstMessage
+        : null;
 }
 
 export function getShortResumeId(sessionId: string): string {
     const trimmed = sessionId.trim();
-    return UUID_PATTERN.test(trimmed) && trimmed.length > 8 ? `${trimmed.slice(0, 8)}…` : trimmed;
+    if (UUID_PATTERN.test(trimmed) && trimmed.length > 8) {
+        return `${trimmed.slice(0, 8)}…`;
+    }
+    return trimmed.length > MAX_VISIBLE_OPAQUE_RESUME_ID_LENGTH
+        ? `${trimmed.slice(0, MAX_VISIBLE_OPAQUE_RESUME_ID_LENGTH)}…`
+        : trimmed;
 }
 
 export function parseNewSessionNavigationState(state: unknown): NewSessionNavigationState {
@@ -620,21 +651,52 @@ export function ResumeSheetContent({
                         )}
                         {[...items]
                             .sort((left, right) => right.lastModified - left.lastModified || left.sessionId.localeCompare(right.sessionId))
-                            .map((item, index) => (
-                            <SheetRow
-                                key={item.sessionId}
-                                isActive={index === 0}
-                                label={getResumePrimaryLabel(item, agent)}
-                                meta={
-                                    <span className="flex min-w-0 max-w-[42%] shrink-0 flex-col items-end font-mono text-[10px] text-muted-foreground">
-                                        <span className="max-w-full truncate" title={item.sessionId}>{getShortResumeId(item.sessionId)}</span>
-                                        <span>{formatRelativeTime(item.lastModified)}</span>
-                                    </span>
-                                }
-                                onClick={() => onResume(item)}
-                                disabled={isResuming}
-                            />
-                        ))}
+                            .map((item, index) => {
+                                const primaryLabel = getResumePrimaryLabel(item, agent);
+                                const preview = getResumePreview(item);
+                                return (
+                                    <button
+                                        key={item.sessionId}
+                                        type="button"
+                                        onClick={() => onResume(item)}
+                                        disabled={isResuming}
+                                        className={`flex min-h-11 w-full min-w-0 items-start gap-2.5 overflow-hidden border-t px-[18px] py-3 text-left transition-[background-color,border-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] motion-reduce:active:scale-100 disabled:cursor-not-allowed disabled:opacity-50 ${index === 0 ? "border-accent/30 bg-accent/10" : "border-border bg-card"}`}
+                                    >
+                                        <RotateCcw className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                                        <span className="min-w-0 flex-1">
+                                            <span
+                                                className="line-clamp-2 min-w-0 overflow-hidden break-words font-mono text-[12.5px] font-semibold leading-snug text-foreground"
+                                                title={primaryLabel}
+                                                aria-label={primaryLabel}
+                                            >
+                                                {primaryLabel}
+                                            </span>
+                                            {preview !== null && (
+                                                <span
+                                                    className="line-clamp-2 mt-1 min-w-0 overflow-hidden break-words font-mono text-[11px] leading-snug text-muted-foreground"
+                                                    title={preview}
+                                                    aria-label={preview}
+                                                >
+                                                    {preview}
+                                                </span>
+                                            )}
+                                            {item.projectPath.trim() !== "" && (
+                                                <span
+                                                    className="line-clamp-2 mt-1 min-w-0 overflow-hidden break-all font-mono text-[10px] leading-snug text-muted-foreground"
+                                                    title={item.projectPath}
+                                                    aria-label={item.projectPath}
+                                                >
+                                                    {item.projectPath}
+                                                </span>
+                                            )}
+                                        </span>
+                                        <span className="flex max-w-[30%] shrink-0 flex-col items-end font-mono text-[10px] text-muted-foreground/70">
+                                            <span className="max-w-full truncate" title={item.sessionId} aria-label={item.sessionId}>{getShortResumeId(item.sessionId)}</span>
+                                            <span className="whitespace-nowrap">{formatRelativeTime(item.lastModified)}</span>
+                                        </span>
+                                    </button>
+                                );
+                            })}
                     </>
                 )}
             </div>

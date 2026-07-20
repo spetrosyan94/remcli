@@ -9,6 +9,7 @@ const packageRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const pathSeparator = process.platform === 'win32' ? ';' : ':';
 const cliArtifactSnapshotAttempts = 30;
 const cliArtifactSnapshotRetryMs = 250;
+const cliPassthroughTimeoutMs = 15_000;
 const remcliPassthroughCases: Array<[string, string[], string, string]> = [
     ['--version', ['--version'], 'remcli version:', 'fake-claude 1.2.3'],
     ['--help', ['--help'], 'remcli', 'claude fake help']
@@ -133,7 +134,7 @@ afterAll(() => {
     }
 });
 
-describe('CLI help/version passthrough', () => {
+describe('CLI help/version passthrough', { timeout: cliPassthroughTimeoutMs }, () => {
     it.each(remcliPassthroughCases)('prints remcli %s without starting a daemon session', (_name, args, cliOutput, vendorOutput) => {
         withCliPassthroughTestEnvironment((environment) => {
             const result = runRemcli(args, environment);

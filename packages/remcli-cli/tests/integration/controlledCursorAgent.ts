@@ -117,7 +117,11 @@ if (!stateFile) {
 }
 
 const readState = () => JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-const writeState = (state) => fs.writeFileSync(stateFile, JSON.stringify(state), 'utf8');
+const writeState = (state) => {
+    const temporaryStateFile = stateFile + '.' + process.pid + '.tmp';
+    fs.writeFileSync(temporaryStateFile, JSON.stringify(state), 'utf8');
+    fs.renameSync(temporaryStateFile, stateFile);
+};
 const state = readState();
 state.runningPids = state.runningPids || [];
 state.runningPids.push(process.pid);

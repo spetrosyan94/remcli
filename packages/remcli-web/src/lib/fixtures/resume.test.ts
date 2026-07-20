@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+    fixtureListAgentSessions,
     fixtureListRecentDirectories,
     fixtureSpawnNewSession,
 } from '@/lib/fixtures';
@@ -176,5 +177,33 @@ describe('fixture resume history', () => {
             expect.objectContaining({ canonicalPath: spawnedDirectory }),
         ]));
         await expect(fixtureListRecentDirectories('fx-machine-offline')).resolves.toEqual(offlineBefore);
+    });
+
+    it('serves opaque Cursor resume rows with project context and honors the requested limit', async () => {
+        vi.stubGlobal('window', { location: { search: '?resumeFixture=cursor-opaque' } });
+
+        try {
+            const sessions = await fixtureListAgentSessions('fx-machine-online', 'cursor', undefined, 2);
+            expect(sessions).toHaveLength(2);
+            expect(sessions.every((session) => /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(session.sessionId))).toBe(true);
+            expect(sessions.every((session) => session.sessionName === null && session.firstMessage === null)).toBe(true);
+            expect(sessions.map((session) => session.projectPath)).toEqual([
+                '/Users/dev/projects/remcli',
+                '/Users/dev/projects/webapp',
+            ]);
+
+            await expect(fixtureListAgentSessions(
+                'fx-machine-online',
+                'cursor',
+                '/Users/dev/projects/api-server',
+                2,
+            )).resolves.toEqual([
+                expect.objectContaining({ projectPath: '/Users/dev/projects/api-server' }),
+            ]);
+            await expect(fixtureListAgentSessions('fx-machine-online', 'codex')).resolves.toEqual([]);
+            await expect(fixtureListAgentSessions('fx-machine-offline', 'cursor')).resolves.toEqual([]);
+        } finally {
+            vi.stubGlobal('window', { location: { search: '' } });
+        }
     });
 });

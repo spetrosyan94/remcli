@@ -129,6 +129,48 @@ const FIXTURE_CURSOR_RESUME_SESSION: AgentSessionInfo = {
     createdAt: FIXTURE_BASE_TIME - 6 * 60_000,
     sessionName: 'Cursor lifecycle review',
 };
+const FIXTURE_CURSOR_OPAQUE_RESUME_SESSIONS: AgentSessionInfo[] = [
+    {
+        sessionId: '019f7dd8-9c4c-7b7c-9a89-abcdef123456',
+        agent: 'cursor',
+        projectPath: '/Users/dev/projects/remcli',
+        lastModified: FIXTURE_BASE_TIME - 45_000,
+        firstMessage: null,
+        messageCount: 14,
+        createdAt: FIXTURE_BASE_TIME - 8 * 60_000,
+        sessionName: null,
+    },
+    {
+        sessionId: '019f7dd8-9c4c-7b7c-9a89-abcdef123457',
+        agent: 'cursor',
+        projectPath: '/Users/dev/projects/webapp',
+        lastModified: FIXTURE_BASE_TIME - 3 * 60_000,
+        firstMessage: null,
+        messageCount: 6,
+        createdAt: FIXTURE_BASE_TIME - 12 * 60_000,
+        sessionName: null,
+    },
+    {
+        sessionId: '019f7dd8-9c4c-7b7c-9a89-abcdef123458',
+        agent: 'cursor',
+        projectPath: '/Users/dev/projects/api-server',
+        lastModified: FIXTURE_BASE_TIME - 18 * 60_000,
+        firstMessage: null,
+        messageCount: 21,
+        createdAt: FIXTURE_BASE_TIME - 24 * 60_000,
+        sessionName: null,
+    },
+    {
+        sessionId: '019f7dd8-9c4c-7b7c-9a89-abcdef123459',
+        agent: 'cursor',
+        projectPath: '/Users/dev/projects/remcli/packages/remcli-web',
+        lastModified: FIXTURE_BASE_TIME - 32 * 60_000,
+        firstMessage: null,
+        messageCount: 3,
+        createdAt: FIXTURE_BASE_TIME - 40 * 60_000,
+        sessionName: null,
+    },
+];
 const FIXTURE_ENDED_CURSOR_CHAT_SESSION_ID = 'fixture-cursor-ended-chat';
 const FIXTURE_ENDED_CURSOR_CHAT_SESSION: Session = {
     id: FIXTURE_ENDED_CURSOR_CHAT_SESSION_ID,
@@ -855,7 +897,18 @@ export async function fixtureListAgentSessions(
 ): Promise<AgentSessionInfo[]> {
     if (fixtureQueryParameter('resumeFixture') === 'cursor-lifecycle') {
         await waitForFixtureResumeResponse();
-        return agent === 'cursor' ? [FIXTURE_CURSOR_RESUME_SESSION] : [];
+        return agent === 'cursor' ? [FIXTURE_CURSOR_RESUME_SESSION].slice(0, limit) : [];
+    }
+
+    if (fixtureQueryParameter('resumeFixture') === 'cursor-opaque') {
+        if (machineId !== 'fx-machine-online' || (agent !== undefined && agent !== 'cursor')) {
+            return [];
+        }
+
+        return FIXTURE_CURSOR_OPAQUE_RESUME_SESSIONS
+            .filter((session) => !directory || session.projectPath === normalizeFixtureDirectoryPath(directory, '/Users/dev'))
+            .sort((left, right) => right.lastModified - left.lastModified)
+            .slice(0, limit);
     }
 
     if (fixtureQueryParameter('resumeFixture') === 'retry-long') {
@@ -864,7 +917,7 @@ export async function fixtureListAgentSessions(
         if (fixtureResumeRetryAttempts === 1) {
             throw new Error('Fixture resume list rejected');
         }
-        return fixtureLongResumeSessions(agent);
+        return fixtureLongResumeSessions(agent).slice(0, limit);
     }
 
     return FIXTURE_SESSIONS

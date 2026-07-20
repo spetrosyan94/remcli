@@ -352,6 +352,22 @@ flowchart LR
 | Gemini | Реализован путь, acceptance pending | ACP `session/load`, если агент декларирует capability `loadSession`; иначе откат к новой сессии (`src/agent/acp/AcpBackend.ts`). Отдельные ACP daemon-boundary, real provider и Browser fixture gates ещё не приняты. |
 | Codex | Поддерживается, частичная lifecycle acceptance | Remcli использует официальный Codex app-server: daemon поднимает shared `codex app-server --listen ws://127.0.0.1:<port>`, `runCodex.ts` делает `thread/start` или attach-only `thread/resume`. Daemon-owned resume сначала возвращает тот же native thread и открывает один shared remote TUI без искусственного `turn/start`; следующий реальный prompt идёт через `turn/start` или `turn/steer`. При stale state либо transient shared connect/attach error он один раз переключается на typed private app-server по stdio; private fallback сохраняет context, но TUI не открывается, а окончательная ошибка видна в чате. Capability machine-RPC, Browser fixture, opt-in real app-server resume и daemon/P2P lifecycle gates проверены; visual-baseline reconciliation остаётся в плане. `codex mcp-server` и `codex-reply` не используются для chat/resume transport; `remcli-mcp` остаётся отдельным tool bridge. Детали: [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) |
 
+### Контракт resume picker
+
+`list-agent-sessions` сортирует только по provider-native `lastModified`. Web
+никогда не использует UUID как заголовок: порядок primary label — provider
+`sessionName`, затем `firstMessage`, затем нейтральное
+`provider · project · activity`; native ID остаётся коротким вторичным
+идентификатором.
+
+- Codex читает bounded first user message только transiently из уже существующей
+  native JSONL history. Remcli не создаёт отдельную persistent копию prompt.
+- Cursor использует `~/.cursor/chats/.../store.db` только как existence/mtime
+  marker и не читает SQLite schema или transcript. При отсутствии публичного
+  title API picker показывает нейтральный fallback с выбранной директорией.
+- RPC не принимает и не сохраняет title/preview. Directory filter применяется
+  до ответа, поэтому picker не предлагает незаметный resume другой папки.
+
 Примечания по агентам:
 - **Cursor**: бинарник CLI определяется как `agent` (fallback: `cursor-agent` для старых сборок); headless turn использует `--print --output-format stream-json --trust`. Daemon нормализует account-visible `agent models` в short-lived catalog, а New Session отправляет exact `cursorExecution { model, catalogVersion }`; raw CLI output, static web catalog и stale selection не проходят. Обычный Agent не получает несуществующий `--mode agent`; `plan`/`ask` маппятся в нативный `--mode`, а `force`/`auto-review` - в отдельные флаги. До создания daemon-owned P2P session runner подтверждает одноразовую daemon capability через `/cursor-runner-preflight`; ручной `--started-by daemon` не считается provenance и terminal не читает injected daemon model env. После `system/init` wrapper проходит credential-protected атомарную привязку native ID через `/cursor-session-bound`. При корректном `Ctrl+C` credential-protected `runner-stopping` блокирует новый resume до archive/flush/close, а `runner-stopped` освобождает только immutable owned pane; неполный proof остаётся tracked для retry. Bind создаёт in-memory lineage `{native ID -> previous Remcli P2P session, workspace}` только для daemon-owned wrapper; same-daemon resume получает provisional parent relation в initial metadata, которую matching `system/init` + bind подтверждает, а pre-init failure/abort/stop/mode change удаляет до fresh turn/archive. Неудачный bounded metadata rollback завершает wrapper fail-closed. Web использует связь только для уже существующей P2P-ленты Remcli: native Cursor history/DB не читается, external Cursor sessions и restart daemon relation не создают. Это исключает повторный tmux wrapper для active resume. Детали: [agent-architecture/cursor-cli-architecture.md](agent-architecture/cursor-cli-architecture.md).
 - **Gemini**: режим ACP использует `--acp` на новых сборках с откатом к `--experimental-acp` (проверяется однократно через `gemini --help`). С 2026-06-18 Google отключил доступ Gemini CLI для OAuth-пользователей (аккаунт Google) — CLI выводит понятную ошибку с предложением аутентификации по API-ключу вместо общего сбоя.

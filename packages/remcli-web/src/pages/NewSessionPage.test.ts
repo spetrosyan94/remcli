@@ -177,6 +177,7 @@ interface TestElement {
         role?: string;
         'aria-label'?: string;
         'aria-busy'?: boolean;
+        title?: string;
         showSelectionIndicator?: boolean;
     };
 }
@@ -228,6 +229,12 @@ let getModelOverride = (_model: string): string | null => {
     throw new Error('NewSessionPage module was not loaded');
 };
 let modelOverrideState = (_model: string, _hasExplicitModelSelection: boolean): { model?: string | null } => {
+    throw new Error('NewSessionPage module was not loaded');
+};
+let getResumePrimaryLabel: typeof import('@/pages/NewSessionPage').getResumePrimaryLabel = (_item, _agent) => {
+    throw new Error('NewSessionPage module was not loaded');
+};
+let getShortResumeId: typeof import('@/pages/NewSessionPage').getShortResumeId = (_sessionId) => {
     throw new Error('NewSessionPage module was not loaded');
 };
 let getResumeDirectory = (_projectPath: string | undefined, _activeDirectory: string): string => {
@@ -285,6 +292,8 @@ beforeAll(async () => {
     agentOptions = pageModule.AGENT_OPTIONS;
     getModelOverride = pageModule.getModelOverride;
     modelOverrideState = pageModule.modelOverrideState;
+    getResumePrimaryLabel = pageModule.getResumePrimaryLabel;
+    getShortResumeId = pageModule.getShortResumeId;
     getResumeDirectory = pageModule.getResumeDirectory;
     getDefaultCodexExecution = pageModule.getDefaultCodexExecution;
     createCodexExecutionForModel = pageModule.createCodexExecutionForModel;
@@ -807,7 +816,7 @@ describe('NewSessionPage Cursor capability selection', () => {
 
         let page = renderNewSessionPage();
         expect(elementText(page)).toContain('Cursor lifecycle review');
-        expect(elementText(page)).toContain('cursor-native-session-id');
+        expect(elementText(page)).toContain('cursor-nativ…');
 
         await flushPendingEffects();
         page = renderNewSessionPage();
@@ -978,7 +987,7 @@ describe('NewSessionPage directory and resume sheets', () => {
 
         const content = ResumeSheetContent({ agent: 'codex', items, onResume });
         const scrollRegion = findElement(content, (element) => element.props['aria-label'] === 'new.resumeTitle');
-        const lastSession = findElement(content, (element) => element.props.label === 'Long-running Codex session 23');
+        const lastSession = findElement(content, (element) => element.type === 'button' && elementText(element).includes('Long-running Codex session 23'));
 
         expect(scrollRegion.props.className).toContain('overflow-y-auto');
         expect(scrollRegion.props.className).toContain('overscroll-contain');
@@ -1037,7 +1046,7 @@ describe('NewSessionPage directory and resume sheets', () => {
             && element.props['aria-label'] === 'new.resumeTitle');
         const progress = findElement(content, (element) => element.props.role === 'status'
             && elementText(element).includes('new.spawning'));
-        const row = findElement(content, (element) => element.props.label === 'Cursor lifecycle review');
+        const row = findElement(content, (element) => element.type === 'button' && elementText(element).includes('Cursor lifecycle review'));
 
         expect(scrollRegion.props['aria-busy']).toBe(true);
         expect(elementText(progress)).toContain('new.spawning');
@@ -1058,10 +1067,76 @@ describe('NewSessionPage directory and resume sheets', () => {
             sessionName: '019f7dd8-9c4c-7b7c-9a89-abcdef123458',
         };
         const content = ResumeSheetContent({ agent: 'cursor', items: [item], onResume: vi.fn() });
-        const row = findElement(content, (element) => element.props.label === 'new.resumeProviderTitle');
+        const primaryLabel = getResumePrimaryLabel(item, 'cursor');
+        const row = findElement(content, (element) => element.type === 'button' && elementText(element).includes(primaryLabel));
+        const primary = findElement(row, (element) => element.props.title === primaryLabel);
 
-        expect(elementText(row.props.meta)).toContain('019f7dd8…');
+        expect(primary.props.title).not.toContain(item.sessionId);
         expect(elementText(row)).not.toContain(item.sessionName);
         expect(elementText(row)).not.toContain(item.firstMessage);
+        expect(elementText(row)).toContain(item.projectPath);
+        expect(getResumePrimaryLabel({
+            sessionId: item.sessionId,
+            sessionName: item.sessionName,
+            firstMessage: item.firstMessage,
+            projectPath: item.projectPath,
+        }, 'cursor')).toBe('new.resumeProviderTitle · remcli');
+        expect(getResumePrimaryLabel({
+            sessionId: item.sessionId,
+            sessionName: null,
+            firstMessage: null,
+        }, 'cursor')).toBe('new.resumeProviderTitle');
+    });
+
+    it('prioritizes a human title, renders the message as preview, and clamps long values with full accessible text', () => {
+        const title = 'Named Cursor session '.repeat(12).trim();
+        const preview = 'Review the resume context before continuing '.repeat(12).trim();
+        const projectPath = `/Users/dev/projects/${'nested-directory/'.repeat(20)}remcli`;
+        const item = {
+            sessionId: 'cursor-native-long-session',
+            agent: 'cursor' as const,
+            projectPath,
+            lastModified: 1,
+            firstMessage: preview,
+            messageCount: 4,
+            createdAt: 1,
+            sessionName: title,
+        };
+        const content = ResumeSheetContent({ agent: 'cursor', items: [item], onResume: vi.fn() });
+        const row = findElement(content, (element) => element.type === 'button' && elementText(element).includes(title));
+        const titleElement = findElement(row, (element) => element.props.title === title);
+        const previewElement = findElement(row, (element) => element.props.title === preview);
+        const projectElement = findElement(row, (element) => element.props.title === projectPath);
+
+        expect(titleElement.props.className).toContain('line-clamp-2');
+        expect(previewElement.props['aria-label']).toBe(preview);
+        expect(projectElement.props['aria-label']).toBe(projectPath);
+        expect(projectElement.props.className).toContain('break-all');
+        expect(row.props.className).toContain('overflow-hidden');
+        expect(getResumePrimaryLabel({ ...item, sessionName: null, firstMessage: 'Continue from the saved Cursor context' }, 'cursor'))
+            .toBe('Continue from the saved Cursor context');
+    });
+
+    it('keeps an opaque non-UUID provider id secondary and omits unknown project context', () => {
+        const item = {
+            sessionId: 'cursor-native-session-without-title',
+            agent: 'cursor' as const,
+            projectPath: '',
+            lastModified: 1,
+            firstMessage: 'cursor-native-session-without-title',
+            messageCount: 1,
+            createdAt: 1,
+            sessionName: 'cursor-native-session-without-title',
+        };
+        const content = ResumeSheetContent({ agent: 'cursor', items: [item], onResume: vi.fn() });
+        const primaryLabel = getResumePrimaryLabel(item, 'cursor');
+        const row = findElement(content, (element) => element.type === 'button' && elementText(element).includes(primaryLabel));
+        const secondaryId = findElement(row, (element) => element.props['aria-label'] === item.sessionId);
+
+        expect(primaryLabel).not.toContain(item.sessionId);
+        expect(secondaryId.props['aria-label']).toBe(item.sessionId);
+        expect(elementText(secondaryId)).toBe('cursor-nativ…');
+        expect(getShortResumeId(item.sessionId)).toBe('cursor-nativ…');
+        expect(() => findElement(row, (element) => element.props.title === item.projectPath)).toThrow();
     });
 });

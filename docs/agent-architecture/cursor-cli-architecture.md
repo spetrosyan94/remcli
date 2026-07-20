@@ -99,6 +99,15 @@ agent --print --output-format stream-json --trust \
    отправляет typed `cursorExecution` + `cursorLaunchControls` + native resume ID.
    URL не содержит native ID или выбор controls.
 
+### Picker истории
+
+Cursor не публикует документированный API title или transcript для native
+history. Поэтому Remcli использует `store.db` только как existence/mtime marker,
+не читает SQLite schema и не создаёт дополнительный prompt cache. Picker
+сортирует по native activity, показывает `Cursor session · project · activity`,
+а короткий native ID оставляет вторичным. Текст первой строки возможен только
+когда provider вернул его в публичном session contract.
+
 ### Корректное завершение daemon runner
 
 Когда пользователь завершает daemon-owned Cursor wrapper через `Ctrl+C`, runner

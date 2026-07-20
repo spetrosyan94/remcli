@@ -174,6 +174,16 @@ watermark; summary, history replay, reasoning и status events его не за�
 - Heartbeat удаляет stale `codexAppServerEndpoint` и `codexAppServerPid` из
   `daemon.state.json`.
 
+## Resume picker
+
+`list-agent-sessions` читает bounded prefix существующей Codex JSONL history
+только во время RPC, чтобы извлечь first user message для picker-а. Remcli не
+создаёт второй persistent title/preview cache и не меняет provider-native
+activity. Web использует такой текст только если это не opaque UUID; иначе
+показывает нейтральный `Codex session · project · activity`, а короткий native
+thread ID оставляет вторичным. Child threads продолжают исключаться по native
+metadata до выдачи списка.
+
 ## Permissions
 
 Native Codex sandbox values:
