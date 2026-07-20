@@ -314,6 +314,19 @@ async function bindTrackedCodexThread(
     return manager.bindNativeCodexThread(binding);
 }
 
+async function bindTrackedCursorSession(
+    manager: ReturnType<typeof createSessionManager>,
+    binding: {
+        agent: 'cursor';
+        remcliSessionId: string;
+        nativeSessionId: string;
+    },
+) {
+    mockTrackedDaemonTmuxOwnership(manager, binding.remcliSessionId);
+
+    return manager.bindNativeCursorSession(binding);
+}
+
 function openTrackedCodexRemoteTui(
     manager: ReturnType<typeof createSessionManager>,
     request: {
@@ -4429,5 +4442,195 @@ describe('createSessionManager resume deduplication', () => {
         }, getDaemonRunnerToken());
 
         await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-claude' });
+    });
+
+    describe('Cursor interactive TUI host', () => {
+        it('opens one daemon-owned native TUI using the immutable Cursor launch selection', async () => {
+            const runnerPid = 22_101;
+            const interactivePanePid = 22_102;
+            const remcliSessionId = 'remcli-cursor-interactive-tui';
+            const nativeSessionId = 'cursor-native-interactive-tui';
+            const cursorLaunchControls = {
+                executionMode: 'plan' as const,
+                force: true,
+                autoReview: true,
+                sandbox: 'enabled' as const,
+                approveMcps: true,
+            };
+            tmuxMocks.spawnInTmux
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-runner:main', windowId: '@801', paneId: '%801', pid: runnerPid })
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-interactive:cursor', windowId: '@802', paneId: '%802', pid: interactivePanePid });
+
+            const manager = createSessionManager();
+            const spawning = manager.spawnSession({
+                directory: process.cwd(),
+                agent: 'cursor',
+                cursorExecution: {
+                    model: 'controlled-cursor-interactive-model',
+                    catalogVersion: 'controlled-cursor-catalog',
+                },
+                cursorLaunchControls,
+                cursorRunner: CONTROLLED_CURSOR_SELECTION.cursorRunner,
+            });
+            await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
+            manager.onRemcliSessionWebhook(
+                remcliSessionId,
+                createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
+                getDaemonRunnerToken(),
+            );
+            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+            await expect(bindTrackedCursorSession(manager, {
+                agent: 'cursor',
+                remcliSessionId,
+                nativeSessionId,
+            })).resolves.toMatchObject({ type: 'bound' });
+
+            openTerminalMocks.openTerminalWithCommand.mockClear();
+            const request = { agent: 'cursor' as const, remcliSessionId, nativeSessionId };
+            const [firstOpen, secondOpen, forgedOpen] = await Promise.all([
+                manager.openCursorInteractiveTui(request),
+                manager.openCursorInteractiveTui(request),
+                manager.openCursorInteractiveTui({
+                    agent: 'cursor',
+                    remcliSessionId,
+                    nativeSessionId: 'cursor-native-interactive-forged',
+                }),
+            ]);
+
+            expect(firstOpen).toMatchObject({ type: 'opened', tmuxWindowId: '@802' });
+            expect(secondOpen).toMatchObject({ type: 'opened', tmuxWindowId: '@802' });
+            expect(forgedOpen).toEqual({
+                type: 'native-session-mismatch',
+                request: {
+                    agent: 'cursor',
+                    remcliSessionId,
+                    nativeSessionId: 'cursor-native-interactive-forged',
+                },
+                trackedNativeSessionId: nativeSessionId,
+            });
+            expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2);
+            expect(tmuxMocks.spawnInTmux.mock.calls[1]?.[0]).toEqual([
+                "'agent' --resume 'cursor-native-interactive-tui' --model 'controlled-cursor-interactive-model' --mode plan --force --auto-review --sandbox enabled --approve-mcps",
+            ]);
+            expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledTimes(1);
+            expect(manager.getChildren()[0]?.managedCursorInteractiveTui).toMatchObject({
+                windowId: '@802',
+                paneId: '%802',
+            });
+
+            const managedInteractiveTui = manager.getChildren()[0]?.managedCursorInteractiveTui;
+            expect(managedInteractiveTui).toBeDefined();
+            tmuxMocks.ownedPanes.set(managedInteractiveTui!.paneId, {
+                ...managedInteractiveTui!,
+                ownerMarker: '00000000-0000-4000-8000-000000000802',
+            });
+
+            await expect(manager.stopSession(remcliSessionId)).resolves.toEqual({ success: false });
+            expect(manager.getChildren()).toHaveLength(1);
+
+            tmuxMocks.ownedPanes.set(managedInteractiveTui!.paneId, managedInteractiveTui!);
+            await expect(manager.stopSession(remcliSessionId)).resolves.toEqual({
+                success: true,
+                stoppedSessionId: remcliSessionId,
+            });
+            expect(manager.getChildren()).toHaveLength(0);
+        });
+
+        it('fails closed when the native Cursor session does not match the daemon binding', async () => {
+            const runnerPid = 22_111;
+            const remcliSessionId = 'remcli-cursor-interactive-mismatch';
+            tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+                success: true,
+                sessionId: 'tmux-cursor-runner:main',
+                windowId: '@811',
+                paneId: '%811',
+                pid: runnerPid,
+            });
+
+            const manager = createSessionManager();
+            const spawning = manager.spawnSession({
+                directory: process.cwd(),
+                agent: 'cursor',
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
+            await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
+            manager.onRemcliSessionWebhook(
+                remcliSessionId,
+                createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
+                getDaemonRunnerToken(),
+            );
+            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+            await expect(bindTrackedCursorSession(manager, {
+                agent: 'cursor',
+                remcliSessionId,
+                nativeSessionId: 'cursor-native-bound',
+            })).resolves.toMatchObject({ type: 'bound' });
+
+            await expect(manager.openCursorInteractiveTui({
+                agent: 'cursor',
+                remcliSessionId,
+                nativeSessionId: 'cursor-native-forged',
+            })).resolves.toEqual({
+                type: 'native-session-mismatch',
+                request: {
+                    agent: 'cursor',
+                    remcliSessionId,
+                    nativeSessionId: 'cursor-native-forged',
+                },
+                trackedNativeSessionId: 'cursor-native-bound',
+            });
+            expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+            expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledOnce();
+        });
+
+        it('waits for an in-flight Cursor TUI opening before it cleans up the wrapper', async () => {
+            const runnerPid = 22_121;
+            const interactivePanePid = 22_122;
+            const remcliSessionId = 'remcli-cursor-interactive-stop-race';
+            const nativeSessionId = 'cursor-native-interactive-stop-race';
+            tmuxMocks.spawnInTmux
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-runner:main', windowId: '@821', paneId: '%821', pid: runnerPid })
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-interactive:cursor', windowId: '@822', paneId: '%822', pid: interactivePanePid });
+
+            const manager = createSessionManager();
+            const spawning = manager.spawnSession({
+                directory: process.cwd(),
+                agent: 'cursor',
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
+            await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
+            manager.onRemcliSessionWebhook(
+                remcliSessionId,
+                createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
+                getDaemonRunnerToken(),
+            );
+            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+            await expect(bindTrackedCursorSession(manager, {
+                agent: 'cursor',
+                remcliSessionId,
+                nativeSessionId,
+            })).resolves.toMatchObject({ type: 'bound' });
+
+            let resolveInteractiveTerminal: (result: boolean) => void = () => {};
+            openTerminalMocks.openTerminalWithCommand.mockClear();
+            openTerminalMocks.openTerminalWithCommand.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+                resolveInteractiveTerminal = resolve;
+            }));
+
+            const request = { agent: 'cursor' as const, remcliSessionId, nativeSessionId };
+            const opening = manager.openCursorInteractiveTui(request);
+            await vi.waitFor(() => expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledOnce());
+
+            const stopping = manager.stopSession(remcliSessionId);
+            resolveInteractiveTerminal(true);
+
+            await expect(opening).resolves.toEqual({ type: 'wrapper-not-tracked', request });
+            await expect(stopping).resolves.toEqual({
+                success: true,
+                stoppedSessionId: remcliSessionId,
+            });
+            expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(expect.objectContaining({ paneId: '%822' }));
+            expect(manager.getChildren()).toHaveLength(0);
+        });
     });
 });

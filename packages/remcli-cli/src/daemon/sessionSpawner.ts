@@ -16,6 +16,8 @@ import {
     CodexThreadResumeResult,
     CodexRemoteTuiOpenRequest,
     CodexRemoteTuiOpenResult,
+    CursorInteractiveTuiOpenRequest,
+    CursorInteractiveTuiOpenResult,
     CursorRunnerPreflightRequest,
     CursorRunnerPreflightResult,
     DaemonRunnerLifecycleResult,
@@ -41,6 +43,7 @@ import { expandEnvironmentVariables } from '@/utils/expandEnvVars';
 import { openTerminalWithCommand } from '@/utils/openTerminal';
 import { buildCodexRemoteTuiCommand } from '@/codex/codexAppServerHost';
 import { isCursorRunnerIdentity } from '@/cursor/cursorCapabilities';
+import { buildCursorInteractiveTuiCommand } from '@/cursor/cursorCli';
 import { isCursorLaunchControls } from '@/cursor/cursorLaunchControls';
 
 const DAEMON_SHUTDOWN_CANCELLATION_MESSAGE = 'Daemon shut down before session process registration.';
@@ -129,6 +132,18 @@ interface CursorSessionLineage {
     directory: string;
 }
 
+/** Immutable native Cursor launch selection retained only inside the daemon. */
+interface CursorInteractiveTuiLaunch {
+    model: string;
+    runner: NonNullable<SpawnSessionOptions['cursorRunner']>;
+    launchControls: NonNullable<SpawnSessionOptions['cursorLaunchControls']>;
+}
+
+interface CursorInteractiveTuiOpening {
+    remcliSessionId: string;
+    promise: Promise<CursorInteractiveTuiOpenResult>;
+}
+
 function createPendingSpawnTask(nativeThreadId?: string): PendingSpawnTask {
     let cancellationResult: SpawnSessionResult | undefined;
     let resolvePromise: (result: SpawnSessionResult) => void = () => {};
@@ -197,6 +212,8 @@ export interface SessionManager {
     completeDaemonRunnerStopping: (sessionId: string) => Promise<DaemonRunnerLifecycleResult>;
     /** Open one daemon-owned tmux window for a bound Codex remote TUI. */
     openCodexRemoteTui: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
+    /** Prepare one daemon-owned tmux window for a bound native Cursor TUI. */
+    openCursorInteractiveTui: (request: CursorInteractiveTuiOpenRequest) => Promise<CursorInteractiveTuiOpenResult>;
     /** Resolve whether a Codex thread already has an active wrapper session. */
     resolveCodexThreadResume: (nativeThreadId: string) => Promise<CodexThreadResumeResult>;
     /** Spawn a new session in tmux and wait for its webhook. */
@@ -316,6 +333,15 @@ function buildCodexRemoteTuiWindowName(nativeThreadId: string): string {
     return `codex-${suffix}-${randomUUID()}`;
 }
 
+function buildCursorInteractiveTuiWindowName(nativeSessionId: string): string {
+    const suffix = createHash('sha256').update(nativeSessionId).digest('hex').slice(0, 16);
+    return `cursor-${suffix}-${randomUUID()}`;
+}
+
+function buildCursorInteractiveTuiOpeningKey(request: CursorInteractiveTuiOpenRequest): string {
+    return JSON.stringify([request.remcliSessionId, request.nativeSessionId]);
+}
+
 export function createSessionManager(options: SessionManagerOptions = {}): SessionManager {
     const runnerEntrypointPath = options.runnerEntrypointPath;
     // PID indexes only the currently active session in a process slot. A session
@@ -331,11 +357,15 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     const cursorSessionLineageByNativeSessionId = new Map<string, CursorSessionLineage>();
     const runnerSessionIdToTrackedSession = new Map<string, RunnerSessionMapping>();
     const codexRemoteTuiOpenPromises = new Map<string, Promise<CodexRemoteTuiOpenResult>>();
+    const cursorInteractiveTuiOpenPromises = new Map<string, CursorInteractiveTuiOpening>();
     const orphanedCodexRemoteTuiPanes = new Map<string, TmuxPaneOwnership>();
+    const orphanedCursorInteractiveTuiPanes = new Map<string, TmuxPaneOwnership>();
+    const cursorInteractiveTuiLaunches = new WeakMap<TrackedSession, CursorInteractiveTuiLaunch>();
     const sessionCleanupPromises = new Map<TrackedSession, Promise<boolean>>();
     const sessionCleanupFailureReasons = new Map<TrackedSession, string>();
     const daemonRunnerStoppingFences = new WeakMap<TrackedSession, DaemonRunnerStoppingFence>();
     let codexRemoteTuiHostPromise: Promise<{ ok: true } | { ok: false; error: string }> | null = null;
+    let cursorInteractiveTuiHostPromise: Promise<{ ok: true } | { ok: false; error: string }> | null = null;
 
     // Session spawning awaiter system
     const pidToAwaiter = new Map<number, SessionSpawnAwaiter>();
@@ -351,6 +381,11 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     const codexRemoteTuiHostOwnerMarker = randomUUID();
     let codexRemoteTuiHostAnchor: TmuxPaneOwnership | undefined;
     let hasOpenedCodexRemoteTuiHostTerminal = false;
+    const cursorInteractiveTuiHostSessionName = `remcli-cursor-tui-${randomUUID()}`;
+    const cursorInteractiveTuiHostWindowName = 'host';
+    const cursorInteractiveTuiHostOwnerMarker = randomUUID();
+    let cursorInteractiveTuiHostAnchor: TmuxPaneOwnership | undefined;
+    let hasOpenedCursorInteractiveTuiHostTerminal = false;
     let isShuttingDown = false;
     let shutdownDrain: Promise<void> | null = null;
 
@@ -624,6 +659,26 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         return true;
     };
 
+    const releaseManagedCursorInteractiveTuiWindow = async (session: TrackedSession): Promise<boolean> => {
+        const ownership = session.managedCursorInteractiveTui;
+        if (!ownership) {
+            return true;
+        }
+
+        const didRelease = await releaseOwnedPane(ownership);
+        if (!didRelease) {
+            sessionCleanupFailureReasons.set(
+                session,
+                `Could not confirm cleanup of managed Cursor interactive TUI for session ${session.remcliSessionId ?? session.pid}.`,
+            );
+            logger.warn(`[DAEMON RUN] Could not confirm cleanup of managed Cursor interactive TUI pane ${ownership.paneId}; preserving tracking for retry.`);
+            return false;
+        }
+
+        session.managedCursorInteractiveTui = undefined;
+        return true;
+    };
+
     const releaseDaemonTmuxRunner = async (session: TrackedSession): Promise<boolean> => {
         if (session.startedBy !== 'daemon') {
             return true;
@@ -680,6 +735,21 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         return true;
     };
 
+    const releaseOrphanedCursorInteractiveTuiPane = async (sessionId: string): Promise<boolean> => {
+        const ownership = orphanedCursorInteractiveTuiPanes.get(sessionId);
+        if (!ownership) {
+            return true;
+        }
+
+        if (!await releaseOwnedPane(ownership)) {
+            logger.warn(`[DAEMON RUN] Could not confirm cleanup of orphaned Cursor interactive TUI pane ${ownership.paneId}; preserving ownership for retry.`);
+            return false;
+        }
+
+        orphanedCursorInteractiveTuiPanes.delete(sessionId);
+        return true;
+    };
+
     const retireTrackedSession = (
         pid: number,
         expectedSession: TrackedSession,
@@ -716,6 +786,23 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         }
     };
 
+    const waitForCursorInteractiveTuiOpening = async (sessionId: string): Promise<boolean> => {
+        const openings = Array.from(cursorInteractiveTuiOpenPromises.values())
+            .filter((opening) => opening.remcliSessionId === sessionId)
+            .map((opening) => opening.promise);
+        if (openings.length === 0) {
+            return true;
+        }
+
+        try {
+            await Promise.all(openings);
+            return true;
+        } catch (error) {
+            logger.warn(`[DAEMON RUN] Cursor interactive TUI opening failed while stopping ${sessionId}:`, error);
+            return false;
+        }
+    };
+
     const releaseAndRemoveTrackedSession = async (
         pid: number,
         trackedSession: TrackedSession,
@@ -747,7 +834,21 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 );
                 return false;
             }
+            if (
+                shouldAwaitRemoteTuiOpening
+                && trackedSession.remcliSessionId
+                && !await waitForCursorInteractiveTuiOpening(trackedSession.remcliSessionId)
+            ) {
+                sessionCleanupFailureReasons.set(
+                    trackedSession,
+                    `Could not wait for managed Cursor interactive TUI cleanup for session ${trackedSession.remcliSessionId}.`,
+                );
+                return false;
+            }
             if (!await releaseManagedCodexRemoteTuiWindow(trackedSession)) {
+                return false;
+            }
+            if (!await releaseManagedCursorInteractiveTuiWindow(trackedSession)) {
                 return false;
             }
             if (!await releaseDaemonTmuxRunner(trackedSession)) {
@@ -1416,7 +1517,72 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         return hostPromise;
     };
 
-    async function getManagedCodexRemoteTuiWindowStatus(
+    const ensureCursorInteractiveTuiHostInternal = async (): Promise<{ ok: true } | { ok: false; error: string }> => {
+        const tmux = getTmuxUtilities(cursorInteractiveTuiHostSessionName);
+        if (cursorInteractiveTuiHostAnchor) {
+            const hostStatus = await getOwnedPaneStatus(cursorInteractiveTuiHostAnchor);
+            if (hostStatus === 'missing') {
+                cursorInteractiveTuiHostAnchor = undefined;
+                hasOpenedCursorInteractiveTuiHostTerminal = false;
+            } else if (hostStatus !== 'exists') {
+                return { ok: false, error: 'Could not confirm the immutable Cursor TUI tmux host ownership.' };
+            }
+        }
+
+        if (!cursorInteractiveTuiHostAnchor) {
+            hasOpenedCursorInteractiveTuiHostTerminal = false;
+            const createdHost = await tmux.createSessionWithPane(
+                cursorInteractiveTuiHostSessionName,
+                cursorInteractiveTuiHostWindowName,
+                cursorInteractiveTuiHostOwnerMarker,
+            );
+            if (!createdHost.success) {
+                return { ok: false, error: createdHost.error };
+            }
+            cursorInteractiveTuiHostAnchor = createdHost.ownership;
+        }
+
+        const hostAnchor = cursorInteractiveTuiHostAnchor;
+        if (!hostAnchor || await getOwnedPaneStatus(hostAnchor) !== 'exists') {
+            return { ok: false, error: 'Could not confirm the immutable Cursor TUI tmux host ownership.' };
+        }
+
+        if (!hasOpenedCursorInteractiveTuiHostTerminal) {
+            const terminalContext = await openTerminalWithCommand(
+                `env -u TMUX tmux attach -t ${hostAnchor.paneId}`,
+            );
+            if (!terminalContext) {
+                return { ok: false, error: 'Could not open the Cursor TUI terminal host.' };
+            }
+            hasOpenedCursorInteractiveTuiHostTerminal = true;
+        }
+
+        return { ok: true };
+    };
+
+    const ensureCursorInteractiveTuiHost = (): Promise<{ ok: true } | { ok: false; error: string }> => {
+        if (cursorInteractiveTuiHostPromise) {
+            return cursorInteractiveTuiHostPromise;
+        }
+
+        const hostPromise = ensureCursorInteractiveTuiHostInternal();
+        cursorInteractiveTuiHostPromise = hostPromise;
+        void hostPromise.then(
+            () => {
+                if (cursorInteractiveTuiHostPromise === hostPromise) {
+                    cursorInteractiveTuiHostPromise = null;
+                }
+            },
+            () => {
+                if (cursorInteractiveTuiHostPromise === hostPromise) {
+                    cursorInteractiveTuiHostPromise = null;
+                }
+            },
+        );
+        return hostPromise;
+    };
+
+    async function getManagedTuiWindowStatus(
         ownership: TmuxPaneOwnership
     ): Promise<'exists' | 'missing' | 'unknown'> {
         const paneStatus = await getOwnedPaneStatus(ownership);
@@ -1483,7 +1649,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         );
         const existingOwnership = trackedSession.managedCodexRemoteTui;
         if (existingOwnership) {
-            const existingWindowStatus = await getManagedCodexRemoteTuiWindowStatus(existingOwnership);
+            const existingWindowStatus = await getManagedTuiWindowStatus(existingOwnership);
             if (existingWindowStatus === 'exists') {
                 return { type: 'already-open', wrapper, tmuxWindowId: existingOwnership.windowId };
             }
@@ -1565,6 +1731,177 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 codexRemoteTuiOpenPromises.delete(request.remcliSessionId);
             }
         });
+        return openingPromise;
+    };
+
+    const openCursorInteractiveTuiInternal = async (
+        request: CursorInteractiveTuiOpenRequest,
+    ): Promise<CursorInteractiveTuiOpenResult> => {
+        let trackedSession: TrackedSession | undefined;
+        let trackedPid: number | undefined;
+        for (const [pid, session] of pidToTrackedSession.entries()) {
+            if (session.remcliSessionId !== request.remcliSessionId) {
+                continue;
+            }
+            const status = await getTrackedSessionStatus(pid, session);
+            if (status === 'missing') {
+                await releaseAndRemoveTrackedSession(pid, session, false);
+                break;
+            }
+            if (status !== 'exists') {
+                return { type: 'wrapper-not-tracked', request };
+            }
+            trackedSession = session;
+            trackedPid = pid;
+            break;
+        }
+
+        if (!trackedSession || trackedPid === undefined) {
+            return { type: 'wrapper-not-tracked', request };
+        }
+
+        const trackedAgent = getTrackedAgent(trackedSession);
+        if (trackedAgent && trackedAgent !== 'cursor') {
+            return { type: 'agent-mismatch', request, trackedAgent };
+        }
+        if (trackedSession.startedBy !== 'daemon' || isStoppingSession(trackedSession)) {
+            return { type: 'wrapper-not-tracked', request };
+        }
+        if (trackedSession.nativeCursorSessionId !== request.nativeSessionId) {
+            return {
+                type: 'native-session-mismatch',
+                request,
+                trackedNativeSessionId: trackedSession.nativeCursorSessionId,
+            };
+        }
+        if (isShuttingDown) {
+            return { type: 'launch-unavailable', request, error: 'Daemon is shutting down.' };
+        }
+
+        const launch = cursorInteractiveTuiLaunches.get(trackedSession);
+        if (
+            !launch
+            || !isCursorRunnerIdentity(launch.runner)
+            || !isCursorLaunchControls(launch.launchControls)
+            || typeof launch.model !== 'string'
+            || launch.model.trim() === ''
+        ) {
+            return {
+                type: 'launch-unavailable',
+                request,
+                error: 'The daemon-validated Cursor launch selection is unavailable.',
+            };
+        }
+
+        const wrapper = toNativeCursorSessionWrapper(
+            request.remcliSessionId,
+            request.nativeSessionId,
+        );
+        const existingOwnership = trackedSession.managedCursorInteractiveTui;
+        if (existingOwnership) {
+            const existingWindowStatus = await getManagedTuiWindowStatus(existingOwnership);
+            if (existingWindowStatus === 'exists') {
+                return { type: 'already-open', wrapper, tmuxWindowId: existingOwnership.windowId };
+            }
+            if (existingWindowStatus === 'unknown') {
+                return {
+                    type: 'launch-unavailable',
+                    request,
+                    error: 'Could not confirm the managed Cursor interactive TUI tmux window state.',
+                };
+            }
+
+            trackedSession.managedCursorInteractiveTui = undefined;
+        }
+
+        const host = await ensureCursorInteractiveTuiHost();
+        if (!host.ok) {
+            return { type: 'launch-unavailable', request, error: host.error };
+        }
+
+        const hostAnchor = cursorInteractiveTuiHostAnchor;
+        if (!hostAnchor) {
+            return {
+                type: 'launch-unavailable',
+                request,
+                error: 'The immutable Cursor TUI tmux host is unavailable.',
+            };
+        }
+
+        let command: string;
+        try {
+            command = buildCursorInteractiveTuiCommand({
+                executable: launch.runner.executable,
+                resumeSessionId: request.nativeSessionId,
+                model: launch.model,
+                launchControls: launch.launchControls,
+            });
+        } catch {
+            return {
+                type: 'launch-unavailable',
+                request,
+                error: 'The daemon-validated Cursor launch selection is invalid.',
+            };
+        }
+
+        const tmuxResult = await getTmuxUtilities(cursorInteractiveTuiHostSessionName).spawnInOwnedTmuxSession(
+            [command],
+            {
+                hostOwnership: hostAnchor,
+                windowName: buildCursorInteractiveTuiWindowName(request.nativeSessionId),
+                ownershipMarker: randomUUID(),
+                cwd: trackedSession.remcliSessionMetadataFromLocalWebhook?.path
+                    ?? trackedSession.expectedDirectory
+                    ?? process.cwd(),
+            },
+        );
+        if (!tmuxResult.success) {
+            return { type: 'launch-unavailable', request, error: tmuxResult.error };
+        }
+
+        const createdOwnership: TmuxPaneOwnership = tmuxResult.ownership;
+        const currentSession = pidToTrackedSession.get(trackedPid);
+        if (currentSession !== trackedSession || currentSession.remcliSessionId !== request.remcliSessionId) {
+            orphanedCursorInteractiveTuiPanes.set(request.remcliSessionId, createdOwnership);
+            logger.warn(`[DAEMON RUN] Preserved late-created Cursor interactive TUI pane ${createdOwnership.paneId} for retry after its wrapper was removed.`);
+            return { type: 'wrapper-not-tracked', request };
+        }
+
+        trackedSession.managedCursorInteractiveTui = createdOwnership;
+        if (isShuttingDown || isStoppingSession(trackedSession)) {
+            return { type: 'wrapper-not-tracked', request };
+        }
+
+        logger.debug(`[DAEMON RUN] Opened managed Cursor interactive TUI tmux window ${createdOwnership.windowId}`);
+        return { type: 'opened', wrapper, tmuxWindowId: createdOwnership.windowId };
+    };
+
+    const openCursorInteractiveTui = (
+        request: CursorInteractiveTuiOpenRequest,
+    ): Promise<CursorInteractiveTuiOpenResult> => {
+        const openingKey = buildCursorInteractiveTuiOpeningKey(request);
+        const existingOpening = cursorInteractiveTuiOpenPromises.get(openingKey);
+        if (existingOpening) {
+            return existingOpening.promise;
+        }
+
+        const openingPromise = openCursorInteractiveTuiInternal(request);
+        cursorInteractiveTuiOpenPromises.set(openingKey, {
+            remcliSessionId: request.remcliSessionId,
+            promise: openingPromise,
+        });
+        void openingPromise.then(
+            () => {
+                if (cursorInteractiveTuiOpenPromises.get(openingKey)?.promise === openingPromise) {
+                    cursorInteractiveTuiOpenPromises.delete(openingKey);
+                }
+            },
+            () => {
+                if (cursorInteractiveTuiOpenPromises.get(openingKey)?.promise === openingPromise) {
+                    cursorInteractiveTuiOpenPromises.delete(openingKey);
+                }
+            },
+        );
         return openingPromise;
     };
 
@@ -2027,6 +2364,20 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 };
 
                 replaceTrackedSession(tmuxResult.ownership.panePid, trackedSession);
+                if (
+                    agent === 'cursor'
+                    && options.cursorExecution
+                    && options.cursorLaunchControls
+                    && options.cursorRunner
+                    && isCursorLaunchControls(options.cursorLaunchControls)
+                    && isCursorRunnerIdentity(options.cursorRunner)
+                ) {
+                    cursorInteractiveTuiLaunches.set(trackedSession, {
+                        model: options.cursorExecution.model,
+                        runner: { ...options.cursorRunner },
+                        launchControls: { ...options.cursorLaunchControls },
+                    });
+                }
                 const sessionSpawnAwaiter = createSessionSpawnAwaiter(
                     tmuxResult.ownership.panePid,
                     trackedSession,
@@ -2326,6 +2677,16 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             };
         }
 
+        if (orphanedCursorInteractiveTuiPanes.has(sessionId)) {
+            if (!await releaseOrphanedCursorInteractiveTuiPane(sessionId)) {
+                return { success: false };
+            }
+            return {
+                success: true,
+                stoppedSessionId: sessionId,
+            };
+        }
+
         logger.debug(`[DAEMON RUN] Session ${sessionId} not found`);
         return { success: false };
     };
@@ -2397,6 +2758,20 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         hasOpenedCodexRemoteTuiHostTerminal = false;
     };
 
+    const cleanupCursorInteractiveTuiHost = async (): Promise<void> => {
+        const hostAnchor = cursorInteractiveTuiHostAnchor;
+        if (!hostAnchor) {
+            return;
+        }
+
+        if (!await releaseOwnedPane(hostAnchor)) {
+            throw new Error('Could not confirm cleanup of the immutable Cursor TUI tmux host pane.');
+        }
+
+        cursorInteractiveTuiHostAnchor = undefined;
+        hasOpenedCursorInteractiveTuiHostTerminal = false;
+    };
+
     // Kill all tracked sessions and tmux sessions created by this daemon
     const killAllSessions = (): Promise<void> => {
         if (shutdownDrain) {
@@ -2431,7 +2806,10 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             const cleanupErrors: Error[] = [];
 
             const remoteTuiOpenResults = await Promise.allSettled(
-                Array.from(codexRemoteTuiOpenPromises.values()),
+                [
+                    ...codexRemoteTuiOpenPromises.values(),
+                    ...Array.from(cursorInteractiveTuiOpenPromises.values(), (opening) => opening.promise),
+                ],
             );
             for (const result of remoteTuiOpenResults) {
                 if (result.status === 'rejected') {
@@ -2459,6 +2837,11 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                         throw new Error(`Could not confirm cleanup of orphaned Codex remote TUI for session ${sessionId}.`);
                     }
                 }),
+                ...Array.from(orphanedCursorInteractiveTuiPanes.keys()).map(async (sessionId) => {
+                    if (!await releaseOrphanedCursorInteractiveTuiPane(sessionId)) {
+                        throw new Error(`Could not confirm cleanup of orphaned Cursor interactive TUI for session ${sessionId}.`);
+                    }
+                }),
                 ...orphanedDaemonTmuxRunnerSnapshot.map((runner) => cleanupDaemonTmuxRunner(runner)),
             ]);
             for (const result of cleanupResults) {
@@ -2467,8 +2850,11 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 }
             }
 
-            const codexTuiHostCleanup = await Promise.allSettled([cleanupCodexRemoteTuiHost()]);
-            for (const result of codexTuiHostCleanup) {
+            const tuiHostCleanup = await Promise.allSettled([
+                cleanupCodexRemoteTuiHost(),
+                cleanupCursorInteractiveTuiHost(),
+            ]);
+            for (const result of tuiHostCleanup) {
                 if (result.status === 'rejected') {
                     cleanupErrors.push(result.reason instanceof Error ? result.reason : new Error(String(result.reason)));
                 }
@@ -2489,7 +2875,9 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             pidToPendingSpawnTask.clear();
             codexThreadResumeSpawnPromises.clear();
             codexRemoteTuiOpenPromises.clear();
+            cursorInteractiveTuiOpenPromises.clear();
             orphanedCodexRemoteTuiPanes.clear();
+            orphanedCursorInteractiveTuiPanes.clear();
             displacedTrackedSessionPids.clear();
             daemonTmuxRunners.clear();
             sessionCleanupPromises.clear();
@@ -2510,6 +2898,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         markDaemonRunnerStopping,
         completeDaemonRunnerStopping,
         openCodexRemoteTui,
+        openCursorInteractiveTui,
         resolveCodexThreadResume,
         spawnSession,
         stopSession,

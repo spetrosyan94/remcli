@@ -269,3 +269,19 @@ input или screen text и используют per-call random outcome marker,
 terminal content не может предсказать. Это не public terminal transport: пока
 нет daemon lease, P2P API или UI, и capture не превращается в chat message,
 tool call либо history source.
+
+### Daemon-owned interactive TUI host
+
+`SessionManager` умеет создать ровно один дочерний Cursor TUI pane для уже
+bound пары `{remcliSessionId, nativeSessionId}`. Он использует только
+daemon-validated executable, model и native launch controls, которые остаются
+в private `WeakMap`, а не приходят из P2P/terminal запроса. У child и shared
+host есть полный immutable ownership tuple; stop и daemon shutdown сначала
+освобождают child, а при `mismatch`/`unknown` сохраняют tracking для retry.
+
+Этот handle намеренно пока не опубликован через loopback control server, P2P
+или `runCursor`. Headless `agent --print --resume` всё ещё является единственным
+writer native thread. Следующий шаг - explicit writer lease на один native
+Cursor session, затем typed bridge для bounded input/output. Открывать TUI до
+этого нельзя: два независимых Cursor CLI процесса могли бы одновременно писать
+в одну native сессию.

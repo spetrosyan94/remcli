@@ -30,6 +30,13 @@ export interface NativeCursorSessionWrapper {
   remcliSessionId: string;
 }
 
+/** Internal daemon request to prepare the one native Cursor TUI for a bound wrapper. */
+export interface CursorInteractiveTuiOpenRequest {
+  agent: 'cursor';
+  nativeSessionId: string;
+  remcliSessionId: string;
+}
+
 /** Capability-bound request made by a daemon-spawned Cursor runner before it creates P2P metadata. */
 export interface CursorRunnerPreflightRequest {
   agent: 'claude' | 'codex' | 'cursor' | 'gemini';
@@ -120,6 +127,26 @@ export type CodexRemoteTuiOpenResult =
     error: string;
   };
 
+export type CursorInteractiveTuiOpenResult =
+  | { type: 'opened'; wrapper: NativeCursorSessionWrapper; tmuxWindowId: string }
+  | { type: 'already-open'; wrapper: NativeCursorSessionWrapper; tmuxWindowId: string }
+  | { type: 'wrapper-not-tracked'; request: CursorInteractiveTuiOpenRequest }
+  | {
+    type: 'agent-mismatch';
+    request: CursorInteractiveTuiOpenRequest;
+    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini';
+  }
+  | {
+    type: 'native-session-mismatch';
+    request: CursorInteractiveTuiOpenRequest;
+    trackedNativeSessionId?: string;
+  }
+  | {
+    type: 'launch-unavailable';
+    request: CursorInteractiveTuiOpenRequest;
+    error: string;
+  };
+
 export interface DaemonSessionWebhookResult {
   accepted: boolean;
   daemonOwned: boolean;
@@ -161,6 +188,8 @@ export interface TrackedSession {
   tmuxRunner?: TmuxPaneOwnership;
   /** Immutable ownership proof for the optional interactive Codex TUI. */
   managedCodexRemoteTui?: TmuxPaneOwnership;
+  /** Immutable ownership proof for the future interactive Cursor TUI bridge. */
+  managedCursorInteractiveTui?: TmuxPaneOwnership;
   pid: number;
   childProcess?: ChildProcess;
   error?: string;
