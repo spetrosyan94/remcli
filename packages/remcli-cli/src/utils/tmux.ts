@@ -20,7 +20,7 @@
  */
 
 import { spawn, SpawnOptions } from 'child_process';
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { promisify } from 'util';
 import { logger } from '@/ui/logger';
 
@@ -128,12 +128,20 @@ export type TmuxSessionCreateResult =
     | { success: false; error: string };
 
 export type TmuxOwnedPaneReleaseResult = 'released' | 'missing' | 'mismatch' | 'unknown';
+export type TmuxOwnedPaneActionResult = 'applied' | 'missing' | 'mismatch' | 'unknown';
+
+export type TmuxOwnedPaneCaptureResult =
+    | { status: 'captured'; output: string; truncated: boolean }
+    | { status: 'missing' | 'mismatch' | 'unknown' };
 
 const TMUX_WINDOW_ID_PATTERN = /^@\d+$/;
 const TMUX_PANE_ID_PATTERN = /^%\d+$/;
 const TMUX_OWNER_MARKER_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TMUX_OWNER_OPTION = '@remcli_owner';
 const TMUX_OWNERSHIP_MISMATCH_OUTPUT = '__remcli_ownership_mismatch__';
+const TMUX_OWNED_PANE_CAPTURE_HISTORY_LINES = 200;
+const TMUX_OWNED_PANE_CAPTURE_MAX_CHARS = 32_768;
+const TMUX_OWNED_PANE_INPUT_MAX_CHARS = 16_384;
 const TMUX_OWNED_PANE_FORMAT = '#{session_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{@remcli_owner}';
 const TMUX_MAX_WINDOW_INDEX = 2_147_483_647;
 const TMUX_WINDOW_INDEX_MIN = 1_000_000;
@@ -171,6 +179,14 @@ function hasValidTmuxPaneOwnership(ownership: TmuxPaneInfo): boolean {
         && isTmuxOwnerMarker(ownership.ownerMarker);
 }
 
+function hasMatchingTmuxPaneOwnership(actual: TmuxPaneInfo, expected: TmuxPaneInfo): boolean {
+    return actual.sessionName === expected.sessionName
+        && actual.windowId === expected.windowId
+        && actual.paneId === expected.paneId
+        && actual.panePid === expected.panePid
+        && actual.ownerMarker === expected.ownerMarker;
+}
+
 function buildTmuxPaneCondition(ownership: TmuxPaneInfo, expectedOwnerMarker: string): string {
     const conditions = [
         `#{==:#{${TMUX_OWNER_OPTION}},${expectedOwnerMarker}}`,
@@ -201,6 +217,10 @@ function isTmuxWindowIndexInUse(result: TmuxCommandResult | null, windowIndex: n
 
 function quoteTmuxCommandArgument(value: string): string {
     return `"${value.replace(/([\\"])/g, '\\$1')}"`;
+}
+
+function createOwnedPaneOutcomeMarker(kind: 'capture' | 'input'): string {
+    return `__remcli_owned_pane_${kind}_${randomUUID()}__`;
 }
 
 function buildOwnedTmuxPaneCreationCommand(
@@ -1552,6 +1572,137 @@ export class TmuxUtilities {
                 ownerMarker,
             },
         };
+    }
+
+    private async getOwnedPaneOperationFailureStatus(
+        ownership: TmuxPaneInfo,
+    ): Promise<'missing' | 'mismatch' | 'unknown'> {
+        const paneLookup = await this.getPaneInfo(ownership.paneId);
+        if (paneLookup.status === 'missing') {
+            return 'missing';
+        }
+        if (paneLookup.status !== 'exists') {
+            return 'unknown';
+        }
+
+        return hasMatchingTmuxPaneOwnership(paneLookup.pane, ownership)
+            ? 'unknown'
+            : 'mismatch';
+    }
+
+    /**
+     * Atomically send literal text only after tmux confirms the complete
+     * daemon ownership tuple. The caller must decide separately whether a
+     * terminal Enter/control sequence is appropriate for its protocol.
+     */
+    async sendLiteralTextToOwnedPane(
+        ownership: TmuxPaneInfo,
+        text: string,
+    ): Promise<TmuxOwnedPaneActionResult> {
+        if (
+            !hasValidTmuxPaneOwnership(ownership)
+            || typeof text !== 'string'
+            || text.length === 0
+            || text.length > TMUX_OWNED_PANE_INPUT_MAX_CHARS
+        ) {
+            return 'unknown';
+        }
+
+        const outcomeMarker = createOwnedPaneOutcomeMarker('input');
+        const condition = buildTmuxPaneCondition(ownership, ownership.ownerMarker);
+        const successCommand = [
+            'send-keys',
+            '-l',
+            '-t',
+            ownership.paneId,
+            '--',
+            quoteTmuxCommandArgument(text),
+            ';',
+            'display-message',
+            '-p',
+            outcomeMarker,
+        ].join(' ');
+
+        try {
+            const result = await this.executeCommand([
+                'tmux',
+                'if-shell',
+                '-t',
+                ownership.paneId,
+                '-F',
+                condition,
+                successCommand,
+                `display-message -p ${TMUX_OWNERSHIP_MISMATCH_OUTPUT}`,
+            ]);
+            if (result?.returncode === 0 && result.stdout.trim() === outcomeMarker) {
+                return 'applied';
+            }
+        } catch (error) {
+            logger.debug(`[TMUX] Failed to send text to owned pane ${ownership.paneId}:`, error);
+        }
+
+        return await this.getOwnedPaneOperationFailureStatus(ownership);
+    }
+
+    /**
+     * Capture a bounded owned-pane screen snapshot. The random terminal marker
+     * is never logged and prevents pane content from forging a success result.
+     */
+    async captureOwnedPane(ownership: TmuxPaneInfo): Promise<TmuxOwnedPaneCaptureResult> {
+        if (!hasValidTmuxPaneOwnership(ownership)) {
+            return { status: 'unknown' };
+        }
+
+        const outcomeMarker = createOwnedPaneOutcomeMarker('capture');
+        const condition = buildTmuxPaneCondition(ownership, ownership.ownerMarker);
+        const successCommand = [
+            'capture-pane',
+            '-p',
+            '-S',
+            `-${TMUX_OWNED_PANE_CAPTURE_HISTORY_LINES}`,
+            '-t',
+            ownership.paneId,
+            ';',
+            'display-message',
+            '-p',
+            outcomeMarker,
+        ].join(' ');
+
+        try {
+            const result = await this.executeCommand([
+                'tmux',
+                'if-shell',
+                '-t',
+                ownership.paneId,
+                '-F',
+                condition,
+                successCommand,
+                `display-message -p ${TMUX_OWNERSHIP_MISMATCH_OUTPUT}`,
+            ]);
+            const markerIndex = result?.returncode === 0
+                ? result.stdout.lastIndexOf(outcomeMarker)
+                : -1;
+            if (
+                result?.returncode === 0
+                && markerIndex !== undefined
+                && markerIndex >= 0
+                && result.stdout.slice(markerIndex + outcomeMarker.length).trim() === ''
+            ) {
+                const output = result.stdout.slice(0, markerIndex);
+                const truncated = output.length > TMUX_OWNED_PANE_CAPTURE_MAX_CHARS;
+                return {
+                    status: 'captured',
+                    output: truncated
+                        ? output.slice(-TMUX_OWNED_PANE_CAPTURE_MAX_CHARS)
+                        : output,
+                    truncated,
+                };
+            }
+        } catch (error) {
+            logger.debug(`[TMUX] Failed to capture owned pane ${ownership.paneId}:`, error);
+        }
+
+        return { status: await this.getOwnedPaneOperationFailureStatus(ownership) };
     }
 
     /**

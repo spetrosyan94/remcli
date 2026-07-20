@@ -41,6 +41,14 @@ function mockTmuxChild(): MockTmuxChild {
     return child;
 }
 
+function readOwnedPaneOutcomeMarker(command: string[]): string {
+    const match = command.join(' ').match(/__remcli_owned_pane_(?:capture|input)_[0-9a-f-]+__/i);
+    if (!match) {
+        throw new Error('Expected a per-call owned-pane outcome marker.');
+    }
+    return match[0];
+}
+
 afterEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
@@ -519,6 +527,108 @@ describe('TmuxUtilities cleanup commands', () => {
 
         await expect(result).resolves.toBe(false);
         expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    });
+});
+
+describe('TmuxUtilities owned pane I/O', () => {
+    const ownership = {
+        sessionName: 'remcli-owned',
+        windowId: '@43',
+        paneId: '%10',
+        panePid: 1235,
+        ownerMarker: '11111111-1111-4111-8111-111111111111',
+    };
+
+    it('sends hostile text literally only through an atomically verified owned pane', async () => {
+        const child = mockTmuxChild();
+        const utilities = new TmuxUtilities();
+        const hostileInput = '--literal "; display-message -p pwned; $(echo nope) #{pane_id}\nnext';
+        const sent = utilities.sendLiteralTextToOwnedPane(ownership, hostileInput);
+        const command = childProcessMocks.spawn.mock.calls[0]?.[1] as string[];
+        const outcomeMarker = readOwnedPaneOutcomeMarker(command);
+        const condition = command[4] ?? '';
+        const successCommand = command[5] ?? '';
+
+        expect(command.slice(0, 4)).toEqual(['if-shell', '-t', '%10', '-F']);
+        expect(condition).toContain(`#{==:#{@remcli_owner},${ownership.ownerMarker}}`);
+        expect(condition).toContain(`#{==:#{session_name},${ownership.sessionName}}`);
+        expect(condition).toContain(`#{==:#{window_id},${ownership.windowId}}`);
+        expect(condition).toContain(`#{==:#{pane_id},${ownership.paneId}}`);
+        expect(condition).toContain(`#{==:#{pane_pid},${ownership.panePid}}`);
+        expect(successCommand).toBe(
+            `send-keys -l -t %10 -- "--literal \\"; display-message -p pwned; $(echo nope) #{pane_id}\nnext" ; display-message -p ${outcomeMarker}`,
+        );
+
+        child.stdout.emit('data', Buffer.from(`${outcomeMarker}\n`));
+        child.emit('close', 0, null);
+
+        await expect(sent).resolves.toBe('applied');
+    });
+
+    it('captures a bounded owned-pane snapshot and strips only its private outcome marker', async () => {
+        const child = mockTmuxChild();
+        const utilities = new TmuxUtilities();
+        const capture = utilities.captureOwnedPane(ownership);
+        const command = childProcessMocks.spawn.mock.calls[0]?.[1] as string[];
+        const outcomeMarker = readOwnedPaneOutcomeMarker(command);
+
+        expect(command[5]).toBe(
+            `capture-pane -p -S -200 -t %10 ; display-message -p ${outcomeMarker}`,
+        );
+        child.stdout.emit('data', Buffer.from(`first line\nsecond line\n${outcomeMarker}\n`));
+        child.emit('close', 0, null);
+
+        await expect(capture).resolves.toEqual({
+            status: 'captured',
+            output: 'first line\nsecond line\n',
+            truncated: false,
+        });
+    });
+
+    it('keeps only the newest bounded capture payload', async () => {
+        const child = mockTmuxChild();
+        const utilities = new TmuxUtilities();
+        const capture = utilities.captureOwnedPane(ownership);
+        const command = childProcessMocks.spawn.mock.calls[0]?.[1] as string[];
+        const outcomeMarker = readOwnedPaneOutcomeMarker(command);
+        const output = 'x'.repeat(33_000);
+
+        child.stdout.emit('data', Buffer.from(`${output}${outcomeMarker}\n`));
+        child.emit('close', 0, null);
+
+        await expect(capture).resolves.toEqual({
+            status: 'captured',
+            output: 'x'.repeat(32_768),
+            truncated: true,
+        });
+    });
+
+    it('fails closed when the atomic guard rejects a foreign pane', async () => {
+        const guardChild = mockTmuxChild();
+        const lookupChild = mockTmuxChild();
+        const utilities = new TmuxUtilities();
+        const sent = utilities.sendLiteralTextToOwnedPane(ownership, 'safe text');
+
+        guardChild.stdout.emit('data', Buffer.from('__remcli_ownership_mismatch__\n'));
+        guardChild.emit('close', 0, null);
+        await vi.waitFor(() => expect(childProcessMocks.spawn).toHaveBeenCalledTimes(2));
+        lookupChild.stdout.emit('data', Buffer.from(
+            'foreign-session\t@44\t%10\t9999\t22222222-2222-4222-8222-222222222222\n',
+        ));
+        lookupChild.emit('close', 0, null);
+
+        await expect(sent).resolves.toBe('mismatch');
+    });
+
+    it('does not execute owned-pane I/O for invalid ownership or empty input', async () => {
+        const utilities = new TmuxUtilities();
+
+        await expect(utilities.sendLiteralTextToOwnedPane({ ...ownership, paneId: 'not-a-pane' }, 'text'))
+            .resolves.toBe('unknown');
+        await expect(utilities.sendLiteralTextToOwnedPane(ownership, '')).resolves.toBe('unknown');
+        await expect(utilities.captureOwnedPane({ ...ownership, ownerMarker: 'invalid' }))
+            .resolves.toEqual({ status: 'unknown' });
+        expect(childProcessMocks.spawn).not.toHaveBeenCalled();
     });
 });
 

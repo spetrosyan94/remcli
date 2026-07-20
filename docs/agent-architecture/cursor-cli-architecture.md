@@ -255,3 +255,17 @@ lease нельзя запускать для одного native Cursor ID од�
 runtime handle с immutable tmux ownership tuple. Только после этого допускается
 отдельный terminal bridge; screen scrape не становится P2P chat-message или
 provider tool event.
+
+### Owned-pane I/O foundation
+
+Для будущего bridge `TmuxUtilities` имеет только два scoped primitive для
+полного immutable tuple `{sessionName, windowId, paneId, panePid, ownerMarker}`:
+
+- literal text input в verified pane через server-side `if-shell` guard;
+- bounded capture последних 200 terminal lines с payload limit 32 KiB.
+
+Обе операции возвращают `missing`/`mismatch`/`unknown` fail-closed, не логируют
+input или screen text и используют per-call random outcome marker, который
+terminal content не может предсказать. Это не public terminal transport: пока
+нет daemon lease, P2P API или UI, и capture не превращается в chat message,
+tool call либо history source.

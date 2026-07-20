@@ -246,6 +246,37 @@ describe.skipIf(!await isTmuxAvailable())('tmux immutable ownership integration'
         expect(host.paneId).not.toBe(runner.ownership.paneId);
     });
 
+    it('sends literal input and captures output only from the exact owned pane', async () => {
+        const server = await createIsolatedTmuxServer();
+        const host = await createManuallyOwnedHost(server, randomUUID());
+        const child = await server.utilities.spawnInOwnedTmuxSession(['cat'], {
+            hostOwnership: host,
+            windowName: 'owned-io',
+            ownershipMarker: randomUUID(),
+        });
+
+        expect(child.success).toBe(true);
+        if (!child.success) return;
+
+        const input = '--literal "; $(echo not-shell) #{pane_id}';
+        await expect(server.utilities.sendLiteralTextToOwnedPane(child.ownership, input)).resolves.toBe('applied');
+        await execFileAsync('tmux', ['-S', server.socketPath, 'send-keys', '-t', child.ownership.paneId, 'C-m']);
+
+        await vi.waitFor(async () => {
+            const captured = await server.utilities.captureOwnedPane(child.ownership);
+            expect(captured.status).toBe('captured');
+            if (captured.status === 'captured') {
+                expect(captured.output).toContain(input);
+            }
+        });
+
+        const foreign = await createManuallyOwnedWindow(server, 'foreign-io', randomUUID(), 101);
+        await expect(server.utilities.captureOwnedPane({
+            ...child.ownership,
+            ownerMarker: foreign.ownerMarker,
+        })).resolves.toEqual({ status: 'mismatch' });
+    });
+
     it('recovers a normal runner from response loss with one marked pane', async () => {
         const server = await createIsolatedTmuxServer();
         const ownerMarker = randomUUID();
