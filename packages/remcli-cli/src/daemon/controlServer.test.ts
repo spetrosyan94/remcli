@@ -16,6 +16,8 @@ import type {
     CursorHeadlessWriterLeaseAcquireResult,
     CursorNativeWriterLeaseReleaseRequest,
     CursorNativeWriterLeaseReleaseResult,
+    CursorRunnerBootstrapFailureRequest,
+    CursorRunnerBootstrapFailureResult,
     CursorRunnerPreflightRequest,
     CursorRunnerPreflightResult,
     DaemonRunnerLifecycleResult,
@@ -60,6 +62,9 @@ interface ControlServerTestOptions {
     preflightCursorRunner?: (
         request: CursorRunnerPreflightRequest,
     ) => Promise<CursorRunnerPreflightResult>;
+    reportCursorRunnerBootstrapFailure?: (
+        request: CursorRunnerBootstrapFailureRequest,
+    ) => Promise<CursorRunnerBootstrapFailureResult>;
     markDaemonRunnerStopping?: (sessionId: string) => DaemonRunnerLifecycleResult;
     completeDaemonRunnerStopping?: (sessionId: string) => Promise<DaemonRunnerLifecycleResult>;
     openCodexRemoteTui?: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
@@ -88,7 +93,11 @@ async function startControlServerForTest(options: ControlServerTestOptions = {})
     return startDaemonControlServer({
         getChildren: () => [],
         stopSession: options.stopSession ?? (() => ({ success: false })),
-        spawnSession: async () => ({ type: 'success', sessionId: 'unused' }),
+        spawnSession: async () => ({
+            type: 'success',
+            sessionId: 'unused',
+            terminal: { type: 'not-requested' },
+        }),
         requestShutdown: () => {},
         onRemcliSessionWebhook: options.onRemcliSessionWebhook ?? (() => ({ accepted: true, daemonOwned: false })),
         issueSessionRunnerCredential: options.issueSessionRunnerCredential ?? (() => undefined),
@@ -107,6 +116,7 @@ async function startControlServerForTest(options: ControlServerTestOptions = {})
         })),
         releaseCursorNativeWriterLease: options.releaseCursorNativeWriterLease ?? (async () => ({ released: false })),
         preflightCursorRunner: options.preflightCursorRunner ?? (async () => ({ type: 'rejected' })),
+        reportCursorRunnerBootstrapFailure: options.reportCursorRunnerBootstrapFailure ?? (async () => ({ accepted: false })),
         markDaemonRunnerStopping: options.markDaemonRunnerStopping ?? (() => ({ accepted: false })),
         completeDaemonRunnerStopping: options.completeDaemonRunnerStopping ?? (async () => ({ accepted: false })),
         openCodexRemoteTui: options.openCodexRemoteTui ?? (async (request) => ({
@@ -241,6 +251,42 @@ describe('startDaemonControlServer', () => {
         expect(preflightCursorRunner).toHaveBeenNthCalledWith(3, {
             ...request,
             runnerToken: 'forged-runner-token',
+        });
+    });
+
+    it('forwards only a well-formed authenticated Cursor bootstrap failure report', async () => {
+        const reportCursorRunnerBootstrapFailure = vi.fn(async (request: CursorRunnerBootstrapFailureRequest) => ({
+            accepted: request.pid === process.pid && request.runnerToken === 'valid-runner-token',
+        }));
+        const controlServer = await startControlServerForTest({ reportCursorRunnerBootstrapFailure });
+        stopServer = controlServer.stop;
+
+        const acceptedResponse = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-runner-bootstrap-failed`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent: 'cursor', pid: process.pid, runnerToken: 'valid-runner-token' }),
+        });
+        const foreignResponse = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-runner-bootstrap-failed`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent: 'cursor', pid: process.pid + 1, runnerToken: 'forged-runner-token' }),
+        });
+        const malformedResponse = await fetch(`http://127.0.0.1:${controlServer.port}/cursor-runner-bootstrap-failed`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent: 'codex', pid: process.pid, runnerToken: 'valid-runner-token' }),
+        });
+
+        expect(acceptedResponse.status).toBe(200);
+        await expect(acceptedResponse.json()).resolves.toEqual({ accepted: true });
+        expect(foreignResponse.status).toBe(403);
+        await expect(foreignResponse.json()).resolves.toEqual({ error: 'cursor-runner-bootstrap-failure-rejected' });
+        expect(malformedResponse.status).toBe(400);
+        expect(reportCursorRunnerBootstrapFailure).toHaveBeenCalledTimes(2);
+        expect(reportCursorRunnerBootstrapFailure).toHaveBeenNthCalledWith(1, {
+            agent: 'cursor',
+            pid: process.pid,
+            runnerToken: 'valid-runner-token',
         });
     });
 

@@ -17,6 +17,7 @@ import {
 import { CONCIERGE_SYSTEM_PROMPT, CONCIERGE_TOOLS } from './constants';
 import type { ConciergeDeps, ConciergeRequestBody } from './types';
 import type { CursorDaemonSelection } from '@/cursor/cursorCapabilities';
+import type { CodexDaemonSelection } from '@/codex/codexCapabilities';
 
 // ---- Helpers ----
 
@@ -31,10 +32,19 @@ function makeDeps(overrides?: Partial<ConciergeDeps>): ConciergeDeps {
             cliFingerprint: '0123456789abcdef',
         },
     };
+    const defaultCodexSelection: CodexDaemonSelection = {
+        execution: {
+            model: 'gpt-5.6-terra',
+            reasoningEffort: 'high',
+            catalogVersion: 'codex-catalog-v1',
+        },
+        permissionMode: 'workspace-write',
+    };
     return {
         listSessions: () => [],
         spawnSession: async () => ({ type: 'success', sessionId: 'sess-123' }),
         getDefaultCursorSelection: async () => defaultCursorSelection,
+        getDefaultCodexSelection: async () => defaultCodexSelection,
         getDaemonStatus: () => ({ version: '1.0.0', uptimeSec: 42, port: 12345, tunnelUrl: null }),
         ...overrides,
     };
@@ -300,6 +310,53 @@ describe('executeToolCall — spawn_agent_session validation', () => {
         );
 
         expect(result).toEqual(expect.objectContaining({ error: expect.stringMatching(/catalog could not be validated/i) }));
+        expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it('spawns Codex with a daemon-validated native default', async () => {
+        const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'codex-session' }));
+        const getDefaultCodexSelection = vi.fn(async (): Promise<CodexDaemonSelection> => ({
+            execution: {
+                model: 'gpt-5.6-terra',
+                reasoningEffort: 'high',
+                catalogVersion: 'fresh-codex-catalog',
+            },
+            permissionMode: 'workspace-write',
+        }));
+
+        const result = await executeToolCall(
+            'spawn_agent_session',
+            JSON.stringify({ agent: 'codex', directory: process.cwd() }),
+            makeDeps({ spawnSession: spawn, getDefaultCodexSelection }),
+        );
+
+        expect(getDefaultCodexSelection).toHaveBeenCalledOnce();
+        expect(spawn).toHaveBeenCalledWith({
+            agent: 'codex',
+            directory: process.cwd(),
+            approvedNewDirectoryCreation: false,
+            permissionMode: 'workspace-write',
+            codexExecution: {
+                model: 'gpt-5.6-terra',
+                reasoningEffort: 'high',
+                catalogVersion: 'fresh-codex-catalog',
+            },
+        });
+        expect(result).toEqual({ type: 'success', sessionId: 'codex-session' });
+    });
+
+    it('does not spawn Codex when no live native default can be validated', async () => {
+        const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'codex-session' }));
+        const result = await executeToolCall(
+            'spawn_agent_session',
+            JSON.stringify({ agent: 'codex', directory: process.cwd() }),
+            makeDeps({
+                spawnSession: spawn,
+                getDefaultCodexSelection: async () => null,
+            }),
+        );
+
+        expect(result).toEqual(expect.objectContaining({ error: expect.stringMatching(/live capability selection/i) }));
         expect(spawn).not.toHaveBeenCalled();
     });
 });

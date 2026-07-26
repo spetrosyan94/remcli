@@ -76,6 +76,8 @@ const machineGetCodexCapabilitiesMock = vi.hoisted(() => vi.fn());
 const machineGetCursorCapabilitiesMock = vi.hoisted(() => vi.fn());
 const machineListRecentDirectoriesMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
+const toastErrorMock = vi.hoisted(() => vi.fn());
+const toastWarningMock = vi.hoisted(() => vi.fn());
 const protocolSessions = vi.hoisted(() => ({ current: [] as unknown[] }));
 const navigationState = vi.hoisted(() => ({ current: null as unknown }));
 
@@ -96,7 +98,7 @@ vi.mock('react-router', () => ({
 }));
 
 vi.mock('sonner', () => ({
-    toast: { error: vi.fn() },
+    toast: { error: toastErrorMock, warning: toastWarningMock },
 }));
 
 vi.mock('@/components/kit', () => ({
@@ -342,6 +344,8 @@ beforeEach(() => {
     machineSpawnNewSessionMock.mockReset();
     machineSpawnNewSessionMock.mockResolvedValue({ type: 'success', sessionId: 'session-1' });
     navigateMock.mockReset();
+    toastErrorMock.mockReset();
+    toastWarningMock.mockReset();
     protocolSessions.current = [];
     navigationState.current = null;
 });
@@ -412,6 +416,118 @@ describe('NewSessionPage navigation state and shared access-level label', () => 
         expect(gemini.props.disabled).toBe(true);
         expect(gemini.props['aria-describedby']).toBe('deferred-provider-note');
         expect(gemini.props['data-provider-availability']).toBe('deferred');
+    });
+
+    it('warns about an unavailable terminal and still navigates after creating a session', async () => {
+        machineGetCodexCapabilitiesMock.mockResolvedValue({
+            agent: 'codex',
+            status: 'ready',
+            fetchedAt: 1,
+            expiresAt: 2,
+            catalogVersion: 'catalog-1',
+            permissionModes: ['workspace-write'],
+            models: [{
+                id: 'gpt-5.6-terra',
+                displayName: 'GPT-5.6-Terra',
+                defaultReasoningEffort: 'high',
+                supportedReasoningEfforts: ['high'],
+                isDefault: true,
+            }],
+        } satisfies CodexCapabilitiesSnapshot);
+        machineSpawnNewSessionMock.mockResolvedValue({
+            type: 'success',
+            sessionId: 'session-1',
+            terminal: { type: 'unavailable', error: 'terminal-unavailable' },
+        });
+        componentHooks.enableEffects();
+
+        renderNewSessionPage();
+        await flushPendingEffects();
+        const page = renderNewSessionPage();
+        const startButton = findElement(page, (element) => element.type === 'button'
+            && elementText(element) === 'start:codex');
+
+        startButton.props.onClick?.();
+        await flushPendingEffects();
+
+        expect(toastWarningMock).toHaveBeenCalledWith('new.terminalUnavailable');
+        expect(navigateMock).toHaveBeenCalledWith('/session/session-1', expect.objectContaining({ replace: true }));
+        expect(toastWarningMock.mock.invocationCallOrder[0]).toBeLessThan(navigateMock.mock.invocationCallOrder[0]);
+    });
+
+    it('does not navigate or warn when spawn transport rejects a malformed success result', async () => {
+        machineGetCodexCapabilitiesMock.mockResolvedValue({
+            agent: 'codex',
+            status: 'ready',
+            fetchedAt: 1,
+            expiresAt: 2,
+            catalogVersion: 'catalog-1',
+            permissionModes: ['workspace-write'],
+            models: [{
+                id: 'gpt-5.6-terra',
+                displayName: 'GPT-5.6-Terra',
+                defaultReasoningEffort: 'high',
+                supportedReasoningEfforts: ['high'],
+                isDefault: true,
+            }],
+        } satisfies CodexCapabilitiesSnapshot);
+        machineSpawnNewSessionMock.mockResolvedValue({
+            type: 'error',
+            errorMessage: 'Spawn session RPC returned an invalid response',
+        });
+        componentHooks.enableEffects();
+
+        renderNewSessionPage();
+        await flushPendingEffects();
+        const page = renderNewSessionPage();
+        const startButton = findElement(page, (element) => element.type === 'button'
+            && elementText(element) === 'start:codex');
+
+        startButton.props.onClick?.();
+        await flushPendingEffects();
+
+        expect(navigateMock).not.toHaveBeenCalled();
+        expect(toastWarningMock).not.toHaveBeenCalled();
+        expect(toastErrorMock).toHaveBeenCalledTimes(1);
+        expect(toastErrorMock).toHaveBeenCalledWith('Spawn session RPC returned an invalid response');
+    });
+
+    it('keeps navigation when a resumed Cursor session reports an unavailable terminal', async () => {
+        navigationState.current = {
+            cursorResume: {
+                machineId: 'machine-1',
+                directory: '/workspace/remcli',
+                resumeSessionId: 'cursor-native-session-id',
+                resumeSessionName: 'Cursor lifecycle review',
+            },
+        };
+        machineGetCursorCapabilitiesMock.mockResolvedValue({
+            agent: 'cursor',
+            status: 'ready',
+            fetchedAt: 1,
+            expiresAt: 2,
+            catalogVersion: 'cursor-catalog-1',
+            models: [{ id: 'auto', displayName: 'Auto', isDefault: true }],
+        } satisfies CursorCapabilitiesSnapshot);
+        machineSpawnNewSessionMock.mockResolvedValue({
+            type: 'success',
+            sessionId: 'session-1',
+            terminal: { type: 'unavailable', error: 'terminal-unavailable' },
+        });
+        componentHooks.enableEffects();
+
+        renderNewSessionPage();
+        await flushPendingEffects();
+        const page = renderNewSessionPage();
+        const resumeButton = findElement(page, (element) => element.type === 'button'
+            && elementText(element).includes('new.resumeTitle'));
+
+        resumeButton.props.onClick?.();
+        await flushPendingEffects();
+
+        expect(toastWarningMock).toHaveBeenCalledWith('new.terminalUnavailable');
+        expect(navigateMock).toHaveBeenCalledWith('/session/session-1', expect.objectContaining({ replace: true }));
+        expect(toastWarningMock.mock.invocationCallOrder[0]).toBeLessThan(navigateMock.mock.invocationCallOrder[0]);
     });
 
 });

@@ -224,6 +224,7 @@ graph TB
 |--------|-----------------|
 | `run.ts` | Оркестрация запуска/остановки: lock-файл, P2P-сервер, QR-код, туннель, связывание модулей ниже |
 | `sessionSpawner.ts` | Фабрика менеджера сессий: запуск/остановка/трекинг дочерних сессий, окна tmux, очистка |
+| `providerSpawnRequest.ts` | Строгая provider-discriminated граница encrypted machine-RPC перед capability validation и process spawn |
 | `src/daemon/sessions/listAgentSessions.ts` | Сканирует on-disk хранилища сессий агентов (Claude/Codex/Cursor/Gemini) для пикера resume (RPC `list-agent-sessions`) |
 | `machineSocket.ts` | Machine-scoped Socket.IO-клиент, подключающийся к собственному P2P-серверу демона; регистрирует RPC-обработчики (`spawn-session` и др.) |
 | `heartbeat.ts` | Интервальный цикл: удаляет мёртвые сессии, автообновляется при смене версии CLI (запускает свежий демон, завершает себя), обнаруживает чужие демоны, пишет heartbeat в файл состояния |
@@ -335,9 +336,21 @@ flowchart LR
 - Демоном (в фоне).
 - Удалёнными запросами по RPC (из mobile/web через подключение машины).
 
-Все сессии, запущенные демоном, работают внутри **tmux** (обязательная зависимость). Первая сессия создаёт tmux-сессию с именем `remcli`, где команда — единственное окно. Последующие сессии добавляют новые окна в ту же tmux-сессию. На macOS при запуске первой сессии автоматически открывается Terminal.app/iTerm2.
+Каждая daemon-owned сессия получает собственный immutable tmux ownership tuple
+(`sessionName`, window, pane, PID и owner marker). Display name tmux не
+используется как идентификатор для destructive cleanup. На macOS daemon может
+попросить Terminal.app открыть attach к owned pane: результат явно возвращается
+как `opened`, `unavailable` или `not-requested`; невозможность открыть окно не
+выдаётся за ошибку запуска agent runner.
 
-При остановке демон убивает все отслеживаемые дочерние процессы и tmux-сессию `remcli`.
+При stop демон освобождает только подтверждённо owned child process/pane. При
+`unknown` или `mismatch` tracking сохраняется для безопасной повторной попытки,
+а не расширяется до пользовательского Terminal window или чужой tmux-сессии.
+
+Внешний machine-RPC проходит `providerSpawnRequest.ts` до capability discovery:
+общие lifecycle fields отделены от provider-native schemas. Поэтому Codex
+получает только app-server selection, Cursor - только headless stream controls,
+а daemon-issued runner identity никогда не приходит от web-клиента.
 
 Запуск сессий демоном использует `registerCommonHandlers` для предоставления контролируемой RPC-поверхности (shell-команды, файловые операции, помощники поиска/diff).
 
@@ -350,7 +363,7 @@ flowchart LR
 | Claude Code | Реализован путь, acceptance pending | `--resume <id>`; история исходной сессии реплеится в P2P-хранилище (`src/claude/utils/replaySessionHistory.ts`). Отдельные provider-specific daemon-boundary, real CLI и Browser fixture gates ещё не приняты. |
 | Cursor | Lifecycle D/I/L/UI-F принят; capability UX развивается | `agent --resume <id>` для подтверждённого native Cursor ID на каждый headless turn (`src/cursor/cursorQuery.ts`); активный daemon wrapper дедуплицируется по этому ID и workspace, а fresh daemon wrapper проходит capability-bound preflight до P2P creation. При `Ctrl+C` runner credential-подтверждённо блокирует повторный resume, отправляет финальный P2P lifecycle и только затем освобождает свой immutable tmux pane; повторный Stop отклоняется, а daemon shutdown ждёт completion ограниченное время и fail-closed при таймауте. Если runner уже умер до callback, reconcile допустим только после независимого immutable proof отсутствия его owned pane/session. Неподтверждённый ownership остаётся fail-closed. `agent models` даёт daemon account-visible catalog; Web отправляет exact `cursorExecution { model, catalogVersion }`, который daemon fresh-валидирует до spawn. Для same-daemon/same-workspace resume initial metadata получает provisional ссылку на предыдущую Remcli P2P session, поэтому Web сразу показывает её существующую ленту перед child сообщениями; связь подтверждается matching `system/init` + bind или удаляется до fresh turn/archive при failed/aborted resume. Если bounded rollback metadata не принят, wrapper завершает сессию fail-closed. Fake native CLI, encrypted daemon-RPC, Browser fixture и opt-in real lifecycle/negative hardening приняты. |
 | Gemini | Реализован путь, acceptance pending | ACP `session/load`, если агент декларирует capability `loadSession`; иначе откат к новой сессии (`src/agent/acp/AcpBackend.ts`). Отдельные ACP daemon-boundary, real provider и Browser fixture gates ещё не приняты. |
-| Codex | Поддерживается, частичная lifecycle acceptance | Remcli использует официальный Codex app-server: daemon поднимает shared `codex app-server --listen ws://127.0.0.1:<port>`, `runCodex.ts` делает `thread/start` или attach-only `thread/resume`. Daemon-owned resume сначала возвращает тот же native thread и открывает один shared remote TUI без искусственного `turn/start`; следующий реальный prompt идёт через `turn/start` или `turn/steer`. При stale state либо transient shared connect/attach error он один раз переключается на typed private app-server по stdio; private fallback сохраняет context, но TUI не открывается, а окончательная ошибка видна в чате. Capability machine-RPC, Browser fixture, opt-in real app-server resume и daemon/P2P lifecycle gates проверены; visual-baseline reconciliation остаётся в плане. `codex mcp-server` и `codex-reply` не используются для chat/resume transport; `remcli-mcp` остаётся отдельным tool bridge. Детали: [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) |
+| Codex | Поддерживается, частичная lifecycle acceptance | Remcli использует официальный Codex app-server: daemon поднимает shared `codex app-server --listen ws://127.0.0.1:<port>`, `runCodex.ts` делает `thread/start` или attach-only `thread/resume`. Daemon-owned resume сначала возвращает тот же native thread и открывает один shared remote TUI без искусственного `turn/start`; следующий реальный prompt идёт через `turn/start` или `turn/steer`. Session-level saved tuple сохраняет original model/reasoning/access, Resume собирает его с fresh catalog version и fail-closed при legacy/unsupported selection, а daemon и app-server заново валидируют его перед spawn. При stale state либо transient shared connect/attach error он один раз переключается на typed private app-server по stdio; private fallback сохраняет context, но TUI не открывается, а окончательная ошибка видна в чате. Capability machine-RPC, Browser fixture, opt-in real app-server resume и daemon/P2P lifecycle gates проверены; visual-baseline reconciliation остаётся в плане. `codex mcp-server` и `codex-reply` не используются для chat/resume transport; `remcli-mcp` остаётся отдельным tool bridge. Детали: [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) |
 
 ### Контракт resume picker
 

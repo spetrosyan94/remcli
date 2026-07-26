@@ -37,6 +37,12 @@ export interface CodexExecutionConfig {
     catalogVersion: string;
 }
 
+/** Fresh daemon-only Codex selection used by internal spawn callers. */
+export interface CodexDaemonSelection {
+    execution: CodexExecutionConfig;
+    permissionMode: CodexSandbox;
+}
+
 export interface CodexModelCapability {
     id: string;
     displayName: string;
@@ -264,6 +270,37 @@ export function getDefaultCodexExecution(snapshot: CodexCapabilitiesSnapshot): C
     };
 }
 
+/**
+ * Choose only an app-server-advertised default model, reasoning effort and
+ * sandbox policy. The result is safe for daemon-owned callers after a fresh
+ * capability query.
+ */
+export function getDefaultCodexSelection(snapshot: CodexCapabilitiesSnapshot): CodexDaemonSelection | null {
+    const execution = getDefaultCodexExecution(snapshot);
+    if (!execution) return null;
+
+    // Concierge is an LLM-initiated caller. It may select a compatible native
+    // sandbox, but it must never make the session more privileged than the
+    // least safe choice. `danger-full-access` stays an explicit user choice.
+    const permissionMode = (['read-only', 'workspace-write'] as const).find((mode) => (
+        snapshot.permissionModes.includes(mode)
+        && snapshot.approvalPolicies.includes(resolveApprovalPolicyForPermissionMode(mode))
+    ));
+    if (!permissionMode) return null;
+
+    try {
+        validateCodexExecution(
+            snapshot,
+            execution,
+            permissionMode,
+            resolveApprovalPolicyForPermissionMode(permissionMode),
+        );
+        return { execution, permissionMode };
+    } catch {
+        return null;
+    }
+}
+
 export function validateCodexExecution(
     snapshot: CodexCapabilitiesSnapshot,
     execution: CodexExecutionConfig | undefined,
@@ -344,13 +381,18 @@ export class CodexCapabilitiesService {
         execution: CodexExecutionConfig | undefined,
         permissionMode: CodexSandbox,
     ): Promise<void> {
-        const snapshot = await this.getCapabilities();
+        const snapshot = await this.getCapabilities(true);
         validateCodexExecution(
             snapshot,
             execution,
             permissionMode,
             resolveApprovalPolicyForPermissionMode(permissionMode),
         );
+    }
+
+    async getDefaultSelection(): Promise<CodexDaemonSelection | null> {
+        const snapshot = await this.getCapabilities(true);
+        return getDefaultCodexSelection(snapshot);
     }
 
     private async refresh(

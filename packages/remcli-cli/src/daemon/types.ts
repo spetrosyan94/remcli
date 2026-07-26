@@ -89,6 +89,18 @@ export type CursorRunnerPreflightResult =
   | CursorRunnerPreflightResponse
   | { type: 'rejected' };
 
+/** Capability-bound report from Cursor before it has created any P2P metadata. */
+export interface CursorRunnerBootstrapFailureRequest {
+  agent: 'cursor';
+  pid: number;
+  runnerToken: string;
+}
+
+/** The daemon only acknowledges a report after exact owned-runner validation. */
+export interface CursorRunnerBootstrapFailureResult {
+  accepted: boolean;
+}
+
 /** Parent relation captured only after daemon-owned native Cursor binding and workspace validation. */
 export interface CursorResumeLineage {
   nativeResumeSessionId: string;
@@ -217,6 +229,18 @@ export interface DaemonRunnerLifecycleResult {
   accepted: boolean;
 }
 
+/** Terminal.app is optional for a daemon runner, but its launch outcome is explicit. */
+export type DaemonTerminalLaunchResult =
+  | { type: 'opened' }
+  | { type: 'unavailable'; error: 'terminal-unavailable' }
+  | { type: 'not-requested' };
+
+/** Spawn outcome separates daemon-runner readiness from optional Terminal.app availability. */
+export type DaemonSpawnSessionResult =
+  | { type: 'success'; sessionId: string; terminal: DaemonTerminalLaunchResult }
+  | { type: 'requestToApproveDirectoryCreation'; directory: string }
+  | { type: 'error'; errorMessage: string };
+
 export type CodexThreadResumeResult =
   | { type: 'reuse-active-wrapper'; wrapper: NativeCodexThreadWrapper }
   | { type: 'wrapper-starting'; nativeThreadId: string }
@@ -246,6 +270,8 @@ export interface TrackedSession {
   managedCodexRemoteTui?: TmuxPaneOwnership;
   /** Immutable ownership proof for the future interactive Cursor TUI bridge. */
   managedCursorInteractiveTui?: TmuxPaneOwnership;
+  /** macOS Terminal.app launch state for the daemon-owned runner, when attempted. */
+  terminalLaunch?: DaemonTerminalLaunchResult;
   pid: number;
   childProcess?: ChildProcess;
   error?: string;

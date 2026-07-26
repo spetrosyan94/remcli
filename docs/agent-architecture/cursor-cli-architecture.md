@@ -235,11 +235,21 @@ Remcli передаёт в phone chat подтверждённый terminal resu
 tool/approval events. Добавление такого mirror требует отдельного
 provider-specific дизайна, контракта и real gate.
 
+Cursor-адаптер ограничен `src/cursor/*` и активным native transport
+`agent --print --output-format stream-json`. До process spawn
+`providerSpawnRequest.ts` принимает только `agent: "cursor"`, validated
+`cursorExecution` и provider-native launch controls; Codex sandbox/model,
+внешний runner identity и произвольный terminal I/O не пересекают эту границу.
+Daemon сам добавляет private runner identity только после capability validation.
+
 Daemon-owned tmux pane для Cursor сейчас является lifecycle host для
 `agent --print`, а не интерактивным native TUI. После `Ctrl+C` он должен
 безопасно завершить wrapper; параллельный `agent --resume` не запускается.
-Полноценный terminal/phone mirror возможен только после отдельного решения для
-PTY streaming, изоляции сессии и host-side confirmation.
+Owned-pane primitives и private interactive host остаются только lifecycle
+infrastructure: они не опубликованы через P2P, `runCursor` или web UI. Нельзя
+превращать `capture-pane` в provider message и нельзя строить generic PTY-слой
+ради parity с Codex. Product mirror возможен только после документированного
+Cursor remote/attach transport либо отдельного принятого security design.
 
 ## Интерактивный native TUI: подтверждённая база
 

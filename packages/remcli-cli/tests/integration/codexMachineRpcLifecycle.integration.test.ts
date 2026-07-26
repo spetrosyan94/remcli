@@ -604,7 +604,11 @@ describe('Codex encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_M
             createSpawnParams(selection),
         );
         expect(isSpawnResult(spawned)).toBe(true);
-        expect(spawned).toEqual({ type: 'success', sessionId: expect.any(String) });
+        expect(spawned).toEqual({
+            type: 'success',
+            sessionId: expect.any(String),
+            terminal: { type: 'not-requested' },
+        });
         if (!isSpawnResult(spawned) || !spawned.sessionId) {
             throw new Error('Controlled Codex initial spawn did not return a Remcli session ID.');
         }
@@ -624,7 +628,11 @@ describe('Codex encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_M
             'spawn-remcli-session',
             createSpawnParams(selection, TEST_NATIVE_THREAD_ID),
         );
-        expect(duplicateResume).toEqual({ type: 'success', sessionId: firstRemcliSessionId });
+        expect(duplicateResume).toEqual({
+            type: 'success',
+            sessionId: firstRemcliSessionId,
+            terminal: { type: 'not-requested' },
+        });
         expect(harness.getChildren()).toHaveLength(1);
         expect(harness.fixture.getRequests('thread/resume')).toHaveLength(0);
 
@@ -641,7 +649,11 @@ describe('Codex encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_M
             createSpawnParams(selection, TEST_NATIVE_THREAD_ID),
         );
         expect(isSpawnResult(resumed)).toBe(true);
-        expect(resumed).toEqual({ type: 'success', sessionId: expect.any(String) });
+        expect(resumed).toEqual({
+            type: 'success',
+            sessionId: expect.any(String),
+            terminal: { type: 'not-requested' },
+        });
         if (!isSpawnResult(resumed) || !resumed.sessionId) {
             throw new Error('Controlled Codex resume did not return a Remcli session ID.');
         }

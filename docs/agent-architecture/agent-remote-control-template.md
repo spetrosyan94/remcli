@@ -16,6 +16,30 @@ Claude Code, Codex, Gemini, Cursor и будущие агенты.
 - Как этот поток соотносится с нативным CLI/TUI агента.
 - Что считается сохранением контекста и resume.
 
+## Граница адаптера
+
+```text
+encrypted Remcli machine-RPC -> provider-selected request -> native provider adapter -> native CLI/API
+```
+
+- Product layer владеет шифрованием, P2P-сессией, lifecycle, duplicate guard и
+  показом typed outcome в UI.
+- Адаптер владеет только нативным контрактом одного provider: capability
+  discovery, допустимыми options, argv/IPC, native session id и разбором
+  событий.
+- В адаптер попадает только его строгая provider-selected schema. Поля другого
+  provider, daemon-issued credentials и terminal I/O из P2P не проходят эту
+  границу.
+- Persisted session selection хранит только native model/reasoning/access,
+  никогда не старый catalog version. Resume обязан пересобрать запрос по
+  свежему capability snapshot и fail-closed при missing или unsupported tuple;
+  нельзя подставлять live provider default. Такой selection не является
+  credential и не заменяет daemon/provider validation.
+- Не создавать общий PTY/terminal transport ради одинакового UX. Live terminal
+  mirror допустим только там, где provider даёт надёжный документированный
+  remote/attach или structured transport, и только после отдельной security и
+  real-host приёмки.
+
 ## Runtime Ownership
 
 - Кто владеет процессом агента: daemon, session process, external app-server,

@@ -350,6 +350,16 @@ export type Metadata = {
   agentSessionId?: string, // Native agent session/thread ID for the current flavor
   claudeSessionId?: string, // Claude Code session ID
   codexSessionId?: string, // Codex thread ID
+  /**
+   * Daemon-validated native configuration used to create this Codex wrapper.
+   * catalogVersion is intentionally omitted: resume validates this tuple
+   * against the live provider capabilities before it starts a runner.
+   */
+  codexExecution?: {
+    model: string,
+    reasoningEffort?: string,
+    permissionMode: Extract<PermissionMode, 'read-only' | 'workspace-write' | 'danger-full-access'>,
+  },
   cursorSessionId?: string, // Cursor agent session ID
   geminiSessionId?: string, // Gemini ACP session ID
   /** Trusted daemon-lifetime P2P parent for a Cursor native resume. */

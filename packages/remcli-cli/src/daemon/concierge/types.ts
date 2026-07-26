@@ -6,6 +6,7 @@
 import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 import { CONCIERGE_TOOLS } from '@/daemon/concierge/constants';
 import type { CursorDaemonSelection } from '@/cursor/cursorCapabilities';
+import type { CodexDaemonSelection } from '@/codex/codexCapabilities';
 
 export interface ConciergeConfig {
     /** Base URL of the OpenAI-compatible server, e.g. http://127.0.0.1:1234/v1 */
@@ -33,6 +34,7 @@ export interface ConciergeDeps {
     listSessions: () => ConciergeSessionInfo[];
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
     getDefaultCursorSelection: () => Promise<CursorDaemonSelection | null>;
+    getDefaultCodexSelection: () => Promise<CodexDaemonSelection | null>;
     getDaemonStatus: () => ConciergeDaemonStatus;
 }
 

@@ -162,6 +162,14 @@ export type ApiEphemeralUpdate = z.infer<typeof ApiEphemeralUpdateSchema>;
 
 // ─── Session metadata / agent state (decrypted payloads) ─────────
 
+export const CodexSessionExecutionSchema = z.object({
+    model: z.string().min(1),
+    reasoningEffort: z.string().min(1).optional(),
+    permissionMode: z.enum(['read-only', 'workspace-write', 'danger-full-access']),
+});
+
+export type CodexSessionExecution = z.infer<typeof CodexSessionExecutionSchema>;
+
 export const MetadataSchema = z.object({
     path: z.string(),
     host: z.string(),
@@ -180,6 +188,7 @@ export const MetadataSchema = z.object({
     agentSessionId: z.string().optional(),
     claudeSessionId: z.string().optional(), // Claude Code session ID
     codexSessionId: z.string().optional(),
+    codexExecution: CodexSessionExecutionSchema.optional(),
     cursorSessionId: z.string().optional(),
     geminiSessionId: z.string().optional(),
     resumedFromRemcliSessionId: z.string().min(1).optional(),

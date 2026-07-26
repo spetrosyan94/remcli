@@ -147,6 +147,7 @@ export type {
     Session,
     Machine,
     SessionMetadata,
+    CodexSessionExecution,
     AgentState,
     MachineMetadata,
     ApiMessage,

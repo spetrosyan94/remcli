@@ -17,14 +17,17 @@ import {
     type CursorHeadlessWriterLeaseAcquireResult,
     type CursorNativeWriterLeaseReleaseRequest,
     type CursorNativeWriterLeaseReleaseResult,
-  type CursorRunnerPreflightRequest,
-  type CursorRunnerPreflightResponse,
-  type DaemonRunnerLifecycleResult,
-  type NativeCodexThreadBinding,
-  type NativeCodexThreadBindingResult,
-  type NativeCursorSessionBinding,
-  type NativeCursorSessionBindingResult,
-  type TrackedSession,
+    type CursorRunnerBootstrapFailureRequest,
+    type CursorRunnerBootstrapFailureResult,
+    type CursorRunnerPreflightRequest,
+    type CursorRunnerPreflightResponse,
+    type DaemonRunnerLifecycleResult,
+    type DaemonTerminalLaunchResult,
+    type NativeCodexThreadBinding,
+    type NativeCodexThreadBindingResult,
+    type NativeCursorSessionBinding,
+    type NativeCursorSessionBindingResult,
+    type TrackedSession,
 } from './types';
 import { getSessionRunnerCredential, rememberSessionRunnerCredential } from './p2p/p2pRunnerCredentials';
 import type { PairingRekeyApprovalResult } from './p2p/pairingRekey';
@@ -40,6 +43,7 @@ export type DaemonResponse<T> =
 interface SpawnDaemonSessionBody {
   success?: boolean;
   sessionId?: string;
+  terminal?: DaemonTerminalLaunchResult;
   errorMessage?: string;
   type?: string;
   directory?: string;
@@ -174,6 +178,20 @@ export async function preflightDaemonCursorRunner(
   }
 
   return daemonPost<CursorRunnerPreflightResponse>('/cursor-runner-preflight', {
+    ...request,
+    runnerToken,
+  });
+}
+
+export async function reportDaemonCursorRunnerBootstrapFailure(
+  request: Omit<CursorRunnerBootstrapFailureRequest, 'runnerToken'>,
+): Promise<DaemonResponse<CursorRunnerBootstrapFailureResult>> {
+  const runnerToken = process.env.REMCLI_DAEMON_RUNNER_TOKEN;
+  if (!runnerToken) {
+    return { ok: false, error: MISSING_DAEMON_RUNNER_CAPABILITY_ERROR };
+  }
+
+  return daemonPost<CursorRunnerBootstrapFailureResult>('/cursor-runner-bootstrap-failed', {
     ...request,
     runnerToken,
   });

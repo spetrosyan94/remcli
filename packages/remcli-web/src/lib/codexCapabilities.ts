@@ -2,6 +2,7 @@ import type {
     CodexCapabilitiesSnapshot,
     CodexExecutionConfig,
     CodexModelCapability,
+    CodexSessionExecution,
     PermissionMode,
 } from "@/lib/protocol";
 
@@ -40,19 +41,35 @@ export function getDefaultCodexExecution(capabilities: CodexCapabilitiesSnapshot
     return model ? createCodexExecutionForModel(capabilities, model.id) : null;
 }
 
-export function getDefaultCodexPermissionMode(capabilities: CodexCapabilitiesSnapshot): CodexPermissionMode | null {
-    if (capabilities.status !== "ready") return null;
-
-    return capabilities.permissionModes.includes("workspace-write")
-        ? "workspace-write"
-        : capabilities.permissionModes[0] ?? null;
-}
-
-export function getDefaultCodexResumeSelection(
+export function getCodexResumeSelection(
     capabilities: CodexCapabilitiesSnapshot,
+    storedExecution: CodexSessionExecution | undefined,
 ): CodexResumeSelection | null {
-    const codexExecution = getDefaultCodexExecution(capabilities);
-    const permissionMode = getDefaultCodexPermissionMode(capabilities);
+    if (!storedExecution) return null;
+
+    if (capabilities.status !== "ready" || !capabilities.catalogVersion) return null;
+    const model = capabilities.models.find((item) => item.id === storedExecution.model);
+    if (!model) return null;
+
+    // A missing effort is valid only for providers that expose no reasoning
+    // selector for this model. It must never turn into a current default on
+    // resume, because that changes the saved execution contract.
+    if (model.supportedReasoningEfforts.length === 0) {
+        if (storedExecution.reasoningEffort !== undefined) return null;
+    } else if (
+        !storedExecution.reasoningEffort
+        || !model.supportedReasoningEfforts.includes(storedExecution.reasoningEffort)
+    ) {
+        return null;
+    }
+
+    const codexExecution = createCodexExecutionForModel(
+        capabilities,
+        storedExecution.model,
+        storedExecution.reasoningEffort,
+    );
+    const permissionMode = storedExecution.permissionMode;
+    if (!capabilities.permissionModes.includes(permissionMode)) return null;
 
     return codexExecution && permissionMode ? { codexExecution, permissionMode } : null;
 }

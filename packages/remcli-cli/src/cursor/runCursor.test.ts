@@ -115,6 +115,8 @@ const testState = vi.hoisted(() => {
         response: null as { id: string } | null,
         initialSession: null as TestSession | null,
         reconnectionOptions: null as ReconnectionOptions | null,
+        readSettings: vi.fn(),
+        createApiClient: vi.fn(),
         getOrCreateSession: vi.fn(),
         sessionSyncClient: vi.fn(),
         acquireDaemonRunnerCredential: vi.fn(),
@@ -123,6 +125,7 @@ const testState = vi.hoisted(() => {
         acquireDaemonCursorHeadlessWriterLease: vi.fn(),
         releaseDaemonCursorNativeWriterLease: vi.fn(),
         preflightDaemonCursorRunner: vi.fn(),
+        reportDaemonCursorRunnerBootstrapFailure: vi.fn(),
         reportDaemonRunnerStopping: vi.fn(),
         reportDaemonRunnerStopped: vi.fn(),
         verifyCursorRunnerIdentity: vi.fn(),
@@ -136,6 +139,13 @@ const testState = vi.hoisted(() => {
             this.response = null;
             this.initialSession = null;
             this.reconnectionOptions = null;
+            this.readSettings.mockReset();
+            this.readSettings.mockResolvedValue({ machineId: 'test-machine' });
+            this.createApiClient.mockReset();
+            this.createApiClient.mockImplementation(async () => ({
+                getOrCreateSession: testState.getOrCreateSession,
+                sessionSyncClient: testState.sessionSyncClient,
+            }));
             this.getOrCreateSession.mockReset();
             this.getOrCreateSession.mockImplementation(async () => testState.response);
             this.sessionSyncClient.mockReset();
@@ -156,6 +166,8 @@ const testState = vi.hoisted(() => {
                 data: { released: true },
             });
             this.preflightDaemonCursorRunner.mockReset();
+            this.reportDaemonCursorRunnerBootstrapFailure.mockReset();
+            this.reportDaemonCursorRunnerBootstrapFailure.mockResolvedValue({ ok: true, data: { accepted: true } });
             this.reportDaemonRunnerStopping.mockReset();
             this.reportDaemonRunnerStopped.mockReset();
             this.reportDaemonRunnerStopping.mockResolvedValue({ ok: false, error: 'test runner lifecycle unavailable' });
@@ -174,15 +186,12 @@ const testState = vi.hoisted(() => {
 
 vi.mock('@/api/api', () => ({
     ApiClient: {
-        create: vi.fn(async () => ({
-            getOrCreateSession: testState.getOrCreateSession,
-            sessionSyncClient: testState.sessionSyncClient,
-        })),
+        create: testState.createApiClient,
     },
 }));
 
 vi.mock('@/persistence', () => ({
-    readSettings: vi.fn(async () => ({ machineId: 'test-machine' })),
+    readSettings: testState.readSettings,
 }));
 
 vi.mock('@/utils/createSessionMetadata', () => ({
@@ -198,6 +207,7 @@ vi.mock('@/daemon/controlClient', () => ({
     acquireDaemonCursorHeadlessWriterLease: testState.acquireDaemonCursorHeadlessWriterLease,
     bindDaemonCursorSession: testState.bindDaemonCursorSession,
     preflightDaemonCursorRunner: testState.preflightDaemonCursorRunner,
+    reportDaemonCursorRunnerBootstrapFailure: testState.reportDaemonCursorRunnerBootstrapFailure,
     releaseDaemonCursorNativeWriterLease: testState.releaseDaemonCursorNativeWriterLease,
     reportDaemonRunnerStopping: testState.reportDaemonRunnerStopping,
     reportDaemonRunnerStopped: testState.reportDaemonRunnerStopped,
@@ -463,6 +473,118 @@ describe('runCursor lifecycle', () => {
         expect(testState.acquireDaemonRunnerCredential).not.toHaveBeenCalled();
     });
 
+    it('reports an authenticated rejected preflight before P2P setup or a native Cursor turn', async () => {
+        process.env.REMCLI_DAEMON_RUNNER_TOKEN = 'daemon-owned-runner-token';
+        testState.preflightDaemonCursorRunner.mockResolvedValue({
+            ok: false,
+            error: 'daemon runner preflight rejected',
+        });
+
+        await runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+            execution: {
+                model: 'controlled-cursor-model',
+                catalogVersion: 'controlled-cursor-catalog',
+            },
+            launchControls: { ...TEST_CURSOR_LAUNCH_CONTROLS },
+            runner: { ...TEST_CURSOR_RUNNER },
+        });
+
+        expect(testState.reportDaemonCursorRunnerBootstrapFailure).toHaveBeenCalledWith({
+            agent: 'cursor',
+            pid: process.pid,
+        });
+        expect(testState.createSessionMetadata).not.toHaveBeenCalled();
+        expect(testState.getOrCreateSession).not.toHaveBeenCalled();
+        expect(testState.runCursorTurn).not.toHaveBeenCalled();
+    });
+
+    it('reports authenticated bootstrap failure when daemon settings have no machine id without cleaning up a session', async () => {
+        process.env.REMCLI_DAEMON_RUNNER_TOKEN = 'daemon-owned-runner-token';
+        testState.readSettings.mockResolvedValueOnce({});
+        const processExit = vi.spyOn(process, 'exit').mockImplementation((() => {
+            throw new Error('test process exit');
+        }) as never);
+
+        try {
+            await expect(runCursor({
+                credentials: createCredentials(),
+                startedBy: 'daemon',
+                execution: {
+                    model: 'controlled-cursor-model',
+                    catalogVersion: 'controlled-cursor-catalog',
+                },
+                launchControls: { ...TEST_CURSOR_LAUNCH_CONTROLS },
+                runner: { ...TEST_CURSOR_RUNNER },
+            })).rejects.toThrow('test process exit');
+        } finally {
+            processExit.mockRestore();
+        }
+
+        expect(testState.reportDaemonCursorRunnerBootstrapFailure).toHaveBeenCalledWith({
+            agent: 'cursor',
+            pid: process.pid,
+        });
+        expect(testState.getOrCreateSession).not.toHaveBeenCalled();
+        expect(testState.runCursorTurn).not.toHaveBeenCalled();
+        expect(testState.reportDaemonRunnerStopping).not.toHaveBeenCalled();
+        expect(testState.reportDaemonRunnerStopped).not.toHaveBeenCalled();
+    });
+
+    it('reports authenticated bootstrap failure when P2P session creation returns null without cleaning up a session', async () => {
+        process.env.REMCLI_DAEMON_RUNNER_TOKEN = 'daemon-owned-runner-token';
+        testState.response = null;
+
+        await expect(runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+            execution: {
+                model: 'controlled-cursor-model',
+                catalogVersion: 'controlled-cursor-catalog',
+            },
+            launchControls: { ...TEST_CURSOR_LAUNCH_CONTROLS },
+            runner: { ...TEST_CURSOR_RUNNER },
+        })).resolves.toBeUndefined();
+
+        expect(testState.reportDaemonCursorRunnerBootstrapFailure).toHaveBeenCalledWith({
+            agent: 'cursor',
+            pid: process.pid,
+        });
+        expect(testState.acquireDaemonRunnerCredential).not.toHaveBeenCalled();
+        expect(testState.runCursorTurn).not.toHaveBeenCalled();
+        expect(testState.reportDaemonRunnerStopping).not.toHaveBeenCalled();
+        expect(testState.reportDaemonRunnerStopped).not.toHaveBeenCalled();
+    });
+
+    it('reports an authenticated P2P bootstrap exception before credential handoff or a Cursor turn', async () => {
+        process.env.REMCLI_DAEMON_RUNNER_TOKEN = 'daemon-owned-runner-token';
+        testState.preflightDaemonCursorRunner.mockResolvedValue({
+            ok: true,
+            data: { type: 'verified' },
+        });
+        testState.createApiClient.mockRejectedValueOnce(new Error('P2P bootstrap unavailable'));
+
+        await expect(runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+            execution: {
+                model: 'controlled-cursor-model',
+                catalogVersion: 'controlled-cursor-catalog',
+            },
+            launchControls: { ...TEST_CURSOR_LAUNCH_CONTROLS },
+            runner: { ...TEST_CURSOR_RUNNER },
+        })).resolves.toBeUndefined();
+
+        expect(testState.reportDaemonCursorRunnerBootstrapFailure).toHaveBeenCalledWith({
+            agent: 'cursor',
+            pid: process.pid,
+        });
+        expect(testState.getOrCreateSession).not.toHaveBeenCalled();
+        expect(testState.acquireDaemonRunnerCredential).not.toHaveBeenCalled();
+        expect(testState.runCursorTurn).not.toHaveBeenCalled();
+    });
+
     it('rejects a token-bearing daemon runner that lacks the daemon-validated model and control', async () => {
         process.env.REMCLI_DAEMON_RUNNER_TOKEN = 'daemon-owned-runner-token';
 
@@ -472,6 +594,27 @@ describe('runCursor lifecycle', () => {
         });
 
         expect(testState.preflightDaemonCursorRunner).not.toHaveBeenCalled();
+        expect(testState.reportDaemonCursorRunnerBootstrapFailure).toHaveBeenCalledWith({
+            agent: 'cursor',
+            pid: process.pid,
+        });
+        expect(testState.createSessionMetadata).not.toHaveBeenCalled();
+        expect(testState.getOrCreateSession).not.toHaveBeenCalled();
+        expect(testState.runCursorTurn).not.toHaveBeenCalled();
+    });
+
+    it('does not report a bootstrap failure without a daemon runner credential', async () => {
+        testState.preflightDaemonCursorRunner.mockResolvedValue({
+            ok: false,
+            error: 'missing daemon runner capability',
+        });
+
+        await runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+        });
+
+        expect(testState.reportDaemonCursorRunnerBootstrapFailure).not.toHaveBeenCalled();
         expect(testState.createSessionMetadata).not.toHaveBeenCalled();
         expect(testState.getOrCreateSession).not.toHaveBeenCalled();
     });
@@ -551,6 +694,7 @@ describe('runCursor lifecycle', () => {
     });
 
     it('keeps daemon-verified lineage when the daemon credential handoff fails', async () => {
+        process.env.REMCLI_DAEMON_RUNNER_TOKEN = 'daemon-owned-runner-token';
         testState.response = { id: 'cursor-session' };
         testState.preflightDaemonCursorRunner.mockResolvedValue({
             ok: true,
@@ -564,6 +708,12 @@ describe('runCursor lifecycle', () => {
             credentials: createCredentials(),
             startedBy: 'daemon',
             resumeSessionId: 'cursor-native-session',
+            execution: {
+                model: 'controlled-cursor-model',
+                catalogVersion: 'controlled-cursor-catalog',
+            },
+            launchControls: { ...TEST_CURSOR_LAUNCH_CONTROLS },
+            runner: { ...TEST_CURSOR_RUNNER },
         });
 
         expect(testState.acquireDaemonRunnerCredential).toHaveBeenCalledWith(expect.objectContaining({
@@ -576,7 +726,12 @@ describe('runCursor lifecycle', () => {
         expect(getOrCreateOptions?.metadata).toMatchObject({
             resumedFromRemcliSessionId: 'trusted-parent-remcli-session',
         });
+        expect(testState.reportDaemonCursorRunnerBootstrapFailure).toHaveBeenCalledWith({
+            agent: 'cursor',
+            pid: process.pid,
+        });
         expect(testState.sessionSyncClient).not.toHaveBeenCalled();
+        expect(testState.runCursorTurn).not.toHaveBeenCalled();
     });
 
     it.each(['SIGTERM', 'SIGINT', 'SIGHUP'] as const)('cleans up exactly once for %s', async (signal) => {

@@ -415,6 +415,15 @@ export async function runCodex(opts: {
         machineId,
         startedBy: opts.startedBy
     });
+    if (opts.startedBy === 'daemon' && opts.execution && opts.permissionMode) {
+        // This is a session-level preference, not a per-message override.
+        // A resume must preserve it or fail explicitly, never use a new default.
+        metadata.codexExecution = {
+            model: opts.execution.model,
+            ...(opts.execution.reasoningEffort ? { reasoningEffort: opts.execution.reasoningEffort } : {}),
+            permissionMode: opts.permissionMode,
+        };
+    }
     if (opts.resumeSessionId) {
         metadata.agentSessionId = opts.resumeSessionId;
         metadata.codexSessionId = opts.resumeSessionId;

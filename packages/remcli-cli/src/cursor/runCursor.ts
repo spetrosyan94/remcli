@@ -33,6 +33,7 @@ import {
     acquireDaemonCursorHeadlessWriterLease,
     bindDaemonCursorSession,
     preflightDaemonCursorRunner,
+    reportDaemonCursorRunnerBootstrapFailure,
     releaseDaemonCursorNativeWriterLease,
     reportDaemonRunnerStopped,
     reportDaemonRunnerStopping,
@@ -69,6 +70,24 @@ const LIFECYCLE_METADATA_UPDATE_OPTIONS = {
 const MAX_PROVISIONAL_PARENT_ROLLBACK_UPDATES = 2;
 const DAEMON_EXECUTION_SELECTION_REQUIRED_ERROR = 'Cursor daemon runner requires a validated execution and control selection.';
 
+async function reportDaemonCursorBootstrapFailure(): Promise<void> {
+    if (!process.env.REMCLI_DAEMON_RUNNER_TOKEN) {
+        return;
+    }
+
+    try {
+        const result = await reportDaemonCursorRunnerBootstrapFailure({
+            agent: 'cursor',
+            pid: process.pid,
+        });
+        if (!result.ok || !result.data.accepted) {
+            logger.debug('[Cursor] Daemon did not accept bootstrap failure report.');
+        }
+    } catch {
+        logger.debug('[Cursor] Daemon bootstrap failure report failed.');
+    }
+}
+
 function withoutResumedFromRemcliSessionId(metadata: Metadata): Metadata {
     const updatedMetadata = { ...metadata };
     delete updatedMetadata.resumedFromRemcliSessionId;
@@ -97,6 +116,9 @@ export async function runCursor(opts: {
     const settings = await readSettings();
     const machineId = settings?.machineId;
     if (!machineId) {
+        if (opts.startedBy === 'daemon') {
+            await reportDaemonCursorBootstrapFailure();
+        }
         console.error(`[START] No machine ID found in settings. Make sure daemon is running: remcli daemon start`);
         process.exit(1);
     }
@@ -110,6 +132,7 @@ export async function runCursor(opts: {
             || !isCursorLaunchControls(opts.launchControls)
             || !isCursorRunnerIdentity(opts.runner))) {
         logger.warn(`[Cursor] ${DAEMON_EXECUTION_SELECTION_REQUIRED_ERROR}`);
+        await reportDaemonCursorBootstrapFailure();
         return;
     }
 
@@ -120,6 +143,7 @@ export async function runCursor(opts: {
             if (process.env.REMCLI_DAEMON_RUNNER_TOKEN
                 && (!opts.runner || !await verifyCursorRunnerIdentity(opts.runner))) {
                 logger.debug('[Cursor] Daemon runner CLI identity did not match capability validation.');
+                await reportDaemonCursorBootstrapFailure();
                 return;
             }
             const runnerPreflight = await preflightDaemonCursorRunner({
@@ -129,12 +153,14 @@ export async function runCursor(opts: {
             });
             if (!runnerPreflight.ok || runnerPreflight.data.type !== 'verified') {
                 logger.debug('[Cursor] Daemon runner preflight rejected.');
+                await reportDaemonCursorBootstrapFailure();
                 return;
             }
             trustedStartedBy = 'daemon';
             resumedFromRemcliSessionId = runnerPreflight.data.parentRemcliSessionId;
         } catch {
             logger.debug('[Cursor] Daemon runner preflight failed.');
+            await reportDaemonCursorBootstrapFailure();
             return;
         }
     } else {
@@ -162,15 +188,33 @@ export async function runCursor(opts: {
     // the already-published request object while still preventing future swaps
     // from recreating a provisional parent relation.
     const reconnectMetadata: Metadata = { ...initialMetadata };
-    const api = await ApiClient.create(opts.credentials);
-    const response = await api.getOrCreateSession({ tag: sessionTag, metadata: initialMetadata, state });
+    const p2pBootstrap = await (async () => {
+        try {
+            const api = await ApiClient.create(opts.credentials);
+            const response = await api.getOrCreateSession({ tag: sessionTag, metadata: initialMetadata, state });
+            return { api, response };
+        } catch (error) {
+            if (trustedStartedBy !== 'daemon') {
+                throw error;
+            }
+            logger.debug('[Cursor] Daemon runner could not initialize P2P before credential handoff:', redactDiagnosticData(error));
+            await reportDaemonCursorBootstrapFailure();
+            return undefined;
+        }
+    })();
+    if (!p2pBootstrap) {
+        return;
+    }
+    const { api, response } = p2pBootstrap;
 
     if (trustedStartedBy === 'daemon') {
         if (!response) {
             logger.warn('[Cursor] Daemon-owned runner cannot start without a P2P session for credential handoff.');
+            await reportDaemonCursorBootstrapFailure();
             return;
         }
         if (!await acquireDaemonRunnerCredential({ agentName: 'Cursor', sessionId: response.id, metadata: initialMetadata })) {
+            await reportDaemonCursorBootstrapFailure();
             return;
         }
     } else if (response) {

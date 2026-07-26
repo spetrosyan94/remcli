@@ -19,7 +19,7 @@ import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { getAgentPermissionLabel, getAgentPermissionModes, normalizeAgentPermissionMode } from "@/lib/agentPermissions";
 import { copyText } from "@/lib/clipboard";
-import { getDefaultCodexResumeSelection } from "@/lib/codexCapabilities";
+import { getCodexResumeSelection } from "@/lib/codexCapabilities";
 import { isProviderAvailable } from "@/lib/providerAvailability";
 import { canStopSession, type IStopMachineTarget } from "@/lib/sessionCapabilities";
 import { t } from "@/lib/i18n";
@@ -1562,8 +1562,9 @@ export function ChatPage() {
             let codexResumeSelection = null;
             if (agent === "codex") {
                 try {
-                    codexResumeSelection = getDefaultCodexResumeSelection(
+                    codexResumeSelection = getCodexResumeSelection(
                         await machineGetCodexCapabilities(rpcMachineId, true),
+                        meta.codexExecution,
                     );
                 } catch {
                     toast.error(t("new.capabilitiesUnavailable"));
@@ -1571,7 +1572,7 @@ export function ChatPage() {
                 }
             }
             if (agent === "codex" && !codexResumeSelection) {
-                toast.error(t("new.capabilitiesUnavailable"));
+                toast.error(t("chat.resumeConfigurationUnavailable"));
                 return;
             }
             const result = await machineSpawnNewSession({

@@ -1,11 +1,15 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { io as ioClient, type Socket } from 'socket.io-client';
 
 import { decodeBase64, decrypt, encodeBase64, encrypt } from '@/api/encryption';
-import { CodexCapabilitiesService, type CodexCapabilityClient } from '@/codex/codexCapabilities';
+import {
+    CodexCapabilitiesService,
+    getDefaultCodexExecution,
+    type CodexCapabilityClient,
+} from '@/codex/codexCapabilities';
 import { CursorCapabilitiesService } from '@/cursor/cursorCapabilities';
 import { bootstrapMachineSocket, type MachineSocketHandle } from '@/daemon/machineSocket';
 import { PairingRekeyCoordinator } from '@/daemon/p2p/pairingRekey';
@@ -17,6 +21,7 @@ import {
     createRecentDirectoriesStore,
     type RecentDirectoriesStore,
 } from '@/daemon/recentDirectories';
+import type { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 
 const TEST_MACHINE_ID = 'machine-recent-directories-rpc';
 const RPC_TIMEOUT_MS = 5_000;
@@ -43,6 +48,34 @@ function createCodexCapabilities(): CodexCapabilitiesService {
     return new CodexCapabilitiesService({
         getAppServerState: () => null,
         isStateUsable: async () => false,
+        createClient: () => client,
+    });
+}
+
+function createReadyCodexCapabilities(): CodexCapabilitiesService {
+    const client: CodexCapabilityClient = {
+        listModels: async () => ({
+            data: [{
+                id: 'gpt-5.6-terra',
+                displayName: 'GPT-5.6-Terra',
+                defaultReasoningEffort: 'high',
+                supportedReasoningEfforts: [{ reasoningEffort: 'high' }],
+                isDefault: true,
+            }],
+        }),
+        readConfigRequirements: async () => ({
+            allowedSandboxModes: ['workspaceWrite'],
+            allowedApprovalPolicies: ['onRequest'],
+        }),
+        disconnect: async () => undefined,
+    };
+
+    return new CodexCapabilitiesService({
+        getAppServerState: () => ({
+            codexAppServerEndpoint: 'ws://127.0.0.1:45123',
+            codexAppServerPid: 123,
+        }),
+        isStateUsable: async () => true,
         createClient: () => client,
     });
 }
@@ -130,7 +163,11 @@ async function callMachineRpc(secret: Uint8Array, method: string, params: unknow
     return decrypt(secret, 'legacy', decodeBase64(response.result)) as unknown;
 }
 
-async function startHarness(recentDirectories: RecentDirectoriesStore, spawnSession: () => Promise<{ type: 'success'; sessionId: string }>): Promise<Uint8Array> {
+async function startHarness(
+    recentDirectories: RecentDirectoriesStore,
+    spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>,
+    codexCapabilities: CodexCapabilitiesService = createCodexCapabilities(),
+): Promise<Uint8Array> {
     const secret = generateSharedSecret();
     const bearerToken = deriveBearerToken(secret);
     const store = new P2PStore({ kvFilePath: null });
@@ -152,7 +189,7 @@ async function startHarness(recentDirectories: RecentDirectoriesStore, spawnSess
         bearerToken,
         contentSecret: secret,
         pairingRekeyCoordinator: createPairingRekeyCoordinator(secret),
-        codexCapabilities: createCodexCapabilities(),
+        codexCapabilities,
         cursorCapabilities: createCursorCapabilities(),
         spawnSession,
         stopSession: () => ({ success: false }),
@@ -193,7 +230,11 @@ describe('machine RPC recent directories', { timeout: 15_000 }, () => {
             sessionId: 'spawned-session',
         }));
 
-        expect(await callMachineRpc(secret, 'spawn-remcli-session', { directory: workspace })).toEqual({
+        expect(await callMachineRpc(secret, 'spawn-remcli-session', {
+            type: 'spawn-in-directory',
+            agent: 'claude',
+            directory: workspace,
+        })).toEqual({
             type: 'success',
             sessionId: 'spawned-session',
         });
@@ -203,6 +244,104 @@ describe('machine RPC recent directories', { timeout: 15_000 }, () => {
                 displayPath: '~/workspace',
                 lastUsedAt: 100,
             }],
+        });
+    });
+
+    it('rejects missing or unknown providers and foreign provider controls before spawn', async () => {
+        const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'unused' }));
+        testDirectory = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-provider-'));
+        const recentDirectories = createRecentDirectoriesStore({
+            machineId: TEST_MACHINE_ID,
+            filePath: join(testDirectory, 'recent-directories.json'),
+        });
+        const secret = await startHarness(recentDirectories, spawn);
+
+        const invalidRequests = [
+            { directory: process.cwd() },
+            { agent: 'terminal', directory: process.cwd() },
+            {
+                agent: 'claude',
+                directory: process.cwd(),
+                codexExecution: { model: 'gpt-5.6-terra', catalogVersion: 'forged' },
+            },
+            {
+                agent: 'gemini',
+                directory: process.cwd(),
+                cursorExecution: { model: 'cursor-model', catalogVersion: 'forged' },
+            },
+            { agent: 'claude', directory: process.cwd(), permissionMode: 'workspace-write' },
+            { agent: 'gemini', directory: process.cwd(), permissionMode: 'acceptEdits' },
+            {
+                agent: 'cursor',
+                directory: process.cwd(),
+                cursorExecution: { model: 'cursor-model', catalogVersion: 'forged' },
+                cursorLaunchControls: {
+                    executionMode: 'agent',
+                    force: false,
+                    autoReview: false,
+                    sandbox: 'local-configuration',
+                    approveMcps: false,
+                },
+                cursorRunner: { executable: 'agent', cliFingerprint: '0123456789abcdef' },
+            },
+        ];
+
+        for (const request of invalidRequests) {
+            await expect(callMachineRpc(secret, 'spawn-remcli-session', request)).resolves.toEqual(
+                expect.objectContaining({ error: expect.any(String) }),
+            );
+        }
+        expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it('spawns Codex only after its validated native selection passes a live refresh', async () => {
+        const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'codex-session' }));
+        const codexCapabilities = createReadyCodexCapabilities();
+        const snapshot = await codexCapabilities.getCapabilities();
+        const execution = getDefaultCodexExecution(snapshot);
+        expect(execution).not.toBeNull();
+        testDirectory = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-codex-'));
+        const recentDirectories = createRecentDirectoriesStore({
+            machineId: TEST_MACHINE_ID,
+            filePath: join(testDirectory, 'recent-directories.json'),
+        });
+        const secret = await startHarness(recentDirectories, spawn, codexCapabilities);
+
+        await expect(callMachineRpc(secret, 'spawn-remcli-session', {
+            type: 'spawn-in-directory',
+            agent: 'codex',
+            directory: process.cwd(),
+            permissionMode: 'workspace-write',
+            codexExecution: execution,
+        })).resolves.toEqual({ type: 'success', sessionId: 'codex-session' });
+        expect(spawn).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'codex',
+            permissionMode: 'workspace-write',
+            codexExecution: execution,
+        }));
+    });
+
+    it('returns a daemon terminal-unavailable status through encrypted machine RPC', async () => {
+        const spawn = vi.fn(async () => ({
+            type: 'success' as const,
+            sessionId: 'terminal-session',
+            terminal: { type: 'unavailable' as const, error: 'terminal-unavailable' as const },
+        }));
+        testDirectory = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-terminal-'));
+        const recentDirectories = createRecentDirectoriesStore({
+            machineId: TEST_MACHINE_ID,
+            filePath: join(testDirectory, 'recent-directories.json'),
+        });
+        const secret = await startHarness(recentDirectories, spawn);
+
+        await expect(callMachineRpc(secret, 'spawn-remcli-session', {
+            type: 'spawn-in-directory',
+            agent: 'claude',
+            directory: process.cwd(),
+        })).resolves.toEqual({
+            type: 'success',
+            sessionId: 'terminal-session',
+            terminal: { type: 'unavailable', error: 'terminal-unavailable' },
         });
     });
 

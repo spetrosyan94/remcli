@@ -1139,6 +1139,9 @@ export function NewSessionPage() {
         } catch (error: unknown) {
             setRecentDirectoriesError(formatRecentDirectoriesError(error));
         }
+        if (result.terminal?.type === "unavailable") {
+            toast.warning(t("new.terminalUnavailable"));
+        }
         await finishSpawn(result.sessionId, resume);
     };
 

@@ -312,9 +312,6 @@ function createValidSpawnParams(
         agent: 'codex',
         permissionMode: 'workspace-write',
         codexExecution: execution,
-        environmentVariables: {
-            REMCLI_CODEX_TEST: 'true',
-        },
         ...overrides,
     };
 }
@@ -422,6 +419,23 @@ describe('Codex machine RPC capability and spawn contract', { timeout: 15_000 },
     ] as const)('forwards %s unchanged to spawnSession', async (_caseName, createSpawnParams) => {
         const harness = await createRpcHarness();
         await expectSpawned(harness, createSpawnParams(harness.snapshot));
+    });
+
+    it.each([
+        ['unknown transport envelope', (params: ReturnType<typeof createValidSpawnParams>) => ({
+            ...params,
+            type: 'spawn-in-project',
+        })],
+        ['foreign transport field', (params: ReturnType<typeof createValidSpawnParams>) => ({
+            ...params,
+            unexpectedTransportField: true,
+        })],
+    ] as const)('rejects %s before provider validation or spawn', async (_caseName, mutateParams) => {
+        const harness = await createRpcHarness();
+        const params = mutateParams(createValidSpawnParams(createValidExecution(harness.snapshot)));
+
+        await expectRpcError(harness, 'spawn-remcli-session', params, 'Invalid provider spawn request.');
+        expect(harness.validateSelectionSpy).not.toHaveBeenCalled();
     });
 
     it.each([

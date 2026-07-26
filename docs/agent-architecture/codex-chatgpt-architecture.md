@@ -9,8 +9,8 @@
 - Codex remote connections: https://developers.openai.com/codex/remote-connections
 - Codex MCP: https://developers.openai.com/codex/mcp
 
-Проверено 2026-07-17 через official OpenAI docs, локальные `codex --help`,
-`codex app-server --help` и `codex-cli 0.144.5`.
+Проверено 2026-07-26 через official OpenAI docs, локальные `codex --help`,
+`codex app-server --help` и `codex-cli 0.145.0`.
 
 ## Цель
 
@@ -37,6 +37,20 @@ codex app-server --listen ws://127.0.0.1:<port>
 В `daemon.state.json` сохраняются `codexAppServerEndpoint` и
 `codexAppServerPid`. Endpoint доступен только через loopback: телефон не
 подключается к app-server напрямую, а использует Remcli P2P и daemon.
+
+## Граница адаптера
+
+Codex-адаптер ограничен `src/codex/*`: `runCodex.ts` и
+`CodexAppServerClient` работают только с официальным app-server contract.
+Перед spawn `providerSpawnRequest.ts` принимает исключительно
+`agent: "codex"`, native sandbox и validated `codexExecution`; Cursor options,
+daemon runner credentials и произвольные terminal payloads от телефона
+отклоняются до запуска процесса.
+
+Единственный live terminal path - `codex --remote` к shared loopback
+app-server. Это не MCP transport и не общий PTY bridge: телефон остаётся за
+Remcli P2P/daemon boundary, а terminal работает с тем же native `threadId` через
+официальный Codex transport.
 
 ## Идентичность сессии
 
@@ -220,6 +234,27 @@ Web отправляет `codexExecution { model, reasoningEffort?, catalogVersi
 native turn, включая shared-to-private fallback. Stale catalog, unsupported
 model/effort или permission отклоняются до `thread/start`, `thread/resume` и
 `turn/start`.
+
+Для daemon-created Codex wrapper `runCodex` записывает session-level
+`metadata.codexExecution { model, reasoningEffort?, permissionMode }` без
+`catalogVersion`. При Resume Web сначала получает свежий capability catalog,
+восстанавливает **тот же** model/reasoning/access с его новым `catalogVersion` и
+лишь затем вызывает spawn. Для модели с reasoning selector effort обязателен;
+его отсутствие допустимо только для native модели без selector. Missing,
+legacy, unsupported или несовместимый tuple показывает явную ошибку и не
+подставляет текущий provider default.
+
+Concierge - LLM-initiated caller: его default selection выбирает только
+наименее привилегированный совместимый `read-only`, затем `workspace-write`.
+Если live policy оставляет лишь `danger-full-access`, Concierge отказывается
+запускать Codex; этот доступ остаётся только явным выбором пользователя в New
+Session.
+
+Этот tuple сохраняет пользовательский выбор, но не является credential или
+источником авторизации: доступ к session metadata уже требует paired Remcli
+client, а machine-RPC и runner передают selection только после fresh native
+validation. Изменённый metadata payload не может обойти актуальные provider
+limits или daemon-issued runner identity.
 
 RPC принимает только own plain object с `model`, `catalogVersion` и необязательным
 `reasoningEffort`; extra fields, accessors, массивы и prototype-pollution payload

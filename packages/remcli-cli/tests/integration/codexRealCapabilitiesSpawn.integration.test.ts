@@ -5,33 +5,17 @@ import { describe, expect, it, vi } from 'vitest';
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
 import {
     fetchCodexCapabilities,
-    getDefaultCodexExecution,
+    getDefaultCodexSelection,
     validateCodexExecution,
     type CodexCapabilitiesSnapshot,
-    type CodexExecutionConfig,
 } from '@/codex/codexCapabilities';
 import { resolveCodexPermissionConfig } from '@/codex/runCodex';
-import type { CodexSandbox } from '@/codex/types';
 import { expectTurnSucceeded } from './codexRealTestUtils';
 
 const runRealAi = process.env.REMCLI_REAL_AI === '1';
 
-interface LiveCapabilitySelection {
-    execution: CodexExecutionConfig;
-    permissionMode: CodexSandbox;
-}
-
-function selectLiveCapabilitySelection(snapshot: CodexCapabilitiesSnapshot): LiveCapabilitySelection | null {
-    const execution = getDefaultCodexExecution(snapshot);
-    const permissionMode = snapshot.permissionModes[0];
-    if (!execution || !permissionMode) {
-        return null;
-    }
-
-    return {
-        execution,
-        permissionMode,
-    };
+function selectLiveCapabilitySelection(snapshot: CodexCapabilitiesSnapshot) {
+    return getDefaultCodexSelection(snapshot);
 }
 
 function formatCleanupFailure(error: unknown): string {
@@ -78,8 +62,13 @@ realCodexDescribe('Codex real capabilities spawn contract', { timeout: 180_000 }
                 context.skip('Live Codex capabilities no longer expose an executable selection after the opt-in preflight.');
             }
 
-            validateCodexExecution(snapshot, selection.execution, selection.permissionMode);
             const permission = resolveCodexPermissionConfig(selection.permissionMode);
+            validateCodexExecution(
+                snapshot,
+                selection.execution,
+                permission.sandbox,
+                permission.approvalPolicy,
+            );
 
             nativeThreadId = await client.startThread({
                 cwd: process.cwd(),

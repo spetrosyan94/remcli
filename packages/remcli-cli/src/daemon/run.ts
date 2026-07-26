@@ -461,6 +461,7 @@ export async function startDaemon(): Promise<void> {
       acquireCursorHeadlessWriterLease: sessionManager.acquireCursorHeadlessWriterLease,
       releaseCursorNativeWriterLease: sessionManager.releaseCursorNativeWriterLease,
       preflightCursorRunner: sessionManager.preflightCursorRunner,
+      reportCursorRunnerBootstrapFailure: sessionManager.reportCursorRunnerBootstrapFailure,
       markDaemonRunnerStopping: sessionManager.markDaemonRunnerStopping,
       completeDaemonRunnerStopping: sessionManager.completeDaemonRunnerStopping,
       openCodexRemoteTui: sessionManager.openCodexRemoteTui,
@@ -524,6 +525,11 @@ export async function startDaemon(): Promise<void> {
         spawnSession: sessionManager.spawnSession,
         getDefaultCursorSelection: async () => {
             const capabilities = cursorCapabilities;
+            if (!capabilities) return null;
+            return await capabilities.getDefaultSelection();
+        },
+        getDefaultCodexSelection: async () => {
+            const capabilities = codexCapabilities;
             if (!capabilities) return null;
             return await capabilities.getDefaultSelection();
         },

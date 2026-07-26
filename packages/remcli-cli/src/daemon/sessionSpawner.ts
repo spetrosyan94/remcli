@@ -24,8 +24,12 @@ import {
     CursorNativeWriterLeaseReleaseRequest,
     CursorNativeWriterLeaseReleaseResult,
     CursorNativeWriterOwner,
+    CursorRunnerBootstrapFailureRequest,
+    CursorRunnerBootstrapFailureResult,
     CursorRunnerPreflightRequest,
     CursorRunnerPreflightResult,
+    DaemonSpawnSessionResult,
+    DaemonTerminalLaunchResult,
     DaemonRunnerLifecycleResult,
     DaemonSessionWebhookResult,
     NativeCodexThreadBinding,
@@ -39,7 +43,7 @@ import {
     TmuxPaneOwnership,
 } from './types';
 import { Metadata } from '@/api/types';
-import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
+import { SpawnSessionOptions } from '@/modules/common/registerCommonHandlers';
 import { logger } from '@/ui/logger';
 import { readSettings, validateProfileForAgent, getProfileEnvironmentVariables } from '@/persistence';
 import { projectPath } from '@/projectPath';
@@ -51,6 +55,7 @@ import { buildCodexRemoteTuiCommand } from '@/codex/codexAppServerHost';
 import { isCursorRunnerIdentity } from '@/cursor/cursorCapabilities';
 import { buildCursorInteractiveTuiCommand } from '@/cursor/cursorCli';
 import { isCursorLaunchControls } from '@/cursor/cursorLaunchControls';
+import type { CodexSandbox } from '@/codex/types';
 
 const DAEMON_SHUTDOWN_CANCELLATION_MESSAGE = 'Daemon shut down before session process registration.';
 const CODEX_RESUME_SHUTDOWN_CANCELLATION_MESSAGE = 'Daemon shut down before Codex resume process registration.';
@@ -60,6 +65,20 @@ const RUNNER_CONTROL_TOKEN_BYTES = 32;
 const CURSOR_NATIVE_WRITER_LEASE_BYTES = 32;
 const GRACEFUL_DAEMON_RUNNER_SHUTDOWN_TIMEOUT_MS = 10_000;
 const CURSOR_LEGACY_PERMISSION_ENV_KEY = 'REMCLI_CURSOR_PERMISSION_MODE';
+const CURSOR_DAEMON_BOOTSTRAP_FAILURE_ERROR = 'Cursor daemon runner bootstrap failed before creating a Remcli session.';
+const UNSUPPORTED_DAEMON_SPAWN_AGENT_ERROR = 'Daemon session spawn requires a supported agent.';
+const CODEX_DAEMON_SELECTION_REQUIRED_ERROR = 'Codex requires a daemon-validated model, reasoning, and sandbox selection.';
+const CODEX_DAEMON_SELECTION_ENV_KEYS = [
+    'REMCLI_CODEX_MODEL',
+    'REMCLI_CODEX_REASONING_EFFORT',
+    'REMCLI_CODEX_CATALOG_VERSION',
+    'REMCLI_CODEX_PERMISSION_MODE',
+] as const;
+const CODEX_SANDBOXES = new Set<CodexSandbox>([
+    'read-only',
+    'workspace-write',
+    'danger-full-access',
+]);
 const CURSOR_DAEMON_SELECTION_ENV_KEYS = [
     'REMCLI_CURSOR_MODEL',
     'REMCLI_CURSOR_CATALOG_VERSION',
@@ -75,19 +94,21 @@ const CURSOR_DAEMON_SELECTION_ENV_KEYS = [
 
 interface SessionSpawnAwaiter {
     session: TrackedSession;
+    completion: Promise<DaemonSpawnSessionResult>;
     complete: (session: TrackedSession) => void;
     fail: (errorMessage: string) => void;
+    setTerminalLaunch: (terminalLaunch: DaemonTerminalLaunchResult) => void;
 }
 
 interface PendingSpawnTask {
     nativeThreadId?: string;
     resumeKey?: string;
-    promise: Promise<SpawnSessionResult>;
+    promise: Promise<DaemonSpawnSessionResult>;
     taskCompletion: Promise<Error | undefined>;
     cancel: (errorMessage: string) => void;
     completeTask: (error?: Error) => void;
-    getCancellationResult: () => SpawnSessionResult | undefined;
-    resolve: (result: SpawnSessionResult) => void;
+    getCancellationResult: () => DaemonSpawnSessionResult | undefined;
+    resolve: (result: DaemonSpawnSessionResult) => void;
 }
 
 interface DaemonTmuxRunner {
@@ -173,13 +194,43 @@ interface CursorInteractiveTuiOpening {
     promise: Promise<CursorInteractiveTuiOpenResult>;
 }
 
+type SpawnAgent = 'claude' | 'codex' | 'cursor' | 'gemini';
+
+function resolveSpawnAgent(agent: unknown): SpawnAgent | undefined {
+    if (agent === undefined) {
+        // The local control endpoint predates explicit agent selection.
+        return 'claude';
+    }
+
+    return agent === 'claude' || agent === 'codex' || agent === 'cursor' || agent === 'gemini'
+        ? agent
+        : undefined;
+}
+
+function hasValidatedCodexSelection(options: SpawnSessionOptions): boolean {
+    const execution = options.codexExecution;
+    return Boolean(
+        execution
+        && typeof execution.model === 'string'
+        && execution.model.length > 0
+        && typeof execution.catalogVersion === 'string'
+        && execution.catalogVersion.length > 0
+        && (execution.reasoningEffort === undefined || (
+            typeof execution.reasoningEffort === 'string'
+            && execution.reasoningEffort.length > 0
+        ))
+        && typeof options.permissionMode === 'string'
+        && CODEX_SANDBOXES.has(options.permissionMode as CodexSandbox),
+    );
+}
+
 function createPendingSpawnTask(nativeThreadId?: string): PendingSpawnTask {
-    let cancellationResult: SpawnSessionResult | undefined;
-    let resolvePromise: (result: SpawnSessionResult) => void = () => {};
+    let cancellationResult: DaemonSpawnSessionResult | undefined;
+    let resolvePromise: (result: DaemonSpawnSessionResult) => void = () => {};
     let resolveTaskCompletion: (error: Error | undefined) => void = () => {};
     let hasSettled = false;
     let hasCompletedTask = false;
-    const promise = new Promise<SpawnSessionResult>((resolve) => {
+    const promise = new Promise<DaemonSpawnSessionResult>((resolve) => {
         resolvePromise = resolve;
     });
     const taskCompletion = new Promise<Error | undefined>((resolve) => {
@@ -243,6 +294,10 @@ export interface SessionManager {
     preflightCursorRunner: (
         request: CursorRunnerPreflightRequest,
     ) => Promise<CursorRunnerPreflightResult>;
+    /** Fail a pending Cursor spawn before P2P setup only after capability-bound ownership validation. */
+    reportCursorRunnerBootstrapFailure: (
+        request: CursorRunnerBootstrapFailureRequest,
+    ) => Promise<CursorRunnerBootstrapFailureResult>;
     /** Prevent a graceful daemon-owned runner from being resumed while it exits. */
     markDaemonRunnerStopping: (sessionId: string) => DaemonRunnerLifecycleResult;
     /** Release a graceful daemon-owned runner after it flushed its final P2P lifecycle event. */
@@ -254,7 +309,7 @@ export interface SessionManager {
     /** Resolve whether a Codex thread already has an active wrapper session. */
     resolveCodexThreadResume: (nativeThreadId: string) => Promise<CodexThreadResumeResult>;
     /** Spawn a new session in tmux and wait for its webhook. */
-    spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
+    spawnSession: (options: SpawnSessionOptions) => Promise<DaemonSpawnSessionResult>;
     /** Stop a daemon-owned session by its immutable tmux target. */
     stopSession: (sessionId: string) => Promise<StopSessionResult>;
     /** Handle a webhook from a session reporting itself to the daemon. */
@@ -390,7 +445,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     // cleanup is confirmed.
     const pidToTrackedSession = new Map<number, TrackedSession>();
     const displacedTrackedSessionPids = new Map<TrackedSession, number>();
-    const resumeSpawnPromises = new Map<string, Promise<SpawnSessionResult>>();
+    const resumeSpawnPromises = new Map<string, Promise<DaemonSpawnSessionResult>>();
     const codexThreadResumeSpawnPromises = new Map<string, PendingSpawnTask>();
     const nativeCodexThreadIdToTrackedSession = new Map<string, NativeCodexThreadMapping>();
     const nativeCursorSessionIdToTrackedSession = new Map<string, NativeCursorSessionMapping>();
@@ -699,31 +754,62 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         pidToTrackedSession.get(pid) === session
     );
 
+    const getDaemonTerminalLaunchResult = (
+        session: TrackedSession | NativeCodexThreadWrapper,
+    ): DaemonTerminalLaunchResult => (
+        'terminalLaunch' in session && session.terminalLaunch
+            ? session.terminalLaunch
+            : { type: 'not-requested' }
+    );
+
     const createSessionSpawnAwaiter = (
         pid: number,
         session: TrackedSession,
-    ): Promise<SpawnSessionResult> => new Promise((resolve) => {
+        requiresTerminalLaunch: boolean,
+    ): SessionSpawnAwaiter => {
+        let resolveCompletion: (result: DaemonSpawnSessionResult) => void = () => {};
+        const completion = new Promise<DaemonSpawnSessionResult>((resolve) => {
+            resolveCompletion = resolve;
+        });
         let timeout: ReturnType<typeof setTimeout> | undefined;
-        const settle = (result: SpawnSessionResult): void => {
+        let completedSession: TrackedSession | undefined;
+        let terminalLaunch: DaemonTerminalLaunchResult | undefined = requiresTerminalLaunch
+            ? undefined
+            : { type: 'not-requested' };
+        const settle = (result: DaemonSpawnSessionResult): void => {
             if (timeout) {
                 clearTimeout(timeout);
             }
             if (pidToAwaiter.get(pid)?.session === session) {
                 pidToAwaiter.delete(pid);
             }
-            resolve(result);
+            resolveCompletion(result);
+        };
+        const settleCompletedSession = (): void => {
+            if (!completedSession || !terminalLaunch) {
+                return;
+            }
+            settle({
+                type: 'success',
+                sessionId: completedSession.remcliSessionId!,
+                terminal: terminalLaunch,
+            });
         };
         const awaiter: SessionSpawnAwaiter = {
             session,
-            complete: (completedSession) => {
-                logger.debug(`[DAEMON RUN] Session ${completedSession.remcliSessionId} fully spawned with webhook (tmux)`);
-                settle({
-                    type: 'success',
-                    sessionId: completedSession.remcliSessionId!,
-                });
+            completion,
+            complete: (reportedSession) => {
+                completedSession = reportedSession;
+                logger.debug(`[DAEMON RUN] Session ${reportedSession.remcliSessionId} received webhook (tmux)`);
+                settleCompletedSession();
             },
             fail: (errorMessage) => {
                 settle({ type: 'error', errorMessage });
+            },
+            setTerminalLaunch: (result) => {
+                terminalLaunch = result;
+                session.terminalLaunch = result;
+                settleCompletedSession();
             },
         };
         timeout = setTimeout(() => {
@@ -735,7 +821,8 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         }, 15_000);
 
         pidToAwaiter.set(pid, awaiter);
-    });
+        return awaiter;
+    };
 
     const getOwnedPaneStatus = async (ownership: TmuxPaneOwnership): Promise<OwnedPaneStatus> => {
         try {
@@ -1135,14 +1222,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         remcliSessionId,
     });
 
-    const agentOf = (options: Pick<SpawnSessionOptions, 'agent'>): 'claude' | 'codex' | 'cursor' | 'gemini' => (
-        options.agent === 'gemini' ? 'gemini'
-            : options.agent === 'cursor' ? 'cursor'
-                : options.agent === 'codex' ? 'codex'
-                    : 'claude'
-    );
-
-    const getNativeSessionId = (metadata: Metadata | undefined, agent: 'claude' | 'codex' | 'cursor' | 'gemini'): string | undefined => {
+    const getNativeSessionId = (metadata: Metadata | undefined, agent: SpawnAgent): string | undefined => {
         if (!metadata) return undefined;
         if (agent === 'codex') return undefined;
         switch (agent) {
@@ -1729,6 +1809,33 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             type: 'verified',
             parentRemcliSessionId: lineage.parentRemcliSessionId,
         };
+    };
+
+    const reportCursorRunnerBootstrapFailure = async (
+        request: CursorRunnerBootstrapFailureRequest,
+    ): Promise<CursorRunnerBootstrapFailureResult> => {
+        const session = pidToTrackedSession.get(request.pid);
+        const awaiter = pidToAwaiter.get(request.pid);
+        if (
+            request.agent !== 'cursor'
+            || !session
+            || awaiter?.session !== session
+            || !isReadyTrackedSession(request.pid, session)
+            || session.startedBy !== 'daemon'
+            || !session.tmuxRunner
+            || session.expectedAgent !== 'cursor'
+            || session.remcliSessionId !== undefined
+            || session.runnerControlTokenSessionId !== undefined
+            || !hasMatchingRunnerControlToken(session.runnerControlToken, request.runnerToken)
+        ) {
+            return { accepted: false };
+        }
+
+        awaiter.fail(CURSOR_DAEMON_BOOTSTRAP_FAILURE_ERROR);
+        if (!await releaseAndRemoveTrackedSession(request.pid, session)) {
+            logger.warn(`[DAEMON RUN] Could not safely clean up Cursor bootstrap failure runner ${request.pid}; preserving tracking for retry.`);
+        }
+        return { accepted: true };
     };
 
     const ensureCodexRemoteTuiHostInternal = async (): Promise<{ ok: true } | { ok: false; error: string }> => {
@@ -2366,11 +2473,18 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         options: SpawnSessionOptions,
         pendingSpawnTask?: PendingSpawnTask,
         cursorSessionLineage?: CursorSessionLineage,
-    ): Promise<SpawnSessionResult> => {
+    ): Promise<DaemonSpawnSessionResult> => {
         logger.debugLargeJson('[DAEMON RUN] Spawning session', buildSafeSpawnSessionLogPayload(options));
         let cancelledTmuxCleanupError: Error | undefined;
+        const agent = resolveSpawnAgent(options.agent);
+        if (!agent) {
+            return { type: 'error', errorMessage: UNSUPPORTED_DAEMON_SPAWN_AGENT_ERROR };
+        }
+        if (agent === 'codex' && !hasValidatedCodexSelection(options)) {
+            return { type: 'error', errorMessage: CODEX_DAEMON_SELECTION_REQUIRED_ERROR };
+        }
 
-        const getCancellationResult = (): SpawnSessionResult | undefined => (
+        const getCancellationResult = (): DaemonSpawnSessionResult | undefined => (
             pendingSpawnTask?.getCancellationResult()
         );
         const initialCancellationResult = getCancellationResult();
@@ -2473,14 +2587,14 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                         // Get profile environment variables filtered for agent compatibility
                         profileEnv = await getProfileEnvironmentVariablesForAgent(
                             settings.activeProfileId,
-                            options.agent || 'claude'
+                            agent,
                         );
                         const profileCancellationResult = getCancellationResult();
                         if (profileCancellationResult) {
                             return profileCancellationResult;
                         }
 
-                        logger.debug(`[DAEMON RUN] Loaded ${Object.keys(profileEnv).length} environment variables from CLI local profile for agent ${options.agent || 'claude'}`);
+                        logger.debug(`[DAEMON RUN] Loaded ${Object.keys(profileEnv).length} environment variables from CLI local profile for agent ${agent}`);
                         logger.debug(`[DAEMON RUN] CLI profile env var keys: ${Object.keys(profileEnv).join(', ')}`);
                     } else {
                         logger.debug('[DAEMON RUN] No CLI local active profile set');
@@ -2547,7 +2661,6 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             }
 
             // Each remote session gets its own tmux session → its own Terminal.app tab
-            const agent = options.agent === 'gemini' ? 'gemini' : options.agent === 'cursor' ? 'cursor' : (options.agent === 'codex' ? 'codex' : 'claude');
             const hasValidatedCursorSelection = Boolean(
                 options.cursorExecution
                 && options.cursorLaunchControls
@@ -2597,21 +2710,24 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                     delete tmuxEnv[key];
                 }
             }
+            if (agent === 'codex') {
+                for (const key of CODEX_DAEMON_SELECTION_ENV_KEYS) {
+                    delete tmuxEnv[key];
+                }
+            }
 
             // Pass session name for resumed sessions (used by runClaude to set P2P metadata)
             if (options.resumeSessionName) {
                 tmuxEnv.REMCLI_SESSION_NAME = options.resumeSessionName;
             }
 
-            if (agent === 'codex' && options.codexExecution) {
+            if (agent === 'codex' && options.codexExecution && hasValidatedCodexSelection(options)) {
                 tmuxEnv.REMCLI_CODEX_MODEL = options.codexExecution.model;
                 if (options.codexExecution.reasoningEffort) {
                     tmuxEnv.REMCLI_CODEX_REASONING_EFFORT = options.codexExecution.reasoningEffort;
                 }
                 tmuxEnv.REMCLI_CODEX_CATALOG_VERSION = options.codexExecution.catalogVersion;
-                if (options.permissionMode) {
-                    tmuxEnv.REMCLI_CODEX_PERMISSION_MODE = options.permissionMode;
-                }
+                tmuxEnv.REMCLI_CODEX_PERMISSION_MODE = options.permissionMode as CodexSandbox;
             }
 
             if (agent === 'cursor'
@@ -2715,7 +2831,11 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 const sessionSpawnAwaiter = createSessionSpawnAwaiter(
                     tmuxResult.ownership.panePid,
                     trackedSession,
+                    agent !== 'codex' && process.platform === 'darwin',
                 );
+                if (agent === 'codex' || process.platform !== 'darwin') {
+                    sessionSpawnAwaiter.setTerminalLaunch({ type: 'not-requested' });
+                }
                 if (pendingSpawnTask) {
                     pidToPendingSpawnTask.set(tmuxResult.ownership.panePid, {
                         session: trackedSession,
@@ -2731,20 +2851,31 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
                 if (agent === 'codex') {
                     logger.debug('[DAEMON RUN] Codex runner started headless; runCodex opens the real Codex TUI through app-server --remote');
-                } else {
+                } else if (process.platform === 'darwin') {
                     // Always open a new Terminal.app context for this session.
                     // Unset TMUX so the attach command works even when the daemon
                     // process was started from inside an existing tmux client.
-                    try {
-                        const terminalLease = await openTerminalWithCommand(`env -u TMUX tmux attach -t ${tmuxSessionName}`);
-                        if (terminalLease) {
-                            logger.debug(`[DAEMON RUN] Opened terminal context for tmux session ${tmuxSessionName}`);
-                        } else {
-                            logger.debug(`[DAEMON RUN] Terminal context was not opened for tmux session ${tmuxSessionName}`);
-                        }
-                    } catch (error) {
-                        logger.debug(`[DAEMON RUN] Failed to open terminal for tmux:`, error);
-                    }
+                    void openTerminalWithCommand(`env -u TMUX tmux attach -t ${tmuxSessionName}`)
+                        .then((didOpenTerminal): DaemonTerminalLaunchResult => (
+                            didOpenTerminal
+                                ? { type: 'opened' }
+                                : { type: 'unavailable', error: 'terminal-unavailable' }
+                        ))
+                        .catch((error): DaemonTerminalLaunchResult => {
+                            logger.debug('[DAEMON RUN] Failed to open terminal for tmux:', error);
+                            return { type: 'unavailable', error: 'terminal-unavailable' };
+                        })
+                        .then((terminalLaunch) => {
+                            if (!isExactTrackedSession(tmuxResult.ownership.panePid, trackedSession)) {
+                                return;
+                            }
+                            sessionSpawnAwaiter.setTerminalLaunch(terminalLaunch);
+                            if (terminalLaunch.type === 'opened') {
+                                logger.debug(`[DAEMON RUN] Opened terminal context for tmux session ${tmuxSessionName}`);
+                            } else {
+                                logger.warn(`[DAEMON RUN] Terminal unavailable for tmux session ${tmuxSessionName}; daemon runner remains active.`);
+                            }
+                        });
                 }
 
                 if (!isExactTrackedSession(tmuxResult.ownership.panePid, trackedSession)) {
@@ -2774,7 +2905,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
                 // Wait for webhook to populate session with remcliSessionId (exact same as regular flow)
                 logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${tmuxResult.ownership.panePid} (tmux)`);
-                return sessionSpawnAwaiter;
+                return sessionSpawnAwaiter.completion;
             } else {
                 return {
                     type: 'error',
@@ -2824,7 +2955,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         return pendingSpawnTask;
     };
 
-    const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
+    const spawnSession = async (options: SpawnSessionOptions): Promise<DaemonSpawnSessionResult> => {
         if (isShuttingDown) {
             return {
                 type: 'error',
@@ -2832,7 +2963,10 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             };
         }
 
-        const agent = agentOf(options);
+        const agent = resolveSpawnAgent(options.agent);
+        if (!agent) {
+            return { type: 'error', errorMessage: UNSUPPORTED_DAEMON_SPAWN_AGENT_ERROR };
+        }
 
         if (agent === 'codex' && options.resumeSessionId) {
             const resumeResult = await resolveCodexThreadResume(options.resumeSessionId);
@@ -2845,7 +2979,11 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
             if (resumeResult.type === 'reuse-active-wrapper') {
                 logger.debug(`[DAEMON RUN] Reusing active Codex wrapper ${resumeResult.wrapper.remcliSessionId} for thread ${options.resumeSessionId}`);
-                return { type: 'success', sessionId: resumeResult.wrapper.remcliSessionId };
+                return {
+                    type: 'success',
+                    sessionId: resumeResult.wrapper.remcliSessionId,
+                    terminal: getDaemonTerminalLaunchResult(resumeResult.wrapper),
+                };
             }
 
             const pending = codexThreadResumeSpawnPromises.get(options.resumeSessionId);
@@ -2918,7 +3056,11 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         }
         if (existing?.remcliSessionId) {
             logger.debug(`[DAEMON RUN] Reusing active ${agent} session ${existing.remcliSessionId} for resume ${options.resumeSessionId}`);
-            return { type: 'success', sessionId: existing.remcliSessionId };
+            return {
+                type: 'success',
+                sessionId: existing.remcliSessionId,
+                terminal: getDaemonTerminalLaunchResult(existing),
+            };
         }
 
         const pending = resumeSpawnPromises.get(resumeKey);
@@ -3232,6 +3374,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         acquireCursorHeadlessWriterLease,
         releaseCursorNativeWriterLease,
         preflightCursorRunner,
+        reportCursorRunnerBootstrapFailure,
         markDaemonRunnerStopping,
         completeDaemonRunnerStopping,
         openCodexRemoteTui,

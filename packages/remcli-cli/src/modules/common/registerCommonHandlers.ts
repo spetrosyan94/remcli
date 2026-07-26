@@ -12,6 +12,7 @@ import type { PermissionMode } from '@/api/types';
 import type { CodexExecutionConfig } from '@/codex/codexCapabilities';
 import type { CursorExecutionConfig, CursorRunnerIdentity } from '@/cursor/cursorCapabilities';
 import type { CursorLaunchControls } from '@/cursor/cursorLaunchControls';
+import type { DaemonTerminalLaunchResult } from '@/daemon/types';
 
 const execAsync = promisify(exec);
 
@@ -156,7 +157,7 @@ export interface SpawnSessionOptions {
 }
 
 export type SpawnSessionResult =
-    | { type: 'success'; sessionId: string }
+    | { type: 'success'; sessionId: string; terminal?: DaemonTerminalLaunchResult }
     | { type: 'requestToApproveDirectoryCreation'; directory: string }
     | { type: 'error'; errorMessage: string };
 

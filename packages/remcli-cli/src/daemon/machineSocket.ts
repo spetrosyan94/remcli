@@ -28,21 +28,14 @@ import { listAllAgentSessions } from '@/daemon/sessions/listAgentSessions';
 import {
     CodexCapabilitiesError,
     CodexCapabilitiesService,
-    type CodexExecutionConfig,
 } from '@/codex/codexCapabilities';
 import {
     CursorCapabilitiesError,
     CursorCapabilitiesService,
-    type CursorExecutionConfig,
-    type CursorRunnerIdentity,
 } from '@/cursor/cursorCapabilities';
-import type { CodexSandbox } from '@/codex/types';
-import { isCursorLaunchControls, type CursorLaunchControls } from '@/cursor/cursorLaunchControls';
 import type { StopSessionResult } from '@/daemon/types';
+import { parseProviderSpawnRequest } from '@/daemon/providerSpawnRequest';
 import type { PairingRekeyCoordinator } from './p2p/pairingRekey';
-
-const CODEX_EXECUTION_KEYS = new Set(['model', 'catalogVersion', 'reasoningEffort']);
-const CURSOR_EXECUTION_KEYS = new Set(['model', 'catalogVersion']);
 
 export interface MachineSocketDeps {
     p2pPort: number;
@@ -56,61 +49,6 @@ export interface MachineSocketDeps {
     stopSession: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
     requestShutdown: () => void;
     recentDirectories?: RecentDirectoriesStore;
-}
-
-function isCodexSandbox(value: unknown): value is CodexSandbox {
-    return value === 'read-only'
-        || value === 'workspace-write'
-        || value === 'danger-full-access';
-}
-
-function isNonEmptyStringDataProperty(value: object, key: string): boolean {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    return descriptor !== undefined
-        && descriptor.enumerable === true
-        && 'value' in descriptor
-        && typeof descriptor.value === 'string'
-        && descriptor.value !== '';
-}
-
-function isOptionalNonEmptyStringDataProperty(value: object, key: string): boolean {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    return descriptor === undefined
-        || (descriptor.enumerable === true
-            && 'value' in descriptor
-            && typeof descriptor.value === 'string'
-            && descriptor.value !== '');
-}
-
-function isCodexExecutionConfig(value: unknown): value is CodexExecutionConfig {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-
-    try {
-        if (Object.getPrototypeOf(value) !== Object.prototype) return false;
-        if (!Reflect.ownKeys(value).every((key) =>
-            typeof key === 'string' && CODEX_EXECUTION_KEYS.has(key))) return false;
-
-        return isNonEmptyStringDataProperty(value, 'model')
-            && isNonEmptyStringDataProperty(value, 'catalogVersion')
-            && isOptionalNonEmptyStringDataProperty(value, 'reasoningEffort');
-    } catch {
-        return false;
-    }
-}
-
-function isCursorExecutionConfig(value: unknown): value is CursorExecutionConfig {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-
-    try {
-        if (Object.getPrototypeOf(value) !== Object.prototype) return false;
-        if (!Reflect.ownKeys(value).every((key) =>
-            typeof key === 'string' && CURSOR_EXECUTION_KEYS.has(key))) return false;
-
-        return isNonEmptyStringDataProperty(value, 'model')
-            && isNonEmptyStringDataProperty(value, 'catalogVersion');
-    } catch {
-        return false;
-    }
 }
 
 export interface MachineSocketHandle {
@@ -157,35 +95,14 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
     registerCommonHandlers(machineRpcManager, process.cwd());
 
     // Register daemon-specific RPC handlers
-    machineRpcManager.registerHandler('spawn-remcli-session', async (params: Partial<SpawnSessionOptions> & { directory: string }) => {
-        const {
-            directory,
-            sessionId: sid,
-            machineId: targetMachineId,
-            approvedNewDirectoryCreation,
-            agent,
-            token,
-            environmentVariables,
-            resumeSessionId,
-            resumeSessionName,
-            permissionMode,
-            codexExecution,
-            cursorExecution,
-            cursorLaunchControls,
-        } = params || {};
-        let cursorRunner: CursorRunnerIdentity | undefined;
-        logger.debugLargeJson('[DAEMON RUN] RPC spawn-remcli-session', buildSafeSpawnSessionLogPayload(params));
+    machineRpcManager.registerHandler('spawn-remcli-session', async (params: unknown) => {
+        const request = parseProviderSpawnRequest(params);
+        logger.debugLargeJson('[DAEMON RUN] RPC spawn-remcli-session', buildSafeSpawnSessionLogPayload(request));
+        let spawnOptions: SpawnSessionOptions = request;
 
-        if (!directory) {
-            throw new Error('Directory is required');
-        }
-
-        if (agent === 'codex') {
-            if (!isCodexSandbox(permissionMode) || !isCodexExecutionConfig(codexExecution)) {
-                throw new Error('Codex requires a current model, reasoning, and permission selection.');
-            }
+        if (request.agent === 'codex') {
             try {
-                await codexCapabilities.validateSelection(codexExecution, permissionMode);
+                await codexCapabilities.validateSelection(request.codexExecution, request.permissionMode);
             } catch (error) {
                 if (error instanceof CodexCapabilitiesError) {
                     throw new Error(`Codex capability selection rejected: ${error.code}.`);
@@ -194,15 +111,10 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
             }
         }
 
-        if (agent === 'cursor') {
-            if (Object.prototype.hasOwnProperty.call(params ?? {}, 'permissionMode')) {
-                throw new Error('Cursor launch controls must not use the generic permissionMode field.');
-            }
-            if (!isCursorExecutionConfig(cursorExecution) || !isCursorLaunchControls(cursorLaunchControls)) {
-                throw new Error('Cursor requires a current model and validated launch controls.');
-            }
+        if (request.agent === 'cursor') {
             try {
-                cursorRunner = await cursorCapabilities.validateSelection(cursorExecution);
+                const cursorRunner = await cursorCapabilities.validateSelection(request.cursorExecution);
+                spawnOptions = { ...request, cursorRunner };
             } catch (error) {
                 if (error instanceof CursorCapabilitiesError) {
                     throw new Error(`Cursor capability selection rejected: ${error.code}.`);
@@ -211,37 +123,22 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
             }
         }
 
-        const result = await spawnSession({
-            directory,
-            sessionId: sid,
-            machineId: targetMachineId,
-            approvedNewDirectoryCreation,
-            agent,
-            token,
-            environmentVariables,
-            resumeSessionId,
-            resumeSessionName,
-            ...(agent !== 'cursor' && permissionMode !== undefined ? { permissionMode } : {}),
-            ...(codexExecution ? { codexExecution } : {}),
-            ...(agent === 'cursor' && cursorExecution && cursorLaunchControls && cursorRunner
-                ? {
-                    cursorExecution,
-                    cursorLaunchControls: cursorLaunchControls as CursorLaunchControls,
-                    cursorRunner,
-                }
-                : {}),
-        });
+        const result = await spawnSession(spawnOptions);
 
         switch (result.type) {
             case 'success':
                 try {
-                    recentDirectories.recordSuccessfulSpawn(directory);
+                    recentDirectories.recordSuccessfulSpawn(request.directory);
                 } catch (error) {
                     const code = error instanceof RecentDirectoriesError ? error.code : 'unavailable';
                     logger.warn(`[DAEMON RUN] Recent directory persistence failed: ${code}`);
                 }
                 logger.debug(`[DAEMON RUN] RPC spawned session ${result.sessionId}`);
-                return { type: 'success', sessionId: result.sessionId };
+                return {
+                    type: 'success',
+                    sessionId: result.sessionId,
+                    ...(result.terminal ? { terminal: result.terminal } : {}),
+                };
             case 'requestToApproveDirectoryCreation':
                 logger.debug(`[DAEMON RUN] RPC requesting directory approval: ${result.directory}`);
                 return { type: 'requestToApproveDirectoryCreation', directory: result.directory };

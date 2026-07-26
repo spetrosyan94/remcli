@@ -222,10 +222,17 @@ export async function machineRpc<R, A>(machineId: string, method: string, params
 
 // ─── Typed operations (port of sources/sync/ops.ts) ─────────────
 
+export type TerminalLaunchOutcome =
+    | { type: 'opened' }
+    | { type: 'unavailable'; error: 'terminal-unavailable' }
+    | { type: 'not-requested' };
+
 export type SpawnSessionResult =
-    | { type: 'success'; sessionId: string }
+    | { type: 'success'; sessionId: string; terminal?: TerminalLaunchOutcome }
     | { type: 'requestToApproveDirectoryCreation'; directory: string }
     | { type: 'error'; errorMessage: string };
+
+const INVALID_SPAWN_SESSION_RESPONSE_ERROR = 'Spawn session RPC returned an invalid response';
 
 /** Provider-defined value, validated against the daemon's live model snapshot. */
 export type CodexReasoningEffort = string;
@@ -571,6 +578,48 @@ function isPairingRekeyCancellationResult(value: unknown): value is PairingRekey
             || value.type === 'invalid-code');
 }
 
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+    return Object.keys(value).every((key) => keys.includes(key));
+}
+
+function isTerminalLaunchOutcome(value: unknown): value is TerminalLaunchOutcome {
+    if (!isRecord(value) || !Object.hasOwn(value, 'type') || typeof value.type !== 'string') return false;
+
+    if (value.type === 'opened' || value.type === 'not-requested') {
+        return hasOnlyKeys(value, ['type']);
+    }
+
+    return value.type === 'unavailable'
+        && Object.hasOwn(value, 'error')
+        && value.error === 'terminal-unavailable'
+        && hasOnlyKeys(value, ['type', 'error']);
+}
+
+function isSpawnSessionResult(value: unknown): value is SpawnSessionResult {
+    if (!isRecord(value) || !Object.hasOwn(value, 'type') || typeof value.type !== 'string') return false;
+
+    if (value.type === 'success') {
+        return Object.hasOwn(value, 'sessionId')
+            && typeof value.sessionId === 'string'
+            && value.sessionId.trim().length > 0
+            && (!Object.hasOwn(value, 'terminal') || isTerminalLaunchOutcome(value.terminal))
+            && hasOnlyKeys(value, ['type', 'sessionId', 'terminal']);
+    }
+
+    if (value.type === 'requestToApproveDirectoryCreation') {
+        return Object.hasOwn(value, 'directory')
+            && typeof value.directory === 'string'
+            && value.directory.trim().length > 0
+            && hasOnlyKeys(value, ['type', 'directory']);
+    }
+
+    return value.type === 'error'
+        && Object.hasOwn(value, 'errorMessage')
+        && typeof value.errorMessage === 'string'
+        && value.errorMessage.trim().length > 0
+        && hasOnlyKeys(value, ['type', 'errorMessage']);
+}
+
 /** Spawn a new agent session on a machine (daemon RPC `spawn-remcli-session`). */
 export async function machineSpawnNewSession(options: SpawnSessionOptions): Promise<SpawnSessionResult> {
     const {
@@ -588,7 +637,7 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
         cursorLaunchControls,
     } = options;
     try {
-        const result = await machineRpc<SpawnSessionResult | null, {
+        const result = await machineRpc<unknown, {
             type: 'spawn-in-directory';
             directory: string;
             approvedNewDirectoryCreation?: boolean;
@@ -621,6 +670,9 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
         );
         if (!result) {
             return { type: 'error', errorMessage: 'RPC returned null — decryption likely failed' };
+        }
+        if (!isSpawnSessionResult(result)) {
+            return { type: 'error', errorMessage: INVALID_SPAWN_SESSION_RESPONSE_ERROR };
         }
         return result;
     } catch (error) {

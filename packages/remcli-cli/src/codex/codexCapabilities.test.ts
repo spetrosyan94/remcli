@@ -5,6 +5,7 @@ import {
     CodexCapabilitiesService,
     fetchCodexCapabilities,
     getDefaultCodexExecution,
+    getDefaultCodexSelection,
     validateCodexExecution,
     type CodexCapabilityClient,
 } from './codexCapabilities';
@@ -232,6 +233,31 @@ describe('fetchCodexCapabilities', () => {
             ...execution!,
             reasoningEffort: 'xhigh',
         }, READ_ONLY_PERMISSION_CONFIG.sandbox, READ_ONLY_PERMISSION_CONFIG.approvalPolicy), 'unsupported_selection');
+    });
+
+    it('refuses to auto-escalate a daemon default to danger-full-access', async () => {
+        const snapshot = await fetchCodexCapabilities(createClient({
+            readConfigRequirements: vi.fn(async () => ({
+                allowedApprovalPolicies: ['never'],
+                allowedSandboxModes: ['readOnly', 'dangerFullAccess'],
+            })),
+        }));
+
+        expect(getDefaultCodexSelection(snapshot)).toBeNull();
+    });
+
+    it('chooses the least privileged compatible daemon default', async () => {
+        const snapshot = await fetchCodexCapabilities(createClient({
+            readConfigRequirements: vi.fn(async () => ({
+                allowedApprovalPolicies: ['onRequest', 'never'],
+                allowedSandboxModes: ['readOnly', 'workspaceWrite', 'dangerFullAccess'],
+            })),
+        }));
+
+        expect(getDefaultCodexSelection(snapshot)).toEqual({
+            execution: getDefaultCodexExecution(snapshot),
+            permissionMode: 'read-only',
+        });
     });
 
     it('normalizes native app-server approval policies before versioning and validating them', async () => {
@@ -502,6 +528,34 @@ describe('CodexCapabilitiesService', () => {
             name: 'CodexCapabilitiesError',
             code: 'unavailable',
         });
+    });
+
+    it('rejects a stale selection after forcing a live capability refresh before spawn', async () => {
+        let modelId = 'gpt-5.6-initial';
+        const clientFactory = vi.fn(() => createClient({
+            listModels: vi.fn(async () => createModelListPage(modelId)),
+        }));
+        const service = new CodexCapabilitiesService({
+            getAppServerState: () => ({
+                codexAppServerEndpoint: 'ws://127.0.0.1:45123',
+                codexAppServerPid: 123,
+            }),
+            isStateUsable: async () => true,
+            createClient: clientFactory,
+        });
+
+        const selection = await service.getDefaultSelection();
+        expect(selection).not.toBeNull();
+        modelId = 'gpt-5.6-after-refresh';
+
+        await expect(service.validateSelection(
+            selection?.execution,
+            selection?.permissionMode ?? 'read-only',
+        )).rejects.toMatchObject({
+            name: 'CodexCapabilitiesError',
+            code: 'expired',
+        });
+        expect(clientFactory).toHaveBeenCalledTimes(2);
     });
 
     it('fails closed when a mixed approval policy payload contains an unknown provider value', async () => {

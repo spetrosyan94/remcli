@@ -15,8 +15,11 @@ import type {
   CursorHeadlessWriterLeaseAcquireResult,
   CursorNativeWriterLeaseReleaseRequest,
   CursorNativeWriterLeaseReleaseResult,
+  CursorRunnerBootstrapFailureRequest,
+  CursorRunnerBootstrapFailureResult,
   CursorRunnerPreflightRequest,
   CursorRunnerPreflightResult,
+  DaemonSpawnSessionResult,
   DaemonRunnerLifecycleResult,
   DaemonSessionWebhookResult,
   NativeCodexThreadBinding,
@@ -26,7 +29,7 @@ import type {
   StopSessionResult,
   TrackedSession,
 } from './types';
-import type { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
+import type { SpawnSessionOptions } from '@/modules/common/registerCommonHandlers';
 import type { PairingRekeyApprovalResult } from './p2p/pairingRekey';
 
 const nativeCodexThreadBindingSchema = z.object({
@@ -90,6 +93,16 @@ const cursorRunnerPreflightResponseSchema = z.object({
   parentRemcliSessionId: z.string().min(1).optional(),
 });
 
+const cursorRunnerBootstrapFailureRequestSchema = z.object({
+  agent: z.literal('cursor'),
+  pid: z.number().int().positive(),
+  runnerToken: z.string().min(1),
+});
+
+const cursorRunnerBootstrapFailureResultSchema = z.object({
+  accepted: z.boolean(),
+});
+
 const codexRemoteTuiOpenRequestSchema = nativeCodexThreadBindingSchema.extend({
   endpoint: z.string().url(),
   reasoningEffort: z.string().trim().min(1).nullable(),
@@ -123,6 +136,11 @@ const metadataSchema = z.object({
   agentSessionId: z.string().optional(),
   claudeSessionId: z.string().optional(),
   codexSessionId: z.string().optional(),
+  codexExecution: z.object({
+    model: z.string().min(1),
+    reasoningEffort: z.string().min(1).optional(),
+    permissionMode: z.enum(['read-only', 'workspace-write', 'danger-full-access']),
+  }).optional(),
   cursorSessionId: z.string().optional(),
   geminiSessionId: z.string().optional(),
   tools: z.array(z.string()).optional(),
@@ -168,6 +186,12 @@ const CURSOR_RUNNER_PREFLIGHT_REJECTED_ERROR = 'cursor-runner-preflight-rejected
 
 const cursorRunnerPreflightRejectedResponseSchema = z.object({
   error: z.literal(CURSOR_RUNNER_PREFLIGHT_REJECTED_ERROR),
+});
+
+const CURSOR_RUNNER_BOOTSTRAP_FAILURE_REJECTED_ERROR = 'cursor-runner-bootstrap-failure-rejected';
+
+const cursorRunnerBootstrapFailureRejectedResponseSchema = z.object({
+  error: z.literal(CURSOR_RUNNER_BOOTSTRAP_FAILURE_REJECTED_ERROR),
 });
 
 const pairingRekeyApprovalRequestSchema = z.object({
@@ -277,6 +301,7 @@ export function startDaemonControlServer({
   acquireCursorHeadlessWriterLease,
   releaseCursorNativeWriterLease,
   preflightCursorRunner,
+  reportCursorRunnerBootstrapFailure,
   markDaemonRunnerStopping,
   completeDaemonRunnerStopping,
   openCodexRemoteTui,
@@ -284,7 +309,7 @@ export function startDaemonControlServer({
 }: {
   getChildren: () => TrackedSession[];
   stopSession: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
-  spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
+  spawnSession: (options: SpawnSessionOptions) => Promise<DaemonSpawnSessionResult>;
   requestShutdown: () => void;
   onRemcliSessionWebhook: (sessionId: string, metadata: Metadata, runnerToken?: string) => DaemonSessionWebhookResult;
   issueSessionRunnerCredential: (sessionId: string, owner: string) => string | undefined;
@@ -298,6 +323,9 @@ export function startDaemonControlServer({
     request: CursorNativeWriterLeaseReleaseRequest,
   ) => Promise<CursorNativeWriterLeaseReleaseResult>;
   preflightCursorRunner: (request: CursorRunnerPreflightRequest) => Promise<CursorRunnerPreflightResult>;
+  reportCursorRunnerBootstrapFailure: (
+    request: CursorRunnerBootstrapFailureRequest,
+  ) => Promise<CursorRunnerBootstrapFailureResult>;
   markDaemonRunnerStopping: (sessionId: string) => DaemonRunnerLifecycleResult;
   completeDaemonRunnerStopping: (sessionId: string) => Promise<DaemonRunnerLifecycleResult>;
   openCodexRemoteTui: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
@@ -368,6 +396,26 @@ export function startDaemonControlServer({
       if (result.type === 'rejected') {
         reply.code(403);
         return { error: CURSOR_RUNNER_PREFLIGHT_REJECTED_ERROR } as const;
+      }
+
+      return result;
+    });
+
+    // Cursor reports only an authenticated bootstrap failure before it can
+    // publish P2P metadata. Do not accept runner-provided diagnostics here.
+    typed.post('/cursor-runner-bootstrap-failed', {
+      schema: {
+        body: cursorRunnerBootstrapFailureRequestSchema,
+        response: {
+          200: cursorRunnerBootstrapFailureResultSchema,
+          403: cursorRunnerBootstrapFailureRejectedResponseSchema,
+        },
+      },
+    }, async (request, reply) => {
+      const result = await reportCursorRunnerBootstrapFailure(request.body);
+      if (!result.accepted) {
+        reply.code(403);
+        return { error: CURSOR_RUNNER_BOOTSTRAP_FAILURE_REJECTED_ERROR } as const;
       }
 
       return result;
@@ -579,6 +627,11 @@ export function startDaemonControlServer({
           200: z.object({
             success: z.boolean(),
             sessionId: z.string().optional(),
+            terminal: z.discriminatedUnion('type', [
+              z.object({ type: z.literal('opened') }),
+              z.object({ type: z.literal('unavailable'), error: z.literal('terminal-unavailable') }),
+              z.object({ type: z.literal('not-requested') }),
+            ]).optional(),
             approvedNewDirectoryCreation: z.boolean().optional()
           }),
           409: z.object({
@@ -612,6 +665,7 @@ export function startDaemonControlServer({
           return {
             success: true,
             sessionId: result.sessionId,
+            terminal: result.terminal,
             approvedNewDirectoryCreation: true
           };
         

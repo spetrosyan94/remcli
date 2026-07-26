@@ -35,4 +35,32 @@ describe('MetadataSchema execution outcome', () => {
             executionOutcome: { kind: 'error', occurredAt: 'now' },
         }).success).toBe(false);
     });
+
+    it('accepts only a complete persisted Codex execution tuple', () => {
+        expect(MetadataSchema.safeParse({
+            path: '/tmp/project',
+            host: 'test-host',
+            codexExecution: {
+                model: 'gpt-5.6-luna',
+                reasoningEffort: 'xhigh',
+                permissionMode: 'workspace-write',
+            },
+        }).success).toBe(true);
+        expect(MetadataSchema.safeParse({
+            path: '/tmp/project',
+            host: 'test-host',
+            codexExecution: {
+                model: 'gpt-5.6-luna',
+                permissionMode: 'default',
+            },
+        }).success).toBe(false);
+        expect(MetadataSchema.safeParse({
+            path: '/tmp/project',
+            host: 'test-host',
+            codexExecution: {
+                model: '',
+                permissionMode: 'workspace-write',
+            },
+        }).success).toBe(false);
+    });
 });

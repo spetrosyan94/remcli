@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { CodexCapabilitiesSnapshot } from "@/lib/protocol";
 import {
     createCodexExecutionForModel,
-    getDefaultCodexResumeSelection,
+    getCodexResumeSelection,
 } from "@/lib/codexCapabilities";
 
 function createCapabilities(overrides: Partial<CodexCapabilitiesSnapshot> = {}): CodexCapabilitiesSnapshot {
@@ -25,14 +25,38 @@ function createCapabilities(overrides: Partial<CodexCapabilitiesSnapshot> = {}):
 }
 
 describe("Codex capability selections", () => {
-    it("builds an atomic default resume selection from the live catalog", () => {
-        expect(getDefaultCodexResumeSelection(createCapabilities())).toEqual({
+    it("rebuilds the stored selection with a fresh catalog instead of the live default", () => {
+        const capabilities = createCapabilities({
+            catalogVersion: "fresh-catalog",
+            models: [
+                {
+                    id: "gpt-5.6-sol",
+                    displayName: "GPT-5.6 Sol",
+                    isDefault: true,
+                    defaultReasoningEffort: "max",
+                    supportedReasoningEfforts: ["max"],
+                },
+                {
+                    id: "gpt-5.6-luna",
+                    displayName: "GPT-5.6 Luna",
+                    isDefault: false,
+                    defaultReasoningEffort: "xhigh",
+                    supportedReasoningEfforts: ["low", "high", "xhigh"],
+                },
+            ],
+        });
+
+        expect(getCodexResumeSelection(capabilities, {
+            model: "gpt-5.6-luna",
+            reasoningEffort: "xhigh",
+            permissionMode: "read-only",
+        })).toEqual({
             codexExecution: {
                 model: "gpt-5.6-luna",
                 reasoningEffort: "xhigh",
-                catalogVersion: "catalog-v1",
+                catalogVersion: "fresh-catalog",
             },
-            permissionMode: "workspace-write",
+            permissionMode: "read-only",
         });
     });
 
@@ -47,15 +71,62 @@ describe("Codex capability selections", () => {
         });
 
         expect(createCodexExecutionForModel(capabilities, "gpt-5.6-luna")).toBeNull();
-        expect(getDefaultCodexResumeSelection(capabilities)).toBeNull();
+        expect(getCodexResumeSelection(capabilities, {
+            model: "gpt-5.6-luna",
+            reasoningEffort: "xhigh",
+            permissionMode: "workspace-write",
+        })).toBeNull();
     });
 
-    it("does not synthesize a resume selection from an unavailable catalog", () => {
-        expect(getDefaultCodexResumeSelection(createCapabilities({
+    it("fails closed for a legacy or incompatible stored selection", () => {
+        expect(getCodexResumeSelection(createCapabilities(), undefined)).toBeNull();
+        expect(getCodexResumeSelection(createCapabilities(), {
+            model: "gpt-5.6-luna",
+            permissionMode: "workspace-write",
+        })).toBeNull();
+        expect(getCodexResumeSelection(createCapabilities({
             status: "unavailable",
             catalogVersion: null,
             models: [],
             permissionModes: [],
-        }))).toBeNull();
+        }), {
+            model: "gpt-5.6-luna",
+            reasoningEffort: "xhigh",
+            permissionMode: "workspace-write",
+        })).toBeNull();
+        expect(getCodexResumeSelection(createCapabilities({
+            permissionModes: ["workspace-write"],
+        }), {
+            model: "gpt-5.6-luna",
+            reasoningEffort: "xhigh",
+            permissionMode: "read-only",
+        })).toBeNull();
+    });
+
+    it("preserves the absence of reasoning only for a model without a selector", () => {
+        const capabilities = createCapabilities({
+            models: [{
+                id: "gpt-5.6-no-reasoning",
+                displayName: "GPT-5.6 No Reasoning",
+                isDefault: true,
+                supportedReasoningEfforts: [],
+            }],
+        });
+
+        expect(getCodexResumeSelection(capabilities, {
+            model: "gpt-5.6-no-reasoning",
+            permissionMode: "read-only",
+        })).toEqual({
+            codexExecution: {
+                model: "gpt-5.6-no-reasoning",
+                catalogVersion: "catalog-v1",
+            },
+            permissionMode: "read-only",
+        });
+        expect(getCodexResumeSelection(capabilities, {
+            model: "gpt-5.6-no-reasoning",
+            reasoningEffort: "xhigh",
+            permissionMode: "read-only",
+        })).toBeNull();
     });
 });

@@ -194,6 +194,13 @@ async function executeSpawnAgentSession(rawArgs: string, deps: ConciergeDeps): P
         return { error: 'Cursor is unavailable because its account-visible model catalog could not be validated.' };
     }
 
+    const codexSelection = agent === 'codex'
+        ? await deps.getDefaultCodexSelection()
+        : null;
+    if (agent === 'codex' && !codexSelection) {
+        return { error: 'Codex is unavailable because its live capability selection could not be validated.' };
+    }
+
     // Directory is validated to exist, so directory-creation approval is irrelevant here.
     // Spawning a session is a privileged, LLM-initiated action — log it at info level for audit.
     logger.infoDeveloper(`[CONCIERGE] Spawning agent session: agent=${agent} directory=${directory}`);
@@ -205,6 +212,10 @@ async function executeSpawnAgentSession(rawArgs: string, deps: ConciergeDeps): P
             cursorExecution: cursorSelection.execution,
             cursorLaunchControls: { ...DEFAULT_CURSOR_LAUNCH_CONTROLS },
             cursorRunner: cursorSelection.runner,
+        } : {}),
+        ...(codexSelection ? {
+            permissionMode: codexSelection.permissionMode,
+            codexExecution: codexSelection.execution,
         } : {}),
     });
     return result;

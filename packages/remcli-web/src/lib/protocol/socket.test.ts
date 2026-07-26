@@ -239,4 +239,74 @@ describe('socket reconnect lifecycle', () => {
 
         socketDisconnect();
     });
+
+    it('preserves an unavailable terminal outcome from a successful encrypted spawn RPC', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-spawn-result' });
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const cipher = {
+            encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
+            decryptRaw: vi.fn().mockResolvedValue({
+                type: 'success',
+                sessionId: 'session-1',
+                terminal: { type: 'unavailable', error: 'terminal-unavailable' },
+            }),
+        } as unknown as Cipher;
+
+        const { machineSpawnNewSession, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+
+        await expect(machineSpawnNewSession({
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            agent: 'codex',
+        })).resolves.toEqual({
+            type: 'success',
+            sessionId: 'session-1',
+            terminal: { type: 'unavailable', error: 'terminal-unavailable' },
+        });
+        expect(emitWithAck).toHaveBeenCalledWith('rpc-call', expect.objectContaining({
+            method: 'machine-1:spawn-remcli-session',
+        }));
+
+        socketDisconnect();
+    });
+
+    it('rejects a successful spawn RPC with an unknown terminal outcome', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-invalid-spawn-result' });
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const cipher = {
+            encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
+            decryptRaw: vi.fn().mockResolvedValue({
+                type: 'success',
+                sessionId: 'session-1',
+                terminal: { type: 'unknown', error: 'terminal-unavailable' },
+            }),
+        } as unknown as Cipher;
+
+        const { machineSpawnNewSession, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+
+        await expect(machineSpawnNewSession({
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            agent: 'codex',
+        })).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Spawn session RPC returned an invalid response',
+        });
+
+        socketDisconnect();
+    });
 });

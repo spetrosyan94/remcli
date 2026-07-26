@@ -113,6 +113,7 @@ interface TestState {
     startupCallOrder: string[];
     p2pSessionCreateCalls: number;
     p2pSessionConnectCallCounts: number[];
+    p2pSessionMetadata: Array<Record<string, unknown>>;
     sessionStartedResults: Array<{ error?: string }>;
     daemonRunnerPreflightCalls: Array<{
         agent: 'codex';
@@ -220,6 +221,7 @@ const testState = vi.hoisted(() => {
         startupCallOrder: [],
         p2pSessionCreateCalls: 0,
         p2pSessionConnectCallCounts: [],
+        p2pSessionMetadata: [],
         sessionStartedResults: [],
         daemonRunnerPreflightCalls: [],
         daemonRunnerPreflightResults: [],
@@ -308,6 +310,7 @@ const testState = vi.hoisted(() => {
             state.startupCallOrder = [];
             state.p2pSessionCreateCalls = 0;
             state.p2pSessionConnectCallCounts = [];
+            state.p2pSessionMetadata = [];
             state.sessionStartedResults = [];
             state.daemonRunnerPreflightCalls = [];
             state.daemonRunnerPreflightResults = [];
@@ -379,9 +382,10 @@ const testState = vi.hoisted(() => {
 vi.mock('@/api/api', () => ({
     ApiClient: {
         create: vi.fn(async () => ({
-        getOrCreateSession: vi.fn(async () => {
+        getOrCreateSession: vi.fn(async (options: { metadata: Record<string, unknown> }) => {
             testState.state.p2pSessionCreateCalls += 1;
             testState.state.p2pSessionConnectCallCounts.push(testState.state.connectCalls);
+            testState.state.p2pSessionMetadata.push(options.metadata);
             return {
                 id: 'remcli-session',
                 seq: 1,
@@ -1063,6 +1067,25 @@ describe('runCodex app-server integration', () => {
 
     afterEach(() => {
         forgetSessionRunnerCredential('remcli-session');
+    });
+
+    it('persists the daemon-selected Codex configuration without a stale catalog version', async () => {
+        testState.state.incomingMessages = [createIncomingMessage()];
+
+        await runTestCodex({
+            startedBy: 'daemon',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution('xhigh'),
+        });
+
+        expect(testState.state.p2pSessionMetadata).toContainEqual(expect.objectContaining({
+            codexExecution: {
+                model: 'gpt-5.6-luna',
+                reasoningEffort: 'xhigh',
+                permissionMode: 'read-only',
+            },
+        }));
+        expect(JSON.stringify(testState.state.p2pSessionMetadata)).not.toContain('catalogVersion');
     });
 
     it('forwards one external native user item to the P2P feed without starting another turn', async () => {

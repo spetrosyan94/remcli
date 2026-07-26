@@ -813,7 +813,11 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
         expect(harness.fixture.getInvocations()).toEqual([]);
 
         const spawned = await harness.callMachineRpc('spawn-remcli-session', createSpawnParams());
-        expect(spawned).toEqual({ type: 'success', sessionId: expect.any(String) });
+        expect(spawned).toEqual({
+            type: 'success',
+            sessionId: expect.any(String),
+            terminal: { type: 'opened' },
+        });
         if (!isSpawnResult(spawned) || !spawned.sessionId) {
             throw new Error('Controlled Cursor spawn did not return a Remcli session ID.');
         }
@@ -860,7 +864,11 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
             createSpawnParams(undefined, process.cwd(), launchControls),
         );
         expect(isSpawnResult(spawned)).toBe(true);
-        expect(spawned).toEqual({ type: 'success', sessionId: expect.any(String) });
+        expect(spawned).toEqual({
+            type: 'success',
+            sessionId: expect.any(String),
+            terminal: { type: 'opened' },
+        });
         if (!isSpawnResult(spawned) || !spawned.sessionId) {
             throw new Error('Controlled Cursor initial spawn did not return a Remcli session ID.');
         }
@@ -906,7 +914,11 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
             'spawn-remcli-session',
             createSpawnParams(TEST_NATIVE_SESSION_ID, process.cwd(), launchControls),
         );
-        expect(duplicateResume).toEqual({ type: 'success', sessionId: firstRemcliSessionId });
+        expect(duplicateResume).toEqual({
+            type: 'success',
+            sessionId: firstRemcliSessionId,
+            terminal: { type: 'opened' },
+        });
         expect(harness.getChildren()).toHaveLength(1);
         expect(harness.fixture.getInvocations()).toHaveLength(1);
 
@@ -922,7 +934,11 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
             'spawn-remcli-session',
             createSpawnParams(TEST_NATIVE_SESSION_ID, process.cwd(), launchControls),
         );
-        expect(resumedForActiveStop).toEqual({ type: 'success', sessionId: expect.any(String) });
+        expect(resumedForActiveStop).toEqual({
+            type: 'success',
+            sessionId: expect.any(String),
+            terminal: { type: 'opened' },
+        });
         if (!isSpawnResult(resumedForActiveStop) || !resumedForActiveStop.sessionId) {
             throw new Error('Controlled Cursor active-stop resume did not return a Remcli session ID.');
         }
@@ -964,7 +980,11 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
             createSpawnParams(TEST_NATIVE_SESSION_ID, process.cwd(), launchControls),
         );
         expect(isSpawnResult(resumed)).toBe(true);
-        expect(resumed).toEqual({ type: 'success', sessionId: expect.any(String) });
+        expect(resumed).toEqual({
+            type: 'success',
+            sessionId: expect.any(String),
+            terminal: { type: 'opened' },
+        });
         if (!isSpawnResult(resumed) || !resumed.sessionId) {
             throw new Error('Controlled Cursor resume did not return a Remcli session ID.');
         }
@@ -1051,8 +1071,16 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
             harness.callMachineRpc('spawn-remcli-session', createSpawnParams(TEST_NATIVE_SESSION_ID)),
             harness.callMachineRpc('spawn-remcli-session', createSpawnParams(TEST_NATIVE_SESSION_ID)),
         ]);
-        expect(firstResume).toEqual({ type: 'success', sessionId: expect.any(String) });
-        expect(duplicateResume).toEqual({ type: 'success', sessionId: expect.any(String) });
+        expect(firstResume).toEqual({
+            type: 'success',
+            sessionId: expect.any(String),
+            terminal: { type: 'opened' },
+        });
+        expect(duplicateResume).toEqual({
+            type: 'success',
+            sessionId: expect.any(String),
+            terminal: { type: 'opened' },
+        });
         if (!isSpawnResult(firstResume) || !firstResume.sessionId) {
             throw new Error('Controlled Cursor first pre-init resume did not return a Remcli session ID.');
         }

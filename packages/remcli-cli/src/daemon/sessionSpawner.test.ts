@@ -35,6 +35,15 @@ const openTerminalMocks = vi.hoisted(() => ({
     openTerminalWithCommand: vi.fn(async () => true),
 }));
 
+const CONTROLLED_CODEX_SELECTION: Pick<SpawnSessionOptions, 'codexExecution' | 'permissionMode'> = {
+    permissionMode: 'workspace-write',
+    codexExecution: {
+        model: 'gpt-5.6-luna',
+        reasoningEffort: 'xhigh',
+        catalogVersion: 'catalog-1',
+    },
+};
+
 const loggerMocks = vi.hoisted(() => ({
     debug: vi.fn(),
     debugLargeJson: vi.fn(),
@@ -456,6 +465,7 @@ describe('createSessionManager resume deduplication', () => {
         const spawning = manager.spawnSession({
             directory: process.cwd(),
             agent: 'codex',
+            ...CONTROLLED_CODEX_SELECTION,
         });
 
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
@@ -467,7 +477,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'codex',
         }), getDaemonRunnerToken());
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-isolated-cli-artifact' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-isolated-cli-artifact' });
     });
 
     it('passes the daemon-validated Codex execution config to the runner before its first turn', async () => {
@@ -503,7 +513,11 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'codex',
         }), getDaemonRunnerToken());
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-codex-capability' });
+        await expect(spawning).resolves.toMatchObject({
+            type: 'success',
+            sessionId: 'remcli-codex-capability',
+            terminal: { type: 'not-requested' },
+        });
     });
 
     it('passes the daemon-validated Cursor execution config to the runner before its first turn', async () => {
@@ -553,7 +567,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-capability' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-capability' });
     });
 
     it('does not inherit the legacy Cursor permission environment into a daemon spawn', async () => {
@@ -586,7 +600,7 @@ describe('createSessionManager resume deduplication', () => {
                 startedBy: 'daemon',
                 flavor: 'cursor',
             }), getDaemonRunnerToken());
-            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-legacy-env' });
+            await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-legacy-env' });
         } finally {
             if (previousLegacyPermissionMode === undefined) {
                 delete process.env.REMCLI_CURSOR_PERMISSION_MODE;
@@ -635,11 +649,38 @@ describe('createSessionManager resume deduplication', () => {
         expect(tmuxMocks.spawnInTmux).not.toHaveBeenCalled();
     });
 
+    it('fails closed for Codex without native execution and sandbox selection before tmux spawn', async () => {
+        const manager = createSessionManager();
+
+        await expect(manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'codex',
+        })).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Codex requires a daemon-validated model, reasoning, and sandbox selection.',
+        });
+        expect(tmuxMocks.spawnInTmux).not.toHaveBeenCalled();
+    });
+
+    it('fails closed for an explicit unknown agent before directory or tmux work begins', async () => {
+        const manager = createSessionManager();
+
+        await expect(manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'unknown-agent' as SpawnSessionOptions['agent'],
+        })).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Daemon session spawn requires a supported agent.',
+        });
+        expect(tmuxMocks.spawnInTmux).not.toHaveBeenCalled();
+    });
+
     it('does not spawn a Codex resume after shutdown starts during async resume resolution', async () => {
         const manager = createSessionManager();
         const spawning = manager.spawnSession({
             directory: process.cwd(),
             agent: 'codex',
+            ...CONTROLLED_CODEX_SELECTION,
             resumeSessionId: 'codex-thread-shutdown-race',
         });
         const shutdownDrain = manager.killAllSessions();
@@ -666,6 +707,7 @@ describe('createSessionManager resume deduplication', () => {
         const options = {
             directory: process.cwd(),
             agent: 'codex' as const,
+            ...CONTROLLED_CODEX_SELECTION,
             resumeSessionId: 'codex-thread-1',
         };
 
@@ -691,8 +733,8 @@ describe('createSessionManager resume deduplication', () => {
             codexSessionId: 'codex-thread-1',
         }, getDaemonRunnerToken());
 
-        await expect(first).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-1' });
-        await expect(second).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-1' });
+        await expect(first).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-1' });
+        await expect(second).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-1' });
     });
 
     it('drains a cancelled pre-PID Codex resume through its immutable tmux target before shutdown is exit-ready', async () => {
@@ -723,6 +765,7 @@ describe('createSessionManager resume deduplication', () => {
         const resume = manager.spawnSession({
             directory: process.cwd(),
             agent: 'codex',
+            ...CONTROLLED_CODEX_SELECTION,
             resumeSessionId: 'codex-thread-shutdown-before-pid',
         });
 
@@ -845,6 +888,7 @@ describe('createSessionManager resume deduplication', () => {
         const resume = manager.spawnSession({
             directory: process.cwd(),
             agent: 'codex',
+            ...CONTROLLED_CODEX_SELECTION,
             resumeSessionId: 'codex-thread-fallback-cleanup',
         });
 
@@ -904,6 +948,7 @@ describe('createSessionManager resume deduplication', () => {
         const options = {
             directory: process.cwd(),
             agent: 'codex' as const,
+            ...CONTROLLED_CODEX_SELECTION,
             resumeSessionId: 'codex-thread-stopped-before-webhook',
         };
         const first = manager.spawnSession(options);
@@ -942,8 +987,8 @@ describe('createSessionManager resume deduplication', () => {
             type: 'error',
             errorMessage: expect.stringContaining('stopped before reporting'),
         });
-        await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-resumed-after-stop' });
-        await expect(joinedResume).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-resumed-after-stop' });
+        await expect(resumed).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-resumed-after-stop' });
+        await expect(joinedResume).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-resumed-after-stop' });
     });
 
     it('starts a fresh Codex wrapper when pruning removes a pending resume before its webhook', async () => {
@@ -962,6 +1007,7 @@ describe('createSessionManager resume deduplication', () => {
         const options = {
             directory: process.cwd(),
             agent: 'codex' as const,
+            ...CONTROLLED_CODEX_SELECTION,
             resumeSessionId: 'codex-thread-pruned-before-webhook',
         };
         const first = manager.spawnSession(options);
@@ -991,7 +1037,7 @@ describe('createSessionManager resume deduplication', () => {
             type: 'error',
             errorMessage: expect.stringContaining('stopped before reporting'),
         });
-        await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-resumed-after-prune' });
+        await expect(resumed).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-resumed-after-prune' });
     });
 
     it('settles a displaced pre-webhook Codex resume before allowing a fresh replacement', async () => {
@@ -999,6 +1045,7 @@ describe('createSessionManager resume deduplication', () => {
         const options = {
             directory: process.cwd(),
             agent: 'codex' as const,
+            ...CONTROLLED_CODEX_SELECTION,
             resumeSessionId: 'codex-thread-replaced-before-webhook',
         };
         tmuxMocks.spawnInTmux
@@ -1010,7 +1057,7 @@ describe('createSessionManager resume deduplication', () => {
         const firstResume = manager.spawnSession(options);
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(1));
 
-        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
 
         await expect(firstResume).resolves.toEqual({
@@ -1022,7 +1069,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'codex',
         }), getDaemonRunnerToken(1));
-        await expect(replacementSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-codex-replaced-b' });
+        await expect(replacementSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-codex-replaced-b' });
 
         const recoveredResume = manager.spawnSession(options);
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(3));
@@ -1033,7 +1080,7 @@ describe('createSessionManager resume deduplication', () => {
             codexSessionId: options.resumeSessionId,
         }), getDaemonRunnerToken(2));
 
-        await expect(recoveredResume).resolves.toEqual({ type: 'success', sessionId: 'remcli-codex-replaced-resume' });
+        await expect(recoveredResume).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-codex-replaced-resume' });
     });
 
     it('binds a late native Codex thread and reuses its active wrapper on resume', async () => {
@@ -1049,6 +1096,7 @@ describe('createSessionManager resume deduplication', () => {
         const spawning = manager.spawnSession({
             directory: process.cwd(),
             agent: 'codex' as const,
+            ...CONTROLLED_CODEX_SELECTION,
         });
 
         await vi.waitFor(() => {
@@ -1060,7 +1108,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'codex',
         }), getDaemonRunnerToken());
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-2' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-2' });
 
         await expect(bindTrackedCodexThread(manager, {
             agent: 'codex',
@@ -1096,10 +1144,11 @@ describe('createSessionManager resume deduplication', () => {
         const resumed = await manager.spawnSession({
             directory: process.cwd(),
             agent: 'codex',
+            ...CONTROLLED_CODEX_SELECTION,
             resumeSessionId: 'codex-thread-2',
         });
 
-        expect(resumed).toEqual({ type: 'success', sessionId: 'remcli-session-2' });
+        expect(resumed).toMatchObject({ type: 'success', sessionId: 'remcli-session-2' });
         expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(1);
     });
 
@@ -1112,13 +1161,13 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: 'tmux-codex-reused-b', windowId: '@402', paneId: '%402', pid: reusedPid });
 
         const manager = createSessionManager({ onSessionStopped });
-        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         manager.onRemcliSessionWebhook('remcli-codex-reused-a', createSessionMetadata(reusedPid, {
             startedBy: 'daemon',
             flavor: 'codex',
         }), getDaemonRunnerToken());
-        await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-codex-reused-a' });
+        await expect(firstSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-codex-reused-a' });
         await expect(bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-codex-reused-a',
@@ -1129,13 +1178,13 @@ describe('createSessionManager resume deduplication', () => {
         tmuxMocks.releaseOwnedPane.mockImplementationOnce(() => new Promise<'released'>((resolve) => {
             resolveDisplacedRelease = resolve;
         }));
-        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
         manager.onRemcliSessionWebhook('remcli-codex-reused-b', createSessionMetadata(reusedPid, {
             startedBy: 'daemon',
             flavor: 'codex',
         }), getDaemonRunnerToken(1));
-        await expect(replacementSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-codex-reused-b' });
+        await expect(replacementSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-codex-reused-b' });
         const replacementRunner = manager.getChildren().find((session) => session.remcliSessionId === 'remcli-codex-reused-b')?.tmuxRunner;
         expect(replacementRunner).toBeDefined();
 
@@ -1189,7 +1238,11 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: remoteTuiSessionId, windowId: remoteTuiWindowId, paneId: '%101', pid: 10_121 });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'codex',
+            ...CONTROLLED_CODEX_SELECTION,
+        });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         const runnerToken = getDaemonRunnerToken();
         expect(manager.onRemcliSessionWebhook(
@@ -1202,7 +1255,7 @@ describe('createSessionManager resume deduplication', () => {
             shouldIssueRunnerCredential: true,
             runnerCredentialOwner: expect.any(String),
         });
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-remote-tui' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-remote-tui' });
 
         await expect(bindTrackedCodexThread(manager, {
             agent: 'codex',
@@ -1262,14 +1315,14 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: `remcli-codex-tui-${process.pid}:codex-respawned`, windowId: remoteTuiWindowId, paneId: '%215', pid: 10_215 });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-respawned-tui',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-respawned-tui' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-respawned-tui' });
         await expect(bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-respawned-tui',
@@ -1306,14 +1359,14 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: `remcli-codex-tui-${process.pid}:codex-foreign-pane`, windowId: remoteTuiWindowId, paneId: '%219', pid: 10_219 });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-foreign-pane',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-foreign-pane' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-foreign-pane' });
         await bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-foreign-pane',
@@ -1358,14 +1411,14 @@ describe('createSessionManager resume deduplication', () => {
         } as never);
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-host-takeover',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-host-takeover' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-host-takeover' });
         await bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-host-takeover',
@@ -1409,14 +1462,14 @@ describe('createSessionManager resume deduplication', () => {
             } as never);
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-host-recovery',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-host-recovery' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-host-recovery' });
         await bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-host-recovery',
@@ -1457,14 +1510,14 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: `remcli-codex-tui-${process.pid}:codex-cleanup-failure`, windowId: '@223', paneId: '%223', pid: 10_223 });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-cleanup-failure',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-cleanup-failure' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-cleanup-failure' });
         await bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-cleanup-failure',
@@ -1504,14 +1557,14 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: false, error: 'tmux unavailable' });
 
         const manager = createSessionManager();
-        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-stale-codex-wrapper',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(initialSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-stale-codex-wrapper' });
+        await expect(initialSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-stale-codex-wrapper' });
         const tmuxSessionName = tmuxMocks.spawnInTmux.mock.calls[0]?.[1]?.sessionName as string;
         tmuxMocks.ownedPanes.set('%217', {
             windowId: '@216',
@@ -1529,6 +1582,7 @@ describe('createSessionManager resume deduplication', () => {
         await expect(manager.spawnSession({
             directory: process.cwd(),
             agent: 'codex',
+            ...CONTROLLED_CODEX_SELECTION,
             resumeSessionId: 'codex-thread-stale-wrapper',
         })).resolves.toEqual({
             type: 'error',
@@ -1552,14 +1606,14 @@ describe('createSessionManager resume deduplication', () => {
         tmuxMocks.getPaneInfo.mockResolvedValue({ status: 'unknown' });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-unknown-codex-wrapper',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-unknown-codex-wrapper' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-unknown-codex-wrapper' });
 
         await expect(manager.bindNativeCodexThread({
             agent: 'codex',
@@ -1584,14 +1638,14 @@ describe('createSessionManager resume deduplication', () => {
         });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-stale-open-wrapper',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-stale-open-wrapper' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-stale-open-wrapper' });
         await expect(bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-stale-open-wrapper',
@@ -1629,14 +1683,14 @@ describe('createSessionManager resume deduplication', () => {
         tmuxMocks.getSessionStatus.mockResolvedValue('missing');
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-concurrent-tui',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-concurrent-tui' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-concurrent-tui' });
         await bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-concurrent-tui',
@@ -1693,14 +1747,14 @@ describe('createSessionManager resume deduplication', () => {
             });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-host-interrupted',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-host-interrupted' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-host-interrupted' });
         await bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-host-interrupted',
@@ -1741,14 +1795,14 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: `remcli-codex-tui-${process.pid}:codex-window-recreated`, windowId: replacementWindowId, paneId: '%105', pid: 10_124 });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-window-interrupted',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-window-interrupted' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-window-interrupted' });
         await bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-window-interrupted',
@@ -1783,7 +1837,7 @@ describe('createSessionManager resume deduplication', () => {
         tmuxMocks.spawnInTmux.mockResolvedValueOnce({ success: true, sessionId: 'tmux-session:main', pid: runnerPid });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
 
         expect(manager.onRemcliSessionWebhook(
@@ -1807,7 +1861,7 @@ describe('createSessionManager resume deduplication', () => {
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             runnerToken,
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-secure' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-secure' });
     });
 
     it('binds a daemon runner token to its first Remcli session and rejects another session id', async () => {
@@ -1816,7 +1870,7 @@ describe('createSessionManager resume deduplication', () => {
         tmuxMocks.spawnInTmux.mockResolvedValueOnce({ success: true, sessionId: 'tmux-session:main', pid: runnerPid });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         const runnerToken = getDaemonRunnerToken();
         const firstWebhook = manager.onRemcliSessionWebhook(
@@ -1824,7 +1878,7 @@ describe('createSessionManager resume deduplication', () => {
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             runnerToken,
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-first-bound' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-first-bound' });
 
         expect(firstWebhook).toMatchObject({
             accepted: true,
@@ -1862,9 +1916,9 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: 'tmux-second:main', pid: secondRunnerPid });
 
         const manager = createSessionManager();
-        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
-        const secondSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const secondSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(2));
 
         const firstSession = manager.onRemcliSessionWebhook(
@@ -1900,8 +1954,8 @@ describe('createSessionManager resume deduplication', () => {
             shouldIssueRunnerCredential: true,
             runnerCredentialOwner: expect.any(String),
         });
-        await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-owned-by-first-runner' });
-        await expect(secondSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-owned-by-second-runner' });
+        await expect(firstSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-owned-by-first-runner' });
+        await expect(secondSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-owned-by-second-runner' });
     });
 
     it('does not open a managed tmux TUI for a terminal-started Codex session', async () => {
@@ -1941,14 +1995,14 @@ describe('createSessionManager resume deduplication', () => {
             }));
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-late-tui',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-late-tui' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-late-tui' });
         await bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-late-tui',
@@ -1987,14 +2041,14 @@ describe('createSessionManager resume deduplication', () => {
         tmuxMocks.spawnInTmux.mockResolvedValueOnce({ success: true, sessionId: 'tmux-session:main', pid: runnerPid });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-invalid-endpoint',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-invalid-endpoint' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-invalid-endpoint' });
         await bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-invalid-endpoint',
@@ -2022,14 +2076,14 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: `remcli-codex-tui-${process.pid}:codex-shutdown`, windowId: remoteTuiWindowId, paneId: '%107', pid: 10_126 });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-tui-shutdown',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-tui-shutdown' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-tui-shutdown' });
         await bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-tui-shutdown',
@@ -2061,6 +2115,7 @@ describe('createSessionManager resume deduplication', () => {
             const options = {
                 directory: process.cwd(),
                 agent: 'codex' as const,
+                ...CONTROLLED_CODEX_SELECTION,
                 resumeSessionId: 'codex-thread-slow',
             };
 
@@ -2108,8 +2163,8 @@ describe('createSessionManager resume deduplication', () => {
             flavor: 'cursor',
         }), getDaemonRunnerToken());
 
-        await expect(first).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-resume' });
-        await expect(manager.spawnSession(options)).resolves.toEqual({
+        await expect(first).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-resume' });
+        await expect(manager.spawnSession(options)).resolves.toMatchObject({
             type: 'success',
             sessionId: 'remcli-cursor-resume',
         });
@@ -2136,7 +2191,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(initialSpawn).resolves.toEqual({
+        await expect(initialSpawn).resolves.toMatchObject({
             type: 'success',
             sessionId: 'remcli-cursor-shutdown-race',
         });
@@ -2195,7 +2250,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(initialSpawn).resolves.toEqual({ type: 'success', sessionId });
+        await expect(initialSpawn).resolves.toMatchObject({ type: 'success', sessionId });
         await expect(manager.bindNativeCursorSession({
             agent: 'cursor',
             nativeSessionId,
@@ -2236,7 +2291,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken(1));
-        await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-graceful-resume' });
+        await expect(resumed).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-graceful-resume' });
     });
 
     it('waits for a credential-confirmed Cursor graceful shutdown during daemon teardown without releasing its pane early', async () => {
@@ -2261,7 +2316,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId });
 
         expect(manager.markDaemonRunnerStopping(sessionId)).toEqual({ accepted: true });
         const shutdown = manager.killAllSessions();
@@ -2299,7 +2354,7 @@ describe('createSessionManager resume deduplication', () => {
                 startedBy: 'daemon',
                 flavor: 'cursor',
             }), runnerToken);
-            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-fresh' });
+            await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-fresh' });
 
             const nativeCursorSessionId = 'cursor-native-fresh';
             expect(manager.onRemcliSessionWebhook('remcli-cursor-fresh', createSessionMetadata(process.pid, {
@@ -2334,7 +2389,7 @@ describe('createSessionManager resume deduplication', () => {
                 agent: 'cursor',
                 resumeSessionId: nativeCursorSessionId,
                 ...CONTROLLED_CURSOR_SELECTION,
-            })).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-fresh' });
+            })).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-fresh' });
 
             await expect(manager.spawnSession({
                 directory: otherWorkspace,
@@ -2373,7 +2428,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(first).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-workspace' });
+        await expect(first).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-workspace' });
 
         await expect(manager.spawnSession({
             directory: tmpdir(),
@@ -2410,7 +2465,7 @@ describe('createSessionManager resume deduplication', () => {
                 agentSessionId: nativeSessionId,
                 cursorSessionId: nativeSessionId,
             }), getDaemonRunnerToken());
-            await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-unbound-parent' });
+            await expect(firstSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-unbound-parent' });
 
             await expect(manager.stopSession('remcli-cursor-unbound-parent')).resolves.toEqual({
                 success: true,
@@ -2436,7 +2491,7 @@ describe('createSessionManager resume deduplication', () => {
                 startedBy: 'daemon',
                 flavor: 'cursor',
             }), getDaemonRunnerToken(1));
-            await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-unbound-resume' });
+            await expect(resumed).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-unbound-resume' });
         } finally {
             await rm(workspace, { recursive: true, force: true });
         }
@@ -2463,7 +2518,7 @@ describe('createSessionManager resume deduplication', () => {
                 startedBy: 'daemon',
                 flavor: 'cursor',
             }), getDaemonRunnerToken());
-            await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-before-restart' });
+            await expect(firstSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-before-restart' });
             await expect(firstManager.bindNativeCursorSession({
                 agent: 'cursor',
                 nativeSessionId,
@@ -2494,7 +2549,7 @@ describe('createSessionManager resume deduplication', () => {
                 startedBy: 'daemon',
                 flavor: 'cursor',
             }), getDaemonRunnerToken(1));
-            await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-after-restart' });
+            await expect(resumed).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-after-restart' });
         } finally {
             await rm(workspace, { recursive: true, force: true });
         }
@@ -2523,7 +2578,7 @@ describe('createSessionManager resume deduplication', () => {
                 startedBy: 'daemon',
                 flavor: 'cursor',
             }), getDaemonRunnerToken());
-            await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: parentSessionId });
+            await expect(firstSpawn).resolves.toMatchObject({ type: 'success', sessionId: parentSessionId });
             await expect(manager.bindNativeCursorSession({
                 agent: 'cursor',
                 nativeSessionId,
@@ -2585,7 +2640,7 @@ describe('createSessionManager resume deduplication', () => {
                 startedBy: 'daemon',
                 flavor: 'cursor',
             }), getDaemonRunnerToken(1));
-            await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-lineage-resume' });
+            await expect(resumed).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-lineage-resume' });
         } finally {
             await Promise.all([
                 rm(workspace, { recursive: true, force: true }),
@@ -2627,10 +2682,46 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), runnerToken);
-        await expect(spawning).resolves.toEqual({
+        await expect(spawning).resolves.toMatchObject({
             type: 'success',
             sessionId: 'remcli-cursor-fresh-preflight',
         });
+    });
+
+    it('fails only the exact owned Cursor spawn immediately when its authenticated bootstrap report is accepted', async () => {
+        const runnerPid = 21_035;
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-cursor-bootstrap-failure',
+            pid: runnerPid,
+        });
+
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'cursor',
+            ...CONTROLLED_CURSOR_SELECTION,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        const runnerToken = getDaemonRunnerToken();
+
+        await expect(manager.reportCursorRunnerBootstrapFailure({
+            agent: 'cursor',
+            pid: runnerPid,
+            runnerToken: 'forged-runner-token',
+        })).resolves.toEqual({ accepted: false });
+        expect(manager.getChildren()).toHaveLength(1);
+
+        await expect(manager.reportCursorRunnerBootstrapFailure({
+            agent: 'cursor',
+            pid: runnerPid,
+            runnerToken,
+        })).resolves.toEqual({ accepted: true });
+        await expect(spawning).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Cursor daemon runner bootstrap failed before creating a Remcli session.',
+        });
+        expect(manager.getChildren()).toHaveLength(0);
     });
 
     it('verifies a tracked Codex runner before it can create P2P metadata', async () => {
@@ -2642,7 +2733,11 @@ describe('createSessionManager resume deduplication', () => {
         });
 
         const manager = createSessionManager();
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'codex',
+            ...CONTROLLED_CODEX_SELECTION,
+        });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         const runnerToken = getDaemonRunnerToken();
 
@@ -2659,7 +2754,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'codex',
         }), runnerToken);
-        await expect(spawning).resolves.toEqual({
+        await expect(spawning).resolves.toMatchObject({
             type: 'success',
             sessionId: 'remcli-codex-fresh-preflight',
         });
@@ -2694,7 +2789,7 @@ describe('createSessionManager resume deduplication', () => {
             sessionMetadata,
             runnerToken,
         )).toMatchObject({ accepted: true, daemonOwned: true });
-        await expect(spawning).resolves.toEqual({
+        await expect(spawning).resolves.toMatchObject({
             type: 'success',
             sessionId: 'remcli-cursor-diagnostic-redaction',
         });
@@ -2749,8 +2844,8 @@ describe('createSessionManager resume deduplication', () => {
                 startedBy: 'daemon',
                 flavor: 'cursor',
             }), getDaemonRunnerToken(1));
-            await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-owner-a' });
-            await expect(secondSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-owner-b' });
+            await expect(firstSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-owner-a' });
+            await expect(secondSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-owner-b' });
 
             const nativeSessionId = 'cursor-native-atomic-owner';
             const firstBinding = manager.bindNativeCursorSession({
@@ -2778,7 +2873,7 @@ describe('createSessionManager resume deduplication', () => {
                 type: 'reuse-active-wrapper',
                 wrapper: { remcliSessionId: 'remcli-cursor-owner-a', nativeSessionId },
             });
-            await expect(concurrentResume).resolves.toEqual({
+            await expect(concurrentResume).resolves.toMatchObject({
                 type: 'success',
                 sessionId: 'remcli-cursor-owner-a',
             });
@@ -2838,7 +2933,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: remcliSessionId });
 
         const request = { agent: 'cursor' as const, nativeSessionId, remcliSessionId };
         const [firstAcquire, concurrentAcquire] = await Promise.all([
@@ -2926,7 +3021,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-reused-a' });
+        await expect(firstSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-reused-a' });
         await expect(manager.bindNativeCursorSession({
             agent: 'cursor',
             nativeSessionId,
@@ -2950,7 +3045,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken(1));
-        await expect(secondSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-reused-b' });
+        await expect(secondSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-reused-b' });
         await expect(manager.bindNativeCursorSession({
             agent: 'cursor',
             nativeSessionId: 'cursor-native-reused-b',
@@ -3006,7 +3101,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken(2));
-        await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-reused-resume' });
+        await expect(resumed).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-reused-resume' });
 
         const resumedWriterLease = await acquireTrackedCursorHeadlessWriterLease(manager, {
             agent: 'cursor',
@@ -3046,7 +3141,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-stop-race-a' });
+        await expect(firstSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-stop-race-a' });
         await expect(manager.bindNativeCursorSession({
             agent: 'cursor',
             nativeSessionId: firstNativeSessionId,
@@ -3073,7 +3168,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken(1));
-        await expect(secondSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-stop-race-b' });
+        await expect(secondSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-stop-race-b' });
         const secondRunner = manager.getChildren()[0]?.tmuxRunner;
         expect(secondRunner).toBeDefined();
         const secondBinding = await manager.bindNativeCursorSession({
@@ -3123,7 +3218,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken(2));
-        await expect(lineageResume).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-stop-race-lineage' });
+        await expect(lineageResume).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-stop-race-lineage' });
 
         await expect(manager.bindNativeCursorSession({
             agent: 'cursor',
@@ -3141,7 +3236,7 @@ describe('createSessionManager resume deduplication', () => {
             agent: 'cursor',
             resumeSessionId: 'cursor-native-stop-race-b',
             ...CONTROLLED_CURSOR_SELECTION,
-        })).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-stop-race-b' });
+        })).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-stop-race-b' });
         expect(onSessionStopped).toHaveBeenCalledOnce();
         expect(onSessionStopped).toHaveBeenCalledWith('remcli-cursor-stop-race-a');
     });
@@ -3173,7 +3268,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-prune-race-a' });
+        await expect(firstSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-prune-race-a' });
         await expect(manager.bindNativeCursorSession({
             agent: 'cursor',
             nativeSessionId: firstNativeSessionId,
@@ -3200,7 +3295,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken(1));
-        await expect(secondSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-prune-race-b' });
+        await expect(secondSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-prune-race-b' });
         const secondRunner = manager.getChildren()[0]?.tmuxRunner;
         expect(secondRunner).toBeDefined();
 
@@ -3226,7 +3321,7 @@ describe('createSessionManager resume deduplication', () => {
             agent: 'cursor',
             resumeSessionId: 'cursor-native-prune-race-b',
             ...CONTROLLED_CURSOR_SELECTION,
-        })).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-prune-race-b' });
+        })).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-prune-race-b' });
         expect(onSessionStopped).toHaveBeenCalledOnce();
         expect(onSessionStopped).toHaveBeenCalledWith('remcli-cursor-prune-race-a');
 
@@ -3250,7 +3345,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken(2));
-        await expect(lineageResume).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-prune-race-lineage' });
+        await expect(lineageResume).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-prune-race-lineage' });
 
         await expect(manager.stopSession('remcli-cursor-prune-race-b')).resolves.toEqual({
             success: true,
@@ -3282,7 +3377,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(initialSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-unknown-pane' });
+        await expect(initialSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-unknown-pane' });
 
         const nativeSessionId = 'cursor-native-unknown-pane';
         await expect(manager.bindNativeCursorSession({
@@ -3332,7 +3427,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(initialSpawn).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+        await expect(initialSpawn).resolves.toMatchObject({ type: 'success', sessionId: remcliSessionId });
         await expect(manager.bindNativeCursorSession({
             agent: 'cursor',
             nativeSessionId,
@@ -3393,7 +3488,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(initialSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-stopping-pane' });
+        await expect(initialSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-stopping-pane' });
         await expect(manager.bindNativeCursorSession({
             agent: 'cursor',
             nativeSessionId,
@@ -3447,7 +3542,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(initialSpawn).resolves.toEqual({
+        await expect(initialSpawn).resolves.toMatchObject({
             type: 'success',
             sessionId: 'remcli-cursor-pre-init-stopping-pane',
         });
@@ -3508,7 +3603,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'cursor',
         }), getDaemonRunnerToken());
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-cursor-quote' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-quote' });
     });
 
     it('refreshes a terminal-started tracked session when its webhook arrives again', () => {
@@ -3549,7 +3644,7 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: 'tmux-session-2', pid: 10_002 });
 
         const manager = createSessionManager();
-        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => {
             expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(1);
         });
@@ -3557,7 +3652,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'codex',
         }), getDaemonRunnerToken());
-        await expect(initialSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-stopped' });
+        await expect(initialSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-stopped' });
         await bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-stopped',
@@ -3577,6 +3672,7 @@ describe('createSessionManager resume deduplication', () => {
         const resumed = manager.spawnSession({
             directory: process.cwd(),
             agent: 'codex',
+            ...CONTROLLED_CODEX_SELECTION,
             resumeSessionId: 'codex-thread-stopped',
         });
         await vi.waitFor(() => {
@@ -3589,7 +3685,7 @@ describe('createSessionManager resume deduplication', () => {
             codexSessionId: 'codex-thread-stopped',
         }), getDaemonRunnerToken(1));
 
-        await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-resumed' });
+        await expect(resumed).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-resumed' });
     });
 
     it('allows a dead Codex wrapper to resume its native thread after pruning', async () => {
@@ -3605,7 +3701,7 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: 'tmux-session-2', pid: 10_004 });
 
         const manager = createSessionManager();
-        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const initialSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => {
             expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(1);
         });
@@ -3613,7 +3709,7 @@ describe('createSessionManager resume deduplication', () => {
             startedBy: 'daemon',
             flavor: 'codex',
         }), getDaemonRunnerToken());
-        await expect(initialSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-dead' });
+        await expect(initialSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-dead' });
         await bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-session-dead',
@@ -3634,6 +3730,7 @@ describe('createSessionManager resume deduplication', () => {
         const resumed = manager.spawnSession({
             directory: process.cwd(),
             agent: 'codex',
+            ...CONTROLLED_CODEX_SELECTION,
             resumeSessionId: 'codex-thread-dead',
         });
         await vi.waitFor(() => {
@@ -3646,7 +3743,7 @@ describe('createSessionManager resume deduplication', () => {
             codexSessionId: 'codex-thread-dead',
         }), getDaemonRunnerToken(1));
 
-        await expect(resumed).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-dead-resumed' });
+        await expect(resumed).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-dead-resumed' });
     });
 
     it('calls onSessionStopped once when heartbeat pruning removes a dead runner', async () => {
@@ -3664,7 +3761,7 @@ describe('createSessionManager resume deduplication', () => {
         const manager = createSessionManager({
             onSessionStopped,
         });
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         const rootRunner = manager.getChildren()[0]?.tmuxRunner;
         expect(rootRunner).toBeDefined();
@@ -3673,7 +3770,7 @@ describe('createSessionManager resume deduplication', () => {
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-pruned-runner' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-pruned-runner' });
 
         activePids.delete(runnerPid);
         manager.pruneDeadSessions();
@@ -3706,7 +3803,7 @@ describe('createSessionManager resume deduplication', () => {
         });
 
         const manager = createSessionManager({ onSessionStopped });
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         const rootRunner = manager.getChildren()[0]?.tmuxRunner;
         expect(rootRunner).toBeDefined();
@@ -3715,7 +3812,7 @@ describe('createSessionManager resume deduplication', () => {
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-pruned-root-missing' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-pruned-root-missing' });
 
         tmuxMocks.ownedPanes.delete(rootRunner!.paneId);
         activePids.delete(runnerPid);
@@ -3752,7 +3849,7 @@ describe('createSessionManager resume deduplication', () => {
             }
 
             const manager = createSessionManager({ onSessionStopped });
-            const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+            const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
             await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
             const rootRunner = manager.getChildren()[0]?.tmuxRunner;
             expect(rootRunner).toBeDefined();
@@ -3761,7 +3858,7 @@ describe('createSessionManager resume deduplication', () => {
                 createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
                 getDaemonRunnerToken(),
             );
-            await expect(spawning).resolves.toEqual({
+            await expect(spawning).resolves.toMatchObject({
                 type: 'success',
                 sessionId: `remcli-session-pruned-root-${releaseResult}`,
             });
@@ -3805,7 +3902,7 @@ describe('createSessionManager resume deduplication', () => {
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-pruned-root-unknown-missing' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-pruned-root-unknown-missing' });
 
         expect(manager.markDaemonRunnerStopping('remcli-session-pruned-root-unknown-missing')).toEqual({ accepted: true });
         activePids.delete(runnerPid);
@@ -3837,7 +3934,7 @@ describe('createSessionManager resume deduplication', () => {
         tmuxMocks.releaseOwnedPane.mockResolvedValueOnce('unknown');
 
         const manager = createSessionManager({ onSessionStopped });
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         const rootRunner = manager.getChildren()[0]?.tmuxRunner;
         expect(rootRunner).toBeDefined();
@@ -3846,7 +3943,7 @@ describe('createSessionManager resume deduplication', () => {
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-pruned-root-retry' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-pruned-root-retry' });
 
         activePids.delete(runnerPid);
         manager.pruneDeadSessions();
@@ -3962,14 +4059,14 @@ describe('createSessionManager resume deduplication', () => {
         const manager = createSessionManager({
             onSessionStopped,
         });
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         manager.onRemcliSessionWebhook(
             'remcli-session-stopped-runner',
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-stopped-runner' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-stopped-runner' });
 
         await expect(manager.stopSession('remcli-session-stopped-runner')).resolves.toEqual({
             success: true,
@@ -3993,7 +4090,7 @@ describe('createSessionManager resume deduplication', () => {
         });
 
         const manager = createSessionManager({ onSessionStopped });
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         const runner = manager.getChildren()[0]?.tmuxRunner;
         expect(runner).toBeDefined();
@@ -4002,7 +4099,7 @@ describe('createSessionManager resume deduplication', () => {
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-concurrent-stops' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-concurrent-stops' });
 
         let resolvePaneRelease: (result: 'released') => void = () => {};
         tmuxMocks.releaseOwnedPane.mockImplementationOnce(() => new Promise<'released'>((resolve) => {
@@ -4040,7 +4137,7 @@ describe('createSessionManager resume deduplication', () => {
         });
 
         const manager = createSessionManager({ onSessionStopped });
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         const runner = manager.getChildren()[0]?.tmuxRunner;
         expect(runner).toBeDefined();
@@ -4049,7 +4146,7 @@ describe('createSessionManager resume deduplication', () => {
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-stop-shutdown' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-stop-shutdown' });
 
         let resolvePaneRelease: (result: 'released') => void = () => {};
         tmuxMocks.releaseOwnedPane.mockImplementationOnce(() => new Promise<'released'>((resolve) => {
@@ -4089,14 +4186,14 @@ describe('createSessionManager resume deduplication', () => {
                 .mockResolvedValueOnce('released');
 
             const manager = createSessionManager();
-            const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+            const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
             await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
             manager.onRemcliSessionWebhook(
                 remcliSessionId,
                 createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
                 getDaemonRunnerToken(),
             );
-            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+            await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: remcliSessionId });
 
             await expect(manager.stopSession(remcliSessionId)).resolves.toEqual({ success: false });
             expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledTimes(1);
@@ -4118,14 +4215,14 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: 'tmux-displaced-cleanup-b:main', windowId: '@469', paneId: '%469', pid: reusedPid });
 
         const manager = createSessionManager({ onSessionStopped });
-        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         manager.onRemcliSessionWebhook(
             'remcli-displaced-cleanup-a',
             createSessionMetadata(reusedPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-displaced-cleanup-a' });
+        await expect(firstSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-displaced-cleanup-a' });
         const displacedRunner = manager.getChildren()[0]?.tmuxRunner;
         expect(displacedRunner).toBeDefined();
 
@@ -4134,7 +4231,7 @@ describe('createSessionManager resume deduplication', () => {
             resolveDisplacedPaneRelease = resolve;
         }));
 
-        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
         await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(displacedRunner));
         const replacementRunner = manager.getChildren().find((session) => session.tmuxRunner?.paneId === '%469')?.tmuxRunner;
@@ -4145,7 +4242,7 @@ describe('createSessionManager resume deduplication', () => {
             createSessionMetadata(reusedPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(1),
         );
-        await expect(replacementSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-displaced-cleanup-b' });
+        await expect(replacementSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-displaced-cleanup-b' });
         await expect(bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-displaced-cleanup-b',
@@ -4182,7 +4279,7 @@ describe('createSessionManager resume deduplication', () => {
         });
 
         const manager = createSessionManager({ onSessionStopped: publishInactive });
-        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(1));
         const tmuxSessionName = tmuxMocks.spawnInTmux.mock.calls[0]?.[1]?.sessionName as string;
         manager.onRemcliSessionWebhook(
@@ -4190,7 +4287,7 @@ describe('createSessionManager resume deduplication', () => {
             createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-reused-pid' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-reused-pid' });
         tmuxMocks.ownedPanes.set('%213', {
             windowId: '@213',
             sessionName: tmuxSessionName,
@@ -4390,6 +4487,11 @@ describe('createSessionManager resume deduplication', () => {
             );
 
             const failedShutdown = manager.killAllSessions();
+            const failedShutdownExpectation = expect(failedShutdown).rejects.toThrow(
+                releaseResult === 'mismatch'
+                    ? 'ownership no longer matches the original runner'
+                    : 'immutable pane target is unknown',
+            );
             await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(rootRunner));
             resolveTerminalAttach(true);
 
@@ -4397,11 +4499,7 @@ describe('createSessionManager resume deduplication', () => {
                 type: 'error',
                 errorMessage: 'Daemon shut down before session process registration.',
             });
-            await expect(failedShutdown).rejects.toThrow(
-                releaseResult === 'mismatch'
-                    ? 'ownership no longer matches the original runner'
-                    : 'immutable pane target is unknown',
-            );
+            await failedShutdownExpectation;
 
             expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledTimes(1);
             expect(manager.getChildren()).toHaveLength(1);
@@ -4424,14 +4522,14 @@ describe('createSessionManager resume deduplication', () => {
             .mockResolvedValueOnce({ success: true, sessionId: 'tmux-replaced-b:main', windowId: '@461', paneId: '%461', pid: reusedPid });
 
         const manager = createSessionManager({ onSessionStopped });
-        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const firstSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
         manager.onRemcliSessionWebhook(
             'remcli-replaced-a',
             createSessionMetadata(reusedPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(),
         );
-        await expect(firstSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-replaced-a' });
+        await expect(firstSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-replaced-a' });
         await expect(bindTrackedCodexThread(manager, {
             agent: 'codex',
             remcliSessionId: 'remcli-replaced-a',
@@ -4440,7 +4538,7 @@ describe('createSessionManager resume deduplication', () => {
         const displacedRunner = manager.getChildren()[0]?.tmuxRunner;
         expect(displacedRunner).toBeDefined();
 
-        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex' });
+        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'codex', ...CONTROLLED_CODEX_SELECTION });
         await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
         const replacementRunner = manager.getChildren()[0]?.tmuxRunner;
         expect(replacementRunner).toBeDefined();
@@ -4458,7 +4556,7 @@ describe('createSessionManager resume deduplication', () => {
             createSessionMetadata(reusedPid, { startedBy: 'daemon', flavor: 'codex' }),
             getDaemonRunnerToken(1),
         );
-        await expect(replacementSpawn).resolves.toEqual({ type: 'success', sessionId: 'remcli-replaced-b' });
+        await expect(replacementSpawn).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-replaced-b' });
         expect(manager.getChildren()).toContainEqual(expect.objectContaining({
             pid: reusedPid,
             remcliSessionId: 'remcli-replaced-b',
@@ -4497,12 +4595,44 @@ describe('createSessionManager resume deduplication', () => {
             );
 
             resolveTerminalAttach(true);
-            await expect(spawning).resolves.toEqual({
+            await expect(spawning).resolves.toMatchObject({
                 type: 'success',
                 sessionId: `remcli-${agent}-early-webhook`,
+                terminal: { type: 'opened' },
             });
         },
     );
+
+    it('returns terminal unavailable without treating the owned daemon runner as failed', async () => {
+        const runnerPid = 10_062;
+        openTerminalMocks.openTerminalWithCommand.mockResolvedValueOnce(false);
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-terminal-unavailable:main',
+            pid: runnerPid,
+        });
+
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({ directory: process.cwd(), agent: 'claude' });
+        await vi.waitFor(() => expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook(
+            'remcli-terminal-unavailable',
+            createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'claude' }),
+            getDaemonRunnerToken(),
+        );
+
+        await expect(spawning).resolves.toMatchObject({
+            type: 'success',
+            sessionId: 'remcli-terminal-unavailable',
+            terminal: { type: 'unavailable', error: 'terminal-unavailable' },
+        });
+        expect(manager.getChildren()).toEqual([
+            expect.objectContaining({
+                remcliSessionId: 'remcli-terminal-unavailable',
+                terminalLaunch: { type: 'unavailable', error: 'terminal-unavailable' },
+            }),
+        ]);
+    });
 
     it('settles a Cursor spawn displaced during terminal attach while its PID replacement resolves independently', async () => {
         const reusedPid = 10_063;
@@ -4536,7 +4666,7 @@ describe('createSessionManager resume deduplication', () => {
             createSessionMetadata(reusedPid, { startedBy: 'daemon', flavor: 'gemini' }),
             getDaemonRunnerToken(1),
         );
-        await expect(replacementSpawn).resolves.toEqual({
+        await expect(replacementSpawn).resolves.toMatchObject({
             type: 'success',
             sessionId: 'remcli-gemini-replacement',
         });
@@ -4586,7 +4716,7 @@ describe('createSessionManager resume deduplication', () => {
             claudeSessionId: 'claude-session-1',
         }, getDaemonRunnerToken());
 
-        await expect(spawning).resolves.toEqual({ type: 'success', sessionId: 'remcli-session-claude' });
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-session-claude' });
     });
 
     describe('Cursor interactive TUI host', () => {
@@ -4614,7 +4744,7 @@ describe('createSessionManager resume deduplication', () => {
                 createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
                 getDaemonRunnerToken(),
             );
-            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+            await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: remcliSessionId });
             await expect(bindTrackedCursorSession(manager, {
                 agent: 'cursor',
                 remcliSessionId,
@@ -4666,7 +4796,7 @@ describe('createSessionManager resume deduplication', () => {
                 createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
                 getDaemonRunnerToken(),
             );
-            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+            await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: remcliSessionId });
             const cursorBinding = await bindTrackedCursorSession(manager, {
                 agent: 'cursor',
                 remcliSessionId,
@@ -4788,7 +4918,7 @@ describe('createSessionManager resume deduplication', () => {
                 createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
                 getDaemonRunnerToken(),
             );
-            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+            await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: remcliSessionId });
             await expect(bindTrackedCursorSession(manager, {
                 agent: 'cursor',
                 remcliSessionId,
@@ -4833,7 +4963,7 @@ describe('createSessionManager resume deduplication', () => {
                 createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
                 getDaemonRunnerToken(),
             );
-            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+            await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: remcliSessionId });
             const cursorBinding = await bindTrackedCursorSession(manager, {
                 agent: 'cursor',
                 remcliSessionId,
@@ -4896,7 +5026,7 @@ describe('createSessionManager resume deduplication', () => {
                 createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
                 getDaemonRunnerToken(),
             );
-            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+            await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: remcliSessionId });
             const binding = await bindTrackedCursorSession(manager, {
                 agent: 'cursor',
                 remcliSessionId,
@@ -4919,7 +5049,7 @@ describe('createSessionManager resume deduplication', () => {
                 createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
                 getDaemonRunnerToken(2),
             );
-            await expect(replacement).resolves.toEqual({ type: 'success', sessionId: replacementSessionId });
+            await expect(replacement).resolves.toMatchObject({ type: 'success', sessionId: replacementSessionId });
             const replacementRequest = {
                 agent: 'cursor' as const,
                 remcliSessionId: replacementSessionId,
@@ -5033,7 +5163,7 @@ describe('createSessionManager resume deduplication', () => {
                 createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
                 getDaemonRunnerToken(),
             );
-            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+            await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: remcliSessionId });
             const binding = await bindTrackedCursorSession(manager, {
                 agent: 'cursor',
                 remcliSessionId,
@@ -5099,7 +5229,7 @@ describe('createSessionManager resume deduplication', () => {
                 createSessionMetadata(runnerPid + 1, { startedBy: 'daemon', flavor: 'cursor' }),
                 getDaemonRunnerToken(2),
             );
-            await expect(resumed).resolves.toEqual({ type: 'success', sessionId: resumedSessionId });
+            await expect(resumed).resolves.toMatchObject({ type: 'success', sessionId: resumedSessionId });
         });
     });
 });
