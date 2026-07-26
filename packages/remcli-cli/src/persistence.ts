@@ -508,6 +508,8 @@ const credentialsSchema = z.object({
 
 export type Credentials = {
   token: string,
+  // Assigned only by setupP2PForSession; never read from or written to disk.
+  p2pAuthSecret?: Uint8Array,
   encryption: {
     type: 'legacy', secret: Uint8Array
   } | {

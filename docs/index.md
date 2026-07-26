@@ -16,6 +16,7 @@ state или UX-контракт, обновлять соответствующ�
 |----------|---------------|
 | [protocol.md](protocol.md) | P2P WebSocket/HTTP protocol, payloads, sequencing, concurrency |
 | [encryption.md](encryption.md) | Wire encryption, keys, binary formats |
+| [p2p-security.md](p2p-security.md) | Модель угроз P2P, request integrity и границы direct LAN |
 | [cli-architecture.md](cli-architecture.md) | CLI/daemon lifecycle, session spawning, machine RPC |
 
 ## AI-агенты

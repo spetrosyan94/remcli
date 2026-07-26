@@ -9,6 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { copyFileSync, cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
@@ -20,6 +21,7 @@ import {
     type ControlledCursorAgent,
 } from './controlledCursorAgent';
 import type { CursorLaunchControls } from '@/cursor/cursorLaunchControls';
+import { calculateRequestProofMac } from '@/daemon/p2p/p2pRequestProof';
 
 const SOCKET_TIMEOUT_MS = 8_000;
 const RPC_REGISTRATION_TIMEOUT_MS = 8_000;
@@ -297,21 +299,52 @@ function waitForSocketDisconnect(socket: Socket, description: string): Promise<v
     });
 }
 
-async function emitRpcCall(socket: Socket, method: string, params: string): Promise<RpcCallAck> {
+function signSocketMutation(
+    authSecret: Uint8Array,
+    operation: string,
+    payload: Record<string, unknown>,
+): Record<string, unknown> {
+    const id = randomUUID();
+    const mac = calculateRequestProofMac(authSecret, {
+        v: 1,
+        transport: 'socket',
+        operation,
+        requestId: id,
+        payload,
+    });
+    if (!mac) {
+        throw new Error('Could not create a controlled Cursor request proof.');
+    }
+
+    return { ...payload, proof: { v: 1, id, mac } };
+}
+
+async function emitRpcCall(
+    socket: Socket,
+    authSecret: Uint8Array,
+    method: string,
+    params: string,
+): Promise<RpcCallAck> {
+    const payload = { method, params };
     const response = await socket
         .timeout(SOCKET_TIMEOUT_MS)
-        .emitWithAck('rpc-call', { method, params }) as unknown;
+        .emitWithAck('rpc-call', signSocketMutation(authSecret, 'rpc-call', payload)) as unknown;
     if (!isRpcCallAck(response)) {
         throw new Error('Controlled Cursor machine RPC returned an invalid acknowledgement.');
     }
     return response;
 }
 
-async function emitRpcCallWhenRegistered(socket: Socket, method: string, params: string): Promise<RpcCallAck> {
+async function emitRpcCallWhenRegistered(
+    socket: Socket,
+    authSecret: Uint8Array,
+    method: string,
+    params: string,
+): Promise<RpcCallAck> {
     const deadline = Date.now() + RPC_REGISTRATION_TIMEOUT_MS;
     let lastResponse: RpcCallAck | null = null;
     while (Date.now() < deadline) {
-        lastResponse = await emitRpcCall(socket, method, params);
+        lastResponse = await emitRpcCall(socket, authSecret, method, params);
         if (lastResponse.ok || !lastResponse.error?.startsWith('No handler registered')) {
             return lastResponse;
         }
@@ -523,6 +556,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
             p2pPort: p2pServer.port,
             machineId: TEST_MACHINE_ID,
             bearerToken,
+            authSecret,
             contentSecret,
             pairingRekeyCoordinator,
             codexCapabilities,
@@ -565,6 +599,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
             const encryptedParams = encryption.encodeBase64(encryption.encrypt(contentSecret, 'legacy', params));
             const response = await emitRpcCallWhenRegistered(
                 appSocket,
+                authSecret,
                 `${TEST_MACHINE_ID}:${method}`,
                 encryptedParams,
             );
@@ -608,7 +643,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
         };
 
         const sendPhonePrompt = (sessionId: string, text: string, overrides: PhonePromptOverrides = {}): void => {
-            appSocket.emit('message', {
+            const payload = {
                 sid: sessionId,
                 message: encryption.encodeBase64(encryption.encrypt(contentSecret, 'legacy', {
                     role: 'user',
@@ -618,7 +653,8 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
                         ...overrides.meta,
                     },
                 })),
-            });
+            };
+            appSocket.emit('message', signSocketMutation(authSecret, 'message', payload));
         };
 
         const verifyInFlightDeliveryReplay = async (

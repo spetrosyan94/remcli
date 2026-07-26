@@ -6,6 +6,17 @@ import { decodeBase64, encodeBase64, getRandomBytes, encrypt, decrypt, libsodium
 import { getEffectiveServerUrl } from '@/daemon/p2p/p2pSession';
 import { Credentials } from '@/persistence';
 import { connectionState, isNetworkError } from '@/utils/serverConnectionErrors';
+import { randomUUID } from 'node:crypto';
+import { calculateRequestProofMac, type JsonValue } from '@/daemon/p2p/p2pRequestProof';
+
+const SESSION_CREATION_OPERATION = 'POST /v1/sessions';
+
+interface CreateSessionRequestBody extends Record<string, JsonValue> {
+  tag: string;
+  metadata: string;
+  agentState: string | null;
+  dataEncryptionKey: string | null;
+}
 
 export class ApiClient {
 
@@ -48,21 +59,42 @@ export class ApiClient {
       encryptionVariant = 'legacy';
     }
 
+    const requestBody: CreateSessionRequestBody = {
+      tag: opts.tag,
+      metadata: encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.metadata)),
+      agentState: opts.state ? encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.state)) : null,
+      dataEncryptionKey: dataEncryptionKey ? encodeBase64(dataEncryptionKey) : null,
+    };
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${this.credential.token}`,
+      'Content-Type': 'application/json'
+    };
+
+    if (this.credential.p2pAuthSecret) {
+      const requestId = randomUUID();
+      const mac = calculateRequestProofMac(this.credential.p2pAuthSecret, {
+        v: 1,
+        transport: 'http',
+        operation: SESSION_CREATION_OPERATION,
+        requestId,
+        payload: requestBody,
+      });
+      if (!mac) {
+        throw new Error('Could not create P2P session request proof');
+      }
+
+      headers['X-Remcli-Request-Proof-Version'] = '1';
+      headers['X-Remcli-Request-Proof-Id'] = requestId;
+      headers['X-Remcli-Request-Proof-Mac'] = mac;
+    }
+
     // Create session
     try {
       const response = await axios.post<CreateSessionResponse>(
         `${getEffectiveServerUrl()}/v1/sessions`,
+        requestBody,
         {
-          tag: opts.tag,
-          metadata: encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.metadata)),
-          agentState: opts.state ? encodeBase64(encrypt(encryptionKey, encryptionVariant, opts.state)) : null,
-          dataEncryptionKey: dataEncryptionKey ? encodeBase64(dataEncryptionKey) : null,
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${this.credential.token}`,
-            'Content-Type': 'application/json'
-          },
+          headers,
           timeout: 60000 // 1 minute timeout for very bad network connections
         }
       )

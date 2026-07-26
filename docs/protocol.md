@@ -2,6 +2,11 @@
 
 Этот документ описывает сетевой протокол Remcli в том виде, в каком он реализован в P2P-сервере (`packages/remcli-cli/src/daemon/p2p/`). Протокол намеренно мал: JSON поверх HTTP для чтения/действий и Socket.IO для синхронизации в реальном времени. Большинство payload сквозно шифруется на стороне клиента; границы шифрования и детали кодирования — см. `encryption.md`.
 
+> Границы шифрования и request integrity описаны в
+> [encryption.md](encryption.md) и [p2p-security.md](p2p-security.md). Direct
+> LAN через HTTP остаётся режимом доверенной сети; request proof не заменяет
+> HTTPS.
+
 ## Транспорт и версионирование
 - HTTP API: JSON-запросы/ответы на роутах `/v1` и `/v2`.
 - WebSocket: Socket.IO-сервер на пути `/v1/updates` (транспорты: websocket, polling).
@@ -23,6 +28,21 @@
 
 ## Аутентификация
 API-endpoint'ы (`/v1/*`, `/v2/*`) требуют `Authorization: Bearer <token>`. Тот же токен используется и в handshake Socket.IO. Роуты статических файлов (ассеты веб-приложения) и `/health` аутентификации не требуют. Единственное исключение — одноразовый opaque ticket `GET /v1/pairing-rekey/:ticket`: ответ не содержит открытого ключа и зашифрован на ephemeral public key браузера.
+
+### Request integrity
+
+Bearer аутентифицирует соединение. Все изменяющие HTTP и Socket.IO запросы,
+работающие по bearer, дополнительно несут одноразовый request proof, построенный
+от `authSecret` и привязанный к transport, операции, request id и payload.
+Исключение — daemon-issued session runner с проверенным `runnerCredential` и
+ограниченной session scope. Daemon отклоняет отсутствующий, неверный или уже
+использованный proof до handler/store side effect. Контракт заголовков/полей и
+canonical payload должен оставаться общим для CLI и web; security model и
+ограничения — в `p2p-security.md`.
+
+Для JSON HTTP endpoint canonical payload — parsed JSON body. Для multipart
+`POST /v1/voice/transcribe` proof имеет action-level payload `null`: он
+одноразово привязывает operation/request id, но не хеширует audio stream.
 
 ## QR-код и раздача веб-приложения
 Демон показывает в терминале QR-код, кодирующий URL:
@@ -47,6 +67,11 @@ remcli daemon rekey approve <request-id> <code>
 ```
 
 Команда обращается только к loopback control server. При подтверждении daemon записывает новый `authSecret`, отключает user/machine sockets со старым bearer и оставляет `contentSecret` прежним. Актуальный QR запечатывается `tweetnacl.box` для инициировавшего браузера; endpoint ticket отдаёт только sealed payload с `Cache-Control: no-store`. Закрытие pending dialog посылает cancel с request ID и approval code; coordinator повторно сверяет TTL/state перед самой ротацией. После расшифровки replacement browser сохраняет его как recovery credential до Socket.IO handshake: старый bearer уже отозван, а Socket.IO продолжает reconnect. ACK-capable session runner может продолжить или переподключиться только с валидным daemon-issued `runnerCredential`. Если сохранённый порт занят при запуске, daemon выбирает новый случайный порт и новый QR всё равно требуется. Quick-tunnel cloudflared меняет URL после каждого старта, поэтому tunnel QR пересканируется после рестарта.
+
+`Rekey` ротирует только `authSecret`: старые bearer и request proof сразу
+отзываются, а `contentSecret` остаётся у активных runners ради непрерывности.
+Это revoke remote control, а не полная ротация конфиденциальности; детали и
+границы этой операции описаны в `p2p-security.md`.
 
 ## WebSocket-соединение
 ### Handshake
@@ -225,7 +250,7 @@ auth: {
 | Health | `GET /health` | Liveness-проба (без аутентификации) |
 | Account | `GET /v1/account/settings`, `GET /v1/account/profile`, `POST /v1/account/settings` | Заглушки аккаунта для совместимости с клиентом |
 | KV | `GET /v1/kv`, `GET /v1/kv/:key`, `POST /v1/kv/bulk`, `POST /v1/kv` | Зашифрованное key-value хранилище (мутация с `version` для оптимистичного контроля конкурентности) |
-| Voice (STT) | `GET /v1/whisper/status`, `POST /v1/voice/transcribe` | Локальная транскрипция Whisper |
+| Voice (STT) | `GET /v1/whisper/status`, `POST /v1/voice/transcribe` | Локальная multipart-транскрипция Whisper; action-level proof с payload `null`, без хеширования audio stream |
 | Voice (TTS) | `GET /v1/tts/status`, `POST /v1/voice/synthesize` | Статус TTS + синтез: `{ text, voice?, lang? }` → `audio/ogg` (OGG Opus) |
 | Concierge | `GET /v1/concierge/status`, `POST /v1/concierge/chat` | Опциональный локальный LLM-ассистент (LM Studio); тело chat: `{ messages: [{ role, content }] }` → `{ reply, actions }` |
 | Sessions | `GET /v1/sessions`, `GET /v2/sessions`, `GET /v2/sessions/active`, `POST /v1/sessions`, `GET /v1/sessions/:sessionId/messages`, `DELETE /v1/sessions/:sessionId` | CRUD сессий + история сообщений |

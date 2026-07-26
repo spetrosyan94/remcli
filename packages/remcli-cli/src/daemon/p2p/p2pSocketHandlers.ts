@@ -8,6 +8,7 @@ import { Socket } from 'socket.io';
 import { randomUUID } from 'node:crypto';
 import { P2PStore } from './p2pStore';
 import { P2PEventRouter, P2PClientConnection, UpdatePayload } from './p2pEventRouter';
+import { P2PRequestProofVerifier } from './p2pRequestProof';
 import { publishSessionActivity } from './p2pSessionLifecycle';
 import { logger } from '@/ui/logger';
 
@@ -43,16 +44,42 @@ function canAccessRpcMethod(connection: P2PClientConnection, method: string): bo
     return connection.sessionId !== undefined && method.startsWith(`${connection.sessionId}:`);
 }
 
+function verifyBearerAuthenticatedMutation(
+    connection: P2PClientConnection,
+    requestProofVerifier: P2PRequestProofVerifier,
+    operation: string,
+    data: unknown,
+): boolean {
+    if (connection.isDaemonRunner === true) {
+        return true;
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        return false;
+    }
+
+    const { proof, ...payload } = data as Record<string, unknown>;
+    return requestProofVerifier.verify({
+        transport: 'socket',
+        operation,
+        payload,
+        proof,
+    });
+}
+
 // ─── Register All Handlers ──────────────────────────────────────
 
 export function registerSocketHandlers(
     socket: Socket,
     connection: P2PClientConnection,
     store: P2PStore,
-    router: P2PEventRouter
+    router: P2PEventRouter,
+    requestProofVerifier: P2PRequestProofVerifier,
 ): void {
     // ─── Session: message ────────────────────────────────────────
     socket.on('message', (data: { sid: string; message: string; localId?: string }) => {
+        if (!verifyBearerAuthenticatedMutation(connection, requestProofVerifier, 'message', data)) {
+            return;
+        }
         const { sid, message: msgContent, localId } = data;
         if (!canAccessSession(connection, sid)) {
             logger.debug('[P2P SOCKET] Ignoring out-of-scope session message');
@@ -92,6 +119,10 @@ export function registerSocketHandlers(
         data: { sid: string; metadata: string; expectedVersion: number },
         callback: (response: Record<string, unknown>) => void
     ) => {
+        if (!verifyBearerAuthenticatedMutation(connection, requestProofVerifier, 'update-metadata', data)) {
+            callback({ result: 'error' });
+            return;
+        }
         const { sid, metadata, expectedVersion } = data;
         if (!canAccessSession(connection, sid)) {
             logger.debug('[P2P SOCKET] Ignoring out-of-scope session metadata update');
@@ -118,6 +149,10 @@ export function registerSocketHandlers(
         data: { sid: string; agentState: string | null; expectedVersion: number },
         callback: (response: Record<string, unknown>) => void
     ) => {
+        if (!verifyBearerAuthenticatedMutation(connection, requestProofVerifier, 'update-state', data)) {
+            callback({ result: 'error' });
+            return;
+        }
         const { sid, agentState, expectedVersion } = data;
         if (!canAccessSession(connection, sid)) {
             logger.debug('[P2P SOCKET] Ignoring out-of-scope session state update');
@@ -141,6 +176,9 @@ export function registerSocketHandlers(
 
     // ─── Session: session-alive ──────────────────────────────────
     socket.on('session-alive', (data: { sid: string; time: number; thinking?: boolean; mode?: string }) => {
+        if (!verifyBearerAuthenticatedMutation(connection, requestProofVerifier, 'session-alive', data)) {
+            return;
+        }
         const { sid, time, thinking } = data;
         if (!canAccessSession(connection, sid)) {
             logger.debug('[P2P SOCKET] Ignoring out-of-scope session activity');
@@ -156,6 +194,9 @@ export function registerSocketHandlers(
 
     // ─── Session: session-end ────────────────────────────────────
     socket.on('session-end', (data: { sid: string; time: number }) => {
+        if (!verifyBearerAuthenticatedMutation(connection, requestProofVerifier, 'session-end', data)) {
+            return;
+        }
         const { sid, time } = data;
         if (!canAccessSession(connection, sid)) {
             logger.debug('[P2P SOCKET] Ignoring out-of-scope session end');
@@ -170,6 +211,9 @@ export function registerSocketHandlers(
 
     // ─── Machine: machine-alive ──────────────────────────────────
     socket.on('machine-alive', (data: { machineId: string; time: number }) => {
+        if (!verifyBearerAuthenticatedMutation(connection, requestProofVerifier, 'machine-alive', data)) {
+            return;
+        }
         const { machineId, time } = data;
 
         router.emitEphemeral({
@@ -185,6 +229,10 @@ export function registerSocketHandlers(
         data: { machineId: string; metadata: string; expectedVersion: number },
         callback: (response: Record<string, unknown>) => void
     ) => {
+        if (!verifyBearerAuthenticatedMutation(connection, requestProofVerifier, 'machine-update-metadata', data)) {
+            callback({ result: 'error' });
+            return;
+        }
         const { machineId, metadata, expectedVersion } = data;
         logger.debug(`[P2P SOCKET] machine-update-metadata for ${machineId}`);
 
@@ -206,6 +254,10 @@ export function registerSocketHandlers(
         data: { machineId: string; daemonState: string; expectedVersion: number },
         callback: (response: Record<string, unknown>) => void
     ) => {
+        if (!verifyBearerAuthenticatedMutation(connection, requestProofVerifier, 'machine-update-state', data)) {
+            callback({ result: 'error' });
+            return;
+        }
         const { machineId, daemonState, expectedVersion } = data;
         logger.debug(`[P2P SOCKET] machine-update-state for ${machineId}`);
 
@@ -224,6 +276,10 @@ export function registerSocketHandlers(
 
     // ─── RPC: register ───────────────────────────────────────────
     socket.on('rpc-register', (data: { method: string }) => {
+        if (!verifyBearerAuthenticatedMutation(connection, requestProofVerifier, 'rpc-register', data)) {
+            socket.emit('rpc-error', { type: 'register', error: 'Invalid request proof' });
+            return;
+        }
         const { method } = data;
         if (!canAccessRpcMethod(connection, method)) {
             logger.debug('[P2P SOCKET] Ignoring out-of-scope RPC registration');
@@ -243,6 +299,10 @@ export function registerSocketHandlers(
 
     // ─── RPC: unregister ─────────────────────────────────────────
     socket.on('rpc-unregister', (data: { method: string }) => {
+        if (!verifyBearerAuthenticatedMutation(connection, requestProofVerifier, 'rpc-unregister', data)) {
+            socket.emit('rpc-error', { type: 'unregister', error: 'Invalid request proof' });
+            return;
+        }
         const { method } = data;
         if (!canAccessRpcMethod(connection, method)) {
             logger.debug('[P2P SOCKET] Ignoring out-of-scope RPC unregistration');
@@ -266,6 +326,10 @@ export function registerSocketHandlers(
         data: { method: string; params?: string },
         callback: (response: { ok: boolean; result?: string; error?: string }) => void
     ) => {
+        if (!verifyBearerAuthenticatedMutation(connection, requestProofVerifier, 'rpc-call', data)) {
+            callback({ ok: false, error: 'Invalid request proof' });
+            return;
+        }
         const { method, params } = data;
         if (!canAccessRpcMethod(connection, method)) {
             logger.debug('[P2P SOCKET] Ignoring out-of-scope RPC call');
@@ -302,6 +366,9 @@ export function registerSocketHandlers(
         tokens: Record<string, number>;
         cost: Record<string, number>;
     }) => {
+        if (!verifyBearerAuthenticatedMutation(connection, requestProofVerifier, 'usage-report', data)) {
+            return;
+        }
         const { key, sessionId, tokens, cost } = data;
 
         if (sessionId && canAccessSession(connection, sessionId)) {

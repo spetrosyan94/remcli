@@ -37,6 +37,7 @@ export interface RpcHandlerConfig {
     encryptionKey: Uint8Array;
     encryptionVariant: 'legacy' | 'dataKey';
     logger?: (message: string, data?: any) => void;
+    signOutboundMutation?: (operation: string, payload: Record<string, unknown>) => Record<string, unknown>;
 }
 
 /**

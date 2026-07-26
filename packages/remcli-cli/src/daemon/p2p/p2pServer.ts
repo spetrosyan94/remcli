@@ -18,6 +18,7 @@ import { P2PEventRouter, P2PClientConnection, ConnectionType } from './p2pEventR
 import { registerSocketHandlers } from './p2pSocketHandlers';
 import { registerP2PRestRoutes } from './p2pRestRoutes';
 import { verifyBearerToken } from './p2pAuth';
+import { createP2PRequestProofVerifier } from './p2pRequestProof';
 import { P2PRunnerCredentialStore, SESSION_MESSAGE_ACK_VERSION } from './p2pRunnerCredentials';
 import { ConciergeDeps } from '../concierge/types';
 import { logger } from '@/ui/logger';
@@ -30,6 +31,7 @@ export interface P2PServerConfig {
     host: string;              // '0.0.0.0' for LAN
     authSecret: Uint8Array;    // 32 bytes from the pairing QR code
     store: P2PStore;
+    daemonMachineId?: string;  // Server-owned daemon machine identity
     webAppDir?: string;        // Path to web app build (static files)
     conciergeDeps?: ConciergeDeps; // Optional local concierge capabilities
     runnerCredentialStore?: P2PRunnerCredentialStore;
@@ -136,8 +138,15 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
     const runnerCredentialStore = config.runnerCredentialStore ?? new P2PRunnerCredentialStore();
     let currentAuthSecret = authSecret;
     const retiredRunnerAuthSecrets: Uint8Array[] = [];
+    const requestProofVerifier = createP2PRequestProofVerifier({
+        getAuthSecret: () => currentAuthSecret,
+    });
 
     const router = new P2PEventRouter();
+
+    if (config.daemonMachineId) {
+        store.markOwnMachine(config.daemonMachineId);
+    }
 
     // Create Fastify instance
     const app = fastify({ logger: false });
@@ -162,7 +171,10 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
     app.addHook('onRequest', async (request, reply) => {
         reply.header('Access-Control-Allow-Origin', '*');
         reply.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-        reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        reply.header(
+            'Access-Control-Allow-Headers',
+            'Content-Type, Authorization, X-Remcli-Request-Proof-Version, X-Remcli-Request-Proof-Id, X-Remcli-Request-Proof-Mac',
+        );
 
         if (request.method === 'OPTIONS') {
             reply.code(204).send();
@@ -175,6 +187,7 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
         store,
         router,
         () => currentAuthSecret,
+        requestProofVerifier,
         config.conciergeDeps,
         config.pairingRekeyDeliveryReader,
     );
@@ -335,16 +348,10 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
 
         logger.debug(`[P2P SERVER] New connection: type=${connectionType}, sessionId=${sessionId}, machineId=${machineId}`);
 
-        // The only machine-scoped client is the daemon's own self-connection
-        // (bootstrapMachineSocket) — remember its machine id so DELETE /v1/machines/:id
-        // can refuse to delete the machine the daemon itself runs on.
-        if (connectionType === 'machine-scoped' && machineId) {
-            store.markOwnMachine(machineId);
-        }
-
         const connection: P2PClientConnection = {
             socket,
             connectionType,
+            isDaemonRunner: isAcknowledgedRunner,
             sessionId,
             machineId,
             onUpdateDelivered: (payload) => {
@@ -371,7 +378,7 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
         };
 
         router.addConnection(connection);
-        registerSocketHandlers(socket, connection, store, router);
+        registerSocketHandlers(socket, connection, store, router, requestProofVerifier);
 
         if (isAcknowledgedRunner && sessionId && runnerConnection) {
             const previousRunnerConnection = activeAcknowledgedRunnerConnections.get(sessionId);

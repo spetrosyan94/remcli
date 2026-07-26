@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ApiClient } from './api';
 import axios from 'axios';
 import { connectionState } from '@/utils/serverConnectionErrors';
+import { calculateRequestProofMac, type JsonValue } from '@/daemon/p2p/p2pRequestProof';
 
 // Use vi.hoisted to ensure mock functions are available when vi.mock factory runs
 const { mockPost, mockIsAxiosError, mockGetEffectiveServerUrl } = vi.hoisted(() => ({
@@ -31,7 +32,7 @@ vi.mock('@/daemon/p2p/p2pSession', () => ({
 // Mock encryption utilities
 vi.mock('./encryption', () => ({
     decodeBase64: vi.fn((data: string) => data),
-    encodeBase64: vi.fn((data: unknown) => data),
+    encodeBase64: vi.fn(() => 'encoded-payload'),
     decrypt: vi.fn((data: unknown) => data),
     encrypt: vi.fn((data: unknown) => data)
 }));
@@ -50,6 +51,21 @@ const testMetadata = {
     remcliLibDir: '/home/user/.remcli/lib',
     remcliToolsDir: '/home/user/.remcli/tools'
 };
+
+function createSessionResponse() {
+    return {
+        data: {
+            session: {
+                id: 'session-1',
+                seq: 1,
+                metadata: testMetadata,
+                metadataVersion: 1,
+                agentState: null,
+                agentStateVersion: 0,
+            },
+        },
+    };
+}
 
 describe('Api server error handling', () => {
     let api: ApiClient;
@@ -71,6 +87,58 @@ describe('Api server error handling', () => {
     });
 
     describe('getOrCreateSession', () => {
+        it('signs the final P2P session body with the v1 HTTP request proof', async () => {
+            const p2pAuthSecret = new Uint8Array(32).fill(7);
+            const p2pApi = await ApiClient.create({
+                token: 'p2p-bearer-token',
+                p2pAuthSecret,
+                encryption: {
+                    type: 'legacy',
+                    secret: new Uint8Array(32),
+                },
+            });
+            mockPost.mockResolvedValue(createSessionResponse());
+
+            await p2pApi.getOrCreateSession({ tag: 'test-tag', metadata: testMetadata, state: null });
+
+            const [, requestBody, requestConfig] = mockPost.mock.calls[0] as [
+                string,
+                Record<string, unknown>,
+                { headers: Record<string, string> },
+            ];
+            const headers = requestConfig.headers;
+            const requestId = headers['X-Remcli-Request-Proof-Id'];
+
+            expect(headers).toMatchObject({
+                Authorization: 'Bearer p2p-bearer-token',
+                'X-Remcli-Request-Proof-Version': '1',
+                'X-Remcli-Request-Proof-Id': expect.any(String),
+            });
+            expect(headers['X-Remcli-Request-Proof-Mac']).toBe(calculateRequestProofMac(p2pAuthSecret, {
+                v: 1,
+                transport: 'http',
+                operation: 'POST /v1/sessions',
+                requestId,
+                payload: requestBody as JsonValue,
+            }));
+        });
+
+        it('does not add P2P proof headers to non-P2P credentials', async () => {
+            mockPost.mockResolvedValue(createSessionResponse());
+
+            await api.getOrCreateSession({ tag: 'test-tag', metadata: testMetadata, state: null });
+
+            const [, , requestConfig] = mockPost.mock.calls[0] as [
+                string,
+                Record<string, unknown>,
+                { headers: Record<string, string> },
+            ];
+            expect(requestConfig.headers).toEqual({
+                Authorization: 'Bearer fake-token',
+                'Content-Type': 'application/json',
+            });
+        });
+
         it('should return null when Remcli server is unreachable (ECONNREFUSED)', async () => {
             const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 

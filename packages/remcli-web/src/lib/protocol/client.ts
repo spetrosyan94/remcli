@@ -387,7 +387,11 @@ export async function runFixtureProtocolReconnect(): Promise<void> {
 export function getRestConfig(): RestConfig | null {
     if (isFixturesActive) return fixtureRestConfig();
     if (!context) return null;
-    return { endpoint: context.credentials.endpoint, token: context.credentials.token };
+    return {
+        endpoint: context.credentials.endpoint,
+        token: context.credentials.token,
+        authSecret: context.credentials.authSecret,
+    };
 }
 
 /** List child directories on a machine; fixture mode returns a local daemon-shaped contract. */
@@ -580,7 +584,11 @@ function requireContext(): ClientContext {
 }
 
 function restConfigOf(ctx: ClientContext): RestConfig {
-    return { endpoint: ctx.credentials.endpoint, token: ctx.credentials.token };
+    return {
+        endpoint: ctx.credentials.endpoint,
+        token: ctx.credentials.token,
+        authSecret: ctx.credentials.authSecret,
+    };
 }
 
 // ─── Decryption helpers ──────────────────────────────────────────
@@ -1283,7 +1291,11 @@ async function startWithCredentials(
     ctx.unsubscribers.push(onSocketReconnected(() => refreshAfterReconnect(ctx).catch(() => undefined)));
 
     socketConnect(
-        { endpoint: credentials.endpoint, token: credentials.token },
+        {
+            endpoint: credentials.endpoint,
+            token: credentials.token,
+            authSecret: credentials.authSecret,
+        },
         {
             getSessionCipher: (sessionId) => ctx.sessionCiphers.get(sessionId) ?? null,
             getMachineCipher: (machineId) => ctx.machineCiphers.get(machineId) ?? null

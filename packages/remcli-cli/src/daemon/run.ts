@@ -598,6 +598,7 @@ export async function startDaemon(): Promise<void> {
             p2pPort: p2pServer.port,
             machineId,
             bearerToken: deriveBearerToken(pairing.authSecret),
+            authSecret: pairing.authSecret,
             contentSecret: pairing.contentSecret,
             pairingRekeyCoordinator,
             codexCapabilities,
@@ -712,6 +713,23 @@ export async function startDaemon(): Promise<void> {
         }),
     };
 
+    // Persist the daemon identity before starting P2P so machine ownership is
+    // derived from daemon configuration, never from an untrusted socket handshake.
+    const settings = await updateSettings((currentSettings) => {
+        if (currentSettings.machineId) {
+            return currentSettings;
+        }
+
+        return {
+            ...currentSettings,
+            machineId: randomUUID(),
+        };
+    });
+    if (!settings.machineId) {
+        throw new Error('Daemon machine identity is unavailable.');
+    }
+    machineId = settings.machineId;
+
     // Start P2P server — prefer the persisted port so QR codes stay valid across restarts
     // (pairing.port is 0 on first run → random available port)
     let startedP2PServer: P2PServer;
@@ -721,6 +739,7 @@ export async function startDaemon(): Promise<void> {
             host: '0.0.0.0',
             authSecret: pairing.authSecret,
             store: p2pStore,
+            daemonMachineId: machineId,
             runnerCredentialStore,
             webAppDir,
             conciergeDeps,
@@ -739,6 +758,7 @@ export async function startDaemon(): Promise<void> {
             host: '0.0.0.0',
             authSecret: pairing.authSecret,
             store: p2pStore,
+            daemonMachineId: machineId,
             runnerCredentialStore,
             webAppDir,
             conciergeDeps,
@@ -775,21 +795,7 @@ export async function startDaemon(): Promise<void> {
     await persistDaemonState();
     logger.debug('[DAEMON RUN] Daemon state updated with P2P info');
 
-    // Register machine in P2P store
-    const settings = await updateSettings((currentSettings) => {
-        if (currentSettings.machineId) {
-            return currentSettings;
-        }
-
-        return {
-            ...currentSettings,
-            machineId: randomUUID(),
-        };
-    });
-    if (!settings.machineId) {
-        throw new Error('Daemon machine identity is unavailable.');
-    }
-    machineId = settings.machineId;
+    // Register the server-configured daemon machine in the P2P store.
     p2pStore.getOrCreateMachine(
         machineId,
         JSON.stringify(initialMachineMetadata),
@@ -806,6 +812,7 @@ export async function startDaemon(): Promise<void> {
         p2pPort: p2pServer.port,
         machineId,
         bearerToken: deriveBearerToken(pairing.authSecret),
+        authSecret: pairing.authSecret,
         contentSecret: pairing.contentSecret,
         pairingRekeyCoordinator,
         codexCapabilities,

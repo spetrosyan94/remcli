@@ -15,20 +15,114 @@ import type {
     WhisperStatus,
     WhisperTranscription
 } from '@/lib/protocol/types';
+import {
+    createRequestId,
+    createRequestProof,
+    normalizeRequestPayload,
+    REQUEST_PROOF_HEADERS,
+} from '@/lib/protocol/requestProof';
 
 export interface RestConfig {
     endpoint: string;
     token: string;
+    /** Omitted only by fixture callers; production P2P connections always provide it. */
+    authSecret?: Uint8Array;
+}
+
+const REQUEST_PROOF_PROTECTED_POST_PATHS = new Set([
+    '/v1/account/settings',
+    '/v1/concierge/chat',
+    '/v1/kv',
+    '/v1/sessions',
+    '/v1/machines',
+    '/v1/voice/transcribe',
+]);
+
+const REQUEST_PROOF_MULTIPART_PATHS = new Set([
+    '/v1/voice/transcribe',
+]);
+
+function requestPathname(path: string): string {
+    try {
+        return new URL(path, 'http://remcli.local').pathname;
+    } catch {
+        return path.split('?')[0];
+    }
+}
+
+function isProofBoundFormData(pathname: string, body: BodyInit | null | undefined): body is FormData {
+    return REQUEST_PROOF_MULTIPART_PATHS.has(pathname)
+        && typeof FormData !== 'undefined'
+        && body instanceof FormData;
+}
+
+function isRequestProofEligible(method: string, pathname: string, body: BodyInit | null | undefined): boolean {
+    const isProtectedPost = method === 'POST' && REQUEST_PROOF_PROTECTED_POST_PATHS.has(pathname);
+    const isProtectedDelete = method === 'DELETE'
+        && (/^\/v1\/sessions\/[^/]+$/.test(pathname) || /^\/v1\/machines\/[^/]+$/.test(pathname));
+    if (!isProtectedPost && !isProtectedDelete) {
+        return false;
+    }
+    if (isProofBoundFormData(pathname, body)) {
+        return true;
+    }
+    return body === undefined || body === null || typeof body === 'string';
+}
+
+interface ParsedJsonBody {
+    isValid: boolean;
+    value: unknown;
+}
+
+function parseJsonBody(body: BodyInit | null | undefined): ParsedJsonBody {
+    if (body === undefined || body === null) {
+        return { isValid: true, value: null };
+    }
+    if (typeof body !== 'string') {
+        return { isValid: false, value: null };
+    }
+    try {
+        return { isValid: true, value: JSON.parse(body) };
+    } catch {
+        return { isValid: false, value: null };
+    }
 }
 
 async function request(config: RestConfig, path: string, init?: RequestInit): Promise<Response> {
-    const response = await fetch(`${config.endpoint}${path}`, {
-        ...init,
-        headers: {
-            'Authorization': `Bearer ${config.token}`,
-            ...init?.headers
+    const method = (init?.method ?? 'GET').toUpperCase();
+    const pathname = requestPathname(path);
+    const headers = new Headers(init?.headers);
+    headers.set('Authorization', `Bearer ${config.token}`);
+
+    let body = init?.body;
+    if (config.authSecret && isRequestProofEligible(method, pathname, body)) {
+        const hasFormDataBody = isProofBoundFormData(pathname, body);
+        const parsedBody = hasFormDataBody
+            ? { isValid: true, value: null }
+            : parseJsonBody(body);
+        if (parsedBody.isValid) {
+            const normalizedBody = normalizeRequestPayload(parsedBody.value);
+            const requestId = createRequestId();
+            const proof = createRequestProof(config.authSecret, {
+                transport: 'http',
+                operation: `${method} ${pathname}`,
+                requestId,
+                payload: normalizedBody,
+            });
+            headers.set(REQUEST_PROOF_HEADERS.version, String(proof.v));
+            headers.set(REQUEST_PROOF_HEADERS.id, proof.id);
+            headers.set(REQUEST_PROOF_HEADERS.mac, proof.mac);
+            if (!hasFormDataBody && body !== undefined && body !== null) {
+                body = JSON.stringify(normalizedBody);
+            }
         }
-    });
+    }
+
+    const requestInit: RequestInit = { ...init, headers };
+    if (body !== undefined) {
+        requestInit.body = body;
+    }
+    const response = await fetch(`${config.endpoint}${path}`, requestInit);
     return response;
 }
 

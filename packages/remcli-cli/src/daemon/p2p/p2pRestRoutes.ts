@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { P2PStore } from './p2pStore';
 import { P2PEventRouter } from './p2pEventRouter';
 import { verifyBearerToken } from './p2pAuth';
+import { P2PRequestProofVerifier, REQUEST_PROOF_VERSION } from './p2pRequestProof';
 import { logger } from '@/ui/logger';
 import { transcribe, isAvailable as isWhisperAvailable, ensureModel, getStatus as getWhisperStatus } from '../whisper/whisperService';
 import { synthesize as ttsSynthesize, getTtsStatus } from '../tts/ttsService';
@@ -63,6 +64,52 @@ export interface PairingRekeyDeliveryReader {
     getDelivery(ticket: string): PairingRekeyDeliveryResult;
 }
 
+const REQUEST_PROOF_VERSION_HEADER = 'x-remcli-request-proof-version';
+const REQUEST_PROOF_ID_HEADER = 'x-remcli-request-proof-id';
+const REQUEST_PROOF_MAC_HEADER = 'x-remcli-request-proof-mac';
+
+const REQUEST_PROOF_PROTECTED_POST_PATHS = new Set([
+    '/v1/account/settings',
+    '/v1/concierge/chat',
+    '/v1/kv',
+    '/v1/sessions',
+    '/v1/machines',
+    '/v1/voice/transcribe',
+]);
+
+const REQUEST_PROOF_ACTION_ONLY_POST_PATHS = new Set([
+    '/v1/voice/transcribe',
+]);
+
+function getRequestPathname(url: string): string {
+    return url.split('?', 1)[0] ?? url;
+}
+
+function isRequestProofRequired(method: string, pathname: string): boolean {
+    if (method === 'POST') {
+        return REQUEST_PROOF_PROTECTED_POST_PATHS.has(pathname);
+    }
+
+    return method === 'DELETE'
+        && (/^\/v1\/sessions\/[^/]+$/.test(pathname) || /^\/v1\/machines\/[^/]+$/.test(pathname));
+}
+
+function getRequestProofPayload(pathname: string, body: unknown): unknown {
+    return REQUEST_PROOF_ACTION_ONLY_POST_PATHS.has(pathname)
+        ? null
+        : body === undefined ? null : body;
+}
+
+function readRequestHeader(value: string | string[] | undefined): string | undefined {
+    return typeof value === 'string' ? value : undefined;
+}
+
+function readRequestProofVersion(value: string | string[] | undefined): number | undefined {
+    return readRequestHeader(value) === String(REQUEST_PROOF_VERSION)
+        ? REQUEST_PROOF_VERSION
+        : undefined;
+}
+
 // ─── Register Routes ─────────────────────────────────────────────
 
 export function registerP2PRestRoutes(
@@ -70,6 +117,7 @@ export function registerP2PRestRoutes(
     store: P2PStore,
     router: P2PEventRouter,
     getAuthSecret: () => Uint8Array,
+    requestProofVerifier: P2PRequestProofVerifier,
     conciergeDeps?: ConciergeDeps,
     pairingRekeyDeliveryReader?: PairingRekeyDeliveryReader,
 ): void {
@@ -98,6 +146,27 @@ export function registerP2PRestRoutes(
         if (!verifyBearerToken(token, getAuthSecret())) {
             reply.code(401).send({ error: 'Invalid token' });
             return;
+        }
+    });
+
+    app.addHook('preHandler', async (request, reply) => {
+        const pathname = getRequestPathname(request.url);
+        if (!isRequestProofRequired(request.method, pathname)) {
+            return;
+        }
+
+        const isValid = requestProofVerifier.verify({
+            transport: 'http',
+            operation: `${request.method} ${pathname}`,
+            payload: getRequestProofPayload(pathname, request.body),
+            proof: {
+                v: readRequestProofVersion(request.headers[REQUEST_PROOF_VERSION_HEADER]),
+                id: readRequestHeader(request.headers[REQUEST_PROOF_ID_HEADER]),
+                mac: readRequestHeader(request.headers[REQUEST_PROOF_MAC_HEADER]),
+            },
+        });
+        if (!isValid) {
+            reply.code(403).send({ error: 'Invalid request proof' });
         }
     });
 
@@ -240,6 +309,8 @@ export function registerP2PRestRoutes(
         };
     });
 
+    // Multipart transcription has an action-level proof. Its binary stream is
+    // intentionally not signed; synthesis is a read-only audio response.
     // ─── POST /v1/voice/transcribe (Whisper STT) ────────────────
     app.post('/v1/voice/transcribe', async (request, reply) => {
         if (!isWhisperAvailable()) {

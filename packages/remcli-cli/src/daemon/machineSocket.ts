@@ -8,6 +8,7 @@
  */
 
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
+import { randomUUID } from 'node:crypto';
 
 import { logger } from '@/ui/logger';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
@@ -36,11 +37,17 @@ import {
 import type { StopSessionResult } from '@/daemon/types';
 import { parseProviderSpawnRequest } from '@/daemon/providerSpawnRequest';
 import type { PairingRekeyCoordinator } from './p2p/pairingRekey';
+import {
+    calculateRequestProofMac,
+    REQUEST_PROOF_VERSION,
+    type P2PRequestProof,
+} from './p2p/p2pRequestProof';
 
 export interface MachineSocketDeps {
     p2pPort: number;
     machineId: string;
     bearerToken: string;
+    authSecret: Uint8Array;
     contentSecret: Uint8Array;
     pairingRekeyCoordinator: PairingRekeyCoordinator;
     codexCapabilities: CodexCapabilitiesService;
@@ -56,11 +63,37 @@ export interface MachineSocketHandle {
     close: () => void;
 }
 
+function signMachineRpcRegistration(
+    authSecret: Uint8Array,
+    operation: string,
+    payload: Record<string, unknown>,
+): Record<string, unknown> {
+    if (operation !== 'rpc-register' || typeof payload.method !== 'string') {
+        throw new Error('Machine socket can sign only RPC registrations');
+    }
+
+    const id = randomUUID();
+    const mac = calculateRequestProofMac(authSecret, {
+        v: REQUEST_PROOF_VERSION,
+        transport: 'socket',
+        operation,
+        requestId: id,
+        payload: { method: payload.method },
+    });
+    if (!mac) {
+        throw new Error('Could not create machine RPC request proof');
+    }
+
+    const proof: P2PRequestProof = { v: REQUEST_PROOF_VERSION, id, mac };
+    return { ...payload, proof };
+}
+
 export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHandle {
     const {
         p2pPort,
         machineId,
         bearerToken,
+        authSecret,
         contentSecret,
         pairingRekeyCoordinator,
         codexCapabilities,
@@ -88,7 +121,8 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         scopePrefix: machineId,
         encryptionKey: contentSecret,
         encryptionVariant: 'legacy',
-        logger: (msg, data) => logger.debug(msg, data)
+        logger: (msg, data) => logger.debug(msg, data),
+        signOutboundMutation: (operation, payload) => signMachineRpcRegistration(authSecret, operation, payload),
     });
 
     // Register common handlers (bash, readFile, listDirectory, etc.)

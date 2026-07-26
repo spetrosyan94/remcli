@@ -4,6 +4,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import { ApiSessionClient } from '@/api/apiSession';
 import { encodeBase64, encrypt } from '@/api/encryption';
@@ -15,6 +16,7 @@ import {
 } from '@/api/types';
 import { configuration } from '@/configuration';
 import { deriveBearerToken, generateSharedSecret } from '@/daemon/p2p/p2pAuth';
+import { calculateRequestProofMac, REQUEST_PROOF_VERSION } from '@/daemon/p2p/p2pRequestProof';
 import { startP2PServer, type P2PServer } from '@/daemon/p2p/p2pServer';
 import { P2PStore } from '@/daemon/p2p/p2pStore';
 import {
@@ -209,7 +211,7 @@ function sendPhonePrompt(
     sharedSecret: Uint8Array,
     text: string
 ): void {
-    phoneSocket.emit('message', {
+    const payload = {
         sid: sessionId,
         message: encodeBase64(encrypt(sharedSecret, 'legacy', {
             role: 'user',
@@ -221,6 +223,21 @@ function sendPhonePrompt(
                 sentFrom: 'phone',
             },
         })),
+    };
+    const id = randomUUID();
+    const mac = calculateRequestProofMac(sharedSecret, {
+        v: REQUEST_PROOF_VERSION,
+        transport: 'socket',
+        operation: 'message',
+        requestId: id,
+        payload,
+    });
+    if (!mac) {
+        throw new Error('Could not create phone message request proof');
+    }
+    phoneSocket.emit('message', {
+        ...payload,
+        proof: { v: REQUEST_PROOF_VERSION, id, mac },
     });
 }
 

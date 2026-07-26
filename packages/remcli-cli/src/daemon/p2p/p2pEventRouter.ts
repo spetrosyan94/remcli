@@ -14,6 +14,7 @@ export type ConnectionType = 'user-scoped' | 'session-scoped' | 'machine-scoped'
 export interface P2PClientConnection {
     socket: Socket;
     connectionType: ConnectionType;
+    isDaemonRunner?: boolean;
     sessionId?: string;   // Only for session-scoped
     machineId?: string;   // Only for machine-scoped
     onUpdateDelivered?: (payload: UpdatePayload) => void;

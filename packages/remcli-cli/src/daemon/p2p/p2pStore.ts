@@ -485,11 +485,7 @@ export class P2PStore {
         };
     }
 
-    /**
-     * Mark a machine as the daemon's own. The only machine-scoped client is the
-     * daemon's self-connection (bootstrapMachineSocket), so the P2P server calls
-     * this when such a connection arrives. The own machine cannot be deleted.
-     */
+    /** Mark the daemon-owned machine from trusted server configuration. */
     markOwnMachine(id: string): void {
         this.ownMachineId = id;
     }

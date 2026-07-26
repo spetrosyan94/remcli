@@ -12,6 +12,7 @@
 import { io, type Socket } from 'socket.io-client';
 import type { Cipher } from '@/lib/protocol/encryption';
 import type { AgentKind, AgentSessionInfo, PermissionMode } from '@/lib/protocol/types';
+import { attachRequestProof } from '@/lib/protocol/requestProof';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -20,6 +21,8 @@ export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'er
 export interface SocketConfig {
     endpoint: string;
     token: string;
+    /** Omitted only by fixture callers; production P2P connections always provide it. */
+    authSecret?: Uint8Array;
 }
 
 type MessageHandler = (data: unknown) => void;
@@ -33,6 +36,7 @@ interface CipherResolver {
 
 let socket: Socket | null = null;
 let ciphers: CipherResolver | null = null;
+let authSecret: Uint8Array | undefined;
 const messageHandlers = new Map<string, MessageHandler>();
 const reconnectedListeners = new Set<() => void>();
 const statusListeners = new Set<(status: ConnectionStatus) => void>();
@@ -52,6 +56,7 @@ function updateStatus(status: ConnectionStatus): void {
 export function socketConnect(newConfig: SocketConfig, cipherResolver: CipherResolver): void {
     socketDisconnect();
     ciphers = cipherResolver;
+    authSecret = newConfig.authSecret;
     hasCompletedInitialConnection = false;
 
     updateStatus('connecting');
@@ -99,6 +104,7 @@ export function socketDisconnect(): void {
         socket.disconnect();
         socket = null;
     }
+    authSecret = undefined;
     updateStatus('disconnected');
 }
 
@@ -169,14 +175,14 @@ export function socketSend(event: string, data: unknown): void {
     if (!socket) {
         throw new Error('Socket not connected');
     }
-    socket.emit(event, data);
+    socket.emit(event, attachRequestProof(authSecret, 'socket', event, data));
 }
 
 export async function socketEmitWithAck<T>(event: string, data: unknown): Promise<T> {
     if (!socket) {
         throw new Error('Socket not connected');
     }
-    return await socket.emitWithAck(event, data) as T;
+    return await socket.emitWithAck(event, attachRequestProof(authSecret, 'socket', event, data)) as T;
 }
 
 // ─── Encrypted RPC ───────────────────────────────────────────────
@@ -191,10 +197,10 @@ async function encryptedRpc<R>(cipher: Cipher, entityId: string, method: string,
     if (!socket) {
         throw new Error('Socket not connected');
     }
-    const result = await socket.emitWithAck('rpc-call', {
+    const result = await socket.emitWithAck('rpc-call', attachRequestProof(authSecret, 'socket', 'rpc-call', {
         method: `${entityId}:${method}`,
         params: await cipher.encryptRaw(params)
-    }) as RpcAck;
+    })) as RpcAck;
 
     if (result.ok) {
         return await cipher.decryptRaw(result.result ?? '') as R;

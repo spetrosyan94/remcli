@@ -56,6 +56,7 @@ export async function setupP2PForSession(): Promise<{
     // active runner connections and their session metadata remain readable.
     const credentials: Credentials = {
         token: bearerToken,
+        p2pAuthSecret: pairing.authSecret,
         encryption: {
             type: 'legacy',
             secret: pairing.contentSecret

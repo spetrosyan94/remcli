@@ -7,6 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -16,6 +17,7 @@ import { decodeBase64, decrypt, encodeBase64, encrypt } from '@/api/encryption';
 import type { ListDirectoryResponse } from '@/daemon/directoryBrowser/types';
 import type { MachineSocketHandle } from '@/daemon/machineSocket';
 import type { P2PServer } from '@/daemon/p2p/p2pServer';
+import { calculateRequestProofMac, REQUEST_PROOF_VERSION } from '@/daemon/p2p/p2pRequestProof';
 import type { StopSessionResult } from '@/daemon/types';
 
 const SOCKET_CONNECT_TIMEOUT_MS = 5_000;
@@ -178,13 +180,14 @@ function isListDirectoryResponse(value: unknown): value is ListDirectoryResponse
 
 function createSocketConnection(
     port: number,
-    bearerToken: string
+    bearerToken: string,
+    auth: Record<string, unknown> = { clientType: 'user-scoped' },
 ): Promise<ClientSocket> {
     const socket = ioClient(`http://127.0.0.1:${port}`, {
         transports: ['websocket'],
         auth: {
             token: bearerToken,
-            clientType: 'user-scoped',
+            ...auth,
         },
         path: '/v1/updates',
         reconnection: false,
@@ -229,10 +232,31 @@ async function fetchMachines(port: number, bearerToken: string): Promise<Machine
     return body;
 }
 
-async function emitRpcCall(socket: ClientSocket, method: string, params: string): Promise<RpcCallAck> {
+function createSocketProof(authSecret: Uint8Array, operation: string, payload: Record<string, string>) {
+    const id = randomUUID();
+    const mac = calculateRequestProofMac(authSecret, {
+        v: REQUEST_PROOF_VERSION,
+        transport: 'socket',
+        operation,
+        requestId: id,
+        payload,
+    });
+    if (!mac) {
+        throw new Error('Could not create request proof');
+    }
+    return { v: REQUEST_PROOF_VERSION, id, mac };
+}
+
+async function emitRpcCall(
+    socket: ClientSocket,
+    authSecret: Uint8Array,
+    method: string,
+    params: string,
+): Promise<RpcCallAck> {
+    const payload = { method, params };
     const response = await socket
         .timeout(RPC_ACK_TIMEOUT_MS)
-        .emitWithAck('rpc-call', { method, params }) as unknown;
+        .emitWithAck('rpc-call', { ...payload, proof: createSocketProof(authSecret, 'rpc-call', payload) }) as unknown;
 
     if (!isRpcCallAck(response)) {
         throw new Error('Unexpected rpc-call acknowledgement shape');
@@ -241,12 +265,17 @@ async function emitRpcCall(socket: ClientSocket, method: string, params: string)
     return response;
 }
 
-async function emitRpcCallWhenRegistered(socket: ClientSocket, method: string, params: string): Promise<RpcCallAck> {
+async function emitRpcCallWhenRegistered(
+    socket: ClientSocket,
+    authSecret: Uint8Array,
+    method: string,
+    params: string,
+): Promise<RpcCallAck> {
     const deadline = Date.now() + RPC_REGISTRATION_TIMEOUT_MS;
     let lastResponse: RpcCallAck | null = null;
 
     while (Date.now() < deadline) {
-        lastResponse = await emitRpcCall(socket, method, params);
+        lastResponse = await emitRpcCall(socket, authSecret, method, params);
 
         if (lastResponse.ok || !lastResponse.error?.startsWith('No handler registered')) {
             return lastResponse;
@@ -320,6 +349,7 @@ describe('machine RPC directory browser smoke', { timeout: 15_000 }, () => {
             p2pPort: p2pServer.port,
             machineId: TEST_MACHINE_ID,
             bearerToken,
+            authSecret: sharedSecret,
             contentSecret: sharedSecret,
             pairingRekeyCoordinator: createPairingRekeyCoordinator(modules, sharedSecret),
             cursorCapabilities: new modules.CursorCapabilitiesService({
@@ -336,6 +366,23 @@ describe('machine RPC directory browser smoke', { timeout: 15_000 }, () => {
         const machines = await fetchMachines(p2pServer.port, bearerToken);
         expect(machines.map(({ id }) => id)).toContain(TEST_MACHINE_ID);
 
+        const bearerOnlyMachineSocket = await createSocketConnection(p2pServer.port, bearerToken, {
+            clientType: 'machine-scoped',
+            machineId: 'captured-bearer-machine',
+        });
+        const registrationError = new Promise<{ type: string; error: string }>((resolve) => {
+            bearerOnlyMachineSocket.once('rpc-error', resolve);
+        });
+        bearerOnlyMachineSocket.emit('rpc-register', { method: 'captured-bearer-machine:forged' });
+        await expect(registrationError).resolves.toEqual({ type: 'register', error: 'Invalid request proof' });
+        await expect(
+            bearerOnlyMachineSocket.timeout(RPC_ACK_TIMEOUT_MS).emitWithAck('rpc-call', {
+                method: `${TEST_MACHINE_ID}:list-directory`,
+                params: 'captured-ciphertext',
+            }),
+        ).resolves.toEqual({ ok: false, error: 'Invalid request proof' });
+        bearerOnlyMachineSocket.close();
+
         appSocket = await createSocketConnection(p2pServer.port, bearerToken);
 
         const requestParams = { path: browserRootDir };
@@ -344,6 +391,7 @@ describe('machine RPC directory browser smoke', { timeout: 15_000 }, () => {
 
         const rpcResponse = await emitRpcCallWhenRegistered(
             appSocket,
+            sharedSecret,
             `${TEST_MACHINE_ID}:list-directory`,
             encryptedParams,
         );
@@ -436,6 +484,7 @@ describe('machine RPC stop acknowledgements', { timeout: 15_000 }, () => {
             p2pPort: server.port,
             machineId: TEST_MACHINE_ID,
             bearerToken,
+            authSecret: sharedSecret,
             contentSecret: sharedSecret,
             pairingRekeyCoordinator: createPairingRekeyCoordinator(modules, sharedSecret),
             cursorCapabilities: new modules.CursorCapabilitiesService({
@@ -455,6 +504,7 @@ describe('machine RPC stop acknowledgements', { timeout: 15_000 }, () => {
         let hasRpcAcknowledged = false;
         const rpcResponsePromise = emitRpcCallWhenRegistered(
             appSocket,
+            sharedSecret,
             `${TEST_MACHINE_ID}:stop-session`,
             encryptedParams,
         ).then((response) => {

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, type MockInstance, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { io as ioClient, type Socket } from 'socket.io-client';
 
 import { decodeBase64, decrypt, encodeBase64, encrypt } from '@/api/encryption';
@@ -21,6 +22,7 @@ import {
 } from '@/daemon/machineSocket';
 import { PairingRekeyCoordinator } from '@/daemon/p2p/pairingRekey';
 import { deriveBearerToken, generateSharedSecret } from '@/daemon/p2p/p2pAuth';
+import { calculateRequestProofMac } from '@/daemon/p2p/p2pRequestProof';
 import { P2PStore } from '@/daemon/p2p/p2pStore';
 import { startP2PServer, type P2PServer } from '@/daemon/p2p/p2pServer';
 import type { CodexSandbox } from '@/codex/types';
@@ -164,10 +166,30 @@ function isRpcCallAck(value: unknown): value is RpcCallAck {
         && (candidate.error === undefined || typeof candidate.error === 'string');
 }
 
-async function emitRpcCall(socket: Socket, method: string, params: string): Promise<RpcCallAck> {
+async function emitRpcCall(
+    socket: Socket,
+    authSecret: Uint8Array,
+    method: string,
+    params: string,
+): Promise<RpcCallAck> {
+    const payload = { method, params };
+    const id = randomUUID();
     const response = await socket
         .timeout(RPC_ACK_TIMEOUT_MS)
-        .emitWithAck('rpc-call', { method, params }) as unknown;
+        .emitWithAck('rpc-call', {
+            ...payload,
+            proof: {
+                v: 1,
+                id,
+                mac: calculateRequestProofMac(authSecret, {
+                    v: 1,
+                    transport: 'socket',
+                    operation: 'rpc-call',
+                    requestId: id,
+                    payload,
+                }),
+            },
+        }) as unknown;
 
     if (!isRpcCallAck(response)) {
         throw new Error('Unexpected rpc-call acknowledgement shape');
@@ -178,6 +200,7 @@ async function emitRpcCall(socket: Socket, method: string, params: string): Prom
 
 async function emitRpcCallWhenRegistered(
     socket: Socket,
+    authSecret: Uint8Array,
     method: string,
     params: string,
 ): Promise<RpcCallAck> {
@@ -185,7 +208,7 @@ async function emitRpcCallWhenRegistered(
     let lastResponse: RpcCallAck | null = null;
 
     while (Date.now() < deadline) {
-        lastResponse = await emitRpcCall(socket, method, params);
+        lastResponse = await emitRpcCall(socket, authSecret, method, params);
         if (lastResponse.ok || !lastResponse.error?.startsWith('No handler registered')) {
             return lastResponse;
         }
@@ -203,6 +226,7 @@ async function callMachineRpc(
     const encryptedParams = encodeBase64(encrypt(harness.sharedSecret, 'legacy', params));
     const response = await emitRpcCallWhenRegistered(
         harness.appSocket,
+        harness.sharedSecret,
         `${TEST_MACHINE_ID}:${method}`,
         encryptedParams,
     );
@@ -259,6 +283,7 @@ async function createRpcHarness(): Promise<RpcHarness> {
         p2pPort: p2pServer.port,
         machineId: TEST_MACHINE_ID,
         bearerToken,
+        authSecret: sharedSecret,
         contentSecret: sharedSecret,
         pairingRekeyCoordinator: createPairingRekeyCoordinator(sharedSecret),
         codexCapabilities,

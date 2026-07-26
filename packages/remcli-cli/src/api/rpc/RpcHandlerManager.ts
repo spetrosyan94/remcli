@@ -19,6 +19,7 @@ export class RpcHandlerManager {
     private readonly encryptionKey: Uint8Array;
     private readonly encryptionVariant: 'legacy' | 'dataKey';
     private readonly logger: (message: string, data?: any) => void;
+    private readonly signOutboundMutation?: (operation: string, payload: Record<string, unknown>) => Record<string, unknown>;
     private socket: Socket | null = null;
 
     constructor(config: RpcHandlerConfig) {
@@ -26,6 +27,7 @@ export class RpcHandlerManager {
         this.encryptionKey = config.encryptionKey;
         this.encryptionVariant = config.encryptionVariant;
         this.logger = config.logger || ((msg, data) => defaultLogger.debug(msg, data));
+        this.signOutboundMutation = config.signOutboundMutation;
     }
 
     /**
@@ -43,7 +45,7 @@ export class RpcHandlerManager {
         this.handlers.set(prefixedMethod, handler);
 
         if (this.socket) {
-            this.socket.emit('rpc-register', { method: prefixedMethod });
+            this.emitSocketMutation('rpc-register', { method: prefixedMethod });
         }
     }
 
@@ -65,8 +67,17 @@ export class RpcHandlerManager {
                 return encryptedError;
             }
 
-            // Decrypt the incoming params
-            const decryptedParams = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(request.params));
+            let decryptedParams: unknown;
+            try {
+                decryptedParams = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(request.params));
+            } catch {
+                this.logger('[RPC] [ERROR] Rejected malformed request params', { method: request.method });
+                return this.createInvalidParamsResponse();
+            }
+            if (decryptedParams === null) {
+                this.logger('[RPC] [ERROR] Rejected unauthenticated request params', { method: request.method });
+                return this.createInvalidParamsResponse();
+            }
 
             // Call the handler
             this.logger('[RPC] Calling handler', { method: request.method });
@@ -89,7 +100,7 @@ export class RpcHandlerManager {
     onSocketConnect(socket: Socket): void {
         this.socket = socket;
         for (const [prefixedMethod] of this.handlers) {
-            socket.emit('rpc-register', { method: prefixedMethod });
+            this.emitSocketMutation('rpc-register', { method: prefixedMethod });
         }
     }
 
@@ -127,6 +138,20 @@ export class RpcHandlerManager {
      */
     private getPrefixedMethod(method: string): string {
         return `${this.scopePrefix}:${method}`;
+    }
+
+    private emitSocketMutation(operation: string, payload: Record<string, unknown>): void {
+        if (!this.socket) {
+            return;
+        }
+        const signedPayload = this.signOutboundMutation
+            ? this.signOutboundMutation(operation, payload)
+            : payload;
+        this.socket.emit(operation, signedPayload);
+    }
+
+    private createInvalidParamsResponse(): string {
+        return encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, { error: 'Invalid RPC params' }));
     }
 }
 

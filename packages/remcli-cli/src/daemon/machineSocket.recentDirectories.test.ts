@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { io as ioClient, type Socket } from 'socket.io-client';
 
 import { decodeBase64, decrypt, encodeBase64, encrypt } from '@/api/encryption';
@@ -14,6 +15,7 @@ import { CursorCapabilitiesService } from '@/cursor/cursorCapabilities';
 import { bootstrapMachineSocket, type MachineSocketHandle } from '@/daemon/machineSocket';
 import { PairingRekeyCoordinator } from '@/daemon/p2p/pairingRekey';
 import { deriveBearerToken, generateSharedSecret } from '@/daemon/p2p/p2pAuth';
+import { calculateRequestProofMac } from '@/daemon/p2p/p2pRequestProof';
 import { P2PStore } from '@/daemon/p2p/p2pStore';
 import { startP2PServer, type P2PServer } from '@/daemon/p2p/p2pServer';
 import {
@@ -142,9 +144,24 @@ async function callMachineRpc(secret: Uint8Array, method: string, params: unknow
     let response: RpcCallAck | null = null;
 
     while (Date.now() < deadline) {
-        const received = await appSocket.timeout(RPC_TIMEOUT_MS).emitWithAck('rpc-call', {
+        const payload = {
             method: `${TEST_MACHINE_ID}:${method}`,
             params: encryptedParams,
+        };
+        const id = randomUUID();
+        const received = await appSocket.timeout(RPC_TIMEOUT_MS).emitWithAck('rpc-call', {
+            ...payload,
+            proof: {
+                v: 1,
+                id,
+                mac: calculateRequestProofMac(secret, {
+                    v: 1,
+                    transport: 'socket',
+                    operation: 'rpc-call',
+                    requestId: id,
+                    payload,
+                }),
+            },
         }) as unknown;
         if (!isRpcCallAck(received)) {
             throw new Error('Unexpected machine RPC acknowledgement');
@@ -187,6 +204,7 @@ async function startHarness(
         p2pPort: p2pServer.port,
         machineId: TEST_MACHINE_ID,
         bearerToken,
+        authSecret: secret,
         contentSecret: secret,
         pairingRekeyCoordinator: createPairingRekeyCoordinator(secret),
         codexCapabilities,

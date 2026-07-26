@@ -1,10 +1,16 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 
 import { deriveBearerToken, generateSharedSecret } from './p2pAuth';
+import {
+    calculateRequestProofMac,
+    REQUEST_PROOF_VERSION,
+    type JsonValue,
+} from './p2pRequestProof';
 import { P2PRunnerCredentialStore, SESSION_MESSAGE_ACK_VERSION } from './p2pRunnerCredentials';
 import { P2PStore } from './p2pStore';
 import { getWebStaticCacheControl, isWebStaticAssetRequest, startP2PServer } from './p2pServer';
@@ -20,6 +26,26 @@ function createSocket(port: number, token: string, auth: Record<string, unknown>
         autoConnect: false,
         timeout: SOCKET_TIMEOUT_MS,
     });
+}
+
+function withRequestProof<T extends Record<string, JsonValue>>(
+    authSecret: Uint8Array,
+    operation: string,
+    payload: T,
+): T & { proof: { v: number; id: string; mac: string } } {
+    const id = randomUUID();
+    const mac = calculateRequestProofMac(authSecret, {
+        v: REQUEST_PROOF_VERSION,
+        transport: 'socket',
+        operation,
+        requestId: id,
+        payload,
+    });
+    if (!mac) {
+        throw new Error('Could not create request proof');
+    }
+
+    return { ...payload, proof: { v: REQUEST_PROOF_VERSION, id, mac } };
 }
 
 async function connectSocket(socket: ClientSocket): Promise<void> {
@@ -285,7 +311,10 @@ describe('session-scoped socket isolation', { timeout: 15_000 }, () => {
             expect(metadataResponseForA).toMatchObject({ result: 'success', metadata: 'metadata-a-updated' });
             expect(store.getSession(sessionA.id)?.metadata).toBe('metadata-a-updated');
 
-            userSocket.emit('message', { sid: sessionB.id, message: 'user-message-for-b' });
+            userSocket.emit('message', withRequestProof(authSecret, 'message', {
+                sid: sessionB.id,
+                message: 'user-message-for-b',
+            }));
             runnerA.emit('message-ack', { sid: sessionB.id, seq: 1 });
             const sessionBMessage = waitForSocketEvent<{
                 body: { sid: string; message: { content: { c: string; t: string } } };
@@ -321,12 +350,17 @@ describe('session-scoped socket isolation', { timeout: 15_000 }, () => {
             expect(rpcResponseForB).toEqual({ ok: false, error: 'Method is not available' });
             expect(sessionBRpcCalls).toBe(0);
 
-            await expect(userSocket.timeout(SOCKET_TIMEOUT_MS).emitWithAck('rpc-call', { method: rpcMethod }))
+            await expect(userSocket.timeout(SOCKET_TIMEOUT_MS).emitWithAck('rpc-call', withRequestProof(authSecret, 'rpc-call', {
+                method: rpcMethod,
+            })))
                 .resolves.toEqual({ ok: true, result: 'session-b-response' });
             expect(sessionBRpcCalls).toBe(1);
 
             const sessionAMessage = waitForSocketEvent<{ body: { sid: string; message: { seq: number } } }>(runnerA, 'update');
-            userSocket.emit('message', { sid: sessionA.id, message: 'user-message-for-a' });
+            userSocket.emit('message', withRequestProof(authSecret, 'message', {
+                sid: sessionA.id,
+                message: 'user-message-for-a',
+            }));
             const deliveredSessionAMessage = await sessionAMessage;
             runnerA.emit('message-ack', {
                 sid: sessionA.id,
