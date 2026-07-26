@@ -357,6 +357,15 @@ Payload, хранящийся в `SessionMessage.content`, всегда заши
 }
 ```
 
+`meta` в зашифрованном сообщении не является универсальной control plane.
+Live user prompt разбирается по provider, зафиксированному при создании
+daemon-owned runner: Codex/Cursor получают только текст и безопасную метку
+источника; Claude/Gemini принимают лишь свои документированные legacy поля.
+Сессия без provider metadata может передать только такой же text prompt.
+Model, permission, system prompt, tool fields и внутренние значения `sentFrom`
+в этом случае отбрасываются до запуска provider. История остаётся читаемой, но
+web-клиент также удаляет из неё meta поля чужого provider.
+
 ### Метаданные (зашифрованы)
 ```json
 {

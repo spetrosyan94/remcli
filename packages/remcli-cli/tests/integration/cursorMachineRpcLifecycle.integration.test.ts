@@ -608,7 +608,6 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
                     content: { type: 'text', text },
                     meta: {
                         sentFrom: 'phone',
-                        model: FIXTURE_MODEL,
                         ...overrides.meta,
                     },
                 })),
@@ -828,9 +827,13 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
                 permissionMode: 'plan',
             },
         });
+        await new Promise((resolve) => setTimeout(resolve, RUNNER_DELIVERY_PROBE_WINDOW_MS));
+        expect(harness.fixture.getInvocations()).toEqual([]);
+
+        harness.sendPhonePrompt(spawned.sessionId, FIRST_CONTEXT_PROMPT);
         await waitForCondition(
             () => harness!.fixture.getInvocations().length === 1,
-            'the forged Cursor phone prompt to reach the daemon-owned runner',
+            'the safe Cursor phone prompt to reach the daemon-owned runner',
         );
 
         expect(harness.fixture.getInvocations()).toEqual([{

@@ -31,6 +31,18 @@ function buildUpdate(store: P2PStore, body: Record<string, unknown>): UpdatePayl
     };
 }
 
+function canAccessSession(connection: P2PClientConnection, sessionId: string): boolean {
+    return connection.connectionType !== 'session-scoped' || connection.sessionId === sessionId;
+}
+
+function canAccessRpcMethod(connection: P2PClientConnection, method: string): boolean {
+    if (connection.connectionType !== 'session-scoped') {
+        return true;
+    }
+
+    return connection.sessionId !== undefined && method.startsWith(`${connection.sessionId}:`);
+}
+
 // ─── Register All Handlers ──────────────────────────────────────
 
 export function registerSocketHandlers(
@@ -42,6 +54,10 @@ export function registerSocketHandlers(
     // ─── Session: message ────────────────────────────────────────
     socket.on('message', (data: { sid: string; message: string; localId?: string }) => {
         const { sid, message: msgContent, localId } = data;
+        if (!canAccessSession(connection, sid)) {
+            logger.debug('[P2P SOCKET] Ignoring out-of-scope session message');
+            return;
+        }
         logger.debug(`[P2P SOCKET] message for session ${sid}`);
 
         const msg = store.addMessage(
@@ -77,6 +93,11 @@ export function registerSocketHandlers(
         callback: (response: Record<string, unknown>) => void
     ) => {
         const { sid, metadata, expectedVersion } = data;
+        if (!canAccessSession(connection, sid)) {
+            logger.debug('[P2P SOCKET] Ignoring out-of-scope session metadata update');
+            callback({ result: 'error' });
+            return;
+        }
         logger.debug(`[P2P SOCKET] update-metadata for session ${sid}, expectedVersion=${expectedVersion}`);
 
         const result = store.updateSessionMetadata(sid, metadata, expectedVersion);
@@ -98,6 +119,11 @@ export function registerSocketHandlers(
         callback: (response: Record<string, unknown>) => void
     ) => {
         const { sid, agentState, expectedVersion } = data;
+        if (!canAccessSession(connection, sid)) {
+            logger.debug('[P2P SOCKET] Ignoring out-of-scope session state update');
+            callback({ result: 'error' });
+            return;
+        }
         logger.debug(`[P2P SOCKET] update-state for session ${sid}`);
 
         const result = store.updateSessionState(sid, agentState, expectedVersion);
@@ -116,6 +142,10 @@ export function registerSocketHandlers(
     // ─── Session: session-alive ──────────────────────────────────
     socket.on('session-alive', (data: { sid: string; time: number; thinking?: boolean; mode?: string }) => {
         const { sid, time, thinking } = data;
+        if (!canAccessSession(connection, sid)) {
+            logger.debug('[P2P SOCKET] Ignoring out-of-scope session activity');
+            return;
+        }
         publishSessionActivity(store, router, {
             sessionId: sid,
             active: true,
@@ -127,6 +157,10 @@ export function registerSocketHandlers(
     // ─── Session: session-end ────────────────────────────────────
     socket.on('session-end', (data: { sid: string; time: number }) => {
         const { sid, time } = data;
+        if (!canAccessSession(connection, sid)) {
+            logger.debug('[P2P SOCKET] Ignoring out-of-scope session end');
+            return;
+        }
         publishSessionActivity(store, router, {
             sessionId: sid,
             active: false,
@@ -191,6 +225,11 @@ export function registerSocketHandlers(
     // ─── RPC: register ───────────────────────────────────────────
     socket.on('rpc-register', (data: { method: string }) => {
         const { method } = data;
+        if (!canAccessRpcMethod(connection, method)) {
+            logger.debug('[P2P SOCKET] Ignoring out-of-scope RPC registration');
+            socket.emit('rpc-error', { type: 'register', error: 'Method is not available' });
+            return;
+        }
         logger.debug(`[P2P SOCKET] rpc-register: ${method}`);
 
         if (rpcListeners.has(method)) {
@@ -205,6 +244,11 @@ export function registerSocketHandlers(
     // ─── RPC: unregister ─────────────────────────────────────────
     socket.on('rpc-unregister', (data: { method: string }) => {
         const { method } = data;
+        if (!canAccessRpcMethod(connection, method)) {
+            logger.debug('[P2P SOCKET] Ignoring out-of-scope RPC unregistration');
+            socket.emit('rpc-error', { type: 'unregister', error: 'Method is not available' });
+            return;
+        }
         logger.debug(`[P2P SOCKET] rpc-unregister: ${method}`);
 
         const listener = rpcListeners.get(method);
@@ -223,6 +267,11 @@ export function registerSocketHandlers(
         callback: (response: { ok: boolean; result?: string; error?: string }) => void
     ) => {
         const { method, params } = data;
+        if (!canAccessRpcMethod(connection, method)) {
+            logger.debug('[P2P SOCKET] Ignoring out-of-scope RPC call');
+            callback({ ok: false, error: 'Method is not available' });
+            return;
+        }
         logger.debug(`[P2P SOCKET] rpc-call: ${method}`);
 
         const listener = rpcListeners.get(method);
@@ -255,7 +304,7 @@ export function registerSocketHandlers(
     }) => {
         const { key, sessionId, tokens, cost } = data;
 
-        if (sessionId) {
+        if (sessionId && canAccessSession(connection, sessionId)) {
             router.emitEphemeral({
                 type: 'usage',
                 id: sessionId,

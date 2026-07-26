@@ -66,6 +66,11 @@ auth: {
 - `token` обязателен.
 - `session-scoped` требует `sessionId`.
 - `machine-scoped` требует `machineId`.
+- `session-scoped` может читать и менять только свой `sessionId`: `message`,
+  metadata/state, lifecycle, usage и ACK проверяются до обращения к store/router.
+  Его RPC method обязан начинаться с `<sessionId>:`. Для чужого или
+  несуществующего scope возвращается нейтральная ошибка без раскрытия
+  существования сессии.
 
 ### Типы соединений
 - `user-scoped`: получает обновления всего аккаунта.

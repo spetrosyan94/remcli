@@ -160,6 +160,12 @@ graph LR
 `ApiSessionClient` (`src/api/apiSession.ts`) подключается к Socket.IO как **session-scoped** клиент:
 - Принимает события `update` и расшифровывает содержимое сообщений.
 - Отправляет `message`, `update-metadata`, `update-state`, `session-alive` и `usage-report`.
+- Выбирает схему live user prompt один раз из initial `metadata.flavor` daemon-owned
+  runner-а. Позднее изменение metadata не способно сменить schema: Codex и
+  Cursor принимают только текст с безопасной меткой источника, Claude/Gemini —
+  только свои legacy native поля. Для старой transport-сессии без известного
+  provider допустим лишь такой же безопасный text prompt; model, permissions,
+  system prompt и tool controls отклоняются до runner callback.
 - Typed `metadata.executionOutcome` синхронизируется через `update-metadata` как
   watermark `{ kind, occurredAt }`; error text, stack и provider payload туда не
   входят. Правила записи и UI-приоритеты: [протокол](protocol.md).

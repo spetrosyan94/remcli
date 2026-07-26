@@ -47,6 +47,10 @@ agent --print --output-format stream-json --trust \
   headless runner. Рабочую директорию пользователь выбирает до spawn.
 - Успех принимается только после `system/init` с native ID, terminal
   `result.success` без `is_error` и exit code `0`.
+- Модель и `Agent` / `Plan` / `Ask` выбираются daemon-validated только при
+  spawn/resume. Телефонный prompt несёт текст и безопасную метку источника;
+  injected model, permission или другие launch controls в нём не переопределяют
+  Cursor turn и отклоняются на provider ingress boundary.
 - В телефонный чат сначала передаётся непустой terminal `result`. Если текущий
   Cursor CLI подтвердил успех без этого поля, Remcli использует только text
   chunks из `assistant` events после `system/init` того же native session;

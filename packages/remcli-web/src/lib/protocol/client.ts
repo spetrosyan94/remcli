@@ -35,7 +35,14 @@ import {
 import { decodeBase64, encodeBase64 } from '@/lib/protocol/encoding';
 import { createEncryption, decryptBox, type Cipher, type Encryption } from '@/lib/protocol/encryption';
 import nacl from 'tweetnacl';
-import { normalizeRawMessage, type NormalizedMessage, type RawRecord } from '@/lib/protocol/messages';
+import {
+    getTrustedSessionFlavor,
+    isNativeTurnPermissionMode,
+    normalizeRawMessage,
+    type NormalizedMessage,
+    type RawRecord,
+    type TrustedSessionFlavor,
+} from '@/lib/protocol/messages';
 import {
     deleteMachine,
     fetchMachines,
@@ -689,11 +696,15 @@ async function decryptApiMachine(ctx: ClientContext, api: ApiMachine): Promise<M
     };
 }
 
-async function decryptApiMessage(cipher: Cipher, message: ApiMessage): Promise<NormalizedMessage | null> {
+async function decryptApiMessage(
+    cipher: Cipher,
+    message: ApiMessage,
+    sessionFlavor: TrustedSessionFlavor | null,
+): Promise<NormalizedMessage | null> {
     if (message.content.t !== 'encrypted') return null;
     const decrypted = await cipher.decryptRaw(message.content.c);
     if (!decrypted) return null;
-    return normalizeRawMessage(message.id, message.localId ?? null, message.seq, message.createdAt, decrypted);
+    return normalizeRawMessage(message.id, message.localId ?? null, message.seq, message.createdAt, decrypted, sessionFlavor);
 }
 
 // ─── Sync ────────────────────────────────────────────────────────
@@ -790,9 +801,11 @@ export async function loadSessionMessages(
     };
     if (!isCurrentClientContext(ctx)) return result;
 
+    const session = getCurrentProtocolStore(ctx)?.sessions[sessionId];
+    const sessionFlavor = getTrustedSessionFlavor(session?.metadata?.flavor);
     const normalized: NormalizedMessage[] = [];
     for (const message of page.messages) {
-        const decrypted = await decryptApiMessage(readyCipher, message);
+        const decrypted = await decryptApiMessage(readyCipher, message, sessionFlavor);
         if (!isCurrentClientContext(ctx)) return result;
         if (decrypted) {
             normalized.push(decrypted);
@@ -819,11 +832,18 @@ export async function sendSessionMessage(
     }
 ): Promise<void> {
     const localId = randomUUID();
-    const permissionMode = options?.permissionMode;
+    const sessionFlavor = getTrustedSessionFlavor(useProtocolStore.getState().sessions[sessionId]?.metadata?.flavor);
+    const keepsLegacyTurnControls = sessionFlavor === 'claude' || sessionFlavor === 'gemini';
+    const permissionMode = keepsLegacyTurnControls
+        && isNativeTurnPermissionMode(sessionFlavor, options?.permissionMode)
+        ? options?.permissionMode
+        : undefined;
     const meta: NonNullable<RawRecord['meta']> = {
         sentFrom: 'web',
         ...(permissionMode ? { permissionMode } : {}),
-        ...(options && Object.prototype.hasOwnProperty.call(options, 'model') ? { model: options.model ?? null } : {}),
+        ...(keepsLegacyTurnControls && options && Object.prototype.hasOwnProperty.call(options, 'model')
+            ? { model: options.model ?? null }
+            : {}),
         ...(options?.displayText ? { displayText: options.displayText } : {})
     };
     const record: RawRecord = {
@@ -835,7 +855,7 @@ export async function sendSessionMessage(
     // Fixture-режим: только локальное эхо, без шифрования и сети
     if (isFixturesActive) {
         fixtureRecordSentSession(sessionId);
-        const normalized = normalizeRawMessage(localId, localId, null, Date.now(), record);
+        const normalized = normalizeRawMessage(localId, localId, null, Date.now(), record, sessionFlavor);
         if (normalized) {
             useProtocolStore.getState().applyMessages(sessionId, [normalized]);
         }
@@ -856,7 +876,7 @@ export async function sendSessionMessage(
     if (!store?.sessions[sessionId]) {
         throw new Error(`Unknown session: ${sessionId}`);
     }
-    const normalized = normalizeRawMessage(localId, localId, null, createdAt, record);
+    const normalized = normalizeRawMessage(localId, localId, null, createdAt, record, sessionFlavor);
     if (normalized) {
         store.applyMessages(sessionId, [normalized]);
     }
@@ -1011,10 +1031,11 @@ async function handleUpdate(ctx: ClientContext, data: unknown): Promise<void> {
             cipher = ctx.sessionCiphers.get(sid);
         }
         if (!cipher) return;
-        const normalized = await decryptApiMessage(cipher, message);
         const store = getCurrentProtocolStore(ctx);
         const session = store?.sessions[sid];
         if (!store || !session) return;
+        const normalized = await decryptApiMessage(cipher, message, getTrustedSessionFlavor(session.metadata?.flavor));
+        if (!isCurrentClientContext(ctx)) return;
         if (normalized) {
             store.applyMessages(sid, [normalized]);
         }

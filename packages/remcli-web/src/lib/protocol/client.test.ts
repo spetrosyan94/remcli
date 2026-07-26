@@ -27,6 +27,7 @@ interface IDeferred<T> {
 interface IReconnectMockOptions {
     deleteMachine?: () => Promise<{ ok: boolean; status?: number }>;
     decryptRaw?: (value: string) => Promise<unknown | null>;
+    encryptRaw?: (value: unknown) => Promise<string>;
     fetchMachines?: () => Promise<ApiMachine[]>;
     fetchMessages?: (
         config: unknown,
@@ -129,7 +130,7 @@ function installReconnectMocks(options: IReconnectMockOptions): IReconnectMocks 
         createEncryption: vi.fn(() => ({
             decryptEncryptionKey: vi.fn(() => null),
             openCipher: vi.fn(() => ({
-                encryptRaw: vi.fn(),
+                encryptRaw: options.encryptRaw ?? vi.fn(async () => ''),
                 decryptRaw,
             })),
         })),
@@ -225,10 +226,10 @@ describe('protocol client message meta', () => {
             content: { type: 'text', text: 'Привет' },
             meta: {
                 sentFrom: 'web',
-                permissionMode: 'workspace-write',
             },
         });
         expect(lastMessage?.meta).not.toHaveProperty('model');
+        expect(lastMessage?.meta).not.toHaveProperty('permissionMode');
     });
 
     it('sends explicit null model as a deliberate reset', async () => {
@@ -238,18 +239,133 @@ describe('protocol client message meta', () => {
         const { sendSessionMessage } = await import('@/lib/protocol/client');
         const { useProtocolStore } = await import('@/lib/protocol/store');
 
-        await sendSessionMessage('fx-offline', 'Сбрось модель', {
+        await sendSessionMessage('fx-thinking', 'Сбрось модель', {
             permissionMode: 'workspace-write',
             model: null,
         });
 
-        const messages = useProtocolStore.getState().sessionMessages['fx-offline']?.messages ?? [];
+        const messages = useProtocolStore.getState().sessionMessages['fx-thinking']?.messages ?? [];
         const lastMessage = messages.at(-1);
         expect(lastMessage?.meta).toMatchObject({
             sentFrom: 'web',
-            permissionMode: 'workspace-write',
             model: null,
         });
+        expect(lastMessage?.meta).not.toHaveProperty('permissionMode');
+    });
+
+    it('emits canonical harmless metadata and keeps the local echo for a Codex session', async () => {
+        const session = createTestSession('session-codex');
+        const encryptRaw = vi.fn(async () => 'encrypted-message');
+        installReconnectMocks({
+            decryptRaw: async (value) => value === session.metadata
+                ? { path: '/workspace', host: 'host', flavor: 'codex' }
+                : null,
+            encryptRaw,
+            fetchSessions: async () => [session],
+        });
+
+        const { sendSessionMessage, startProtocolClient, stopProtocolClient } = await import('@/lib/protocol/client');
+        const { useProtocolStore } = await import('@/lib/protocol/store');
+        await startProtocolClient({ mode: 'p2p', host: '127.0.0.1', port: 12345, key: 'test-key', v: 1 });
+
+        await sendSessionMessage(session.id, 'Keep the local echo', {
+            permissionMode: 'workspace-write',
+            model: 'foreign-turn-model',
+            displayText: 'Visible local echo',
+        });
+
+        expect(encryptRaw).toHaveBeenCalledWith({
+            role: 'user',
+            content: { type: 'text', text: 'Keep the local echo' },
+            meta: { sentFrom: 'web', displayText: 'Visible local echo' },
+        });
+        expect(useProtocolStore.getState().sessionMessages[session.id]?.messages.at(-1)).toMatchObject({
+            role: 'user',
+            content: { type: 'text', text: 'Keep the local echo' },
+            meta: { sentFrom: 'web', displayText: 'Visible local echo' },
+        });
+
+        stopProtocolClient();
+    });
+
+    it.each([
+        ['claude', 'workspace-write'],
+        ['gemini', 'danger-full-access'],
+    ] as const)('drops a foreign %s permission mode without dropping the prompt', async (flavor, permissionMode) => {
+        const session = createTestSession(`session-${flavor}`);
+        const encryptRaw = vi.fn(async () => 'encrypted-message');
+        installReconnectMocks({
+            decryptRaw: async (value) => value === session.metadata
+                ? { path: '/workspace', host: 'host', flavor }
+                : null,
+            encryptRaw,
+            fetchSessions: async () => [session],
+        });
+
+        const { sendSessionMessage, startProtocolClient, stopProtocolClient } = await import('@/lib/protocol/client');
+        await startProtocolClient({ mode: 'p2p', host: '127.0.0.1', port: 12345, key: 'test-key', v: 1 });
+
+        await sendSessionMessage(session.id, 'Keep the text prompt', { permissionMode });
+
+        expect(encryptRaw).toHaveBeenCalledWith({
+            role: 'user',
+            content: { type: 'text', text: 'Keep the text prompt' },
+            meta: { sentFrom: 'web' },
+        });
+
+        stopProtocolClient();
+    });
+
+    it.each([
+        ['claude', 'acceptEdits'],
+        ['gemini', 'auto_edit'],
+    ] as const)('keeps a native %s permission mode on the encrypted prompt', async (flavor, permissionMode) => {
+        const session = createTestSession(`session-${flavor}`);
+        const encryptRaw = vi.fn(async () => 'encrypted-message');
+        installReconnectMocks({
+            decryptRaw: async (value) => value === session.metadata
+                ? { path: '/workspace', host: 'host', flavor }
+                : null,
+            encryptRaw,
+            fetchSessions: async () => [session],
+        });
+
+        const { sendSessionMessage, startProtocolClient, stopProtocolClient } = await import('@/lib/protocol/client');
+        await startProtocolClient({ mode: 'p2p', host: '127.0.0.1', port: 12345, key: 'test-key', v: 1 });
+
+        await sendSessionMessage(session.id, 'Keep the native control', { permissionMode });
+
+        expect(encryptRaw).toHaveBeenCalledWith({
+            role: 'user',
+            content: { type: 'text', text: 'Keep the native control' },
+            meta: { sentFrom: 'web', permissionMode },
+        });
+
+        stopProtocolClient();
+    });
+
+    it.each([
+        ['fx-running', 'codex'],
+        ['fx-error', 'cursor'],
+    ])('keeps fixture local echo canonical for %s', async (sessionId) => {
+        vi.resetModules();
+        installFixtureGlobals();
+
+        const { sendSessionMessage } = await import('@/lib/protocol/client');
+        const { useProtocolStore } = await import('@/lib/protocol/store');
+
+        await sendSessionMessage(sessionId, 'Fixture local echo', {
+            permissionMode: 'workspace-write',
+            model: 'foreign-turn-model',
+        });
+
+        expect(useProtocolStore.getState().sessionMessages[sessionId]?.messages.at(-1)).toMatchObject({
+            role: 'user',
+            content: { type: 'text', text: 'Fixture local echo' },
+            meta: { sentFrom: 'web' },
+        });
+        expect(useProtocolStore.getState().sessionMessages[sessionId]?.messages.at(-1)?.meta).not.toHaveProperty('permissionMode');
+        expect(useProtocolStore.getState().sessionMessages[sessionId]?.messages.at(-1)?.meta).not.toHaveProperty('model');
     });
 
     it('routes fixture session spawn through the client wrapper instead of encrypted machine RPC', async () => {

@@ -38,6 +38,78 @@ export const MessageMetaSchema = z.object({
 
 export type MessageMeta = z.infer<typeof MessageMetaSchema>;
 
+export type TrustedSessionFlavor = 'claude' | 'codex' | 'cursor' | 'gemini';
+
+const trustedSessionFlavors = new Set<TrustedSessionFlavor>(['claude', 'codex', 'cursor', 'gemini']);
+
+const harmlessMessageMetaFields = ['sentFrom', 'displayText'] as const;
+
+const legacyNativeMessageMetaFields: Record<TrustedSessionFlavor, readonly (keyof MessageMeta)[]> = {
+    claude: [
+        'permissionMode',
+        'model',
+        'fallbackModel',
+        'customSystemPrompt',
+        'appendSystemPrompt',
+        'allowedTools',
+        'disallowedTools',
+    ],
+    gemini: ['permissionMode', 'model', 'appendSystemPrompt'],
+    codex: [],
+    cursor: [],
+};
+
+const nativePermissionModes: Partial<Record<TrustedSessionFlavor, ReadonlySet<string>>> = {
+    claude: new Set(['manual', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk']),
+    gemini: new Set(['manual', 'auto_edit', 'plan']),
+};
+
+/**
+ * Session metadata is the provider authority. Historical message payloads are
+ * untrusted input and may contain controls left by a different provider.
+ */
+export function getTrustedSessionFlavor(flavor: unknown): TrustedSessionFlavor | null {
+    return typeof flavor === 'string' && trustedSessionFlavors.has(flavor as TrustedSessionFlavor)
+        ? flavor as TrustedSessionFlavor
+        : null;
+}
+
+export function isNativeTurnPermissionMode(
+    sessionFlavor: TrustedSessionFlavor | null | undefined,
+    permissionMode: string | undefined,
+): boolean {
+    const trustedFlavor = getTrustedSessionFlavor(sessionFlavor);
+    return Boolean(
+        trustedFlavor
+        && nativePermissionModes[trustedFlavor]?.has(permissionMode ?? ''),
+    );
+}
+
+function normalizeMessageMeta(
+    meta: MessageMeta | undefined,
+    sessionFlavor: TrustedSessionFlavor | null | undefined,
+): MessageMeta | undefined {
+    if (!meta) return undefined;
+
+    const normalized: Record<string, unknown> = {};
+    const trustedFlavor = getTrustedSessionFlavor(sessionFlavor);
+    const allowedFields = [
+        ...harmlessMessageMetaFields,
+        ...(trustedFlavor ? legacyNativeMessageMetaFields[trustedFlavor] : []),
+    ];
+
+    for (const field of allowedFields) {
+        if (field === 'permissionMode' && !isNativeTurnPermissionMode(trustedFlavor, meta.permissionMode)) {
+            continue;
+        }
+        if (meta[field] !== undefined) {
+            normalized[field] = meta[field];
+        }
+    }
+
+    return Object.keys(normalized).length > 0 ? normalized as MessageMeta : undefined;
+}
+
 // ─── Raw content schemas ─────────────────────────────────────────
 
 const usageDataSchema = z.object({
@@ -288,14 +360,27 @@ function preprocessMessageContent(data: unknown): unknown {
             : { ...normalizedRecord, permissions };
     };
 
-    record.meta = stripUnsupportedPermissionValue(record.meta, 'permissionMode');
+    const meta = stripUnsupportedPermissionValue(record.meta, 'permissionMode');
 
     if (record.role === 'agent' && record.content?.type === 'output' && record.content.data?.message
         && Array.isArray(record.content.data.message.content)) {
-        record.content.data.message.content = record.content.data.message.content.map(normalizeContent);
+        return {
+            ...record,
+            meta,
+            content: {
+                ...record.content,
+                data: {
+                    ...record.content.data,
+                    message: {
+                        ...record.content.data.message,
+                        content: record.content.data.message.content.map(normalizeContent),
+                    },
+                },
+            },
+        };
     }
 
-    return data;
+    return meta === record.meta ? data : { ...record, meta };
 }
 
 const rawRecordSchema = z.preprocess(
@@ -396,7 +481,8 @@ export function normalizeRawMessage(
     localId: string | null,
     seq: number | null,
     createdAt: number,
-    rawInput: unknown
+    rawInput: unknown,
+    sessionFlavor?: TrustedSessionFlavor | null,
 ): NormalizedMessage | null {
     const parsed = rawRecordSchema.safeParse(rawInput);
     if (!parsed.success) {
@@ -404,6 +490,7 @@ export function normalizeRawMessage(
     }
     const raw = parsed.data;
     const base = { id, localId, seq, createdAt };
+    const meta = normalizeMessageMeta(raw.meta, sessionFlavor);
 
     if (raw.role === 'user') {
         return {
@@ -411,7 +498,7 @@ export function normalizeRawMessage(
             role: 'user',
             content: raw.content,
             isSidechain: false,
-            meta: raw.meta,
+            meta,
         };
     }
 
@@ -461,7 +548,7 @@ export function normalizeRawMessage(
                 role: 'agent',
                 isSidechain: data.isSidechain ?? false,
                 content,
-                meta: raw.meta,
+                meta,
                 usage: data.message.usage
             };
         }
@@ -528,7 +615,7 @@ export function normalizeRawMessage(
                 role: 'agent',
                 isSidechain: data.isSidechain ?? false,
                 content,
-                meta: raw.meta
+                meta
             };
         }
 
@@ -557,7 +644,7 @@ export function normalizeRawMessage(
                     uuid: id,
                     parentUUID: null
                 }],
-                meta: raw.meta
+                meta
             };
         }
         if (data.type === 'tool-call') {
@@ -574,7 +661,7 @@ export function normalizeRawMessage(
                     uuid: data.id,
                     parentUUID: null
                 }],
-                meta: raw.meta
+                meta
             };
         }
         if (data.type === 'tool-call-result') {
@@ -590,7 +677,7 @@ export function normalizeRawMessage(
                     uuid: data.id,
                     parentUUID: null
                 }],
-                meta: raw.meta
+                meta
             };
         }
         return null;
@@ -622,7 +709,7 @@ export function normalizeRawMessage(
                     uuid: id,
                     parentUUID: null
                 }],
-                meta: raw.meta
+                meta
             };
         }
         if (data.type === 'thinking') {
@@ -636,7 +723,7 @@ export function normalizeRawMessage(
                     uuid: id,
                     parentUUID: null
                 }],
-                meta: raw.meta
+                meta
             };
         }
         if (data.type === 'tool-call') {
@@ -653,7 +740,7 @@ export function normalizeRawMessage(
                     uuid: data.id,
                     parentUUID: null
                 }],
-                meta: raw.meta
+                meta
             };
         }
         if (data.type === 'tool-result') {
@@ -669,7 +756,7 @@ export function normalizeRawMessage(
                     uuid: data.id,
                     parentUUID: null
                 }],
-                meta: raw.meta
+                meta
             };
         }
         if (data.type === 'tool-call-result') {
@@ -685,7 +772,7 @@ export function normalizeRawMessage(
                     uuid: data.id,
                     parentUUID: null
                 }],
-                meta: raw.meta
+                meta
             };
         }
         if (data.type === 'file-edit') {
@@ -708,7 +795,7 @@ export function normalizeRawMessage(
                     uuid: data.id,
                     parentUUID: null
                 }],
-                meta: raw.meta
+                meta
             };
         }
         if (data.type === 'terminal-output') {
@@ -724,7 +811,7 @@ export function normalizeRawMessage(
                     uuid: id,
                     parentUUID: null
                 }],
-                meta: raw.meta
+                meta
             };
         }
         if (data.type === 'permission-request') {
@@ -742,7 +829,7 @@ export function normalizeRawMessage(
                     uuid: id,
                     parentUUID: null
                 }],
-                meta: raw.meta
+                meta
             };
         }
         // task_started / task_complete / turn_aborted / token_count — status only, skip

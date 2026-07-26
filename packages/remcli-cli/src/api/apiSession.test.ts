@@ -10,6 +10,7 @@ import {
     rememberSessionRunnerCredential,
     SESSION_MESSAGE_ACK_VERSION,
 } from '@/daemon/p2p/p2pRunnerCredentials';
+import { encodeBase64, encrypt } from './encryption';
 
 // Use vi.hoisted to ensure mock function is available when vi.mock factory runs
 const { mockIo, mockGetEffectiveServerUrl } = vi.hoisted(() => ({
@@ -38,11 +39,30 @@ interface MockSocket {
 
 interface ApiSessionClientInternals {
     enqueuePendingUserMessage(message: DeliveredUserMessage, sequence: number): void;
+    metadata: Session['metadata'];
 }
 
 interface SocketIoOptions {
     auth: (callback: (auth: Record<string, unknown>) => void) => void;
 }
+
+type SocketUpdateHandler = (data: {
+    body: {
+        message: {
+            content: {
+                c: string;
+                t: 'encrypted';
+            };
+            id: string;
+            seq: number;
+        };
+        sid: string;
+        t: 'new-message';
+    };
+    createdAt: number;
+    id: string;
+    seq: number;
+}) => void;
 
 describe('ApiSessionClient connection handling', () => {
     let mockSocket: MockSocket;
@@ -210,6 +230,159 @@ describe('ApiSessionClient connection handling', () => {
             });
         });
         expect(client.requestPendingUserMessageRedelivery()).toBe(false);
+    });
+
+    it('drops an invalid live message and continues with the next valid delivery in order', async () => {
+        mockSession.metadata.flavor = 'codex';
+        rememberSessionRunnerCredential(mockSession.id, 'runner-credential');
+        const client = new ApiSessionClient('fake-token', mockSession);
+        const receiveGenericMessage = vi.fn();
+        const receivedTexts: string[] = [];
+        client.on('message', receiveGenericMessage);
+        client.onUserMessage((message) => {
+            receivedTexts.push(message.content.text);
+        });
+
+        const updateHandler = mockSocket.on.mock.calls.find(([event]) => event === 'update')?.[1] as SocketUpdateHandler;
+        const emitEncryptedUserMessage = (sequence: number, payload: Record<string, unknown>): void => {
+            updateHandler({
+                id: `update-${sequence}`,
+                seq: sequence,
+                createdAt: sequence,
+                body: {
+                    t: 'new-message',
+                    sid: mockSession.id,
+                    message: {
+                        id: `message-${sequence}`,
+                        seq: sequence,
+                        content: {
+                            t: 'encrypted',
+                            c: encodeBase64(encrypt(mockSession.encryptionKey, mockSession.encryptionVariant, payload)),
+                        },
+                    },
+                },
+            });
+        };
+
+        emitEncryptedUserMessage(1, {
+            role: 'user',
+            content: { type: 'text', text: 'forged' },
+            meta: { permissionMode: 'danger-full-access' },
+        });
+        emitEncryptedUserMessage(2, {
+            role: 'user',
+            content: { type: 'text', text: 'valid' },
+            meta: { sentFrom: 'web' },
+        });
+
+        await vi.waitFor(() => {
+            expect(receivedTexts).toEqual(['valid']);
+        });
+        expect(receiveGenericMessage).not.toHaveBeenCalled();
+        expect(mockSocket.emit).toHaveBeenNthCalledWith(1, 'message-ack', {
+            sid: mockSession.id,
+            seq: 1,
+        });
+        expect(mockSocket.emit).toHaveBeenNthCalledWith(2, 'message-ack', {
+            sid: mockSession.id,
+            seq: 2,
+        });
+    });
+
+    it('allows only a safe phone prompt when the transport session has no provider flavor', async () => {
+        rememberSessionRunnerCredential(mockSession.id, 'runner-credential');
+        const client = new ApiSessionClient('fake-token', mockSession);
+        const receivedTexts: string[] = [];
+        client.onUserMessage((message) => {
+            receivedTexts.push(message.content.text);
+        });
+
+        const updateHandler = mockSocket.on.mock.calls.find(([event]) => event === 'update')?.[1] as SocketUpdateHandler;
+        const emitEncryptedUserMessage = (sequence: number, payload: Record<string, unknown>): void => {
+            updateHandler({
+                id: `update-${sequence}`,
+                seq: sequence,
+                createdAt: sequence,
+                body: {
+                    t: 'new-message',
+                    sid: mockSession.id,
+                    message: {
+                        id: `message-${sequence}`,
+                        seq: sequence,
+                        content: {
+                            t: 'encrypted',
+                            c: encodeBase64(encrypt(mockSession.encryptionKey, mockSession.encryptionVariant, payload)),
+                        },
+                    },
+                },
+            });
+        };
+
+        emitEncryptedUserMessage(1, {
+            role: 'user',
+            content: { type: 'text', text: 'safe phone prompt' },
+            meta: { sentFrom: 'phone' },
+        });
+        emitEncryptedUserMessage(2, {
+            role: 'user',
+            content: { type: 'text', text: 'forged control prompt' },
+            meta: { model: 'forged-model' },
+        });
+
+        await vi.waitFor(() => {
+            expect(receivedTexts).toEqual(['safe phone prompt']);
+        });
+        await vi.waitFor(() => {
+            // ACK is a cumulative watermark: once the safe first delivery and
+            // rejected second delivery are both terminal, acknowledge seq 2.
+            expect(mockSocket.emit).toHaveBeenCalledWith('message-ack', {
+                sid: mockSession.id,
+                seq: 2,
+            });
+        });
+    });
+
+    it('keeps the original provider ingress schema after mutable metadata changes', async () => {
+        mockSession.metadata.flavor = 'codex';
+        rememberSessionRunnerCredential(mockSession.id, 'runner-credential');
+        const client = new ApiSessionClient('fake-token', mockSession);
+        const internals = client as unknown as ApiSessionClientInternals;
+        const receivedTexts: string[] = [];
+        client.onUserMessage((message) => {
+            receivedTexts.push(message.content.text);
+        });
+        internals.metadata = { ...internals.metadata, flavor: 'claude' };
+
+        const updateHandler = mockSocket.on.mock.calls.find(([event]) => event === 'update')?.[1] as SocketUpdateHandler;
+        updateHandler({
+            id: 'update-forged-flavor',
+            seq: 1,
+            createdAt: 1,
+            body: {
+                t: 'new-message',
+                sid: mockSession.id,
+                message: {
+                    id: 'message-forged-flavor',
+                    seq: 1,
+                    content: {
+                        t: 'encrypted',
+                        c: encodeBase64(encrypt(mockSession.encryptionKey, mockSession.encryptionVariant, {
+                            role: 'user',
+                            content: { type: 'text', text: 'forged via metadata flavor' },
+                            meta: { permissionMode: 'manual' },
+                        })),
+                    },
+                },
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(mockSocket.emit).toHaveBeenCalledWith('message-ack', {
+                sid: mockSession.id,
+                seq: 1,
+            });
+        });
+        expect(receivedTexts).toEqual([]);
     });
 
     it('rejects a bounded metadata update when the server returns error', async () => {

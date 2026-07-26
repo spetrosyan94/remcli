@@ -1,8 +1,9 @@
 import { logger } from '@/ui/logger'
 import { EventEmitter } from 'node:events'
 import { io, Socket } from 'socket.io-client'
-import { AgentState, ClientToServerEvents, DeliveredUserMessage, MessageContent, Metadata, RetryableUserMessageDeliveryError, ServerToClientEvents, Session, Update, UserMessageSchema, Usage } from './types'
+import { AgentState, ClientToServerEvents, DeliveredUserMessage, MessageContent, Metadata, RetryableUserMessageDeliveryError, ServerToClientEvents, Session, Update, Usage } from './types'
 import { decodeBase64, decrypt, encodeBase64, encrypt } from './encryption';
+import { isLiveUserMessagePayload, parseProviderUserMessage, ProviderFlavor, resolveProviderFlavor } from './providerMessageMeta';
 import { backoff } from '@/utils/time';
 import { getEffectiveServerUrl } from '@/daemon/p2p/p2pSession';
 import { getSessionRunnerCredential, SESSION_MESSAGE_ACK_VERSION } from '@/daemon/p2p/p2pRunnerCredentials';
@@ -120,6 +121,7 @@ export class ApiSessionClient extends EventEmitter {
     private hasSessionEnded = false;
     private encryptionKey: Uint8Array;
     private encryptionVariant: 'legacy' | 'dataKey';
+    private readonly providerFlavor: ProviderFlavor | null;
 
     constructor(token: string, session: Session) {
         super()
@@ -131,6 +133,9 @@ export class ApiSessionClient extends EventEmitter {
         this.agentStateVersion = session.agentStateVersion;
         this.encryptionKey = session.encryptionKey;
         this.encryptionVariant = session.encryptionVariant;
+        // The runner's provider is selected when its daemon-owned session is created.
+        // Do not let later mutable metadata switch the live ingress schema.
+        this.providerFlavor = resolveProviderFlavor(session.metadata.flavor);
         this.doesSocketAuthIncludeRunnerCredential = Boolean(getSessionRunnerCredential(this.sessionId));
 
         // Initialize RPC handler manager
@@ -216,13 +221,15 @@ export class ApiSessionClient extends EventEmitter {
 
                     logger.debugLargeJson('[SOCKET] [UPDATE] Received update:', body)
 
-                    // Try to parse as user message first
-                    const userResult = UserMessageSchema.safeParse(body);
+                    const userResult = parseProviderUserMessage(this.providerFlavor, body);
                     if (userResult.success) {
                         this.enqueuePendingUserMessage({
                             ...userResult.data,
                             deliveryId: `${P2P_DELIVERY_ID_PREFIX}:${this.sessionId}:${messageSequence}`,
                         }, messageSequence);
+                    } else if (isLiveUserMessagePayload(body)) {
+                        logger.warn(`[SOCKET] Rejected live user message sequence ${messageSequence} at the provider ingress boundary.`);
+                        this.markMessageProcessed(messageSequence);
                     } else {
                         // If not a user message, it might be a permission response or other message type
                         this.pendingMessageSequences.add(messageSequence);

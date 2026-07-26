@@ -59,6 +59,20 @@ function waitForDisconnect(socket: ClientSocket): Promise<void> {
     });
 }
 
+function waitForSocketEvent<T>(socket: ClientSocket, event: string, timeoutMs = SOCKET_TIMEOUT_MS): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            socket.off(event, handleEvent);
+            reject(new Error(`Timed out waiting for ${event}`));
+        }, timeoutMs);
+        const handleEvent = (data: T): void => {
+            clearTimeout(timeout);
+            resolve(data);
+        };
+        socket.once(event, handleEvent);
+    });
+}
+
 describe('web static asset policy', () => {
     it('revalidates the Vite entry chunk but keeps route chunks immutable', () => {
         expect(getWebStaticCacheControl('/tmp/web-dist/assets/index-abc123.js')).toBe('no-cache');
@@ -165,6 +179,169 @@ describe('pairing auth rotation', { timeout: 15_000 }, () => {
             runnerSocket.close();
             staleUserReconnect.close();
             resumedRunner.close();
+            await server.stop();
+        }
+    });
+});
+
+describe('session-scoped socket isolation', { timeout: 15_000 }, () => {
+    it('prevents runner A from affecting session B while retaining bound runner and user actions', async () => {
+        const authSecret = generateSharedSecret();
+        const bearerToken = deriveBearerToken(authSecret);
+        const store = new P2PStore({ kvFilePath: null });
+        const sessionA = store.createSession('session-a', 'metadata-a', null);
+        const sessionB = store.createSession('session-b', 'metadata-b', null);
+        const runnerCredentials = new P2PRunnerCredentialStore();
+        const runnerCredentialA = runnerCredentials.issue(sessionA.id, `runner:${sessionA.id}`);
+        const runnerCredentialB = runnerCredentials.issue(sessionB.id, `runner:${sessionB.id}`);
+        if (!runnerCredentialA || !runnerCredentialB) {
+            throw new Error('Could not issue runner credentials');
+        }
+
+        const server = await startP2PServer({
+            port: 0,
+            host: '127.0.0.1',
+            authSecret,
+            store,
+            runnerCredentialStore: runnerCredentials,
+        });
+        const userSocket = createSocket(server.port, bearerToken, { clientType: 'user-scoped' });
+        const runnerA = createSocket(server.port, bearerToken, {
+            clientType: 'session-scoped',
+            sessionId: sessionA.id,
+            messageAckVersion: SESSION_MESSAGE_ACK_VERSION,
+            runnerCredential: runnerCredentialA,
+        });
+        const runnerB = createSocket(server.port, bearerToken, {
+            clientType: 'session-scoped',
+            sessionId: sessionB.id,
+            messageAckVersion: SESSION_MESSAGE_ACK_VERSION,
+            runnerCredential: runnerCredentialB,
+        });
+        const resumedRunnerA = createSocket(server.port, bearerToken, {
+            clientType: 'session-scoped',
+            sessionId: sessionA.id,
+            messageAckVersion: SESSION_MESSAGE_ACK_VERSION,
+            runnerCredential: runnerCredentialA,
+        });
+
+        try {
+            await connectSocket(userSocket);
+            await connectSocket(runnerA);
+
+            let sessionBEphemeralEvents = 0;
+            userSocket.on('ephemeral', (payload: { id?: string }) => {
+                if (payload.id === sessionB.id) {
+                    sessionBEphemeralEvents++;
+                }
+            });
+
+            const originalSessionB = { ...store.getSession(sessionB.id)! };
+            runnerA.emit('message', { sid: sessionB.id, message: 'forbidden-message' });
+            runnerA.emit('session-alive', { sid: sessionB.id, time: originalSessionB.activeAt + 1, thinking: true });
+            runnerA.emit('session-end', { sid: sessionB.id, time: originalSessionB.activeAt + 2 });
+            runnerA.emit('usage-report', {
+                key: 'forbidden-usage',
+                sessionId: sessionB.id,
+                tokens: { total: 1 },
+                cost: { total: 1 },
+            });
+
+            const metadataResponseForB = await runnerA.timeout(SOCKET_TIMEOUT_MS).emitWithAck('update-metadata', {
+                sid: sessionB.id,
+                metadata: 'forbidden-metadata',
+                expectedVersion: originalSessionB.metadataVersion,
+            });
+            const metadataResponseForMissingSession = await runnerA.timeout(SOCKET_TIMEOUT_MS).emitWithAck('update-metadata', {
+                sid: 'missing-session',
+                metadata: 'forbidden-metadata',
+                expectedVersion: originalSessionB.metadataVersion,
+            });
+            const stateResponseForB = await runnerA.timeout(SOCKET_TIMEOUT_MS).emitWithAck('update-state', {
+                sid: sessionB.id,
+                agentState: 'forbidden-state',
+                expectedVersion: originalSessionB.agentStateVersion,
+            });
+
+            expect(metadataResponseForB).toEqual(metadataResponseForMissingSession);
+            expect(metadataResponseForB).toEqual({ result: 'error' });
+            expect(stateResponseForB).toEqual({ result: 'error' });
+            expect(store.getMessageCount(sessionB.id)).toBe(0);
+            expect(store.getSession(sessionB.id)).toMatchObject({
+                metadata: originalSessionB.metadata,
+                metadataVersion: originalSessionB.metadataVersion,
+                agentState: originalSessionB.agentState,
+                agentStateVersion: originalSessionB.agentStateVersion,
+                active: originalSessionB.active,
+                activeAt: originalSessionB.activeAt,
+            });
+            expect(sessionBEphemeralEvents).toBe(0);
+
+            const metadataResponseForA = await runnerA.timeout(SOCKET_TIMEOUT_MS).emitWithAck('update-metadata', {
+                sid: sessionA.id,
+                metadata: 'metadata-a-updated',
+                expectedVersion: sessionA.metadataVersion,
+            });
+            expect(metadataResponseForA).toMatchObject({ result: 'success', metadata: 'metadata-a-updated' });
+            expect(store.getSession(sessionA.id)?.metadata).toBe('metadata-a-updated');
+
+            userSocket.emit('message', { sid: sessionB.id, message: 'user-message-for-b' });
+            runnerA.emit('message-ack', { sid: sessionB.id, seq: 1 });
+            const sessionBMessage = waitForSocketEvent<{
+                body: { sid: string; message: { content: { c: string; t: string } } };
+            }>(runnerB, 'update');
+            await connectSocket(runnerB);
+            await expect(sessionBMessage).resolves.toMatchObject({
+                body: { sid: sessionB.id, message: { content: { c: 'user-message-for-b', t: 'encrypted' } } },
+            });
+
+            let sessionBRpcCalls = 0;
+            runnerB.on('rpc-request', (_data, callback: (response: string) => void) => {
+                sessionBRpcCalls++;
+                callback('session-b-response');
+            });
+            const rpcMethod = `${sessionB.id}:control`;
+            const rpcRegistered = waitForSocketEvent<{ method: string }>(runnerB, 'rpc-registered');
+            runnerB.emit('rpc-register', { method: rpcMethod });
+            await expect(rpcRegistered).resolves.toEqual({ method: rpcMethod });
+
+            const registerError = waitForSocketEvent<{ type: string; error: string }>(runnerA, 'rpc-error');
+            runnerA.emit('rpc-register', { method: `${sessionB.id}:forbidden` });
+            await expect(registerError).resolves.toEqual({ type: 'register', error: 'Method is not available' });
+
+            const unregisterError = waitForSocketEvent<{ type: string; error: string }>(runnerA, 'rpc-error');
+            runnerA.emit('rpc-unregister', { method: rpcMethod });
+            await expect(unregisterError).resolves.toEqual({ type: 'unregister', error: 'Method is not available' });
+
+            const rpcResponseForB = await runnerA.timeout(SOCKET_TIMEOUT_MS).emitWithAck('rpc-call', { method: rpcMethod });
+            const rpcResponseForMissingSession = await runnerA.timeout(SOCKET_TIMEOUT_MS).emitWithAck('rpc-call', {
+                method: 'missing-session:control',
+            });
+            expect(rpcResponseForB).toEqual(rpcResponseForMissingSession);
+            expect(rpcResponseForB).toEqual({ ok: false, error: 'Method is not available' });
+            expect(sessionBRpcCalls).toBe(0);
+
+            await expect(userSocket.timeout(SOCKET_TIMEOUT_MS).emitWithAck('rpc-call', { method: rpcMethod }))
+                .resolves.toEqual({ ok: true, result: 'session-b-response' });
+            expect(sessionBRpcCalls).toBe(1);
+
+            const sessionAMessage = waitForSocketEvent<{ body: { sid: string; message: { seq: number } } }>(runnerA, 'update');
+            userSocket.emit('message', { sid: sessionA.id, message: 'user-message-for-a' });
+            const deliveredSessionAMessage = await sessionAMessage;
+            runnerA.emit('message-ack', {
+                sid: sessionA.id,
+                seq: deliveredSessionAMessage.body.message.seq,
+            });
+            await runnerA.timeout(SOCKET_TIMEOUT_MS).emitWithAck('ping');
+            const replayedSessionAMessage = waitForSocketEvent(resumedRunnerA, 'update', 250);
+            runnerA.close();
+            await connectSocket(resumedRunnerA);
+            await expect(replayedSessionAMessage).rejects.toThrow('Timed out waiting for update');
+        } finally {
+            userSocket.close();
+            runnerA.close();
+            runnerB.close();
+            resumedRunnerA.close();
             await server.stop();
         }
     });
