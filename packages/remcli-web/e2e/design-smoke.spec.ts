@@ -93,6 +93,13 @@ async function openFixtureRoute(page: Page, path: string, theme: "dark" | "light
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 
+async function readFixtureSpawnNewSessionCallCount(page: Page): Promise<number> {
+    return page.evaluate(async () => {
+        const { fixtureSpawnNewSessionCallCount } = await import("/src/lib/fixtures/index.ts");
+        return fixtureSpawnNewSessionCallCount();
+    });
+}
+
 async function assertNoHorizontalOverflow(page: Page): Promise<void> {
     const report = await page.evaluate<OverflowReport>(() => {
         function describeElement(element: Element): string {
@@ -277,7 +284,7 @@ async function assertMobileTouchTargets(page: Page): Promise<void> {
 }
 
 async function assertPrimaryActionIsFullyVisible(page: Page): Promise<void> {
-    const primaryAction = page.getByRole("button", { name: /^start claude in /i });
+    const primaryAction = page.getByRole("button", { name: /^start codex in /i });
     await expect(primaryAction).toBeVisible();
 
     const report = await primaryAction.evaluate((element) => {
@@ -501,6 +508,35 @@ test("new session keeps its primary action fully visible", async ({ page }) => {
     expect(pageIssues).toEqual([]);
 });
 
+test("new session keeps deferred providers visible but non-interactive", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/new?fixtures=1");
+
+    const codex = page.getByRole("button", { name: /codex cli/i });
+    const cursor = page.getByRole("button", { name: /cursor agent/i });
+    const claude = page.getByRole("button", { name: /claude code/i });
+    const gemini = page.getByRole("button", { name: /gemini cli/i });
+
+    await expect(codex).toHaveAttribute("aria-pressed", "true");
+    await expect(claude).toBeDisabled();
+    await expect(claude).toHaveAttribute("data-provider-availability", "deferred");
+    await expect(claude).toHaveAttribute("aria-describedby", "deferred-provider-note");
+    await expect(gemini).toBeDisabled();
+    await expect(gemini).toHaveAttribute("data-provider-availability", "deferred");
+    await expect(gemini).toHaveAttribute("aria-describedby", "deferred-provider-note");
+    await expect(page.locator("#deferred-provider-note")).toHaveText("Claude and Gemini will be added in a separate integration.");
+
+    await cursor.click();
+    await expect(cursor).toHaveAttribute("aria-pressed", "true");
+    await expect(claude).toBeDisabled();
+    await expect(gemini).toBeDisabled();
+
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
 test("Claude 1024 keeps metadata readable with a compact permission picker", async ({ page }, testInfo) => {
     test.skip(isMobileProject(testInfo), "Desktop breakpoint regression.");
     const pageIssues = collectPageIssues(page);
@@ -584,10 +620,10 @@ test("triggered toast stays out of bottom chrome", async ({ page }, testInfo) =>
     expect(pageIssues).toEqual([]);
 });
 
-test("daemon fixture chat stop and resume keeps seeded history visible", async ({ page }, testInfo) => {
+test("daemon fixture Codex chat stop and resume keeps seeded history visible", async ({ page }, testInfo) => {
     const pageIssues = collectPageIssues(page);
 
-    await openFixtureRoute(page, "/session/fx-chat?fixtures=1");
+    await openFixtureRoute(page, "/session/fixture-codex-lifecycle-chat?fixtures=1&chatLifecycle=codex");
     await page.getByRole("button", { name: "Menu" }).click();
 
     await expect(page.getByRole("menuitem", { name: /terminal/i })).toBeVisible();
@@ -607,7 +643,7 @@ test("daemon fixture chat stop and resume keeps seeded history visible", async (
     await expect(page.getByRole("button", { name: /resume/i })).toBeVisible();
 
     await Promise.all([
-        page.waitForURL(/\/session\/fx-resume-claude-\d+$/),
+        page.waitForURL(/\/session\/fx-resume-codex-\d+$/),
         page.getByRole("button", { name: /resume/i }).click(),
     ]);
     await expect(page.getByText("Проверь тесты и почини баг с балансом скобок в parser.ts", { exact: true })).toBeVisible();
@@ -619,6 +655,53 @@ test("daemon fixture chat stop and resume keeps seeded history visible", async (
         await assertMobileTouchTargets(page);
     }
 
+    expect(pageIssues).toEqual([]);
+});
+
+test("Codex lifecycle fixture rejects incomplete or stale capability selections", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/session/fixture-codex-lifecycle-chat?fixtures=1&chatLifecycle=codex");
+
+    const rejectedResults = await page.evaluate(async () => {
+        const { fixtureSpawnNewSession } = await import("/src/lib/fixtures/index.ts");
+        const baseOptions = {
+            machineId: "fx-machine-online",
+            directory: "/Users/dev/projects/remcli",
+            agent: "codex",
+            permissionMode: "workspace-write",
+            codexExecution: {
+                model: "gpt-5.6-luna",
+                reasoningEffort: "xhigh",
+                catalogVersion: "fixture-codex-v1",
+            },
+        } as const;
+        const invalidOptions = [
+            { ...baseOptions, codexExecution: undefined },
+            { ...baseOptions, permissionMode: undefined },
+            {
+                ...baseOptions,
+                codexExecution: { ...baseOptions.codexExecution, catalogVersion: "fixture-codex-stale-v0" },
+            },
+            {
+                ...baseOptions,
+                codexExecution: { ...baseOptions.codexExecution, model: "gpt-5.6-unknown" },
+            },
+            {
+                ...baseOptions,
+                codexExecution: { ...baseOptions.codexExecution, reasoningEffort: undefined },
+            },
+            { ...baseOptions, permissionMode: "manual" },
+        ];
+
+        return await Promise.all(invalidOptions.map((options) => fixtureSpawnNewSession(options)));
+    });
+
+    expect(rejectedResults).toEqual(Array.from({ length: 6 }, () => ({
+        type: "error",
+        errorMessage: "Codex capability selection rejected: unsupported_selection.",
+    })));
     expect(pageIssues).toEqual([]);
 });
 
@@ -814,12 +897,42 @@ test("ended Cursor Chat Resume uses a non-URL typed New Session handoff", async 
     await page.waitForURL(/\/new$/);
     expect(new URL(page.url()).search).toBe("");
     await expect(page.getByText("Cursor chat resume", { exact: true })).toBeVisible();
-    await expect(page.getByText("fixture-cursor-chat-native", { exact: true })).toBeVisible();
+    await expect(page.getByText("fixture-cursor-chat-native", { exact: true })).toHaveCount(0);
 
     const resumeButton = page.getByRole("button", { name: /Resume session.*Cursor chat resume/i });
     await expect(resumeButton).toBeEnabled();
     await resumeButton.click();
     await page.waitForURL(/\/session\/fx-resume-cursor-/);
+
+    await assertNoHorizontalOverflow(page);
+    await assertNoBottomToastOverlap(page);
+    if (isMobileProject(testInfo)) {
+        await assertMobileTouchTargets(page);
+    }
+    expect(pageIssues).toEqual([]);
+});
+
+test("ended deferred Chat Resume stays visible and does not spawn", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/session/fixture-deferred-ended-chat?fixtures=1&chatResume=deferred");
+
+    const resumeButton = page.getByRole("button", { name: /Resume$/ });
+    await expect(resumeButton).toBeVisible();
+    await expect(resumeButton).toBeDisabled();
+    await expect(resumeButton).toHaveAttribute("data-resume-availability", "deferred");
+    await expect(resumeButton).toHaveAttribute("aria-describedby", "chat-deferred-resume-note");
+    await expect(page.getByText("Продолжи deferred-сессию без запуска нового провайдера.", { exact: true })).toBeVisible();
+    await expect(page.getByText("История сохранена. Resume отключён, поэтому этот чат остаётся доступным только для чтения.", { exact: true })).toBeVisible();
+
+    const chatUrl = page.url();
+    const spawnCallsBeforeForceClick = await readFixtureSpawnNewSessionCallCount(page);
+    await resumeButton.click({ force: true });
+    const spawnCallsAfterForceClick = await readFixtureSpawnNewSessionCallCount(page);
+    await expect(page).toHaveURL(chatUrl);
+    await expect(resumeButton).toBeDisabled();
+    expect(spawnCallsAfterForceClick).toBe(spawnCallsBeforeForceClick);
 
     await assertNoHorizontalOverflow(page);
     await assertNoBottomToastOverlap(page);

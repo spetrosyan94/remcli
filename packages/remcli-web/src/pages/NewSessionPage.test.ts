@@ -72,6 +72,7 @@ const componentHooks = vi.hoisted(() => {
 });
 
 const machineSpawnNewSessionMock = vi.hoisted(() => vi.fn());
+const machineGetCodexCapabilitiesMock = vi.hoisted(() => vi.fn());
 const machineGetCursorCapabilitiesMock = vi.hoisted(() => vi.fn());
 const machineListRecentDirectoriesMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -136,7 +137,7 @@ vi.mock('@/lib/protocol', () => ({
     machineListAgentSessions: vi.fn(),
     machineListDirectory: vi.fn(),
     machineListRecentDirectories: machineListRecentDirectoriesMock,
-    machineGetCodexCapabilities: vi.fn(),
+    machineGetCodexCapabilities: machineGetCodexCapabilitiesMock,
     machineGetCursorCapabilities: machineGetCursorCapabilitiesMock,
     machineSpawnNewSession: machineSpawnNewSessionMock,
     DEFAULT_CURSOR_LAUNCH_CONTROLS: {
@@ -176,7 +177,10 @@ interface TestElement {
         tabIndex?: number;
         role?: string;
         'aria-label'?: string;
+        'aria-describedby'?: string;
+        'aria-pressed'?: boolean;
         'aria-busy'?: boolean;
+        'data-provider-availability'?: string;
         title?: string;
         showSelectionIndicator?: boolean;
     };
@@ -224,7 +228,7 @@ async function flushPendingEffects(): Promise<void> {
     await Promise.resolve();
 }
 
-let agentOptions: Array<{ id: string; models: string[] }> = [];
+let agentOptions: Array<{ id: string; models: string[]; isAvailable: boolean }> = [];
 let getModelOverride = (_model: string): string | null => {
     throw new Error('NewSessionPage module was not loaded');
 };
@@ -261,6 +265,7 @@ let createCursorExecutionForModel: typeof import('@/pages/NewSessionPage').creat
 let parseNewSessionNavigationState: typeof import('@/pages/NewSessionPage').parseNewSessionNavigationState = (_state) => ({});
 let isCursorResumePresetCompatible: typeof import('@/pages/NewSessionPage').isCursorResumePresetCompatible = (_preset, _machineId, _directory) => true;
 let getPrimarySelectorLabelKey: typeof import('@/pages/NewSessionPage').getPrimarySelectorLabelKey = (_agent) => 'new.accessLevel';
+let isNewSessionAgentAvailable: typeof import('@/pages/NewSessionPage').isNewSessionAgentAvailable = () => false;
 let getReasoningControlState: typeof import('@/pages/NewSessionPage').getReasoningControlState = (_input) => {
     throw new Error('NewSessionPage module was not loaded');
 };
@@ -302,6 +307,7 @@ beforeAll(async () => {
     parseNewSessionNavigationState = pageModule.parseNewSessionNavigationState;
     isCursorResumePresetCompatible = pageModule.isCursorResumePresetCompatible;
     getPrimarySelectorLabelKey = pageModule.getPrimarySelectorLabelKey;
+    isNewSessionAgentAvailable = pageModule.isNewSessionAgentAvailable;
     getReasoningControlState = pageModule.getReasoningControlState;
     buildNewSessionSpawnOptions = pageModule.buildNewSessionSpawnOptions;
     isCodexCapabilityRejection = pageModule.isCodexCapabilityRejection;
@@ -320,6 +326,16 @@ afterAll(() => {
 
 beforeEach(() => {
     componentHooks.reset();
+    machineGetCodexCapabilitiesMock.mockReset();
+    machineGetCodexCapabilitiesMock.mockResolvedValue({
+        agent: 'codex',
+        status: 'unavailable',
+        fetchedAt: null,
+        expiresAt: null,
+        catalogVersion: null,
+        permissionModes: [],
+        models: [],
+    });
     machineGetCursorCapabilitiesMock.mockReset();
     machineListRecentDirectoriesMock.mockReset();
     machineListRecentDirectoriesMock.mockResolvedValue([]);
@@ -331,6 +347,17 @@ beforeEach(() => {
 });
 
 describe('NewSessionPage navigation state and shared access-level label', () => {
+    it('keeps Claude and Gemini visible but unavailable until their capability contracts are accepted', () => {
+        expect(isNewSessionAgentAvailable('codex')).toBe(true);
+        expect(isNewSessionAgentAvailable('cursor')).toBe(true);
+        expect(isNewSessionAgentAvailable('claude')).toBe(false);
+        expect(isNewSessionAgentAvailable('gemini')).toBe(false);
+        expect(agentOptions.find((option) => option.id === 'claude')?.isAvailable).toBe(false);
+        expect(agentOptions.find((option) => option.id === 'gemini')?.isAvailable).toBe(false);
+        expect(agentOptions.find((option) => option.id === 'claude')?.models).toEqual([]);
+        expect(agentOptions.find((option) => option.id === 'gemini')?.models).toEqual([]);
+    });
+
     it('restores only a strict Cursor resume preset and ignores reload or malformed state', () => {
         expect(parseNewSessionNavigationState(null)).toEqual({});
         expect(parseNewSessionNavigationState({ cursorResume: { machineId: 'machine-1' } })).toEqual({});
@@ -368,6 +395,23 @@ describe('NewSessionPage navigation state and shared access-level label', () => 
         expect(getPrimarySelectorLabelKey('codex')).toBe('new.accessLevel');
         expect(getPrimarySelectorLabelKey('cursor')).toBe('new.accessLevel');
         expect(getPrimarySelectorLabelKey('gemini')).toBe('new.accessLevel');
+    });
+
+    it('defaults to Codex and renders deferred providers as disabled choices', () => {
+        const page = renderNewSessionPage();
+        const codex = findElement(page, (element) => element.type === 'button' && elementText(element) === 'Codexcli');
+        const claude = findElement(page, (element) => element.type === 'button' && elementText(element) === 'Claudecode');
+        const gemini = findElement(page, (element) => element.type === 'button' && elementText(element) === 'Geminicli');
+
+        expect(codex.props.disabled).toBe(false);
+        expect(codex.props.className).toContain('border-accent');
+        expect(codex.props['aria-pressed']).toBe(true);
+        expect(claude.props.disabled).toBe(true);
+        expect(claude.props['aria-describedby']).toBe('deferred-provider-note');
+        expect(claude.props['data-provider-availability']).toBe('deferred');
+        expect(gemini.props.disabled).toBe(true);
+        expect(gemini.props['aria-describedby']).toBe('deferred-provider-note');
+        expect(gemini.props['data-provider-availability']).toBe('deferred');
     });
 
 });
@@ -498,6 +542,34 @@ describe('NewSessionPage Codex capability selection', () => {
             codexExecution: null,
             codexReasoningEfforts: capabilities.models[0].supportedReasoningEfforts,
         })).toThrow('Codex requires a capability-validated execution selection.');
+    });
+
+    it.each(['claude', 'gemini'] as const)('fails closed when unavailable %s is passed to the spawn boundary', (agent) => {
+        expect(() => buildNewSessionSpawnOptions({
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            agent,
+            permissionMode: 'workspace-write',
+            codexExecution: null,
+            codexReasoningEfforts: [],
+        })).toThrow(`${agent} is not available in New Session.`);
+    });
+
+    it.each(['claude', 'gemini'] as const)('fails closed when unavailable %s overrides the active provider through resume', (agent) => {
+        expect(() => buildNewSessionSpawnOptions({
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            agent: 'codex',
+            permissionMode: 'workspace-write',
+            codexExecution: getDefaultCodexExecution(capabilities),
+            codexReasoningEfforts: capabilities.models[0].supportedReasoningEfforts,
+            resume: {
+                agent,
+                projectPath: '/workspace/remcli',
+                sessionId: `${agent}-native-session`,
+                sessionName: null,
+            },
+        })).toThrow(`${agent} is not available in New Session.`);
     });
 
     it('fails closed when a reasoning selection is required and accepts zero-options execution', () => {

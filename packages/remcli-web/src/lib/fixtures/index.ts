@@ -101,6 +101,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 let zenTasksValue = JSON.stringify(FIXTURE_ZEN_TASKS);
 let zenTasksVersion = 1;
 let spawnedSessionCounter = 0;
+let fixtureSpawnCallCount = 0;
 let fixtureResumeRetryAttempts = 0;
 let fixtureCodexCapabilityRejectionAttempts = 0;
 let fixtureCursorResumeSpawnAttempts = 0;
@@ -206,6 +207,104 @@ const FIXTURE_ENDED_CURSOR_CHAT_SESSION: Session = {
     thinkingAt: 0,
     presence: FIXTURE_BASE_TIME - 60_000,
 };
+const FIXTURE_ENDED_DEFERRED_CHAT_SESSION_ID = 'fixture-deferred-ended-chat';
+const FIXTURE_ENDED_DEFERRED_CHAT_SESSION: Session = {
+    id: FIXTURE_ENDED_DEFERRED_CHAT_SESSION_ID,
+    seq: 91,
+    createdAt: FIXTURE_BASE_TIME - 14 * 60_000,
+    updatedAt: FIXTURE_BASE_TIME - 2 * 60_000,
+    active: false,
+    activeAt: FIXTURE_BASE_TIME - 2 * 60_000,
+    metadata: {
+        path: '/Users/dev/projects/remcli',
+        host: 'macbook-pro.local',
+        homeDir: '/Users/dev',
+        remcliHomeDir: '/Users/dev/.remcli',
+        machineId: 'fx-machine-online',
+        flavor: 'claude',
+        startedBy: 'daemon',
+        name: 'Claude deferred chat resume',
+        agentSessionId: 'fixture-claude-deferred-chat-native',
+        claudeSessionId: 'fixture-claude-deferred-chat-native',
+        summary: {
+            text: 'Остановленная deferred-сессия для Chat Resume',
+            updatedAt: FIXTURE_BASE_TIME - 2 * 60_000,
+        },
+    },
+    metadataVersion: 1,
+    agentState: {
+        controlledByUser: false,
+        requests: {},
+        completedRequests: {},
+    },
+    agentStateVersion: 1,
+    thinking: false,
+    thinkingAt: 0,
+    presence: FIXTURE_BASE_TIME - 2 * 60_000,
+};
+const FIXTURE_DEFERRED_CHAT_MESSAGES: NormalizedMessage[] = [
+    {
+        id: 'fixture-deferred-history-user',
+        localId: null,
+        seq: 1,
+        createdAt: FIXTURE_BASE_TIME - 4 * 60_000,
+        isSidechain: false,
+        role: 'user',
+        content: {
+            type: 'text',
+            text: 'Продолжи deferred-сессию без запуска нового провайдера.',
+        },
+    },
+    {
+        id: 'fixture-deferred-history-agent',
+        localId: null,
+        seq: 2,
+        createdAt: FIXTURE_BASE_TIME - 3 * 60_000,
+        isSidechain: false,
+        role: 'agent',
+        content: [{
+            type: 'text',
+            text: 'История сохранена. Resume отключён, поэтому этот чат остаётся доступным только для чтения.',
+            uuid: 'fixture-deferred-history-agent',
+            parentUUID: null,
+        }],
+    },
+];
+const FIXTURE_CODEX_LIFECYCLE_CHAT_SESSION_ID = 'fixture-codex-lifecycle-chat';
+const FIXTURE_CODEX_LIFECYCLE_CHAT_SESSION: Session = {
+    id: FIXTURE_CODEX_LIFECYCLE_CHAT_SESSION_ID,
+    seq: 92,
+    createdAt: FIXTURE_BASE_TIME - 14 * 60_000,
+    updatedAt: FIXTURE_BASE_TIME,
+    active: true,
+    activeAt: FIXTURE_BASE_TIME,
+    metadata: {
+        path: '/Users/dev/projects/remcli',
+        host: 'macbook-pro.local',
+        homeDir: '/Users/dev',
+        remcliHomeDir: '/Users/dev/.remcli',
+        machineId: 'fx-machine-online',
+        flavor: 'codex',
+        startedBy: 'daemon',
+        name: 'Codex lifecycle chat resume',
+        agentSessionId: 'fixture-codex-lifecycle-chat-native',
+        codexSessionId: 'fixture-codex-lifecycle-chat-native',
+        summary: {
+            text: 'Остановленная Codex-сессия для lifecycle resume',
+            updatedAt: FIXTURE_BASE_TIME,
+        },
+    },
+    metadataVersion: 1,
+    agentState: {
+        controlledByUser: false,
+        requests: {},
+        completedRequests: {},
+    },
+    agentStateVersion: 1,
+    thinking: false,
+    thinkingAt: 0,
+    presence: 'online',
+};
 
 function fixtureQueryParameter(name: string): string | null {
     if (typeof window === 'undefined') return null;
@@ -213,9 +312,14 @@ function fixtureQueryParameter(name: string): string | null {
 }
 
 function fixtureSessions(): Session[] {
-    return fixtureQueryParameter('chatResume') === 'cursor'
-        ? [...FIXTURE_SESSIONS, FIXTURE_ENDED_CURSOR_CHAT_SESSION]
-        : [...FIXTURE_SESSIONS];
+    const chatResume = fixtureQueryParameter('chatResume');
+    const sessions = [...FIXTURE_SESSIONS];
+
+    if (chatResume === 'cursor') sessions.push(FIXTURE_ENDED_CURSOR_CHAT_SESSION);
+    if (chatResume === 'deferred') sessions.push(FIXTURE_ENDED_DEFERRED_CHAT_SESSION);
+    if (fixtureQueryParameter('chatLifecycle') === 'codex') sessions.push(FIXTURE_CODEX_LIFECYCLE_CHAT_SESSION);
+
+    return sessions;
 }
 
 type LineageFixtureScenario = 'recovery' | 'reconnect-callback' | 'stable-parent' | 'unavailable' | 'foreign-parent';
@@ -531,6 +635,7 @@ export function initFixturesIfEnabled(): boolean {
     fixtureResumeRetryAttempts = 0;
     fixtureCodexCapabilityRejectionAttempts = 0;
     fixtureCursorResumeSpawnAttempts = 0;
+    fixtureSpawnCallCount = 0;
     fixtureRecentDirectoriesByMachine = createFixtureRecentDirectoriesByMachine();
     getFixtureLineageMetricsState();
     const store = useProtocolStore.getState();
@@ -539,6 +644,12 @@ export function initFixturesIfEnabled(): boolean {
     store.applyMessages(FIXTURE_CHAT_SESSION_ID, fixtureChatMessages(), { markLoaded: true });
     if (fixtureQueryParameter('chatResume') === 'cursor') {
         store.applyMessages(FIXTURE_ENDED_CURSOR_CHAT_SESSION_ID, [], { markLoaded: true });
+    }
+    if (fixtureQueryParameter('chatResume') === 'deferred') {
+        store.applyMessages(FIXTURE_ENDED_DEFERRED_CHAT_SESSION_ID, FIXTURE_DEFERRED_CHAT_MESSAGES, { markLoaded: true });
+    }
+    if (fixtureQueryParameter('chatLifecycle') === 'codex') {
+        store.applyMessages(FIXTURE_CODEX_LIFECYCLE_CHAT_SESSION_ID, fixtureChatMessages(), { markLoaded: true });
     }
     const lineageScenario = lineageFixtureScenario();
     if (lineageScenario === 'recovery') {
@@ -580,6 +691,11 @@ export function fixtureLineageMetrics(): FixtureLineageMetrics {
         parentHistoryLoads: state?.parentHistoryLoads ?? 0,
         sentSessionIds: state ? [...state.sentSessionIds] : [],
     };
+}
+
+/** Test-only count of fixture spawn boundary calls for browser assertions. */
+export function fixtureSpawnNewSessionCallCount(): number {
+    return fixtureSpawnCallCount;
 }
 
 /** Record a fixture-mode session-list refresh for browser assertions. */
@@ -950,12 +1066,57 @@ export async function fixtureListAgentSessions(
         });
 }
 
+function isCodexPermissionMode(
+    value: SpawnSessionOptions['permissionMode'],
+): value is CodexCapabilitiesSnapshot['permissionModes'][number] {
+    return value === 'read-only' || value === 'workspace-write' || value === 'danger-full-access';
+}
+
+async function validateCodexLifecycleSpawn(options: SpawnSessionOptions): Promise<SpawnSessionResult | null> {
+    if (fixtureQueryParameter('chatLifecycle') !== 'codex' || options.agent !== 'codex') return null;
+
+    const capabilities = await fixtureGetCodexCapabilities();
+    const execution = options.codexExecution;
+    const model = execution
+        ? capabilities.models.find((item) => item.id === execution.model)
+        : undefined;
+    const reasoningEffort = execution?.reasoningEffort;
+    const hasValidReasoning = model !== undefined
+        && (model.supportedReasoningEfforts.length === 0
+            ? reasoningEffort === undefined
+            : reasoningEffort !== undefined && model.supportedReasoningEfforts.includes(reasoningEffort));
+    const hasSupportedPermission = isCodexPermissionMode(options.permissionMode)
+        && capabilities.permissionModes.includes(options.permissionMode);
+
+    if (
+        capabilities.status !== 'ready'
+        || !capabilities.catalogVersion
+        || !execution
+        || execution.catalogVersion !== capabilities.catalogVersion
+        || model === undefined
+        || !hasValidReasoning
+        || !hasSupportedPermission
+    ) {
+        return {
+            type: 'error',
+            errorMessage: 'Codex capability selection rejected: unsupported_selection.',
+        };
+    }
+
+    return null;
+}
+
 /** Локальный spawn/remcli-session для fixture-mode: без machine encryption и daemon RPC. */
 export async function fixtureSpawnNewSession(options: SpawnSessionOptions): Promise<SpawnSessionResult> {
+    fixtureSpawnCallCount += 1;
+
     const machine = FIXTURE_MACHINES.find((item) => item.id === options.machineId);
     if (!machine?.metadata) {
         return { type: 'error', errorMessage: `Fixture machine not found: ${options.machineId}` };
     }
+
+    const codexValidationError = await validateCodexLifecycleSpawn(options);
+    if (codexValidationError) return codexValidationError;
 
     const capabilityScenario = fixtureQueryParameter('codexCapabilities');
     if (capabilityScenario === 'capability-rejection'

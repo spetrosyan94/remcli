@@ -17,6 +17,7 @@ import {
     getDefaultPermissionMode,
     normalizeAgentPermissionMode,
 } from "@/lib/agentPermissions";
+import { createCodexExecutionForModel } from "@/lib/codexCapabilities";
 import { getIntlLocale, t } from "@/lib/i18n";
 import {
     machineListDirectory,
@@ -45,6 +46,7 @@ import {
     type SpawnSessionOptions,
     type SpawnSessionResult,
 } from "@/lib/protocol";
+import { isProviderAvailable } from "@/lib/providerAvailability";
 import { linkZenTaskSession } from "@/lib/zenTasks";
 
 type SheetKind = "machine" | "model" | "permission" | "reasoning" | "cursor-launch" | "resume" | "directory";
@@ -80,16 +82,20 @@ interface AgentOption {
     name: string;
     kind: string;
     models: string[];
+    isAvailable: boolean;
 }
 
 const DEFAULT_MODEL_ID = "default";
+const DEFAULT_NEW_SESSION_AGENT = "codex";
 
 export const AGENT_OPTIONS: AgentOption[] = [
-    { id: "claude", name: "Claude", kind: "code", models: ["default", "sonnet", "opus", "haiku"] },
-    { id: "codex", name: "Codex", kind: "cli", models: [] },
-    { id: "gemini", name: "Gemini", kind: "cli", models: ["gemini-2.5-pro", "gemini-3-pro", "gemini-3-flash"] },
-    { id: "cursor", name: "Cursor", kind: "agent", models: [] },
+    { id: "claude", name: "Claude", kind: "code", models: [], isAvailable: isProviderAvailable("claude") },
+    { id: "codex", name: "Codex", kind: "cli", models: [], isAvailable: isProviderAvailable("codex") },
+    { id: "gemini", name: "Gemini", kind: "cli", models: [], isAvailable: isProviderAvailable("gemini") },
+    { id: "cursor", name: "Cursor", kind: "agent", models: [], isAvailable: isProviderAvailable("cursor") },
 ];
+
+export const isNewSessionAgentAvailable = isProviderAvailable;
 
 export function getModelOverride(model: string): string | null {
     return model !== DEFAULT_MODEL_ID ? model : null;
@@ -219,31 +225,7 @@ export function getPrimarySelectorLabelKey(_agent: AgentId): "new.accessLevel" {
     return "new.accessLevel";
 }
 
-export function getDefaultCodexExecution(capabilities: CodexCapabilitiesSnapshot): CodexExecutionConfig | null {
-    if (capabilities.status !== "ready" || !capabilities.catalogVersion) return null;
-    const model = capabilities.models.find((item) => item.isDefault) ?? capabilities.models[0];
-    return model ? createCodexExecutionForModel(capabilities, model.id) : null;
-}
-
-export function createCodexExecutionForModel(
-    capabilities: CodexCapabilitiesSnapshot,
-    modelId: string,
-    reasoningEffort?: CodexModelCapability["supportedReasoningEfforts"][number],
-): CodexExecutionConfig | null {
-    if (capabilities.status !== "ready" || !capabilities.catalogVersion) return null;
-    const model = capabilities.models.find((item) => item.id === modelId);
-    if (!model) return null;
-    if (reasoningEffort !== undefined && !model.supportedReasoningEfforts.includes(reasoningEffort)) return null;
-    const selectedReasoningEffort = reasoningEffort ?? model.defaultReasoningEffort;
-    if (model.supportedReasoningEfforts.length > 0) {
-        if (!selectedReasoningEffort || !model.supportedReasoningEfforts.includes(selectedReasoningEffort)) return null;
-    }
-    return {
-        model: model.id,
-        catalogVersion: capabilities.catalogVersion,
-        ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
-    };
-}
+export { createCodexExecutionForModel, getDefaultCodexExecution } from "@/lib/codexCapabilities";
 
 function findCodexModel(
     capabilities: CodexCapabilitiesSnapshot | null,
@@ -337,6 +319,9 @@ export function buildNewSessionSpawnOptions(input: {
     resume?: ResumeTarget;
 }): SpawnSessionOptions {
     const spawnAgent = input.resume?.agent ?? input.agent;
+    if (!isNewSessionAgentAvailable(spawnAgent)) {
+        throw new Error(`${spawnAgent} is not available in New Session.`);
+    }
     if (spawnAgent === "codex" && !input.codexExecution) {
         throw new Error("Codex requires a capability-validated execution selection.");
     }
@@ -718,11 +703,11 @@ export function NewSessionPage() {
         () => navigationState.cursorResume?.machineId ?? null,
     );
     const [agent, setAgent] = React.useState<AgentId>(
-        () => navigationState.cursorResume ? "cursor" : "claude",
+        () => navigationState.cursorResume ? "cursor" : DEFAULT_NEW_SESSION_AGENT,
     );
-    const [model, setModel] = React.useState(AGENT_OPTIONS[0].models[0]);
+    const [model, setModel] = React.useState(DEFAULT_MODEL_ID);
     const [hasExplicitModelSelection, setHasExplicitModelSelection] = React.useState(false);
-    const [mode, setMode] = React.useState<PermissionMode>(() => getDefaultPermissionMode("claude"));
+    const [mode, setMode] = React.useState<PermissionMode>(() => getDefaultPermissionMode(DEFAULT_NEW_SESSION_AGENT));
     const [codexCapabilities, setCodexCapabilities] = React.useState<CodexCapabilitiesSnapshot | null>(null);
     const [codexModelId, setCodexModelId] = React.useState<string | null>(null);
     const [codexExecution, setCodexExecution] = React.useState<CodexExecutionConfig | null>(null);
@@ -1016,6 +1001,7 @@ export function NewSessionPage() {
     }, [activeMachineId, directoryReloadKey, directoryRequestPath, sheetKind]);
 
     const selectAgent = (id: AgentId) => {
+        if (!isNewSessionAgentAvailable(id)) return;
         if (id !== "cursor") setCursorResumePreset(null);
         setAgent(id);
         const nextModel = AGENT_OPTIONS.find((a) => a.id === id)?.models[0];
@@ -1167,6 +1153,10 @@ export function NewSessionPage() {
             return;
         }
         const spawnAgent = selectedResume?.agent ?? agent;
+        if (!isNewSessionAgentAvailable(spawnAgent)) {
+            toast.error(t("new.capabilitiesUnavailable"));
+            return;
+        }
         const permissionMode = spawnAgent === "cursor"
             ? undefined
             : normalizeAgentPermissionMode(spawnAgent, mode);
@@ -1259,8 +1249,11 @@ export function NewSessionPage() {
                     <span className="font-mono text-[10px] text-muted-foreground">{t("new.agent")}</span>
                     <div className="grid grid-cols-2 gap-2">
                         {AGENT_OPTIONS.map((a) => (
-                            <button key={a.id} onClick={() => selectAgent(a.id)}
-                                className={`flex items-center gap-2.5 rounded-xl border bg-card p-3 text-left ${agent === a.id ? "border-accent ring-[3px] ring-accent/10" : "border-border"}`}>
+                            <button key={a.id} onClick={() => selectAgent(a.id)} disabled={!a.isAvailable}
+                                aria-pressed={agent === a.id}
+                                aria-describedby={!a.isAvailable ? "deferred-provider-note" : undefined}
+                                data-provider-availability={a.isAvailable ? "available" : "deferred"}
+                                className={`flex items-center gap-2.5 rounded-xl border bg-card p-3 text-left transition-[border-color,box-shadow,opacity,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100 ${agent === a.id ? "border-accent ring-[3px] ring-accent/10" : "border-border"}`}>
                                 <AgentIcon agent={a.id} className="size-[30px] rounded-lg text-[11px]" />
                                 <span className="flex flex-col">
                                     <span className="text-[13px] font-semibold">{a.name}</span>
@@ -1269,6 +1262,9 @@ export function NewSessionPage() {
                             </button>
                         ))}
                     </div>
+                    <p id="deferred-provider-note" className="font-mono text-[10px] leading-snug text-muted-foreground">
+                        {t("new.deferredProviders")}
+                    </p>
                 </section>
 
                 {/* capability controls: model, permissions, reasoning */}

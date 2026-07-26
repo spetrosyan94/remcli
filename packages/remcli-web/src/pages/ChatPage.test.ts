@@ -22,6 +22,8 @@ let getLineageHistoryScopeTransition: typeof import('@/pages/ChatPage').getLinea
 let getLineageHistoryRequestIdentity: typeof import('@/pages/ChatPage').getLineageHistoryRequestIdentity;
 let createChatMessageSender: typeof import('@/pages/ChatPage').createChatMessageSender;
 let LineageHistoryNotice: typeof import('@/pages/ChatPage').LineageHistoryNotice;
+let getChatResumeAction: typeof import('@/pages/ChatPage').getChatResumeAction;
+let EndedSessionResume: typeof import('@/pages/ChatPage').EndedSessionResume;
 
 interface Deferred<T> {
     promise: Promise<T>;
@@ -71,10 +73,50 @@ beforeAll(async () => {
     getLineageHistoryRequestIdentity = pageModule.getLineageHistoryRequestIdentity;
     createChatMessageSender = pageModule.createChatMessageSender;
     LineageHistoryNotice = pageModule.LineageHistoryNotice;
+    getChatResumeAction = pageModule.getChatResumeAction;
+    EndedSessionResume = pageModule.EndedSessionResume;
 });
 
 afterAll(() => {
     vi.unstubAllGlobals();
+});
+
+describe('ChatPage ended-session resume availability', () => {
+    it.each([
+        ['claude', 'deferred'],
+        ['gemini', 'deferred'],
+        ['codex', 'machine-spawn'],
+        ['cursor', 'cursor-navigation'],
+    ] as const)('maps %s to the %s resume action', (agent, expectedAction) => {
+        expect(getChatResumeAction(agent)).toBe(expectedAction);
+    });
+
+    it.each(['claude', 'gemini'] as const)('renders %s Resume as deferred and disabled', (agent) => {
+        const markup = renderToStaticMarkup(React.createElement(EndedSessionResume, {
+            agent,
+            isResuming: false,
+            onResume: () => undefined,
+            onBackToList: () => undefined,
+        }));
+        const resumeButton = markup.match(/<button[^>]*data-resume-availability="deferred"[^>]*>/)?.[0];
+
+        expect(resumeButton).toBeDefined();
+        expect(resumeButton).toContain('disabled=""');
+        expect(resumeButton).toContain('aria-describedby="chat-deferred-resume-note"');
+    });
+
+    it.each(['codex', 'cursor'] as const)('keeps %s Resume available', (agent) => {
+        const markup = renderToStaticMarkup(React.createElement(EndedSessionResume, {
+            agent,
+            isResuming: false,
+            onResume: () => undefined,
+            onBackToList: () => undefined,
+        }));
+        const resumeButton = markup.match(/<button[^>]*data-resume-availability="available"[^>]*>/)?.[0];
+
+        expect(resumeButton).toBeDefined();
+        expect(resumeButton).not.toMatch(/\sdisabled(?:=|\s|>)/);
+    });
 });
 
 describe('ChatPage feed mapping', () => {

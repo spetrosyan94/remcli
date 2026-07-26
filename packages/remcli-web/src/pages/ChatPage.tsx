@@ -2,7 +2,8 @@
 // Данные — @/lib/protocol: история через REST (loadSessionMessages, пагинация offset/limit)
 // + live через socket (store), отправка — sendSessionMessage, permissions —
 // session.agentState.requests + sessionAllow/Deny, TTS/диктовка — хуки @/lib/voice,
-// resume завершённой сессии — machineSpawnNewSession({resumeSessionId}).
+// resume завершённой сессии — provider-specific: Cursor через New Session,
+// доступный provider через machineSpawnNewSession({resumeSessionId}), deferred provider блокируется до RPC.
 import * as React from "react";
 import { ArrowLeft, ChevronDown, Loader2, Mic, MoreHorizontal, Send, Square, Terminal } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
@@ -18,11 +19,13 @@ import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { getAgentPermissionLabel, getAgentPermissionModes, normalizeAgentPermissionMode } from "@/lib/agentPermissions";
 import { copyText } from "@/lib/clipboard";
+import { getDefaultCodexResumeSelection } from "@/lib/codexCapabilities";
+import { isProviderAvailable } from "@/lib/providerAvailability";
 import { canStopSession, type IStopMachineTarget } from "@/lib/sessionCapabilities";
 import { t } from "@/lib/i18n";
 import {
     fetchWhisperStatus, getRestConfig, isClientStarted, loadSessionMessages,
-    machineSpawnNewSession, refreshSessions, restoreProtocolClient, sendSessionMessage,
+    machineGetCodexCapabilities, machineSpawnNewSession, refreshSessions, restoreProtocolClient, sendSessionMessage,
     sessionAllow, sessionDeny, useConnectionStatus, useMachines, useProtocolStore,
     useSession, useSessionMessages, useSessionMessagesLoaded, useSessions,
     type NormalizedMessage, type PermissionMode, type Session,
@@ -417,6 +420,60 @@ export function agentSessionIdOf(session: Session | null, agent: AgentId): strin
     if (agent === "gemini") return meta.geminiSessionId ?? meta.agentSessionId;
     if (agent === "cursor") return meta.cursorSessionId ?? meta.agentSessionId;
     return meta.claudeSessionId ?? meta.agentSessionId;
+}
+
+export type ChatResumeAction = "deferred" | "cursor-navigation" | "machine-spawn";
+
+export function getChatResumeAction(agent: AgentId): ChatResumeAction {
+    if (!isProviderAvailable(agent)) return "deferred";
+    return agent === "cursor" ? "cursor-navigation" : "machine-spawn";
+}
+
+export interface EndedSessionResumeProps {
+    agent: AgentId;
+    isResuming: boolean;
+    onResume: () => void;
+    onBackToList: () => void;
+}
+
+export function EndedSessionResume({
+    agent,
+    isResuming,
+    onResume,
+    onBackToList,
+}: EndedSessionResumeProps) {
+    const isDeferred = !isProviderAvailable(agent);
+
+    return (
+        <div className="flex flex-col items-center gap-2.5 rounded-xl border border-dashed border-border bg-card/50 px-4 py-4">
+            <span className="font-mono text-[11px] text-muted-foreground">{t("chat.ended")}</span>
+            {isDeferred && (
+                <p id="chat-deferred-resume-note" role="status" className="max-w-[32rem] text-center font-mono text-[10px] leading-snug text-muted-foreground">
+                    {t("chat.ended.resumeDeferred")}
+                </p>
+            )}
+            <div className="flex gap-2">
+                <button
+                    type="button"
+                    onClick={onResume}
+                    disabled={isResuming || isDeferred}
+                    aria-describedby={isDeferred ? "chat-deferred-resume-note" : undefined}
+                    data-resume-availability={isDeferred ? "deferred" : "available"}
+                    className="flex h-11 items-center gap-1.5 rounded-[9px] bg-primary px-3.5 text-[13px] font-semibold text-primary-foreground transition-transform active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100 lg:h-9"
+                >
+                    {isResuming && <Loader2 className="size-3.5 animate-spin" />}
+                    {t("chat.ended.resume")}
+                </button>
+                <button
+                    type="button"
+                    onClick={onBackToList}
+                    className="h-11 rounded-[9px] border border-border px-3.5 text-[13px] font-medium text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96] lg:h-9"
+                >
+                    {t("chat.ended.toList")}
+                </button>
+            </div>
+        </div>
+    );
 }
 
 function displayPath(session: Session): string {
@@ -1469,7 +1526,7 @@ export function ChatPage() {
 
     const resumeAgentSessionId = agentSessionIdOf(session, agent);
     const isEnded = session ? session.presence !== "online" : false;
-    const canResume = isEnded && !!resumeAgentSessionId && !!session?.metadata?.path && !!rpcMachineId;
+    const hasResumeTarget = isEnded && !!resumeAgentSessionId && !!session?.metadata?.path && !!rpcMachineId;
     const canStop = canStopSession(session, stopMachine);
 
     const requestStop = () => {
@@ -1478,10 +1535,16 @@ export function ChatPage() {
     };
 
     const resumeSession = async () => {
+        const resumeAction = getChatResumeAction(agent);
+        if (resumeAction === "deferred") {
+            toast.info(t("chat.ended.resumeDeferred"));
+            return;
+        }
+
         const meta = session?.metadata;
         if (!meta?.path || !resumeAgentSessionId || !rpcMachineId || isResuming) return;
 
-        if (agent === "cursor") {
+        if (resumeAction === "cursor-navigation") {
             setIsResuming(true);
             navigate("/new", {
                 state: buildCursorResumeNavigationState({
@@ -1496,12 +1559,28 @@ export function ChatPage() {
 
         setIsResuming(true);
         try {
+            let codexResumeSelection = null;
+            if (agent === "codex") {
+                try {
+                    codexResumeSelection = getDefaultCodexResumeSelection(
+                        await machineGetCodexCapabilities(rpcMachineId, true),
+                    );
+                } catch {
+                    toast.error(t("new.capabilitiesUnavailable"));
+                    return;
+                }
+            }
+            if (agent === "codex" && !codexResumeSelection) {
+                toast.error(t("new.capabilitiesUnavailable"));
+                return;
+            }
             const result = await machineSpawnNewSession({
                 machineId: rpcMachineId,
                 directory: meta.path,
                 agent,
                 resumeSessionId: resumeAgentSessionId,
                 resumeSessionName: meta.name,
+                ...(codexResumeSelection ?? {}),
             });
             if (result.type !== "success") {
                 toast.error(result.type === "error" ? result.errorMessage : t("chat.resumeFailed"));
@@ -1749,21 +1828,13 @@ export function ChatPage() {
                     {session.thinking && <ThinkingRow agent={agent} />}
 
                     {/* сессия завершена + есть агентская сессия в metadata → resume (design/screens/chat.tsx, ended) */}
-                    {canResume && (
-                        <div className="flex flex-col items-center gap-2.5 rounded-xl border border-dashed border-border bg-card/50 px-4 py-4">
-                            <span className="font-mono text-[11px] text-muted-foreground">{t("chat.ended")}</span>
-                            <div className="flex gap-2">
-                                <button onClick={() => void resumeSession()} disabled={isResuming}
-                                    className="flex h-11 items-center gap-1.5 rounded-[9px] bg-primary px-3.5 text-[13px] font-semibold text-primary-foreground transition-transform active:scale-[0.96] disabled:opacity-60 lg:h-9">
-                                    {isResuming && <Loader2 className="size-3.5 animate-spin" />}
-                                    {t("chat.ended.resume")}
-                                </button>
-                                <button onClick={() => navigate("/")}
-                                    className="h-11 rounded-[9px] border border-border px-3.5 text-[13px] font-medium text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96] lg:h-9">
-                                    {t("chat.ended.toList")}
-                                </button>
-                            </div>
-                        </div>
+                    {hasResumeTarget && (
+                        <EndedSessionResume
+                            agent={agent}
+                            isResuming={isResuming}
+                            onResume={() => void resumeSession()}
+                            onBackToList={() => navigate("/")}
+                        />
                     )}
                 </div>
             </main>
