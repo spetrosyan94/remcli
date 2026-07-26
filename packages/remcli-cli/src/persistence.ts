@@ -249,23 +249,113 @@ function migrateSettings(raw: any, fromVersion: number): any {
   return migrated;
 }
 
+export const DAEMON_STATE_SCHEMA_VERSION = 1;
+const MAX_DAEMON_STATE_BYTES = 64 * 1024;
+
+export type DaemonLifecycleState = 'starting' | 'running' | 'stopping' | 'stopped' | 'failed';
+export type DaemonStateReason =
+    | 'startup'
+    | 'ready'
+    | 'remcli-web-request'
+    | 'remcli-cli-request'
+    | 'os-signal'
+    | 'exception'
+    | 'cleanup-retry'
+    | 'cleanup-failed'
+    | 'clean-shutdown'
+    | 'startup-failed'
+    | 'process-not-running';
+
 /**
- * Daemon state persisted locally (different from API DaemonState)
- * This is written to disk by the daemon to track its local process state
+ * Local daemon diagnostics. This is deliberately not an ownership or
+ * authorization record: every PID is informational and must be independently
+ * verified before any destructive action.
  */
 export interface DaemonLocallyPersistedState {
-  pid: number;
-  httpPort: number;
-  startTime: string;
-  startedWithCliVersion: string;
-  lastHeartbeat?: string;
-  daemonLogPath?: string;
-  p2pPort?: number;
-  p2pHost?: string;
-  tunnelUrl?: string;
-  codexAppServerEndpoint?: string;
-  codexAppServerPid?: number;
+    schemaVersion: typeof DAEMON_STATE_SCHEMA_VERSION;
+    instanceId: string;
+    state: DaemonLifecycleState;
+    stateReason: DaemonStateReason;
+    pid: number;
+    httpPort: number;
+    startedAtMs: number;
+    startedWithCliVersion: string;
+    lastHeartbeatAtMs?: number;
+    daemonLogPath?: string;
+    p2pPort?: number;
+    p2pHost?: string;
+    tunnelUrl?: string;
+    codexAppServerEndpoint?: string;
+    codexAppServerPid?: number;
+    ownedChildPids: number[];
 }
+
+/**
+ * Minimal diagnostic shape written by Remcli releases before lifecycle v1.
+ * It must never be used to control or signal a process; it only blocks an
+ * unsafe in-place upgrade while that older daemon may still be alive.
+ */
+export interface LegacyDaemonStateDiagnostic {
+    pid: number;
+    httpPort: number;
+    startedWithCliVersion?: string;
+}
+
+const daemonLifecycleStateSchema = z.enum(['starting', 'running', 'stopping', 'stopped', 'failed']);
+const daemonStateReasonSchema = z.enum([
+    'startup',
+    'ready',
+    'remcli-web-request',
+    'remcli-cli-request',
+    'os-signal',
+    'exception',
+    'cleanup-retry',
+    'cleanup-failed',
+    'clean-shutdown',
+    'startup-failed',
+    'process-not-running',
+]);
+const daemonPortSchema = z.number().int().min(0).max(65_535);
+const daemonPidSchema = z.number().int().positive();
+const daemonStateTimestampSchema = z.number().int().nonnegative();
+const daemonBoundedStringSchema = z.string().min(1).max(4_096);
+function createDaemonCredentialFreeUrlSchema(maxLength: number) {
+  return z.string().url().max(maxLength).refine((value) => {
+    const url = new URL(value);
+    return !url.username && !url.password && !url.search && !url.hash;
+  }, 'Daemon state URL must not contain credentials, query data, or a fragment.');
+}
+const daemonStateSchema: z.ZodType<DaemonLocallyPersistedState> = z.object({
+    schemaVersion: z.literal(DAEMON_STATE_SCHEMA_VERSION),
+    instanceId: z.string().uuid(),
+    state: daemonLifecycleStateSchema,
+    stateReason: daemonStateReasonSchema,
+    pid: daemonPidSchema,
+    httpPort: daemonPortSchema,
+    startedAtMs: daemonStateTimestampSchema,
+    startedWithCliVersion: z.string().min(1).max(128),
+    lastHeartbeatAtMs: daemonStateTimestampSchema.optional(),
+    daemonLogPath: daemonBoundedStringSchema.optional(),
+    p2pPort: daemonPortSchema.optional(),
+    p2pHost: z.string().min(1).max(255).optional(),
+    tunnelUrl: createDaemonCredentialFreeUrlSchema(2_048).optional(),
+    codexAppServerEndpoint: createDaemonCredentialFreeUrlSchema(512).optional(),
+    codexAppServerPid: daemonPidSchema.optional(),
+    ownedChildPids: z.array(daemonPidSchema).max(128),
+}).strict();
+const legacyDaemonStateSchema = z.object({
+    pid: daemonPidSchema,
+    httpPort: daemonPortSchema,
+    startTime: z.string().min(1).max(128),
+    startedWithCliVersion: z.string().min(1).max(128).optional(),
+}).passthrough().refine(
+    (value) => !Object.hasOwn(value, 'schemaVersion'),
+    'Legacy daemon state cannot declare a schema version.',
+).transform((value): LegacyDaemonStateDiagnostic => ({
+    pid: value.pid,
+    httpPort: value.httpPort,
+    ...(value.startedWithCliVersion ? { startedWithCliVersion: value.startedWithCliVersion } : {}),
+}));
 
 export async function readSettings(): Promise<Settings> {
   if (!existsSync(configuration.settingsFile)) {
@@ -489,21 +579,57 @@ export async function clearMachineId(): Promise<void> {
   }));
 }
 
-/**
- * Read daemon state from local file
- */
-export async function readDaemonState(): Promise<DaemonLocallyPersistedState | null> {
+async function readDaemonStatePayload(): Promise<unknown | null> {
   try {
     if (!existsSync(configuration.daemonStateFile)) {
       return null;
     }
+
+    const fileStats = await stat(configuration.daemonStateFile);
+    if (fileStats.size > MAX_DAEMON_STATE_BYTES) {
+      logger.warn('[PERSISTENCE] Daemon state file is larger than the supported diagnostic snapshot. Ignoring it.');
+      return null;
+    }
+
     const content = await readFile(configuration.daemonStateFile, 'utf-8');
-    return JSON.parse(content) as DaemonLocallyPersistedState;
-  } catch (error) {
-    // State corrupted somehow :(
-    console.error(`[PERSISTENCE] Daemon state file corrupted: ${configuration.daemonStateFile}`, error);
+    return JSON.parse(content);
+  } catch {
+    logger.warn('[PERSISTENCE] Daemon state file could not be read. Ignoring it.');
     return null;
   }
+}
+
+/**
+ * Read the current versioned daemon lifecycle snapshot.
+ */
+export async function readDaemonState(): Promise<DaemonLocallyPersistedState | null> {
+  const payload = await readDaemonStatePayload();
+  if (payload === null) {
+    return null;
+  }
+
+  const parsed = daemonStateSchema.safeParse(payload);
+  if (!parsed.success) {
+    logger.warn('[PERSISTENCE] Daemon state file has an unsupported or invalid shape. Ignoring it.');
+    return null;
+  }
+
+  return parsed.data;
+}
+
+/**
+ * Reads only enough legacy metadata to prevent an unsafe upgrade. Callers may
+ * inspect PID liveness for a fail-closed migration message, but never use this
+ * record as process ownership proof.
+ */
+export async function readLegacyDaemonStateDiagnostic(): Promise<LegacyDaemonStateDiagnostic | null> {
+  const payload = await readDaemonStatePayload();
+  if (payload === null) {
+    return null;
+  }
+
+  const parsed = legacyDaemonStateSchema.safeParse(payload);
+  return parsed.success ? parsed.data : null;
 }
 
 /**
@@ -512,27 +638,27 @@ export async function readDaemonState(): Promise<DaemonLocallyPersistedState | n
  * writes can expose a truncated JSON file between open(O_TRUNC) and close.
  */
 export function writeDaemonState(state: DaemonLocallyPersistedState): void {
+  const validatedState = daemonStateSchema.parse(state);
   const stateFile = configuration.daemonStateFile;
   const tempFile = join(dirname(stateFile), `.${basename(stateFile)}.${process.pid}.${randomUUID()}.tmp`);
-  writeFileSync(tempFile, JSON.stringify(state, null, 2), { encoding: 'utf-8', mode: 0o600 });
-  renameSync(tempFile, stateFile);
-  chmodSync(stateFile, 0o600);
+  try {
+    writeFileSync(tempFile, JSON.stringify(validatedState, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    renameSync(tempFile, stateFile);
+    chmodSync(stateFile, 0o600);
+  } finally {
+    if (existsSync(tempFile)) {
+      unlinkSync(tempFile);
+    }
+  }
 }
 
 /**
- * Clean up daemon state file and lock file
+ * Remove only the diagnostic state file. The lock has a distinct owner and is
+ * released through releaseDaemonLock(), never through stale-state cleanup.
  */
 export async function clearDaemonState(): Promise<void> {
   if (existsSync(configuration.daemonStateFile)) {
     await unlink(configuration.daemonStateFile);
-  }
-  // Also clean up lock file if it exists (for stale cleanup)
-  if (existsSync(configuration.daemonLockFile)) {
-    try {
-      await unlink(configuration.daemonLockFile);
-    } catch {
-      // Lock file might be held by running daemon, ignore error
-    }
   }
 }
 

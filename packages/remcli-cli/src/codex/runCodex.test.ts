@@ -6,6 +6,7 @@ import {
     rememberSessionRunnerCredential,
 } from '@/daemon/p2p/p2pRunnerCredentials';
 import { logger } from '@/ui/logger';
+import { readDaemonState } from '@/persistence';
 import { fetchCodexCapabilities, getDefaultCodexExecution } from './codexCapabilities';
 
 const testAppServerErrors = vi.hoisted(() => {
@@ -473,8 +474,17 @@ vi.mock('@/api/api', () => ({
 
 vi.mock('@/persistence', () => ({
     readDaemonState: vi.fn(async () => ({
+        schemaVersion: 1,
+        instanceId: '3d8c88c3-e2e4-4b0c-a4e1-5ff1f4bb2e7c',
+        state: 'running',
+        stateReason: 'ready',
+        pid: process.pid,
+        httpPort: 50123,
+        startedAtMs: 1_783_120_000_000,
+        startedWithCliVersion: '0.0.1',
         codexAppServerEndpoint: 'ws://127.0.0.1:45123',
         codexAppServerPid: process.pid,
+        ownedChildPids: [],
     })),
     readSettings: vi.fn(async () => ({ machineId: 'test-machine' })),
 }));
@@ -1086,6 +1096,32 @@ describe('runCodex app-server integration', () => {
             },
         }));
         expect(JSON.stringify(testState.state.p2pSessionMetadata)).not.toContain('catalogVersion');
+    });
+
+    it('does not attach a shared app-server or remote TUI from a stopping daemon snapshot', async () => {
+        vi.mocked(readDaemonState).mockResolvedValueOnce({
+            schemaVersion: 1,
+            instanceId: '3d8c88c3-e2e4-4b0c-a4e1-5ff1f4bb2e7c',
+            state: 'stopping',
+            stateReason: 'remcli-cli-request',
+            pid: process.pid,
+            httpPort: 50123,
+            startedAtMs: 1_783_120_000_000,
+            startedWithCliVersion: '0.0.1',
+            codexAppServerEndpoint: 'ws://127.0.0.1:45123',
+            codexAppServerPid: process.pid,
+            ownedChildPids: [],
+        });
+        testState.state.incomingMessages = [createIncomingMessage()];
+
+        await runTestCodex({
+            startedBy: 'daemon',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution('xhigh'),
+        });
+
+        expect(testState.state.connectCalls).toBe(1);
+        expect(testState.state.remoteTuiOpenCalls).toEqual([]);
     });
 
     it('forwards one external native user item to the P2P feed without starting another turn', async () => {

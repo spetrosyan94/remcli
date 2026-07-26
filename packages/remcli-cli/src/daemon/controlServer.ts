@@ -4,6 +4,7 @@
  */
 
 import fastify, { FastifyInstance } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import { logger } from '@/ui/logger';
@@ -293,6 +294,7 @@ export function startDaemonControlServer({
   stopSession,
   spawnSession,
   requestShutdown,
+  onExplicitStopRequested = () => undefined,
   onRemcliSessionWebhook,
   issueSessionRunnerCredential,
   verifySessionRunnerCredential,
@@ -306,11 +308,13 @@ export function startDaemonControlServer({
   completeDaemonRunnerStopping,
   openCodexRemoteTui,
   approvePairingRekey,
+  instanceId = randomUUID(),
 }: {
   getChildren: () => TrackedSession[];
   stopSession: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
   spawnSession: (options: SpawnSessionOptions) => Promise<DaemonSpawnSessionResult>;
   requestShutdown: () => void;
+  onExplicitStopRequested?: () => void;
   onRemcliSessionWebhook: (sessionId: string, metadata: Metadata, runnerToken?: string) => DaemonSessionWebhookResult;
   issueSessionRunnerCredential: (sessionId: string, owner: string) => string | undefined;
   verifySessionRunnerCredential: (sessionId: string, credential: string) => boolean;
@@ -330,6 +334,7 @@ export function startDaemonControlServer({
   completeDaemonRunnerStopping: (sessionId: string) => Promise<DaemonRunnerLifecycleResult>;
   openCodexRemoteTui: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
   approvePairingRekey: (requestId: string, approvalCode: string) => Promise<PairingRekeyApprovalResult>;
+  instanceId?: string;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
   return new Promise((resolve) => {
     const app = fastify({
@@ -340,6 +345,14 @@ export function startDaemonControlServer({
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
     const typed = app.withTypeProvider<ZodTypeProvider>();
+
+    typed.get('/identity', {
+      schema: {
+        response: {
+          200: z.object({ instanceId: z.string().uuid() }),
+        },
+      },
+    }, async () => ({ instanceId }));
 
     // Session reports itself after creation
     typed.post('/session-started', {
@@ -698,6 +711,7 @@ export function startDaemonControlServer({
       }
     }, async () => {
       logger.debug('[CONTROL SERVER] Stop daemon request received');
+      onExplicitStopRequested();
 
       // Give time for response to arrive
       setTimeout(() => {

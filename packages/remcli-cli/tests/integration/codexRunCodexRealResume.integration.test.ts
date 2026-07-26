@@ -645,12 +645,17 @@ async function runRunCodexResumeSmoke(
     hasCreatedManagedResource = true;
     const sharedEndpoint = sharedAppServerHost.endpoint;
     fakeDaemonState.state = {
+        schemaVersion: 1,
+        instanceId: '3d8c88c3-e2e4-4b0c-a4e1-5ff1f4bb2e7c',
+        state: 'running',
+        stateReason: 'ready',
         pid: process.pid,
         httpPort: 1,
-        startTime: new Date().toISOString(),
+        startedAtMs: Date.now(),
         startedWithCliVersion: '0.0.0-test',
         codexAppServerEndpoint: sharedEndpoint,
         codexAppServerPid: sharedAppServerHost.processId,
+        ownedChildPids: [sharedAppServerHost.processId],
     };
     const seedClient = new CodexAppServerClient({ endpoint: sharedEndpoint });
     const beginTurnSpy = vi.spyOn(CodexAppServerClient.prototype, 'beginTurn');

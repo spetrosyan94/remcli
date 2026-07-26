@@ -120,7 +120,7 @@ npm run start:tunnel
 
 - Завершить полный пользовательский сценарий Claude Code и Gemini CLI.
 - Довести Cursor capabilities, названия и сортировку resume-истории.
-- Добавить lifecycle persistence daemon и безопасный cleanup процессов.
+- Усилить P2P threat model и platform-specific process/lock hardening.
 - Развить Zen: удаление задач; отдельно спроектировать live web terminal.
 
 ## Документация

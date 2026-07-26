@@ -185,7 +185,9 @@ interface CodexAppServerClientSelection {
 
 async function createCodexAppServerClient(): Promise<CodexAppServerClientSelection> {
     const daemonState = await readDaemonState();
-    const sharedEndpoint = daemonState?.codexAppServerEndpoint;
+    const sharedEndpoint = daemonState?.state === 'running'
+        ? daemonState.codexAppServerEndpoint
+        : undefined;
     if (sharedEndpoint && await isCodexAppServerStateUsable(daemonState)) {
         logger.debug(`[Codex] Using shared daemon Codex app-server ${sharedEndpoint}`);
         return {

@@ -102,7 +102,7 @@ graph LR
 Локальное состояние хранится в `~/.remcli` (или `REMCLI_HOME_DIR`):
 - `settings.json`: настройки онбординга и профиля (валидируются/мигрируются).
 - `access.key`: локальный ключевой материал для шифрования/аутентификации.
-- `daemon.state.json`: PID демона + контрольный порт + версия.
+- `daemon.state.json`: строгий локальный lifecycle-снимок daemon (`instanceId`, state/reason, PID, порты, версия и диагностические child PID), без ключей pairing или runner credentials. Unversioned state старого релиза служит только migration-диагностикой: handoff блокируется лишь для наблюдаемого Remcli `daemon start-sync`, а wrapper/reused/unrelated PID игнорируется. Подтверждённый legacy daemon требует явной остановки прежним CLI/Terminal и никогда не завершается по PID из файла.
 - `logs/`: логи CLI/демона.
 
 Конфигурация находится в `src/configuration.ts`:
@@ -233,7 +233,7 @@ graph TB
 | `providerSpawnRequest.ts` | Строгая provider-discriminated граница encrypted machine-RPC перед capability validation и process spawn |
 | `src/daemon/sessions/listAgentSessions.ts` | Сканирует on-disk хранилища сессий агентов (Claude/Codex/Cursor/Gemini) для пикера resume (RPC `list-agent-sessions`) |
 | `machineSocket.ts` | Machine-scoped Socket.IO-клиент, подключающийся к собственному P2P-серверу демона; регистрирует RPC-обработчики (`spawn-session` и др.) |
-| `heartbeat.ts` | Интервальный цикл: удаляет мёртвые сессии, автообновляется при смене версии CLI (запускает свежий демон, завершает себя), обнаруживает чужие демоны, пишет heartbeat в файл состояния |
+| `heartbeat.ts` | Интервальный цикл: удаляет мёртвые сессии, при смене версии запрашивает свой graceful shutdown и передаёт replacement только после release lock, обнаруживает чужие демоны, пишет heartbeat в файл состояния |
 | `controlServer.ts` | Локальный HTTP IPC только на `127.0.0.1` |
 
 ### Жизненный цикл
@@ -300,7 +300,7 @@ sequenceDiagram
 - `/session-started` (самоотчёт сессии)
 - `/pairing-rekey/approve` (только локальное подтверждение pending pairing rekey)
 
-CLI общается с этим сервером через `controlClient.ts`, используя порт из `daemon.state.json`.
+CLI общается с этим сервером через `controlClient.ts`, используя порт и `instanceId` из `daemon.state.json`: сначала проверяется `GET /identity`, затем выполняется управляющий запрос. `stopped`/`failed` snapshot не является разрешением на HTTP-команду или PID-only kill.
 
 ### Pairing QR и rekey
 

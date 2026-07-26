@@ -146,16 +146,18 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
         const isRunning = await checkIfDaemonRunningAndCleanupStaleState();
         const state = await readDaemonState();
 
-        if (isRunning && state) {
+        if (isRunning && state?.state === 'running') {
             console.log(chalk.green('✓ Daemon is running'));
             console.log(`  PID: ${state.pid}`);
-            console.log(`  Started: ${new Date(state.startTime).toLocaleString()}`);
+            console.log(`  Started: ${new Date(state.startedAtMs).toLocaleString()}`);
             console.log(`  CLI Version: ${state.startedWithCliVersion}`);
             if (state.httpPort) {
                 console.log(`  HTTP Port: ${state.httpPort}`);
             }
-        } else if (state && !isRunning) {
-            console.log(chalk.yellow('⚠️  Daemon state exists but process not running (stale)'));
+        } else if (isRunning && state?.state === 'stopping') {
+            console.log(chalk.yellow('⚠️  Daemon is finishing a shutdown'));
+        } else if (state) {
+            console.log(chalk.yellow(`⚠️  Daemon is not running (last state: ${state.state}/${state.stateReason})`));
         } else {
             console.log(chalk.red('❌ Daemon is not running'));
         }

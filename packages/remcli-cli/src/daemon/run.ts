@@ -6,10 +6,26 @@ import { configuration } from '@/configuration';
 import { startCaffeinate, stopCaffeinate } from '@/utils/caffeinate';
 import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
-import { writeDaemonState, DaemonLocallyPersistedState, acquireDaemonLock, releaseDaemonLock, updateSettings } from '@/persistence';
+import {
+  DAEMON_STATE_SCHEMA_VERSION,
+  writeDaemonState,
+  readDaemonState,
+  type DaemonLocallyPersistedState,
+  type DaemonStateReason,
+  acquireDaemonLock,
+  releaseDaemonLock,
+  updateSettings,
+} from '@/persistence';
 import { randomUUID } from 'node:crypto';
 
-import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledRemcliVersion, stopDaemon } from './controlClient';
+import {
+  getLiveLegacyDaemonMigrationBlocker,
+  isDaemonRunningCurrentlyInstalledRemcliVersion,
+  isVerifiedDaemonLive,
+  LEGACY_DAEMON_MIGRATION_MESSAGE,
+  stopDaemon,
+  waitForVerifiedDaemonToStop,
+} from './controlClient';
 import { findAllRemcliProcesses } from './doctor';
 import { startDaemonControlServer } from './controlServer';
 import { existsSync } from 'fs';
@@ -37,6 +53,7 @@ import { CodexCapabilitiesService } from '@/codex/codexCapabilities';
 import { CursorCapabilitiesService } from '@/cursor/cursorCapabilities';
 import { PairingRekeyCoordinator } from './p2p/pairingRekey';
 import { redactDiagnosticData } from '@/utils/redaction';
+import { spawnRemcliCLI } from '@/utils/spawnRemcliCLI';
 import QRCode from 'qrcode';
 
 // Prepare initial metadata
@@ -87,17 +104,34 @@ export interface DaemonShutdownDependencies {
     flushP2PStore: () => void;
     stopP2PServer: () => Promise<void>;
     stopControlServer: () => Promise<void>;
-    cleanupDaemonState: () => Promise<void>;
+    persistStoppedState: () => Promise<void>;
     stopCaffeinate: () => Promise<void>;
     releaseDaemonLock: () => Promise<void>;
+    restartAfterRelease?: () => boolean | void;
 }
 
 type ExitProcess = (code: number) => void;
 type ShutdownSource = 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception';
 
+function shutdownSourceToStateReason(source: ShutdownSource): DaemonStateReason {
+    switch (source) {
+        case 'remcli-web':
+            return 'remcli-web-request';
+        case 'remcli-cli':
+            return 'remcli-cli-request';
+        case 'os-signal':
+            return 'os-signal';
+        case 'exception':
+            return 'exception';
+    }
+
+    return 'exception';
+}
+
 export interface DaemonShutdownRequest {
     source: ShutdownSource;
     errorMessage?: string;
+    restartAfterShutdown?: boolean;
 }
 
 export type DaemonShutdownResult = 'completed' | 'retry';
@@ -110,6 +144,59 @@ export interface DaemonShutdownLifecycleDependencies {
 export interface DaemonShutdownRequestChannel {
     enqueueShutdownRequest: (request: DaemonShutdownRequest) => void;
     waitForShutdownRequest: () => Promise<DaemonShutdownRequest>;
+}
+
+export interface DaemonRestartIntent {
+    recordShutdownRequest: (restartAfterShutdown: boolean) => void;
+    shouldRestart: () => boolean;
+}
+
+/**
+ * An explicit stop must win over a pending auto-update, even if it reaches the
+ * daemon while cleanup is already draining resources for that update.
+ */
+export function createDaemonRestartIntent(): DaemonRestartIntent {
+    let isRestartRequested = false;
+    let isRestartCancelled = false;
+
+    return {
+        recordShutdownRequest: (restartAfterShutdown) => {
+            if (restartAfterShutdown) {
+                if (!isRestartCancelled) {
+                    isRestartRequested = true;
+                }
+                return;
+            }
+
+            isRestartRequested = false;
+            isRestartCancelled = true;
+        },
+        shouldRestart: () => isRestartRequested && !isRestartCancelled,
+    };
+}
+
+export function createDaemonReplacementArgs(useTunnel: boolean): string[] {
+    return useTunnel ? ['daemon', 'start', '--tunnel'] : ['daemon', 'start'];
+}
+
+export function createDaemonReplacementStarter(
+    restartIntent: DaemonRestartIntent,
+    useTunnel: boolean,
+    spawnReplacement: typeof spawnRemcliCLI = spawnRemcliCLI,
+): () => boolean {
+    return () => {
+        if (!restartIntent.shouldRestart()) {
+            return false;
+        }
+
+        const replacement = spawnReplacement(createDaemonReplacementArgs(useTunnel), {
+            detached: true,
+            stdio: 'ignore',
+            env: process.env,
+        });
+        replacement.unref();
+        return true;
+    };
 }
 
 export function createDaemonShutdownRequestChannel(): DaemonShutdownRequestChannel {
@@ -211,9 +298,19 @@ export async function performDaemonShutdown(
     }
 
     await dependencies.stopControlServer();
-    await dependencies.cleanupDaemonState();
+    await dependencies.persistStoppedState();
     await dependencies.stopCaffeinate();
     await dependencies.releaseDaemonLock();
+    if (dependencies.restartAfterRelease) {
+        try {
+            const replacementStarted = dependencies.restartAfterRelease();
+            if (replacementStarted !== false) {
+                logger.debug('[DAEMON RUN] Started daemon replacement after releasing the old lock');
+            }
+        } catch (error) {
+            logger.warn('[DAEMON RUN] Failed to start daemon replacement after shutdown:', error);
+        }
+    }
 
     logger.debug('[DAEMON RUN] Cleanup completed, exiting process');
     exitProcess(0);
@@ -233,6 +330,12 @@ export async function runDaemonShutdownLifecycle(
 }
 
 export async function startDaemon(): Promise<void> {
+  const daemonInstanceId = randomUUID();
+  let fileState: DaemonLocallyPersistedState | null = null;
+  let runtimeStateWritesAllowed = false;
+  let daemonStateWriteQueue = Promise.resolve();
+  let persistDaemonState: (() => Promise<void>) | null = null;
+
   // We don't have cleanup function at the time of server construction
   // Control flow is:
   // 1. Create promise that will resolve when shutdown is requested
@@ -245,9 +348,16 @@ export async function startDaemon(): Promise<void> {
   let startupFailureExitTimer: NodeJS.Timeout | null = null;
   let isCleanupInProgress = false;
   let isShutdownRetryPending = false;
+  const restartIntent = createDaemonRestartIntent();
   const shutdownRequestChannel = createDaemonShutdownRequestChannel();
-  const requestShutdown = (source: ShutdownSource, errorMessage?: string): void => {
-    logger.debug(`[DAEMON RUN] Requesting shutdown (source: ${source}, errorMessage: ${errorMessage})`);
+  const requestShutdown = (
+    source: ShutdownSource,
+    errorMessage?: string,
+    restartAfterShutdown = false,
+  ): void => {
+    logger.debug(`[DAEMON RUN] Requesting shutdown (source: ${source}, errorMessage: ${errorMessage}, restartAfterShutdown: ${restartAfterShutdown})`);
+
+    restartIntent.recordShutdownRequest(restartAfterShutdown);
 
     // A failed shared app-server stop keeps the daemon alive for an explicit retry.
     if (!isCleanupInProgress && !isShutdownRetryPending && !startupFailureExitTimer) {
@@ -261,7 +371,7 @@ export async function startDaemon(): Promise<void> {
       }, 1_000);
     }
 
-    shutdownRequestChannel.enqueueShutdownRequest({ source, errorMessage });
+    shutdownRequestChannel.enqueueShutdownRequest({ source, errorMessage, restartAfterShutdown });
   };
 
   // Setup signal handlers
@@ -300,12 +410,24 @@ export async function startDaemon(): Promise<void> {
   logger.debug('[DAEMON RUN] Starting daemon process...');
   logger.debugLargeJson('[DAEMON RUN] Environment', getEnvironmentInfo());
 
+  if (await getLiveLegacyDaemonMigrationBlocker()) {
+    logger.warn('[DAEMON RUN] Refusing to replace a live legacy daemon without instance identity.');
+    console.error(LEGACY_DAEMON_MIGRATION_MESSAGE);
+    process.exit(1);
+  }
+
   // Check if already running
   // Check if running daemon version matches current CLI version
   const runningDaemonVersionMatches = await isDaemonRunningCurrentlyInstalledRemcliVersion();
   if (!runningDaemonVersionMatches) {
     logger.debug('[DAEMON RUN] Daemon version mismatch detected, restarting daemon with current CLI version');
-    await stopDaemon();
+    if (await isVerifiedDaemonLive()) {
+      await stopDaemon();
+      if (!await waitForVerifiedDaemonToStop()) {
+        console.error('Daemon did not stop in time; refusing to acquire its lock.');
+        process.exit(1);
+      }
+    }
   } else {
     logger.debug('[DAEMON RUN] Daemon version matches, keeping existing daemon');
     console.log('Daemon already running with matching version');
@@ -383,7 +505,48 @@ export async function startDaemon(): Promise<void> {
     // Session manager owns tracked child sessions and emits every confirmed stop path.
     const sessionManager = createSessionManager({
         onSessionStopped: handleSessionStopped,
+        onOwnedChildrenChanged: () => {
+            const persist = persistDaemonState;
+            if (persist) {
+                void persist().catch((error) => {
+                    logger.warn('[DAEMON RUN] Failed to queue daemon-owned child diagnostics:', error);
+                });
+            }
+        },
     });
+
+    const persistCurrentDaemonState = async (): Promise<void> => {
+      if (!fileState) {
+        return;
+      }
+
+      const stateOnDisk = await readDaemonState();
+      if (!stateOnDisk || stateOnDisk.instanceId !== daemonInstanceId) {
+        logger.warn('[DAEMON RUN] Refusing to overwrite a daemon state snapshot owned by another instance.');
+        if (runtimeStateWritesAllowed) {
+          runtimeStateWritesAllowed = false;
+          requestShutdown('exception', 'Daemon state ownership changed.');
+        }
+        return;
+      }
+
+      fileState = {
+        ...fileState,
+        ownedChildPids: Array.from(new Set([
+          ...sessionManager.getConfirmedOwnedChildPids(),
+          ...(fileState.codexAppServerPid ? [fileState.codexAppServerPid] : []),
+        ])).sort((left, right) => left - right),
+      };
+      writeDaemonState(fileState);
+    };
+
+    persistDaemonState = (): Promise<void> => {
+      const write = daemonStateWriteQueue.then(persistCurrentDaemonState);
+      daemonStateWriteQueue = write.catch((error) => {
+        logger.warn('[DAEMON RUN] Failed to persist daemon lifecycle state:', error);
+      });
+      return write;
+    };
 
     let p2pServer: P2PServer | null = null;
     let machineSocketHandle: ReturnType<typeof bootstrapMachineSocket> | null = null;
@@ -449,10 +612,12 @@ export async function startDaemon(): Promise<void> {
 
     // Start control server
     const { port: controlPort, stop: stopControlServer } = await startDaemonControlServer({
+      instanceId: daemonInstanceId,
       getChildren: sessionManager.getChildren,
       stopSession: sessionManager.stopSession,
       spawnSession: sessionManager.spawnSession,
       requestShutdown: () => requestShutdown('remcli-cli'),
+      onExplicitStopRequested: () => restartIntent.recordShutdownRequest(false),
       onRemcliSessionWebhook: sessionManager.onRemcliSessionWebhook,
       issueSessionRunnerCredential: (sessionId, owner) => runnerCredentialStore.issue(sessionId, owner),
       verifySessionRunnerCredential: (sessionId, credential) => runnerCredentialStore.verify(sessionId, credential),
@@ -468,22 +633,28 @@ export async function startDaemon(): Promise<void> {
       approvePairingRekey: (requestId, approvalCode) => pairingRekeyCoordinator.approve(requestId, approvalCode),
     });
 
-    // Write initial daemon state (no lock needed for state file)
-    const fileState: DaemonLocallyPersistedState = {
+    // Write the first owner-bound lifecycle snapshot after the control server is ready.
+    fileState = {
+      schemaVersion: DAEMON_STATE_SCHEMA_VERSION,
+      instanceId: daemonInstanceId,
+      state: 'starting',
+      stateReason: 'startup',
       pid: process.pid,
       httpPort: controlPort,
-      startTime: new Date().toLocaleString(),
+      startedAtMs: Date.now(),
       startedWithCliVersion: packageJson.version,
-      daemonLogPath: logger.logFilePath
+      daemonLogPath: logger.logFilePath,
+      ownedChildPids: [],
     };
     codexCapabilities = new CodexCapabilitiesService({
       getAppServerState: () => ({
-        codexAppServerEndpoint: fileState.codexAppServerEndpoint,
-        codexAppServerPid: fileState.codexAppServerPid,
+        codexAppServerEndpoint: fileState?.codexAppServerEndpoint,
+        codexAppServerPid: fileState?.codexAppServerPid,
       }),
     });
     cursorCapabilities = new CursorCapabilitiesService();
     writeDaemonState(fileState);
+    runtimeStateWritesAllowed = true;
     logger.debug('[DAEMON RUN] Daemon state written');
 
     let codexAppServerHost: CodexAppServerHostHandle | null = null;
@@ -491,7 +662,7 @@ export async function startDaemon(): Promise<void> {
         codexAppServerHost = await startCodexAppServerHost();
         fileState.codexAppServerEndpoint = codexAppServerHost.endpoint;
         fileState.codexAppServerPid = codexAppServerHost.processId;
-        writeDaemonState(fileState);
+        await persistDaemonState();
         logger.debug(`[DAEMON RUN] Shared Codex app-server ready at ${codexAppServerHost.endpoint}`);
     } catch (error) {
         logger.debug('[DAEMON RUN] Shared Codex app-server unavailable; Codex sessions will report a transport error if used:', error);
@@ -536,8 +707,8 @@ export async function startDaemon(): Promise<void> {
         getDaemonStatus: () => ({
             version: packageJson.version,
             uptimeSec: Math.floor((Date.now() - daemonStartMs) / 1000),
-            port: fileState.p2pPort ?? 0,
-            tunnelUrl: fileState.tunnelUrl ?? null,
+            port: fileState?.p2pPort ?? 0,
+            tunnelUrl: fileState?.tunnelUrl ?? null,
         }),
     };
 
@@ -601,7 +772,7 @@ export async function startDaemon(): Promise<void> {
     // Update daemon state with P2P info
     fileState.p2pPort = p2pServer.port;
     fileState.p2pHost = lanIP;
-    writeDaemonState(fileState);
+    await persistDaemonState();
     logger.debug('[DAEMON RUN] Daemon state updated with P2P info');
 
     // Register machine in P2P store
@@ -653,7 +824,7 @@ export async function startDaemon(): Promise<void> {
             tunnelUrl = tunnel.url;
             tunnelStop = tunnel.stop;
             fileState.tunnelUrl = tunnelUrl;
-            writeDaemonState(fileState);
+            await persistDaemonState();
             logger.debug(`[DAEMON RUN] Tunnel started: ${tunnelUrl}`);
 
             // Show QR with tunnel URL (accessible from anywhere)
@@ -684,33 +855,66 @@ export async function startDaemon(): Promise<void> {
         }
     }
 
-    // Heartbeat loop: prunes stale sessions, self-updates on version change, writes heartbeat
-    const restartOnStaleVersionAndHeartbeat = startHeartbeatLoop({
-        controlPort,
-        p2pPort: p2pServer.port,
-        lanIP,
-        startTime: fileState.startTime,
-        daemonLogPath: fileState.daemonLogPath,
-        tunnelUrl,
+    fileState.state = 'running';
+    fileState.stateReason = 'ready';
+    await persistDaemonState();
+
+    // Heartbeat loop: prunes stale sessions and asks this owner to persist only
+    // after it has confirmed the same instance still owns the state snapshot.
+    const heartbeat = startHeartbeatLoop({
+        instanceId: daemonInstanceId,
         pruneDeadSessions: sessionManager.pruneDeadSessions,
-        requestShutdown: (source, errorMessage) => requestShutdown(source, errorMessage)
+        requestShutdown: (source, errorMessage, restartAfterShutdown) => requestShutdown(
+          source,
+          errorMessage,
+          restartAfterShutdown,
+        ),
+        isStateWriterActive: () => runtimeStateWritesAllowed && fileState?.state === 'running',
+        persistHeartbeat: async (state, heartbeatAtMs, codexAppServerIsUsable) => {
+          if (
+            !fileState
+            || fileState.instanceId !== state.instanceId
+            || fileState.state !== 'running'
+          ) {
+            return;
+          }
+
+          fileState.lastHeartbeatAtMs = heartbeatAtMs;
+          if (!codexAppServerIsUsable) {
+            fileState.codexAppServerEndpoint = undefined;
+            fileState.codexAppServerPid = undefined;
+          }
+          const persist = persistDaemonState;
+          if (persist) {
+            await persist();
+          }
+        },
     });
 
     // Setup signal handlers
-    const cleanupAndShutdown = async (source: ShutdownSource, errorMessage?: string): Promise<DaemonShutdownResult> => {
+    const cleanupAndShutdown = async (
+      source: ShutdownSource,
+      errorMessage?: string,
+      restartAfterShutdown = false,
+    ): Promise<DaemonShutdownResult> => {
       logger.debug(`[DAEMON RUN] Starting proper cleanup (source: ${source}, errorMessage: ${errorMessage})...`);
       isCleanupInProgress = true;
       isShutdownRetryPending = false;
-
       if (startupFailureExitTimer) {
         clearTimeout(startupFailureExitTimer);
         startupFailureExitTimer = null;
       }
 
-      // Clear health check interval
-      if (restartOnStaleVersionAndHeartbeat) {
-        clearInterval(restartOnStaleVersionAndHeartbeat);
-        logger.debug('[DAEMON RUN] Health check interval cleared');
+      runtimeStateWritesAllowed = false;
+      heartbeat.stop();
+      await heartbeat.waitForIdle();
+      if (fileState) {
+        fileState.state = 'stopping';
+        fileState.stateReason = shutdownSourceToStateReason(source);
+        const persist = persistDaemonState;
+        if (persist) {
+          await persist();
+        }
       }
 
       const shutdownResult = await performDaemonShutdown({
@@ -723,12 +927,36 @@ export async function startDaemon(): Promise<void> {
         flushP2PStore: () => p2pStore.flushKvToDisk(),
         stopP2PServer: () => p2pServer.stop(),
         stopControlServer,
-        cleanupDaemonState,
+        persistStoppedState: async () => {
+          if (!fileState) {
+            return;
+          }
+          fileState.state = 'stopped';
+          fileState.stateReason = 'clean-shutdown';
+          fileState.codexAppServerEndpoint = undefined;
+          fileState.codexAppServerPid = undefined;
+          fileState.ownedChildPids = [];
+          const persist = persistDaemonState;
+          if (persist) {
+            await persist();
+          }
+        },
         stopCaffeinate,
         releaseDaemonLock: () => releaseDaemonLock(daemonLockHandle),
+        ...(restartIntent.shouldRestart() ? {
+          restartAfterRelease: createDaemonReplacementStarter(restartIntent, useTunnel),
+        } : {}),
       });
 
       if (shutdownResult === 'retry') {
+        if (fileState) {
+          fileState.state = 'stopping';
+          fileState.stateReason = 'cleanup-retry';
+          const persist = persistDaemonState;
+          if (persist) {
+            await persist();
+          }
+        }
         isCleanupInProgress = false;
         isShutdownRetryPending = true;
         logger.warn('[DAEMON RUN] Daemon shutdown is pending shared Codex app-server retry; control endpoint, state, and lock remain active');
@@ -746,9 +974,20 @@ export async function startDaemon(): Promise<void> {
       cleanupAndShutdown: (shutdownRequest) => cleanupAndShutdown(
         shutdownRequest.source,
         shutdownRequest.errorMessage,
+        shutdownRequest.restartAfterShutdown,
       ),
     });
   } catch (error) {
+    if (fileState && persistDaemonState) {
+      runtimeStateWritesAllowed = false;
+      fileState.state = 'failed';
+      fileState.stateReason = isCleanupInProgress ? 'cleanup-failed' : 'startup-failed';
+      try {
+        await persistDaemonState();
+      } catch (persistError) {
+        logger.warn('[DAEMON RUN] Failed to persist terminal daemon lifecycle state:', persistError);
+      }
+    }
     logger.debug('[DAEMON RUN][FATAL] Failed somewhere unexpectedly - exiting with code 1:', redactDiagnosticData(error));
     process.exit(1);
   }

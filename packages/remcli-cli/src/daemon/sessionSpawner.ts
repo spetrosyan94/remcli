@@ -56,6 +56,7 @@ import { isCursorRunnerIdentity } from '@/cursor/cursorCapabilities';
 import { buildCursorInteractiveTuiCommand } from '@/cursor/cursorCli';
 import { isCursorLaunchControls } from '@/cursor/cursorLaunchControls';
 import type { CodexSandbox } from '@/codex/types';
+import { collectConfirmedOwnedChildPids } from './ownedChildren';
 
 const DAEMON_SHUTDOWN_CANCELLATION_MESSAGE = 'Daemon shut down before session process registration.';
 const CODEX_RESUME_SHUTDOWN_CANCELLATION_MESSAGE = 'Daemon shut down before Codex resume process registration.';
@@ -278,6 +279,8 @@ function createDaemonRunnerStoppingFence(): DaemonRunnerStoppingFence {
 export interface SessionManager {
     /** Snapshot of currently tracked sessions. */
     getChildren: () => TrackedSession[];
+    /** Diagnostic-only PIDs for current daemon-owned tmux runners. */
+    getConfirmedOwnedChildPids: () => number[];
     /** Bind a native Codex thread to its already-created Remcli wrapper session. */
     bindNativeCodexThread: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
     /** Bind a native Cursor session to its already-created Remcli wrapper session. */
@@ -326,6 +329,8 @@ export interface SessionManager {
 
 export interface SessionManagerOptions {
     onSessionStopped?: (sessionId: string) => void;
+    /** Called after the set of daemon-owned child PIDs changes. */
+    onOwnedChildrenChanged?: (childPids: number[]) => void;
     /**
      * Isolated compiled CLI entrypoint for subprocess integration tests. Normal
      * daemon sessions always use this package's current `dist/index.mjs`.
@@ -493,6 +498,16 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     ];
 
     const getChildren = () => getTrackedSessionEntries().map(([, session]) => session);
+    const getConfirmedOwnedChildPids = () => collectConfirmedOwnedChildPids(
+        Array.from(pidToTrackedSession.values()),
+    );
+    const notifyOwnedChildrenChanged = (): void => {
+        try {
+            options.onOwnedChildrenChanged?.(getConfirmedOwnedChildPids());
+        } catch (error) {
+            logger.warn('[DAEMON RUN] Failed to persist daemon-owned child diagnostics:', error);
+        }
+    };
 
     const retireDaemonTmuxRunner = (session: TrackedSession): void => {
         const ownership = session.tmuxRunner;
@@ -702,6 +717,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         }
 
         pidToTrackedSession.set(pid, session);
+        notifyOwnedChildrenChanged();
 
         if (replacedSession && replacedSession !== session) {
             scheduleDisplacedTrackedSessionCleanup(pid, replacedSession);
@@ -998,6 +1014,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         daemonRunnerStoppingFences.delete(expectedSession);
 
         retireDaemonTmuxRunner(expectedSession);
+        notifyOwnedChildrenChanged();
 
         if (shouldPublishStopped) {
             publishSessionStopped(expectedSession);
@@ -3369,6 +3386,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
     return {
         getChildren,
+        getConfirmedOwnedChildPids,
         bindNativeCodexThread,
         bindNativeCursorSession,
         acquireCursorHeadlessWriterLease,

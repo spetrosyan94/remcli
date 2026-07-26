@@ -27,7 +27,7 @@ export async function setupP2PForSession(): Promise<{
 
     // Read daemon state to get P2P info
     const daemonState = await readDaemonState();
-    if (!daemonState) {
+    if (!daemonState || daemonState.state !== 'running') {
         throw new Error(
             'Daemon is not running. Start the daemon first with: remcli daemon start'
         );

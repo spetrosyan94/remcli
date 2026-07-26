@@ -1,141 +1,129 @@
 /**
  * Daemon heartbeat loop.
  *
- * Runs on an interval and:
- * 1. Prunes stale (dead) sessions
- * 2. Checks whether the daemon is running an outdated CLI version and, if so,
- *    spawns a fresh daemon and self-terminates (auto-update)
- * 3. Detects a foreign daemon that took over the state file and self-terminates
- * 4. Writes a heartbeat to the daemon state file
+ * The daemon coordinator owns persistence. Heartbeat only validates that its
+ * instance still owns the state snapshot, then asks the coordinator to commit
+ * a current snapshot. This prevents an already-stopping daemon from writing
+ * over a successor's lifecycle state.
  */
 
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { logger } from '@/ui/logger';
 import { configuration } from '@/configuration';
 import { projectPath } from '@/projectPath';
-import { spawnRemcliCLI } from '@/utils/spawnRemcliCLI';
-import { writeDaemonState, readDaemonState, DaemonLocallyPersistedState } from '@/persistence';
+import { readDaemonState, type DaemonLocallyPersistedState } from '@/persistence';
 import { isCodexAppServerStateUsable } from '@/codex/codexAppServerHost';
-import packageJson from '../../package.json';
 
 type ShutdownRequester = (
     source: 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception',
-    errorMessage?: string
+    errorMessage?: string,
+    restartAfterShutdown?: boolean,
 ) => void;
 
 export interface HeartbeatDeps {
-    controlPort: number;
-    p2pPort: number;
-    lanIP: string;
-    startTime: string;
-    daemonLogPath: string | undefined;
-    tunnelUrl: string | undefined;
+    instanceId: string;
     pruneDeadSessions: () => void;
     requestShutdown: ShutdownRequester;
+    isStateWriterActive: () => boolean;
+    persistHeartbeat: (
+        state: DaemonLocallyPersistedState,
+        heartbeatAtMs: number,
+        codexAppServerIsUsable: boolean,
+    ) => Promise<void> | void;
+    getDaemonState?: () => Promise<DaemonLocallyPersistedState | null>;
+    getProjectVersion?: () => string;
+    getNow?: () => number;
+    onVersionMismatch?: () => void;
+    isCodexAppServerStateUsable?: (state: DaemonLocallyPersistedState) => Promise<boolean>;
+}
+
+export interface DaemonHeartbeatHandle {
+    stop: () => void;
+    waitForIdle: () => Promise<void>;
+}
+
+function readCurrentProjectVersion(): string {
+    return JSON.parse(readFileSync(join(projectPath(), 'package.json'), 'utf-8')).version;
+}
+
+function defaultVersionMismatchHandler(requestShutdown: ShutdownRequester): void {
+    logger.debug('[DAEMON RUN] Daemon version changed; replacement will start after graceful shutdown releases its lock.');
+    requestShutdown('exception', 'Daemon CLI version changed.', true);
+}
+
+export async function runDaemonHeartbeat(deps: HeartbeatDeps): Promise<void> {
+    if (!deps.isStateWriterActive()) {
+        return;
+    }
+
+    deps.pruneDeadSessions();
+
+    const projectVersion = (deps.getProjectVersion ?? readCurrentProjectVersion)();
+    if (projectVersion !== configuration.currentCliVersion) {
+        (deps.onVersionMismatch ?? (() => defaultVersionMismatchHandler(deps.requestShutdown)))();
+        return;
+    }
+
+    const daemonState = await (deps.getDaemonState ?? readDaemonState)();
+    if (
+        !daemonState
+        || daemonState.instanceId !== deps.instanceId
+        || daemonState.state !== 'running'
+    ) {
+        logger.debug('[DAEMON RUN] Daemon state ownership changed or is no longer running; requesting shutdown.');
+        deps.requestShutdown('exception', 'Daemon state ownership changed.');
+        return;
+    }
+
+    const codexAppServerIsUsable = await (
+        deps.isCodexAppServerStateUsable ?? isCodexAppServerStateUsable
+    )(daemonState);
+    if (daemonState.codexAppServerEndpoint && !codexAppServerIsUsable) {
+        logger.debug('[DAEMON RUN] Shared Codex app-server endpoint is stale; removing it from daemon state.');
+    }
+
+    if (!deps.isStateWriterActive()) {
+        return;
+    }
+
+    await deps.persistHeartbeat(
+        daemonState,
+        (deps.getNow ?? Date.now)(),
+        codexAppServerIsUsable,
+    );
 }
 
 /**
- * Start the heartbeat loop. Returns the interval handle so the caller can
- * clear it during shutdown.
+ * Start the heartbeat loop. stop() prevents future ticks; waitForIdle() lets
+ * shutdown wait for an already-running asynchronous tick before releasing the
+ * daemon lock.
  */
-export function startHeartbeatLoop(deps: HeartbeatDeps): NodeJS.Timeout {
-    const {
-        controlPort,
-        p2pPort,
-        lanIP,
-        startTime,
-        daemonLogPath,
-        tunnelUrl,
-        pruneDeadSessions,
-        requestShutdown
-    } = deps;
-
+export function startHeartbeatLoop(deps: HeartbeatDeps): DaemonHeartbeatHandle {
     const heartbeatIntervalMs = parseInt(process.env.REMCLI_DAEMON_HEARTBEAT_INTERVAL || '60000');
-    let heartbeatRunning = false;
+    let inFlightHeartbeat: Promise<void> | null = null;
 
-    const interval = setInterval(async () => {
-        if (heartbeatRunning) {
+    const tick = (): void => {
+        if (inFlightHeartbeat) {
             return;
         }
-        heartbeatRunning = true;
 
-        if (process.env.DEBUG) {
-            logger.debug(`[DAEMON RUN] Health check started at ${new Date().toLocaleString()}`);
-        }
+        inFlightHeartbeat = runDaemonHeartbeat(deps)
+            .catch((error) => {
+                logger.debug('[DAEMON RUN] Heartbeat failed:', error);
+            })
+            .finally(() => {
+                inFlightHeartbeat = null;
+            });
+    };
 
-        // Prune stale sessions
-        pruneDeadSessions();
+    const interval = setInterval(tick, heartbeatIntervalMs);
 
-        // Check if daemon needs update
-        // If version on disk is different from the one in package.json - we need to restart
-        // BIG if - does this get updated from underneath us on npm upgrade?
-        const projectVersion = JSON.parse(readFileSync(join(projectPath(), 'package.json'), 'utf-8')).version;
-        if (projectVersion !== configuration.currentCliVersion) {
-            logger.debug('[DAEMON RUN] Daemon is outdated, triggering self-restart with latest version, clearing heartbeat interval');
-
-            clearInterval(interval);
-
-            // Spawn new daemon through the CLI
-            // We do not need to clean ourselves up - we will be killed by
-            // the CLI start command.
-            // 1. It will first check if daemon is running (yes in this case)
-            // 2. If the version is stale (it will read daemon.state.json file and check startedWithCliVersion) & compare it to its own version
-            // 3. Next it will start a new daemon with the latest version with daemon-sync :D
-            // Done!
-            try {
-                spawnRemcliCLI(['daemon', 'start'], {
-                    detached: true,
-                    stdio: 'ignore'
-                });
-            } catch (error) {
-                logger.debug('[DAEMON RUN] Failed to spawn new daemon, this is quite likely to happen during integration tests as we are cleaning out dist/ directory', error);
-            }
-
-            // So we can just hang forever
-            logger.debug('[DAEMON RUN] Hanging for a bit - waiting for CLI to kill us because we are running outdated version of the code');
-            await new Promise(resolve => setTimeout(resolve, 10_000));
-            process.exit(0);
-        }
-
-        // Before wrecklessly overriting the daemon state file, we should check if we are the ones who own it
-        // Race condition is possible, but thats okay for the time being :D
-        const daemonState = await readDaemonState();
-        if (daemonState && daemonState.pid !== process.pid) {
-            logger.debug('[DAEMON RUN] Somehow a different daemon was started without killing us. We should kill ourselves.');
-            requestShutdown('exception', 'A different daemon was started without killing us. We should kill ourselves.');
-        }
-
-        // Heartbeat
-        try {
-            const codexAppServerIsUsable = await isCodexAppServerStateUsable(daemonState);
-            if (daemonState?.codexAppServerEndpoint && !codexAppServerIsUsable) {
-                logger.debug('[DAEMON RUN] Shared Codex app-server endpoint is stale; removing it from daemon state');
-            }
-            const updatedState: DaemonLocallyPersistedState = {
-                pid: process.pid,
-                httpPort: controlPort,
-                startTime,
-                startedWithCliVersion: packageJson.version,
-                lastHeartbeat: new Date().toLocaleString(),
-                daemonLogPath,
-                p2pPort,
-                p2pHost: lanIP,
-                tunnelUrl,
-                codexAppServerEndpoint: codexAppServerIsUsable ? daemonState?.codexAppServerEndpoint : undefined,
-                codexAppServerPid: codexAppServerIsUsable ? daemonState?.codexAppServerPid : undefined
-            };
-            writeDaemonState(updatedState);
-            if (process.env.DEBUG) {
-                logger.debug(`[DAEMON RUN] Health check completed at ${updatedState.lastHeartbeat}`);
-            }
-        } catch (error) {
-            logger.debug('[DAEMON RUN] Failed to write heartbeat', error);
-        }
-
-        heartbeatRunning = false;
-    }, heartbeatIntervalMs); // Every 60 seconds in production
-
-    return interval;
+    return {
+        stop: () => clearInterval(interval),
+        waitForIdle: async () => {
+            await inFlightHeartbeat;
+        },
+    };
 }

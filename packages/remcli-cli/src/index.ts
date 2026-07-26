@@ -15,7 +15,15 @@ import { setupP2PForSession } from './daemon/p2p/p2pSession'
 import packageJson from '../package.json'
 import { z } from 'zod'
 import { startDaemon } from './daemon/run'
-import { checkIfDaemonRunningAndCleanupStaleState, isDaemonRunningCurrentlyInstalledRemcliVersion, stopDaemon } from './daemon/controlClient'
+import {
+    checkIfDaemonRunningAndCleanupStaleState,
+    getLiveLegacyDaemonMigrationBlocker,
+    isDaemonRunningCurrentlyInstalledRemcliVersion,
+    isVerifiedDaemonLive,
+    LEGACY_DAEMON_MIGRATION_MESSAGE,
+    stopDaemon,
+    waitForVerifiedDaemonToStop,
+} from './daemon/controlClient'
 import { getLatestDaemonLog } from './ui/logger'
 import { killRunawayRemcliProcesses } from './daemon/doctor'
 import { install } from './daemon/install'
@@ -95,8 +103,18 @@ function readDaemonCodexExecution(): {
     };
 }
 
+async function ensureNoLiveLegacyDaemon(): Promise<void> {
+    if (!await getLiveLegacyDaemonMigrationBlocker()) {
+        return;
+    }
+
+    console.error(LEGACY_DAEMON_MIGRATION_MESSAGE);
+    process.exit(1);
+}
+
 async function ensureDaemonRunning(): Promise<void> {
     logger.debug('Ensuring Remcli background service is running & matches our version...');
+    await ensureNoLiveLegacyDaemon();
     if (!(await isDaemonRunningCurrentlyInstalledRemcliVersion())) {
         logger.debug('Starting Remcli background service...');
         const daemonProcess = spawnRemcliCLI(['daemon', 'start-sync'], {
@@ -463,6 +481,7 @@ async function ensureDaemonRunning(): Promise<void> {
       return
 
     } else if (daemonSubcommand === 'start') {
+      await ensureNoLiveLegacyDaemon();
       // Spawn detached daemon process, passing through --tunnel flag
       const daemonArgs = ['daemon', 'start-sync'];
       if (args.includes('--tunnel')) {
@@ -496,9 +515,11 @@ async function ensureDaemonRunning(): Promise<void> {
       await startDaemon()
       process.exit(0)
     } else if (daemonSubcommand === 'stop') {
+      await ensureNoLiveLegacyDaemon();
       await stopDaemon()
       process.exit(0)
     } else if (daemonSubcommand === 'qr') {
+      await ensureNoLiveLegacyDaemon();
       // Re-display P2P QR code from daemon state
       const { readDaemonState } = await import('./persistence');
       const { buildP2PConnectionInfo, buildP2PQRUrl, displayP2PQRCode, displayP2PConnectionStatus } = await import('./daemon/p2p/p2pQRCode');
@@ -506,7 +527,7 @@ async function ensureDaemonRunning(): Promise<void> {
 
       const state = await readDaemonState();
       const pairing = loadPairing();
-      if (!state || !state.p2pPort || !pairing) {
+      if (!state || state.state !== 'running' || !state.p2pPort || !pairing) {
         console.log('Daemon is not running or P2P is not configured.');
         console.log('Start the daemon first: remcli daemon start');
         process.exit(1);
@@ -562,10 +583,11 @@ async function ensureDaemonRunning(): Promise<void> {
       // Reset the persistent pairing secret: delete the pairing file and restart the daemon
       const { clearPairing } = await import('./daemon/p2p/p2pPairing');
 
-      const wasRunning = await checkIfDaemonRunningAndCleanupStaleState();
+      await ensureNoLiveLegacyDaemon();
+      const wasRunning = await isVerifiedDaemonLive();
       if (wasRunning) {
         await stopDaemon();
-        if (await checkIfDaemonRunningAndCleanupStaleState()) {
+        if (!await waitForVerifiedDaemonToStop()) {
           console.error('Daemon is still running; refusing to replace the active pairing key.');
           process.exit(1);
         }

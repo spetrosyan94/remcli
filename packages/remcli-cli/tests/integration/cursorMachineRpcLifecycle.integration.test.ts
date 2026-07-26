@@ -453,7 +453,9 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
             }),
             rotateAuthSecret: async () => undefined,
         });
+        const controlInstanceId = 'd8f4b39c-0560-4f9f-b605-71dcfa06db7a';
         const controlServer = await startDaemonControlServer({
+            instanceId: controlInstanceId,
             getChildren: sessionManager.getChildren,
             stopSession: sessionManager.stopSession,
             spawnSession: sessionManager.spawnSession,
@@ -485,12 +487,17 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
         });
         cleanupTasks.push({ label: 'controlled daemon control server', run: () => controlServer.stop() });
         writeDaemonState({
+            schemaVersion: 1,
+            instanceId: controlInstanceId,
+            state: 'running',
+            stateReason: 'ready',
             pid: process.pid,
             httpPort: controlServer.port,
             p2pPort: p2pServer.port,
             p2pHost: '127.0.0.1',
-            startTime: new Date().toISOString(),
+            startedAtMs: Date.now(),
             startedWithCliVersion: configuration.currentCliVersion,
+            ownedChildPids: [],
         });
 
         const codexCapabilities = new CodexCapabilitiesService({ getAppServerState: () => null });

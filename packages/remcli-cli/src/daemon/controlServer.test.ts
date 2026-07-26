@@ -41,6 +41,8 @@ const sessionMetadata: Metadata = {
 };
 
 interface ControlServerTestOptions {
+    instanceId?: string;
+    onExplicitStopRequested?: () => void;
     stopSession?: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
     onRemcliSessionWebhook?: (sessionId: string, metadata: Metadata, runnerToken?: string) => {
         accepted: boolean;
@@ -91,6 +93,7 @@ function createDeferred<T>(): Deferred<T> {
 
 async function startControlServerForTest(options: ControlServerTestOptions = {}) {
     return startDaemonControlServer({
+        instanceId: options.instanceId,
         getChildren: () => [],
         stopSession: options.stopSession ?? (() => ({ success: false })),
         spawnSession: async () => ({
@@ -99,6 +102,7 @@ async function startControlServerForTest(options: ControlServerTestOptions = {})
             terminal: { type: 'not-requested' },
         }),
         requestShutdown: () => {},
+        onExplicitStopRequested: options.onExplicitStopRequested,
         onRemcliSessionWebhook: options.onRemcliSessionWebhook ?? (() => ({ accepted: true, daemonOwned: false })),
         issueSessionRunnerCredential: options.issueSessionRunnerCredential ?? (() => undefined),
         verifySessionRunnerCredential: options.verifySessionRunnerCredential ?? (() => false),
@@ -133,6 +137,28 @@ describe('startDaemonControlServer', () => {
     afterEach(async () => {
         await stopServer?.();
         stopServer = undefined;
+    });
+
+    it('exposes the daemon instance identity on loopback control only', async () => {
+        const instanceId = '3d8c88c3-e2e4-4b0c-a4e1-5ff1f4bb2e7c';
+        const server = await startControlServerForTest({ instanceId });
+        stopServer = server.stop;
+
+        const response = await fetch(`http://127.0.0.1:${server.port}/identity`);
+
+        await expect(response.json()).resolves.toEqual({ instanceId });
+    });
+
+    it('cancels a pending auto-update synchronously when /stop is requested', async () => {
+        const onExplicitStopRequested = vi.fn();
+        const controlServer = await startControlServerForTest({ onExplicitStopRequested });
+        stopServer = controlServer.stop;
+
+        const response = await fetch(`http://127.0.0.1:${controlServer.port}/stop`, { method: 'POST' });
+
+        expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toEqual({ status: 'stopping' });
+        expect(onExplicitStopRequested).toHaveBeenCalledOnce();
     });
 
     it('waits for an asynchronous stop before replying from /stop-session', async () => {

@@ -79,10 +79,11 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
       stdio: 'ignore'
     });
     
-    // Wait for daemon to write its state file (it needs to auth, setup, and start server)
+    // A `starting` snapshot is written before P2P/control are ready. Wait for
+    // the lifecycle transition so the first control request cannot race startup.
     await waitFor(async () => {
       const state = await readDaemonState();
-      return state !== null;
+      return state?.state === 'running';
     }, 10_000, 250); // Wait up to 10 seconds, checking every 250ms
     
     const daemonState = await readDaemonState();
@@ -176,8 +177,11 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
   it('should handle daemon stop request gracefully', async () => {    
     await stopDaemonHttp();
 
-    // Verify metadata file is cleaned up
-    await waitFor(async () => !existsSync(configuration.daemonStateFile), 1000);
+    // Verify the diagnostic snapshot records the completed lifecycle.
+    await waitFor(async () => {
+      const state = await readDaemonState();
+      return state?.state === 'stopped' && state.stateReason === 'clean-shutdown';
+    }, 1000);
   });
 
   it('should track both daemon-spawned and terminal sessions', async () => {
@@ -370,7 +374,8 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     
     console.log('[TEST] Daemon terminated gracefully with SIGTERM - cleanup logs written');
     
-    // Clean up state file if it still exists (should have been cleaned by SIGTERM handler)
+    // Explicit test cleanup keeps the next fixture isolated; graceful shutdown
+    // intentionally preserves its stopped diagnostic snapshot.
     await clearDaemonState();
   });
 

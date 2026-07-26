@@ -4,7 +4,13 @@
  */
 
 import { logger } from '@/ui/logger';
-import { clearDaemonState, readDaemonState } from '@/persistence';
+import {
+  readDaemonState,
+  readLegacyDaemonStateDiagnostic,
+  type DaemonLifecycleState,
+  type DaemonLocallyPersistedState,
+  type LegacyDaemonStateDiagnostic,
+} from '@/persistence';
 import type { Metadata } from '@/api/types';
 import { projectPath } from '@/projectPath';
 import { readFileSync } from 'fs';
@@ -31,6 +37,7 @@ import {
 } from './types';
 import { getSessionRunnerCredential, rememberSessionRunnerCredential } from './p2p/p2pRunnerCredentials';
 import type { PairingRekeyApprovalResult } from './p2p/pairingRekey';
+import { findAllRemcliProcesses } from './doctor';
 
 /**
  * Consistent envelope for all daemon HTTP responses.
@@ -56,19 +63,63 @@ interface SessionStartedResponse {
 
 const MISSING_SESSION_RUNNER_CREDENTIAL_ERROR = 'Missing session runner credential';
 const MISSING_DAEMON_RUNNER_CAPABILITY_ERROR = 'Missing daemon runner capability';
+const READY_DAEMON_STATES = ['running'] as const;
+const STOPPABLE_DAEMON_STATES = ['starting', 'running', 'stopping'] as const;
+export const LEGACY_DAEMON_MIGRATION_MESSAGE = [
+  'An older Remcli daemon is still running and cannot be verified safely by this release.',
+  'Stop it from its original terminal (Ctrl+C) or with the previous Remcli release, then retry.',
+].join(' ');
 
-async function daemonPost<T = unknown>(path: string, body?: unknown): Promise<DaemonResponse<T>> {
-  const state = await readDaemonState();
-  if (!state?.httpPort) {
-    const errorMessage = 'No daemon running, no state file found';
-    logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
-    return { ok: false, error: errorMessage };
+function hasDaemonLifecycleState(
+  state: DaemonLocallyPersistedState,
+  allowedStates: readonly DaemonLifecycleState[],
+): boolean {
+  return allowedStates.includes(state.state);
+}
+
+async function hasMatchingDaemonIdentity(
+  state: DaemonLocallyPersistedState,
+): Promise<boolean> {
+  if (!state.httpPort) {
+    return false;
   }
 
   try {
     process.kill(state.pid, 0);
-  } catch (error) {
-    const errorMessage = 'Daemon is not running, file is stale';
+  } catch {
+    return false;
+  }
+
+  try {
+    const timeout = process.env.REMCLI_DAEMON_HTTP_TIMEOUT ? parseInt(process.env.REMCLI_DAEMON_HTTP_TIMEOUT) : 10_000;
+    const response = await fetch(`http://127.0.0.1:${state.httpPort}/identity`, {
+      signal: AbortSignal.timeout(timeout),
+    });
+    if (!response.ok) {
+      return false;
+    }
+
+    const body = await response.json() as { instanceId?: unknown };
+    return body.instanceId === state.instanceId;
+  } catch {
+    return false;
+  }
+}
+
+async function daemonPost<T = unknown>(
+  path: string,
+  body?: unknown,
+  allowedStates: readonly DaemonLifecycleState[] = READY_DAEMON_STATES,
+): Promise<DaemonResponse<T>> {
+  const state = await readDaemonState();
+  if (!state?.httpPort || !hasDaemonLifecycleState(state, allowedStates)) {
+    const errorMessage = 'No running daemon is available for control';
+    logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
+    return { ok: false, error: errorMessage };
+  }
+
+  if (!await hasMatchingDaemonIdentity(state)) {
+    const errorMessage = 'Daemon identity could not be verified';
     logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
     return { ok: false, error: errorMessage };
   }
@@ -250,8 +301,8 @@ export async function spawnDaemonSession(directory: string, sessionId?: string):
   return result.ok ? result.data : { error: result.error };
 }
 
-export async function stopDaemonHttp(): Promise<void> {
-  await daemonPost('/stop');
+export async function stopDaemonHttp(): Promise<DaemonResponse<unknown>> {
+  return await daemonPost('/stop', undefined, STOPPABLE_DAEMON_STATES);
 }
 
 export async function approveDaemonPairingRekey(
@@ -290,19 +341,62 @@ export async function approveDaemonPairingRekey(
  */
 export async function checkIfDaemonRunningAndCleanupStaleState(): Promise<boolean> {
   const state = await readDaemonState();
-  if (!state) {
+  if (!state || !hasDaemonLifecycleState(state, READY_DAEMON_STATES)) {
     return false;
   }
 
-  // Check if the daemon is running
-  try {
-    process.kill(state.pid, 0);
-    return true;
-  } catch {
-    logger.debug('[DAEMON RUN] Daemon PID not running, cleaning up state');
-    await cleanupDaemonState();
+  return await hasMatchingDaemonIdentity(state);
+}
+
+/**
+ * Returns true only when the local control endpoint proves that any lifecycle
+ * instance is still alive. This is intentionally broader than the readiness
+ * check and is used before destructive pairing changes.
+ */
+export async function isVerifiedDaemonLive(): Promise<boolean> {
+  const state = await readDaemonState();
+  if (!state || !hasDaemonLifecycleState(state, STOPPABLE_DAEMON_STATES)) {
     return false;
   }
+
+  return await hasMatchingDaemonIdentity(state);
+}
+
+/**
+ * Legacy state has no cryptographic/instance identity and can never be used
+ * to stop a process. It only prevents a new release from replacing pairing or
+ * claiming the daemon lock while an old daemon may still be alive.
+ */
+export async function getLiveLegacyDaemonMigrationBlocker(): Promise<LegacyDaemonStateDiagnostic | null> {
+  const legacyState = await readLegacyDaemonStateDiagnostic();
+  if (!legacyState) {
+    return null;
+  }
+
+  const remcliProcesses = await findAllRemcliProcesses();
+  const matchedDaemon = remcliProcesses.find((process) =>
+    process.pid === legacyState.pid
+    && (process.type === 'daemon' || process.type === 'dev-daemon')
+    && /\bdaemon\s+start-sync(?:\s|$)/.test(process.command),
+  );
+
+  return matchedDaemon ? legacyState : null;
+}
+
+export async function waitForVerifiedDaemonToStop(timeoutMs = 15_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = await readDaemonState();
+    if (!state || !hasDaemonLifecycleState(state, STOPPABLE_DAEMON_STATES)) {
+      return true;
+    }
+    if (!await hasMatchingDaemonIdentity(state)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  return false;
 }
 
 /**
@@ -356,15 +450,6 @@ export async function isDaemonRunningCurrentlyInstalledRemcliVersion(): Promise<
   }
 }
 
-export async function cleanupDaemonState(): Promise<void> {
-  try {
-    await clearDaemonState();
-    logger.debug('[DAEMON RUN] Daemon state file removed');
-  } catch (error) {
-    logger.debug('[DAEMON RUN] Error cleaning up daemon metadata', error);
-  }
-}
-
 export async function stopDaemon() {
   try {
     const state = await readDaemonState();
@@ -373,26 +458,24 @@ export async function stopDaemon() {
       return;
     }
 
-    logger.debug(`Stopping daemon with PID ${state.pid}`);
-
-    // Try HTTP graceful stop
-    try {
-      await stopDaemonHttp();
-
-      // Wait for daemon to die
-      await waitForProcessDeath(state.pid, 2000);
-      logger.debug('Daemon stopped gracefully via HTTP');
+    if (!hasDaemonLifecycleState(state, STOPPABLE_DAEMON_STATES)) {
+      logger.debug(`Daemon is already ${state.state}; no stop request will be sent`);
       return;
-    } catch (error) {
-      logger.debug('HTTP stop failed, will force kill', error);
     }
 
-    // Force kill
+    logger.debug(`Stopping daemon with PID ${state.pid}`);
+
+    const result = await stopDaemonHttp();
+    if (!result.ok) {
+      logger.debug(`Daemon stop was not sent because ownership could not be verified: ${result.error}`);
+      return;
+    }
+
     try {
-      process.kill(state.pid, 'SIGKILL');
-      logger.debug('Force killed daemon');
+      await waitForProcessDeath(state.pid, 2000);
+      logger.debug('Daemon stopped gracefully via HTTP');
     } catch (error) {
-      logger.debug('Daemon already dead');
+      logger.debug('Daemon did not exit after verified graceful stop request; refusing PID-only force kill', error);
     }
   } catch (error) {
     logger.debug('Error stopping daemon', error);
