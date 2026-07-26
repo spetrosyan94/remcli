@@ -4863,5 +4863,243 @@ describe('createSessionManager resume deduplication', () => {
             expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(expect.objectContaining({ paneId: '%822' }));
             expect(manager.getChildren()).toHaveLength(0);
         });
+
+        it('keeps the interactive writer lease until an orphaned late pane is confirmed released', async () => {
+            const runnerPid = 22_131;
+            const remcliSessionId = 'remcli-cursor-orphaned-late-pane';
+            const replacementSessionId = 'remcli-cursor-orphaned-replacement';
+            const nativeSessionId = 'cursor-native-orphaned-late-pane';
+            let resolveLateInteractivePane: (result: {
+                success: true;
+                sessionId: string;
+                windowId: string;
+                paneId: string;
+                pid: number;
+            }) => void = () => {};
+
+            tmuxMocks.spawnInTmux
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-orphaned-a:main', windowId: '@831', paneId: '%831', pid: runnerPid })
+                .mockImplementationOnce(() => new Promise((resolve) => {
+                    resolveLateInteractivePane = resolve;
+                }))
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-orphaned-b:main', windowId: '@832', paneId: '%832', pid: runnerPid });
+
+            const manager = createSessionManager();
+            const spawning = manager.spawnSession({
+                directory: process.cwd(),
+                agent: 'cursor',
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+            manager.onRemcliSessionWebhook(
+                remcliSessionId,
+                createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
+                getDaemonRunnerToken(),
+            );
+            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+            const binding = await bindTrackedCursorSession(manager, {
+                agent: 'cursor',
+                remcliSessionId,
+                nativeSessionId,
+            });
+            await releaseTrackedCursorHeadlessWriterLease(manager, binding);
+
+            const request = { agent: 'cursor' as const, remcliSessionId, nativeSessionId };
+            const opening = manager.openCursorInteractiveTui(request);
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+
+            const replacement = manager.spawnSession({
+                directory: process.cwd(),
+                agent: 'cursor',
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(3));
+            manager.onRemcliSessionWebhook(
+                replacementSessionId,
+                createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
+                getDaemonRunnerToken(2),
+            );
+            await expect(replacement).resolves.toEqual({ type: 'success', sessionId: replacementSessionId });
+            const replacementRequest = {
+                agent: 'cursor' as const,
+                remcliSessionId: replacementSessionId,
+                nativeSessionId,
+            };
+            const replacementWrapper = manager.getChildren().find((session) => (
+                session.remcliSessionId === replacementSessionId
+            ));
+            expect(replacementWrapper).toBeDefined();
+            // Model a ready resume wrapper between its authenticated webhook and
+            // the runner's native Cursor bind.
+            replacementWrapper!.expectedResumeSessionId = nativeSessionId;
+            const expectReplacementWriterBusy = async (): Promise<void> => {
+                await expect(manager.acquireCursorHeadlessWriterLease(replacementRequest)).resolves.toEqual({
+                    type: 'writer-busy',
+                    request: replacementRequest,
+                    owner: 'interactive',
+                });
+            };
+
+            let resolveLatePaneRelease: (result: 'released' | 'unknown') => void = () => {};
+            tmuxMocks.releaseOwnedPane.mockImplementationOnce((ownership) => {
+                expect(ownership).toMatchObject({ paneId: '%834' });
+                return new Promise<'released' | 'unknown'>((resolve) => {
+                    resolveLatePaneRelease = resolve;
+                });
+            });
+            resolveLateInteractivePane({
+                success: true,
+                sessionId: 'tmux-cursor-interactive:late',
+                windowId: '@834',
+                paneId: '%834',
+                pid: runnerPid + 2,
+            });
+            await expect(opening).resolves.toEqual({ type: 'wrapper-not-tracked', request });
+
+            await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(
+                expect.objectContaining({ paneId: '%834' }),
+            ));
+            await expectReplacementWriterBusy();
+
+            resolveLatePaneRelease('unknown');
+            await vi.waitFor(() => expect(loggerMocks.warn).toHaveBeenCalledWith(
+                expect.stringContaining(`Keeping displaced session ${remcliSessionId} tracked because immutable cleanup was not confirmed.`),
+            ));
+            await expectReplacementWriterBusy();
+
+            tmuxMocks.releaseOwnedPane.mockImplementationOnce((ownership) => {
+                expect(ownership).toMatchObject({ paneId: '%834' });
+                return Promise.resolve('mismatch');
+            });
+            await expect(manager.stopSession(remcliSessionId)).resolves.toEqual({ success: false });
+            await expectReplacementWriterBusy();
+
+            tmuxMocks.releaseOwnedPane.mockImplementationOnce((ownership) => {
+                expect(ownership).toMatchObject({ paneId: '%834' });
+                return Promise.resolve('released');
+            });
+            await expect(manager.stopSession(remcliSessionId)).resolves.toEqual({
+                success: true,
+                stoppedSessionId: remcliSessionId,
+            });
+            await vi.waitFor(() => expect(manager.getChildren()).toEqual([
+                expect.objectContaining({ remcliSessionId: replacementSessionId }),
+            ]));
+            const replacementLease = await manager.acquireCursorHeadlessWriterLease(replacementRequest);
+            expect(replacementLease).toMatchObject({
+                type: 'acquired',
+                writerLease: expect.objectContaining({ owner: 'headless' }),
+            });
+            if (replacementLease.type !== 'acquired') {
+                throw new Error('Expected orphan cleanup to release the interactive Cursor writer lease.');
+            }
+            await expect(manager.releaseCursorNativeWriterLease({
+                agent: 'cursor',
+                leaseId: replacementLease.writerLease.leaseId,
+                nativeSessionId: replacementLease.writerLease.nativeSessionId,
+                remcliSessionId: replacementLease.writerLease.remcliSessionId,
+            })).resolves.toEqual({ released: true });
+        });
+
+        it('waits for an in-flight Cursor TUI before retiring a missing runner lease', async () => {
+            const runnerPid = 22_141;
+            const remcliSessionId = 'remcli-cursor-missing-runner-open-race';
+            const resumedSessionId = 'remcli-cursor-missing-runner-resume';
+            const nativeSessionId = 'cursor-native-missing-runner-open-race';
+            let resolveLateInteractivePane: (result: {
+                success: true;
+                sessionId: string;
+                windowId: string;
+                paneId: string;
+                pid: number;
+            }) => void = () => {};
+
+            tmuxMocks.spawnInTmux
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-missing-runner:main', windowId: '@841', paneId: '%841', pid: runnerPid })
+                .mockImplementationOnce(() => new Promise((resolve) => {
+                    resolveLateInteractivePane = resolve;
+                }))
+                .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-missing-runner:resume', windowId: '@843', paneId: '%843', pid: runnerPid + 1 });
+
+            const manager = createSessionManager();
+            const spawning = manager.spawnSession({
+                directory: process.cwd(),
+                agent: 'cursor',
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+            manager.onRemcliSessionWebhook(
+                remcliSessionId,
+                createSessionMetadata(runnerPid, { startedBy: 'daemon', flavor: 'cursor' }),
+                getDaemonRunnerToken(),
+            );
+            await expect(spawning).resolves.toEqual({ type: 'success', sessionId: remcliSessionId });
+            const binding = await bindTrackedCursorSession(manager, {
+                agent: 'cursor',
+                remcliSessionId,
+                nativeSessionId,
+            });
+            await releaseTrackedCursorHeadlessWriterLease(manager, binding);
+
+            const request = { agent: 'cursor' as const, remcliSessionId, nativeSessionId };
+            const opening = manager.openCursorInteractiveTui(request);
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+            const runner = manager.getChildren()[0]?.tmuxRunner;
+            expect(runner).toBeDefined();
+            tmuxMocks.ownedPanes.delete(runner!.paneId);
+
+            await expect(manager.openCursorInteractiveTui({
+                agent: 'cursor',
+                remcliSessionId,
+                nativeSessionId: 'cursor-native-missing-runner-forged',
+            })).resolves.toMatchObject({ type: 'wrapper-not-tracked' });
+
+            let resolveLatePaneRelease: (result: 'released') => void = () => {};
+            tmuxMocks.releaseOwnedPane.mockImplementationOnce((ownership) => {
+                expect(ownership).toMatchObject({ paneId: '%842' });
+                return new Promise<'released'>((resolve) => {
+                    resolveLatePaneRelease = resolve;
+                });
+            });
+            resolveLateInteractivePane({
+                success: true,
+                sessionId: 'tmux-cursor-interactive:missing-runner',
+                windowId: '@842',
+                paneId: '%842',
+                pid: runnerPid + 2,
+            });
+            await expect(opening).resolves.toEqual({ type: 'wrapper-not-tracked', request });
+            await vi.waitFor(() => expect(tmuxMocks.releaseOwnedPane).toHaveBeenCalledWith(
+                expect.objectContaining({ paneId: '%842' }),
+            ));
+
+            await expect(manager.spawnSession({
+                directory: process.cwd(),
+                agent: 'cursor',
+                resumeSessionId: nativeSessionId,
+                ...CONTROLLED_CURSOR_SELECTION,
+            })).resolves.toEqual({
+                type: 'error',
+                errorMessage: 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.',
+            });
+            expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2);
+
+            resolveLatePaneRelease('released');
+            await vi.waitFor(() => expect(manager.getChildren()).toHaveLength(0));
+
+            const resumed = manager.spawnSession({
+                directory: process.cwd(),
+                agent: 'cursor',
+                resumeSessionId: nativeSessionId,
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
+            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(3));
+            manager.onRemcliSessionWebhook(
+                resumedSessionId,
+                createSessionMetadata(runnerPid + 1, { startedBy: 'daemon', flavor: 'cursor' }),
+                getDaemonRunnerToken(2),
+            );
+            await expect(resumed).resolves.toEqual({ type: 'success', sessionId: resumedSessionId });
+        });
     });
 });

@@ -118,6 +118,12 @@ interface CursorNativeWriterLeaseState {
     session: TrackedSession;
 }
 
+interface OrphanedCursorInteractiveTuiPane {
+    ownership: TmuxPaneOwnership;
+    writerLease: CursorNativeWriterLease;
+    session: TrackedSession;
+}
+
 type CursorNativeWriterLeaseAttempt =
     | { type: 'acquired'; writerLease: CursorNativeWriterLease }
     | { type: 'writer-busy'; owner: CursorNativeWriterOwner }
@@ -396,7 +402,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     const codexRemoteTuiOpenPromises = new Map<string, Promise<CodexRemoteTuiOpenResult>>();
     const cursorInteractiveTuiOpenPromises = new Map<string, CursorInteractiveTuiOpening>();
     const orphanedCodexRemoteTuiPanes = new Map<string, TmuxPaneOwnership>();
-    const orphanedCursorInteractiveTuiPanes = new Map<string, TmuxPaneOwnership>();
+    const orphanedCursorInteractiveTuiPanes = new Map<string, OrphanedCursorInteractiveTuiPane>();
     const cursorInteractiveTuiLaunches = new WeakMap<TrackedSession, CursorInteractiveTuiLaunch>();
     const sessionCleanupPromises = new Map<TrackedSession, Promise<boolean>>();
     const sessionCleanupFailureReasons = new Map<TrackedSession, string>();
@@ -479,6 +485,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     const releaseCursorNativeWriterLeaseIfOwned = (
         request: CursorNativeWriterLeaseReleaseRequest,
         expectedSession?: TrackedSession,
+        expectedOwner?: CursorNativeWriterOwner,
     ): boolean => {
         const currentLease = cursorNativeWriterLeases.get(request.nativeSessionId);
         if (
@@ -488,6 +495,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             || currentLease.lease.remcliSessionId !== request.remcliSessionId
             || currentLease.lease.nativeSessionId !== request.nativeSessionId
             || (expectedSession && currentLease.session !== expectedSession)
+            || (expectedOwner && currentLease.lease.owner !== expectedOwner)
         ) {
             return false;
         }
@@ -854,18 +862,37 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         return true;
     };
 
-    const releaseOrphanedCursorInteractiveTuiPane = async (sessionId: string): Promise<boolean> => {
-        const ownership = orphanedCursorInteractiveTuiPanes.get(sessionId);
-        if (!ownership) {
+    const releaseOrphanedCursorInteractiveTuiPane = async (
+        sessionId: string,
+        expectedSession?: TrackedSession,
+    ): Promise<boolean> => {
+        const orphanedPane = orphanedCursorInteractiveTuiPanes.get(sessionId);
+        if (!orphanedPane) {
+            return true;
+        }
+        if (expectedSession && orphanedPane.session !== expectedSession) {
             return true;
         }
 
-        if (!await releaseOwnedPane(ownership)) {
-            logger.warn(`[DAEMON RUN] Could not confirm cleanup of orphaned Cursor interactive TUI pane ${ownership.paneId}; preserving ownership for retry.`);
+        if (!await releaseOwnedPane(orphanedPane.ownership)) {
+            logger.warn(`[DAEMON RUN] Could not confirm cleanup of orphaned Cursor interactive TUI pane ${orphanedPane.ownership.paneId}; preserving ownership and writer lease for retry.`);
             return false;
         }
 
-        orphanedCursorInteractiveTuiPanes.delete(sessionId);
+        const releasedWriterLease = await withCursorNativeWriterStateLock(async () => (
+            releaseCursorNativeWriterLeaseIfOwned({
+                agent: 'cursor',
+                leaseId: orphanedPane.writerLease.leaseId,
+                nativeSessionId: orphanedPane.writerLease.nativeSessionId,
+                remcliSessionId: orphanedPane.writerLease.remcliSessionId,
+            }, orphanedPane.session, 'interactive')
+        ));
+        if (!releasedWriterLease) {
+            logger.warn(`[DAEMON RUN] Orphaned Cursor interactive TUI pane ${orphanedPane.ownership.paneId} was released, but its exact writer lease was no longer current.`);
+        }
+        if (orphanedCursorInteractiveTuiPanes.get(sessionId) === orphanedPane) {
+            orphanedCursorInteractiveTuiPanes.delete(sessionId);
+        }
         return true;
     };
 
@@ -961,6 +988,16 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 sessionCleanupFailureReasons.set(
                     trackedSession,
                     `Could not wait for managed Cursor interactive TUI cleanup for session ${trackedSession.remcliSessionId}.`,
+                );
+                return false;
+            }
+            if (
+                trackedSession.remcliSessionId
+                && !await releaseOrphanedCursorInteractiveTuiPane(trackedSession.remcliSessionId, trackedSession)
+            ) {
+                sessionCleanupFailureReasons.set(
+                    trackedSession,
+                    `Could not confirm cleanup of orphaned Cursor interactive TUI for session ${trackedSession.remcliSessionId}.`,
                 );
                 return false;
             }
@@ -1990,7 +2027,19 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             }
             const status = await getTrackedSessionStatus(pid, session);
             if (status === 'missing') {
-                await releaseAndRemoveTrackedSession(pid, session, false);
+                // This open can coexist with another Cursor TUI creation for the
+                // same wrapper. Schedule normal cleanup so it waits for that
+                // creation before retiring its interactive writer lease.
+                void releaseAndRemoveTrackedSession(pid, session).then(
+                    (didRemove) => {
+                        if (!didRemove) {
+                            logger.warn(`[DAEMON RUN] Keeping stale Cursor wrapper ${session.remcliSessionId ?? pid} tracked because interactive TUI cleanup was not confirmed.`);
+                        }
+                    },
+                    (error) => {
+                        logger.warn(`[DAEMON RUN] Failed to clean up stale Cursor wrapper ${session.remcliSessionId ?? pid}:`, error);
+                    },
+                );
                 break;
             }
             if (status !== 'exists') {
@@ -2143,8 +2192,12 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         const createdOwnership: TmuxPaneOwnership = tmuxResult.ownership;
         const currentSession = pidToTrackedSession.get(trackedPid);
         if (currentSession !== trackedSession || currentSession.remcliSessionId !== request.remcliSessionId) {
-            orphanedCursorInteractiveTuiPanes.set(request.remcliSessionId, createdOwnership);
-            logger.warn(`[DAEMON RUN] Preserved late-created Cursor interactive TUI pane ${createdOwnership.paneId} for retry after its wrapper was removed.`);
+            orphanedCursorInteractiveTuiPanes.set(request.remcliSessionId, {
+                ownership: createdOwnership,
+                writerLease,
+                session: trackedSession,
+            });
+            logger.warn(`[DAEMON RUN] Preserved late-created Cursor interactive TUI pane ${createdOwnership.paneId} and its exact writer lease for retry after its wrapper was removed.`);
             return { type: 'wrapper-not-tracked', request };
         }
 

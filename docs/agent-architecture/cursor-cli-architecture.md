@@ -303,6 +303,12 @@ Interactive host получает lease до создания child pane. Пос
 требуют credential текущего runner и exact opaque capability, поэтому body с
 `sessionId` или `nativeSessionId` не является правом writer-а.
 
+Если child pane создаётся после удаления wrapper, daemon сохраняет immutable
+pane tuple вместе с exact interactive lease. Cleanup сначала дожидается всех
+in-flight Cursor TUI opens, затем подтверждённо закрывает pane и только после
+этого снимает тот же lease. Пока pane не подтверждённо released/missing,
+headless resume остаётся fail-closed.
+
 `openCursorInteractiveTui` по-прежнему намеренно не опубликован через
 loopback/P2P/`runCursor`. Writer lease устраняет конкурентный native writer, но
 не заменяет отдельный typed bridge для phone input, terminal output, host-side
