@@ -139,6 +139,10 @@ export const en: Dictionary = {
     "zen.newTask": "new task…",
     "zen.toggleTask": "toggle task",
     "zen.syncFailed": "failed to sync tasks",
+    "zen.taskActions": "Actions for {title}",
+    "zen.empty": "No tasks yet. Add one below.",
+    "zen.deleteTitle": "Delete task?",
+    "zen.deleteHint": "Only this Zen task will be removed. The linked AI session and history will remain.",
 
     "settings.title": "Settings",
     "settings.group.appearance": "appearance",

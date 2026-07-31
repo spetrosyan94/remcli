@@ -139,6 +139,10 @@ export const ja: Dictionary = {
     "zen.newTask": "新しいタスク…",
     "zen.toggleTask": "タスクを切り替え",
     "zen.syncFailed": "タスクを同期できませんでした",
+    "zen.taskActions": "{title} の操作",
+    "zen.empty": "タスクはまだありません。下から追加してください。",
+    "zen.deleteTitle": "タスクを削除しますか？",
+    "zen.deleteHint": "この Zen タスクだけが削除されます。リンクされた AI セッションと履歴は残ります。",
 
     "settings.title": "設定",
     "settings.group.appearance": "外観",

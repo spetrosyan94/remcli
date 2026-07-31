@@ -810,6 +810,63 @@ test("Zen keeps a linked session compact on mobile", async ({ page }, testInfo) 
     expect(pageIssues).toEqual([]);
 });
 
+test("Zen confirms deletion, preserves the linked session, and restores focus", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/zen?fixtures=1");
+
+    const firstTask = page.getByText("Показать латентность в пилюле соединения", { exact: true });
+    const firstTrigger = page.getByRole("button", { name: /Actions for Показать латентность/i });
+    await firstTrigger.click();
+    await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+
+    const dialog = page.getByRole("dialog", { name: "Delete task?", exact: true });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(firstTrigger).toBeFocused();
+    await expect(firstTask).toBeVisible();
+
+    await firstTrigger.click();
+    await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+    await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+
+    await expect(firstTask).toHaveCount(0);
+    await expect(page.getByText("1 open", { exact: true })).toBeVisible();
+    const nextTrigger = page.getByRole("button", { name: /Actions for Показать ошибку выполнения/i });
+    await expect(nextTrigger).toBeFocused();
+
+    const linkedSession = page.locator("button:visible").filter({ hasText: /webapp/i }).first();
+    if (isMobileProject(testInfo)) {
+        await page.getByRole("link", { name: "Sessions", exact: true }).click();
+        await expect(linkedSession).toBeVisible();
+        await page.getByRole("link", { name: "Tasks", exact: true }).click();
+    } else {
+        await page.evaluate(() => {
+            window.history.pushState(null, "", "/session/fx-running?fixtures=1");
+            window.dispatchEvent(new PopStateEvent("popstate"));
+        });
+        await expect(page).toHaveURL(/\/session\/fx-running/);
+        await expect(page.getByText("webapp", { exact: true }).first()).toBeVisible();
+        await page.evaluate(() => {
+            window.history.pushState(null, "", "/zen?fixtures=1");
+            window.dispatchEvent(new PopStateEvent("popstate"));
+        });
+        await expect(page).toHaveURL(/\/zen/);
+    }
+    await expect(firstTask).toHaveCount(0);
+
+    const longTitle = "continuous-path-segment-".repeat(24);
+    await page.getByText("Показать ошибку выполнения в связанной сессии", { exact: true }).evaluate((element, value) => {
+        element.textContent = value;
+    }, longTitle);
+    await assertNoHorizontalOverflow(page);
+    if (isMobileProject(testInfo)) await assertMobileTouchTargets(page);
+    expect(pageIssues).toEqual([]);
+});
+
 test("resume history keeps loading and error visible, retries, and reaches the final long row internally", async ({ page }, testInfo) => {
     const pageIssues = collectPageIssues(page);
 

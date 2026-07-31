@@ -139,6 +139,10 @@ export const pl: Dictionary = {
     "zen.newTask": "nowe zadanie…",
     "zen.toggleTask": "przełącz zadanie",
     "zen.syncFailed": "nie udało się zsynchronizować zadań",
+    "zen.taskActions": "Działania dla {title}",
+    "zen.empty": "Nie ma jeszcze zadań. Dodaj pierwsze poniżej.",
+    "zen.deleteTitle": "Usunąć zadanie?",
+    "zen.deleteHint": "Usunięte zostanie tylko to zadanie Zen. Powiązana sesja AI i historia pozostaną.",
 
     "settings.title": "Ustawienia",
     "settings.group.appearance": "wygląd",

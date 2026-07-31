@@ -139,6 +139,10 @@ export const ca: Dictionary = {
     "zen.newTask": "tasca nova…",
     "zen.toggleTask": "commuta la tasca",
     "zen.syncFailed": "no s'han pogut sincronitzar les tasques",
+    "zen.taskActions": "Accions de {title}",
+    "zen.empty": "Encara no hi ha tasques. Afegeix-ne una a sota.",
+    "zen.deleteTitle": "Vols eliminar la tasca?",
+    "zen.deleteHint": "Només s'eliminarà aquesta tasca de Zen. La sessió d'IA enllaçada i l'historial es conservaran.",
 
     "settings.title": "Configuració",
     "settings.group.appearance": "aparença",

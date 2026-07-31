@@ -139,6 +139,10 @@ export const zhHant: Dictionary = {
     "zen.newTask": "新任務…",
     "zen.toggleTask": "切換任務",
     "zen.syncFailed": "任務同步失敗",
+    "zen.taskActions": "{title} 的操作",
+    "zen.empty": "目前沒有任務。請在下方新增。",
+    "zen.deleteTitle": "刪除任務？",
+    "zen.deleteHint": "只會刪除此 Zen 任務。連結的 AI 工作階段與歷史記錄會保留。",
 
     "settings.title": "設定",
     "settings.group.appearance": "外觀",

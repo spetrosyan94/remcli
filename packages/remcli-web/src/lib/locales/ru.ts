@@ -140,6 +140,10 @@ export const ru = {
     "zen.newTask": "новая задача…",
     "zen.toggleTask": "переключить задачу",
     "zen.syncFailed": "не удалось синхронизировать задачи",
+    "zen.taskActions": "Действия: {title}",
+    "zen.empty": "Задач пока нет. Добавьте первую ниже.",
+    "zen.deleteTitle": "Удалить задачу?",
+    "zen.deleteHint": "Удалится только эта задача Zen. Связанная AI-сессия и история останутся.",
 
     "settings.title": "Настройки",
     "settings.group.appearance": "внешний вид",

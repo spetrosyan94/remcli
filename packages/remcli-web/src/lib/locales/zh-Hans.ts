@@ -139,6 +139,10 @@ export const zhHans: Dictionary = {
     "zen.newTask": "新任务…",
     "zen.toggleTask": "切换任务",
     "zen.syncFailed": "任务同步失败",
+    "zen.taskActions": "{title} 的操作",
+    "zen.empty": "暂无任务。请在下方添加。",
+    "zen.deleteTitle": "删除任务？",
+    "zen.deleteHint": "只会删除此 Zen 任务。关联的 AI 会话和历史记录会保留。",
 
     "settings.title": "设置",
     "settings.group.appearance": "外观",

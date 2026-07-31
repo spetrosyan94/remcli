@@ -32,6 +32,7 @@ const MAX_MUTATE_RETRIES = 3;
 // Последнее известное серверное состояние — база для OCC-мутаций
 let knownVersion = -1;
 let knownTasks: ZenTask[] = [];
+let mutationQueue: Promise<void> = Promise.resolve();
 
 function generateTaskId(): string {
     return `z-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -71,24 +72,35 @@ function requireRestConfig(): RestConfig {
  * состоянию; при version-mismatch берём серверные value/version из ответа 409
  * и применяем transform заново (merge через повторное применение намерения).
  */
-async function mutateZenTasks(transform: (tasks: ZenTask[]) => ZenTask[]): Promise<ZenTask[]> {
+async function performZenTaskMutation(transform: (tasks: ZenTask[]) => ZenTask[]): Promise<ZenTask[]> {
     const config = requireRestConfig();
     for (let attempt = 0; attempt < MAX_MUTATE_RETRIES; attempt++) {
         const next = transform(knownTasks);
         const result = await kvMutate(config, [{ key: KV_KEY, value: JSON.stringify(next), version: knownVersion }]);
         if (result.success) {
-            knownVersion = result.results[0]?.version ?? knownVersion + 1;
-            knownTasks = next;
-            return next;
+            const resultVersion = result.results[0]?.version ?? knownVersion + 1;
+            if (resultVersion >= knownVersion) {
+                knownVersion = resultVersion;
+                knownTasks = next;
+            }
+            return knownTasks;
         }
         const conflict = result.errors.find((error) => error.key === KV_KEY) ?? result.errors[0];
         if (!conflict) {
             throw new Error('KV mutate failed without error details');
         }
-        knownVersion = conflict.version;
-        knownTasks = parseTasks(conflict.value);
+        if (conflict.version >= knownVersion) {
+            knownVersion = conflict.version;
+            knownTasks = parseTasks(conflict.value);
+        }
     }
     throw new Error(`Failed to update zen tasks after ${MAX_MUTATE_RETRIES} retries`);
+}
+
+function mutateZenTasks(transform: (tasks: ZenTask[]) => ZenTask[]): Promise<ZenTask[]> {
+    const mutation = mutationQueue.then(() => performZenTaskMutation(transform));
+    mutationQueue = mutation.then(() => undefined, () => undefined);
+    return mutation;
 }
 
 // ─── Миграция localStorage → KV ──────────────────────────────────
@@ -160,6 +172,11 @@ export async function toggleZenTask(id: string): Promise<ZenTask[]> {
             completedAt: isDone ? now : undefined
         };
     }));
+}
+
+/** Удаляет только Zen-задачу и её session link; AI-сессия и история не затрагиваются. */
+export async function deleteZenTask(id: string): Promise<ZenTask[]> {
+    return mutateZenTasks((tasks) => tasks.filter((task) => task.id !== id));
 }
 
 /**

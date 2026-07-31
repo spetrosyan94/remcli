@@ -139,6 +139,10 @@ export const it: Dictionary = {
     "zen.newTask": "nuova attività…",
     "zen.toggleTask": "attiva/disattiva attività",
     "zen.syncFailed": "impossibile sincronizzare le attività",
+    "zen.taskActions": "Azioni per {title}",
+    "zen.empty": "Nessuna attività. Aggiungine una qui sotto.",
+    "zen.deleteTitle": "Eliminare l'attività?",
+    "zen.deleteHint": "Verrà eliminata solo questa attività Zen. La sessione AI collegata e la cronologia resteranno disponibili.",
 
     "settings.title": "Impostazioni",
     "settings.group.appearance": "aspetto",

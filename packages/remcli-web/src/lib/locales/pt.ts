@@ -139,6 +139,10 @@ export const pt: Dictionary = {
     "zen.newTask": "nova tarefa…",
     "zen.toggleTask": "alternar tarefa",
     "zen.syncFailed": "não foi possível sincronizar as tarefas",
+    "zen.taskActions": "Ações de {title}",
+    "zen.empty": "Ainda não há tarefas. Adicione uma abaixo.",
+    "zen.deleteTitle": "Eliminar tarefa?",
+    "zen.deleteHint": "Apenas esta tarefa do Zen será eliminada. A sessão de IA associada e o histórico serão mantidos.",
 
     "settings.title": "Configurações",
     "settings.group.appearance": "aparência",
