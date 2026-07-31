@@ -467,15 +467,14 @@ export async function startDaemon(): Promise<void> {
     logger.debug('[DAEMON RUN] Orphan cleanup failed, continuing startup:', error);
   }
 
-  // Verify tmux is available (required for session spawning)
+  // The P2P daemon can serve the web client without tmux. Provider session
+  // spawning performs its own preflight and returns a platform-specific error.
   const tmuxAvailable = await isTmuxAvailable();
   if (!tmuxAvailable) {
-    console.error('Error: tmux is required for remcli daemon. Install it with: brew install tmux');
-    logger.debug('[DAEMON RUN] tmux not found, aborting daemon startup');
-    await releaseDaemonLock(daemonLockHandle);
-    process.exit(1);
+    logger.warn('[DAEMON RUN] tmux is unavailable; remote agent session spawning is disabled on this host.');
+  } else {
+    logger.debug('[DAEMON RUN] tmux is available');
   }
-  logger.debug('[DAEMON RUN] tmux is available');
 
   try {
     // Start caffeinate

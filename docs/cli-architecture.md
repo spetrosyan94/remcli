@@ -268,6 +268,40 @@ flowchart TD
 
 SPA-fallback роут отдаёт `index.html` на любой несматченный GET-запрос (кроме API-роутов `/v1/*` и `/v2/*`). Статические файлы раздаются без аутентификации; `bearer token` требуется только для API-роутов.
 
+### Автозапуск при входе пользователя
+
+`remcli daemon autostart install [--tunnel]` устанавливает user-level автозапуск
+без `sudo` или прав администратора:
+
+| Платформа | Механизм | Ресурс |
+|-----------|----------|--------|
+| Linux | `systemd --user` | `~/.config/systemd/user/remcli.service` |
+| Windows | Task Scheduler | `RemcliDaemonAutostart` |
+
+Оба адаптера запускают absolute `process.execPath` и текущий
+`dist/index.mjs daemon start-sync`; `--tunnel` сохраняется только как launch
+argument. Pairing files, ключи и произвольное окружение в unit/task не
+записываются. Ресурс имеет owner marker `remcli-managed-autostart-v1`: чужой
+unit/task не перезаписывается и не удаляется.
+
+Linux adapter проверяет доступность user manager, но не включает lingering.
+Unit использует `Restart=no`. Windows task запускается при logon текущего
+пользователя с `InteractiveToken` и `LeastPrivilege`, без restart policy.
+Поэтому явный `remcli daemon stop` оставляет daemon остановленным до ручного
+старта или следующего входа пользователя. Удаление autostart не завершает уже
+работающий daemon; для этого отдельно используется `remcli daemon stop`.
+
+`remcli daemon autostart status` показывает missing/foreign/installed/stale,
+режим tunnel и устаревший absolute Node/package path. Повторная установка
+обновляет только owned resource. Пользовательская установка не использует и не
+скачивает Docker image.
+
+Сам P2P daemon может запуститься без `tmux`; это позволяет диагностике и web
+подключению работать на любом host. Создание AI-сессии остаётся отдельной
+provider boundary: на macOS/Linux нужен `tmux`, а на native Windows текущая
+версия честно предлагает WSL с `tmux`, не выдавая Task Scheduler за готовый
+terminal transport.
+
 ### Контрольный сервер (локальный IPC)
 
 ```mermaid

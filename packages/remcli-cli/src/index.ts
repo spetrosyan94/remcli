@@ -26,8 +26,8 @@ import {
 } from './daemon/controlClient'
 import { getLatestDaemonLog } from './ui/logger'
 import { killRunawayRemcliProcesses } from './daemon/doctor'
-import { install } from './daemon/install'
-import { uninstall } from './daemon/uninstall'
+import { getDaemonAutostartStatus, install, installDaemonAutostart } from './daemon/install'
+import { uninstall, uninstallDaemonAutostart } from './daemon/uninstall'
 import { runDoctorCommand } from './ui/doctor'
 import { listDaemonSessions, stopDaemonSession } from './daemon/controlClient'
 import { handleAuthCommand } from './commands/auth'
@@ -635,9 +635,33 @@ async function ensureDaemonRunning(): Promise<void> {
         console.log(latest.path)
       }
       process.exit(0)
+    } else if (daemonSubcommand === 'autostart') {
+      const action = args[2] ?? 'status';
+      try {
+        if (action === 'install') {
+          await installDaemonAutostart({ isTunnelEnabled: args.includes('--tunnel') });
+        } else if (action === 'uninstall') {
+          await uninstallDaemonAutostart();
+        } else if (action === 'status') {
+          const status = await getDaemonAutostartStatus();
+          console.log(`Autostart: ${status.state}`);
+          console.log(`Platform: ${status.platform}`);
+          console.log(`Resource: ${status.resource}`);
+          console.log(`Tunnel: ${status.isTunnelEnabled ? 'enabled' : 'disabled'}`);
+          if (status.details.length > 0) {
+            console.log(`Needs reinstall: ${status.details.join(', ')}`);
+          }
+        } else {
+          console.error('Usage: remcli daemon autostart <install|uninstall|status> [--tunnel]');
+          process.exit(1);
+        }
+      } catch (error) {
+        console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+        process.exit(1)
+      }
     } else if (daemonSubcommand === 'install') {
       try {
-        await install()
+        await install({ isTunnelEnabled: args.includes('--tunnel') })
       } catch (error) {
         console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
         process.exit(1)
@@ -663,6 +687,10 @@ ${chalk.bold('Usage:')}
   remcli daemon rekey approve <request-id> <code>
                                      Approve a pending UI pairing-key rotation locally
   remcli daemon list               List active sessions
+  remcli daemon autostart install [--tunnel]
+                                     Start Remcli at user login (Linux/Windows)
+  remcli daemon autostart status    Show autostart ownership and stale paths
+  remcli daemon autostart uninstall Remove user-login autostart
 
   If you want to kill all remcli related processes run 
   ${chalk.cyan('remcli doctor clean')}

@@ -80,6 +80,9 @@ npm run start:tunnel
 | `npm run start:tunnel` | Основной удалённый режим: при установленном `cloudflared` запускает HTTPS Cloudflare Tunnel. |
 | `npm start` | Локальный режим для одной Wi-Fi сети без tunnel. |
 | `npm run status` | Показывает состояние daemon и запущенных процессов. |
+| `npm run autostart:install:tunnel` | Включает запуск Remcli при входе пользователя сразу с удалённым HTTPS-режимом (Linux/Windows). |
+| `npm run autostart:status` | Проверяет автозапуск и обнаруживает устаревший путь Node/Remcli. |
+| `npm run autostart:uninstall` | Удаляет только созданный Remcli user-level автозапуск. |
 | `npm run qr` | Показывает QR-код повторно. |
 | `npm run doctor` | Проверяет окружение и установленные AI CLI. |
 | `npm run stop` | Останавливает daemon. |
@@ -118,10 +121,9 @@ npm run start:tunnel
 
 ## Roadmap
 
-- Завершить полный пользовательский сценарий Claude Code и Gemini CLI.
-- Довести Cursor capabilities, названия и сортировку resume-истории.
-- Усилить P2P threat model и platform-specific process/lock hardening.
-- Развить Zen: удаление задач; отдельно спроектировать live web terminal.
+- Завершить полный capability/lifecycle contract Claude Code и Gemini CLI.
+- Отдельно спроектировать безопасный live web terminal.
+- При подтверждённой необходимости добавить durable cross-runner recovery для редкого Cursor failure window.
 
 ## Документация
 

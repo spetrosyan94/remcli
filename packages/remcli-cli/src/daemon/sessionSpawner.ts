@@ -67,6 +67,16 @@ const DAEMON_SHUTDOWN_CANCELLATION_MESSAGE = 'Daemon shut down before session pr
 const CODEX_RESUME_SHUTDOWN_CANCELLATION_MESSAGE = 'Daemon shut down before Codex resume process registration.';
 const DAEMON_SHUTTING_DOWN_SPAWN_ERROR_MESSAGE = 'Daemon is shutting down and cannot start a new session.';
 const CURSOR_RESUME_OWNERSHIP_UNCONFIRMED_ERROR = 'Could not confirm ownership of the Cursor session tmux pane. Resume was not started.';
+
+function getTmuxUnavailableMessage(platform: NodeJS.Platform = process.platform): string {
+    if (platform === 'win32') {
+        return 'Native Windows agent session spawning is not available yet. Run Remcli in WSL with tmux.';
+    }
+    if (platform === 'darwin') {
+        return 'tmux is required for session spawning. Install it with: brew install tmux';
+    }
+    return 'tmux is required for session spawning. Install it with your system package manager.';
+}
 const RUNNER_CONTROL_TOKEN_BYTES = 32;
 const CURSOR_NATIVE_WRITER_LEASE_BYTES = 32;
 const GRACEFUL_DAEMON_RUNNER_SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -2854,7 +2864,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             if (!tmuxAvailable) {
                 return {
                     type: 'error',
-                    errorMessage: 'tmux is required for session spawning. Install it with: brew install tmux'
+                    errorMessage: getTmuxUnavailableMessage()
                 };
             }
 
