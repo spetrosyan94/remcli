@@ -11,7 +11,7 @@ import {
   type DaemonLocallyPersistedState,
   type LegacyDaemonStateDiagnostic,
 } from '@/persistence';
-import type { Metadata } from '@/api/types';
+import type { Metadata, SessionExecutionConsumeResponse } from '@/api/types';
 import { projectPath } from '@/projectPath';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -174,6 +174,22 @@ export async function bindDaemonCodexThread(
 
   return daemonPost<NativeCodexThreadBindingResult>('/codex-thread-bound', {
     ...binding,
+    runnerCredential,
+  });
+}
+
+export async function consumeDaemonSessionExecution(
+  sessionId: string,
+  provider: 'codex' | 'cursor',
+): Promise<DaemonResponse<SessionExecutionConsumeResponse>> {
+  const runnerCredential = getSessionRunnerCredential(sessionId);
+  if (!runnerCredential) {
+    return { ok: false, error: MISSING_SESSION_RUNNER_CREDENTIAL_ERROR };
+  }
+
+  return daemonPost<SessionExecutionConsumeResponse>('/session-execution-consume', {
+    sessionId,
+    provider,
     runnerCredential,
   });
 }

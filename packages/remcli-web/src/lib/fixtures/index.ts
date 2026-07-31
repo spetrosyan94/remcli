@@ -40,6 +40,8 @@ import type {
     CursorCapabilitiesSnapshot,
     DirectoryListing,
     RecentDirectory,
+    SessionExecutionSelection,
+    SessionExecutionSnapshot,
     SpawnSessionOptions,
     SpawnSessionResult,
 } from '@/lib/protocol/socket';
@@ -105,6 +107,8 @@ let fixtureSpawnCallCount = 0;
 let fixtureResumeRetryAttempts = 0;
 let fixtureCodexCapabilityRejectionAttempts = 0;
 let fixtureCursorResumeSpawnAttempts = 0;
+let fixtureSessionExecutionConflictAttempts = 0;
+const fixtureSessionExecutionBySessionId = new Map<string, SessionExecutionSnapshot>();
 
 interface FixtureLineageMetricsState {
     refreshSessionsCalls: number;
@@ -635,6 +639,8 @@ export function initFixturesIfEnabled(): boolean {
     fixtureResumeRetryAttempts = 0;
     fixtureCodexCapabilityRejectionAttempts = 0;
     fixtureCursorResumeSpawnAttempts = 0;
+    fixtureSessionExecutionConflictAttempts = 0;
+    fixtureSessionExecutionBySessionId.clear();
     fixtureSpawnCallCount = 0;
     fixtureRecentDirectoriesByMachine = createFixtureRecentDirectoriesByMachine();
     getFixtureLineageMetricsState();
@@ -727,6 +733,169 @@ export function fixtureRecordProtocolReconnect(): void {
 export function fixtureRecordSentSession(sessionId: string): void {
     const state = getFixtureLineageMetricsState();
     if (state) state.sentSessionIds.push(sessionId);
+
+    const execution = fixtureSessionExecutionBySessionId.get(sessionId);
+    if (!execution?.pending) return;
+    const nextExecution: SessionExecutionSnapshot = {
+        ...execution,
+        revision: execution.revision + 1,
+        current: execution.pending,
+    };
+    delete nextExecution.pending;
+    fixtureSessionExecutionBySessionId.set(sessionId, nextExecution);
+
+    const store = useProtocolStore.getState();
+    const session = store.sessions[sessionId];
+    if (!session?.metadata) return;
+    store.applySessions([{
+        ...session,
+        metadata: {
+            ...session.metadata,
+            ...(nextExecution.current.provider === 'codex'
+                ? {
+                    codexExecution: {
+                        model: nextExecution.current.model,
+                        ...(nextExecution.current.reasoningEffort
+                            ? { reasoningEffort: nextExecution.current.reasoningEffort }
+                            : {}),
+                        permissionMode: session.metadata.codexExecution?.permissionMode ?? 'workspace-write',
+                    },
+                }
+                : { cursorExecution: { model: nextExecution.current.model } }),
+        },
+        metadataVersion: (session.metadataVersion ?? 0) + 1,
+    }]);
+}
+
+function getFixtureSessionExecutionProvider(session: Session): 'codex' | 'cursor' | null {
+    const provider = fixtureSessionAgent(session);
+    return provider === 'codex' || provider === 'cursor' ? provider : null;
+}
+
+async function createFixtureSessionExecutionSnapshot(session: Session): Promise<SessionExecutionSnapshot> {
+    const provider = getFixtureSessionExecutionProvider(session);
+    if (!provider || session.metadata?.startedBy !== 'daemon' || !session.active) {
+        throw new Error('Session execution controls are unavailable for this session.');
+    }
+
+    if (provider === 'codex') {
+        const capabilities = await fixtureGetCodexCapabilities();
+        const configuredModel = session.metadata?.codexExecution?.model;
+        const model = configuredModel
+            ? capabilities.models.find((item) => item.id === configuredModel)
+            : capabilities.models.find((item) => item.isDefault);
+        if (capabilities.status !== 'ready' || !capabilities.catalogVersion || (!configuredModel && !model)) {
+            throw new Error('Codex capabilities are unavailable.');
+        }
+        const modelId = configuredModel ?? model!.id;
+        return {
+            sessionId: session.id,
+            provider,
+            revision: 0,
+            current: {
+                provider,
+                model: modelId,
+                ...(session.metadata?.codexExecution?.reasoningEffort
+                    ? { reasoningEffort: session.metadata.codexExecution.reasoningEffort }
+                    : model?.defaultReasoningEffort
+                        ? { reasoningEffort: model.defaultReasoningEffort }
+                        : {}),
+                catalogVersion: capabilities.catalogVersion,
+            },
+        };
+    }
+
+    const capabilities = await fixtureGetCursorCapabilities();
+    const configuredModel = session.metadata?.cursorExecution?.model;
+    const model = configuredModel
+        ? capabilities.models.find((item) => item.id === configuredModel)
+        : capabilities.models.find((item) => item.isDefault);
+    if (capabilities.status !== 'ready' || !capabilities.catalogVersion || (!configuredModel && !model)) {
+        throw new Error('Cursor capabilities are unavailable.');
+    }
+    return {
+        sessionId: session.id,
+        provider,
+        revision: 0,
+        current: {
+            provider,
+            model: configuredModel ?? model!.id,
+            catalogVersion: capabilities.catalogVersion,
+        },
+    };
+}
+
+export async function fixtureGetSessionExecution(
+    machineId: string,
+    sessionId: string,
+): Promise<SessionExecutionSnapshot> {
+    if (fixtureQueryParameter('sessionExecution') === 'error') {
+        throw new Error('Session execution controls are temporarily unavailable.');
+    }
+    const session = useProtocolStore.getState().sessions[sessionId];
+    if (!session || session.metadata?.machineId !== machineId) {
+        throw new Error('Fixture session not found.');
+    }
+    const existing = fixtureSessionExecutionBySessionId.get(sessionId);
+    if (existing) return structuredClone(existing);
+    const created = await createFixtureSessionExecutionSnapshot(session);
+    fixtureSessionExecutionBySessionId.set(sessionId, created);
+    return structuredClone(created);
+}
+
+export async function fixtureSetSessionExecution(
+    machineId: string,
+    sessionId: string,
+    expectedRevision: number,
+    execution: SessionExecutionSelection,
+): Promise<SessionExecutionSnapshot> {
+    const current = await fixtureGetSessionExecution(machineId, sessionId);
+    if (fixtureQueryParameter('sessionExecution') === 'conflict'
+        && fixtureSessionExecutionConflictAttempts === 0) {
+        fixtureSessionExecutionConflictAttempts += 1;
+        throw new Error('Session execution revision conflict. Refresh and try again.');
+    }
+    if (current.revision !== expectedRevision || current.provider !== execution.provider) {
+        throw new Error('Session execution revision conflict. Refresh and try again.');
+    }
+
+    if (execution.provider === 'codex') {
+        const capabilities = await fixtureGetCodexCapabilities();
+        const model = capabilities.models.find((item) => item.id === execution.model);
+        const isReasoningValid = Boolean(model)
+            && (model!.supportedReasoningEfforts.length === 0
+                ? execution.reasoningEffort === undefined
+                : execution.reasoningEffort !== undefined
+                    && model!.supportedReasoningEfforts.includes(execution.reasoningEffort));
+        if (capabilities.status !== 'ready'
+            || capabilities.catalogVersion !== execution.catalogVersion
+            || !isReasoningValid) {
+            throw new Error('Codex capability selection rejected: unsupported_selection.');
+        }
+    } else {
+        const capabilities = await fixtureGetCursorCapabilities();
+        if (capabilities.status !== 'ready'
+            || capabilities.catalogVersion !== execution.catalogVersion
+            || !capabilities.models.some((item) => item.id === execution.model)) {
+            throw new Error('Cursor capability selection rejected: unsupported_selection.');
+        }
+    }
+
+    const isSameAsCurrent = JSON.stringify(current.current) === JSON.stringify(execution);
+    const isSameAsPending = current.pending
+        && JSON.stringify(current.pending) === JSON.stringify(execution);
+    if ((isSameAsCurrent && !current.pending) || isSameAsPending) {
+        return current;
+    }
+
+    const updated: SessionExecutionSnapshot = {
+        ...current,
+        revision: current.revision + 1,
+        ...(isSameAsCurrent ? {} : { pending: structuredClone(execution) }),
+    };
+    if (isSameAsCurrent) delete updated.pending;
+    fixtureSessionExecutionBySessionId.set(sessionId, updated);
+    return structuredClone(updated);
 }
 
 /** REST-конфиг fixture-режима: все запросы уйдут в fetch-перехватчик. */
@@ -1183,7 +1352,21 @@ export async function fixtureSpawnNewSession(options: SpawnSessionOptions): Prom
         name: fixtureSessionName(directory),
         summary,
         agentSessionId: nativeSessionId,
-        ...providerSessionMetadata(agent, nativeSessionId)
+        ...providerSessionMetadata(agent, nativeSessionId),
+        ...(agent === 'codex' && options.codexExecution && isCodexPermissionMode(options.permissionMode)
+            ? {
+                codexExecution: {
+                    model: options.codexExecution.model,
+                    ...(options.codexExecution.reasoningEffort
+                        ? { reasoningEffort: options.codexExecution.reasoningEffort }
+                        : {}),
+                    permissionMode: options.permissionMode,
+                },
+            }
+            : {}),
+        ...(agent === 'cursor' && options.cursorExecution
+            ? { cursorExecution: { model: options.cursorExecution.model } }
+            : {}),
     };
     const session: Session = {
         id: sessionId,

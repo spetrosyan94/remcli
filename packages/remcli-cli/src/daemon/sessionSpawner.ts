@@ -32,17 +32,22 @@ import {
     DaemonTerminalLaunchResult,
     DaemonRunnerLifecycleResult,
     DaemonSessionWebhookResult,
+    DaemonSessionExecutionSeed,
+    DaemonSessionExecutionState,
     NativeCodexThreadBinding,
     NativeCodexThreadBindingResult,
     NativeCodexThreadWrapper,
     NativeCursorSessionBinding,
     NativeCursorSessionBindingResult,
     NativeCursorSessionWrapper,
+    SessionExecutionConsumeResult,
+    SessionExecutionLookupResult,
+    SessionExecutionSetResult,
     StopSessionResult,
     TrackedSession,
     TmuxPaneOwnership,
 } from './types';
-import { Metadata } from '@/api/types';
+import { Metadata, SessionExecutionSelection, SessionExecutionSnapshot } from '@/api/types';
 import { SpawnSessionOptions } from '@/modules/common/registerCommonHandlers';
 import { logger } from '@/ui/logger';
 import { readSettings, validateProfileForAgent, getProfileEnvironmentVariables } from '@/persistence';
@@ -225,6 +230,75 @@ function hasValidatedCodexSelection(options: SpawnSessionOptions): boolean {
     );
 }
 
+function createSessionExecutionSeed(options: SpawnSessionOptions, agent: SpawnAgent): DaemonSessionExecutionSeed | undefined {
+    if (agent === 'codex' && options.codexExecution && hasValidatedCodexSelection(options)) {
+        return {
+            provider: 'codex',
+            current: {
+                provider: 'codex',
+                model: options.codexExecution.model,
+                ...(options.codexExecution.reasoningEffort ? { reasoningEffort: options.codexExecution.reasoningEffort } : {}),
+                catalogVersion: options.codexExecution.catalogVersion,
+            },
+            codexPermissionMode: options.permissionMode as CodexSandbox,
+        };
+    }
+
+    if (agent === 'cursor'
+        && options.cursorExecution
+        && options.cursorRunner
+        && isCursorRunnerIdentity(options.cursorRunner)) {
+        return {
+            provider: 'cursor',
+            current: {
+                provider: 'cursor',
+                model: options.cursorExecution.model,
+                catalogVersion: options.cursorExecution.catalogVersion,
+            },
+            cursorRunner: { ...options.cursorRunner },
+        };
+    }
+
+    return undefined;
+}
+
+function cloneExecutionSelection(selection: SessionExecutionSelection): SessionExecutionSelection {
+    return selection.provider === 'codex'
+        ? {
+            provider: 'codex',
+            model: selection.model,
+            ...(selection.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}),
+            catalogVersion: selection.catalogVersion,
+        }
+        : {
+            provider: 'cursor',
+            model: selection.model,
+            catalogVersion: selection.catalogVersion,
+        };
+}
+
+function cloneExecutionSnapshot(snapshot: SessionExecutionSnapshot): SessionExecutionSnapshot {
+    return {
+        sessionId: snapshot.sessionId,
+        provider: snapshot.provider,
+        revision: snapshot.revision,
+        current: cloneExecutionSelection(snapshot.current),
+        ...(snapshot.pending ? { pending: cloneExecutionSelection(snapshot.pending) } : {}),
+    };
+}
+
+function areExecutionSelectionsEqual(
+    first: SessionExecutionSelection,
+    second: SessionExecutionSelection,
+): boolean {
+    return first.provider === second.provider
+        && first.model === second.model
+        && first.catalogVersion === second.catalogVersion
+        && (first.provider !== 'codex'
+            || second.provider !== 'codex'
+            || first.reasoningEffort === second.reasoningEffort);
+}
+
 function createPendingSpawnTask(nativeThreadId?: string): PendingSpawnTask {
     let cancellationResult: DaemonSpawnSessionResult | undefined;
     let resolvePromise: (result: DaemonSpawnSessionResult) => void = () => {};
@@ -281,6 +355,18 @@ export interface SessionManager {
     getChildren: () => TrackedSession[];
     /** Diagnostic-only PIDs for current daemon-owned tmux runners. */
     getConfirmedOwnedChildPids: () => number[];
+    /** Read public daemon-owned execution state without exposing internal permissions or runner identity. */
+    getSessionExecution: (sessionId: string) => SessionExecutionLookupResult;
+    /** Return private validation context for the machine RPC boundary only. */
+    getSessionExecutionState: (sessionId: string) => DaemonSessionExecutionState | undefined;
+    /** CAS-update a validated execution selection; selection takes effect on the next runner consume. */
+    setSessionExecution: (
+        sessionId: string,
+        expectedRevision: number,
+        execution: SessionExecutionSelection,
+    ) => SessionExecutionSetResult;
+    /** Atomically move pending execution to current for the authenticated provider runner. */
+    consumeSessionExecution: (sessionId: string, provider: 'codex' | 'cursor') => SessionExecutionConsumeResult;
     /** Bind a native Codex thread to its already-created Remcli wrapper session. */
     bindNativeCodexThread: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
     /** Bind a native Cursor session to its already-created Remcli wrapper session. */
@@ -692,6 +778,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         detachNativeCursorSessionMapping(session);
         clearCursorNativeWriterLeasesForSession(session);
         detachRunnerSessionMapping(session);
+        delete session.executionState;
     };
 
     const displaceTrackedSessionRuntimeState = (pid: number, session: TrackedSession): void => {
@@ -1762,6 +1849,87 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         return null;
     };
 
+    const getSessionExecutionState = (sessionId: string): DaemonSessionExecutionState | undefined => (
+        findDaemonOwnedTrackedSession(sessionId)?.session.executionState
+    );
+
+    const getSessionExecution = (sessionId: string): SessionExecutionLookupResult => {
+        const executionState = getSessionExecutionState(sessionId);
+        if (!executionState) {
+            return { type: 'unavailable' };
+        }
+
+        return { type: 'found', snapshot: cloneExecutionSnapshot(executionState.snapshot) };
+    };
+
+    const setSessionExecution = (
+        sessionId: string,
+        expectedRevision: number,
+        execution: SessionExecutionSelection,
+    ): SessionExecutionSetResult => {
+        const executionState = getSessionExecutionState(sessionId);
+        if (!executionState) {
+            return { type: 'unavailable' };
+        }
+        if (executionState.snapshot.provider !== execution.provider) {
+            return { type: 'provider-mismatch', provider: executionState.snapshot.provider };
+        }
+        if (executionState.snapshot.revision !== expectedRevision) {
+            return { type: 'revision-mismatch', snapshot: cloneExecutionSnapshot(executionState.snapshot) };
+        }
+        if (executionState.snapshot.pending && areExecutionSelectionsEqual(executionState.snapshot.pending, execution)) {
+            return { type: 'updated', snapshot: cloneExecutionSnapshot(executionState.snapshot) };
+        }
+        if (!executionState.snapshot.pending && areExecutionSelectionsEqual(executionState.snapshot.current, execution)) {
+            return { type: 'updated', snapshot: cloneExecutionSnapshot(executionState.snapshot) };
+        }
+        if (executionState.snapshot.pending && areExecutionSelectionsEqual(executionState.snapshot.current, execution)) {
+            executionState.snapshot = {
+                ...executionState.snapshot,
+                revision: executionState.snapshot.revision + 1,
+            };
+            delete executionState.snapshot.pending;
+            return { type: 'updated', snapshot: cloneExecutionSnapshot(executionState.snapshot) };
+        }
+
+        executionState.snapshot = {
+            ...executionState.snapshot,
+            revision: executionState.snapshot.revision + 1,
+            pending: cloneExecutionSelection(execution),
+        };
+        return { type: 'updated', snapshot: cloneExecutionSnapshot(executionState.snapshot) };
+    };
+
+    const consumeSessionExecution = (
+        sessionId: string,
+        provider: 'codex' | 'cursor',
+    ): SessionExecutionConsumeResult => {
+        const executionState = getSessionExecutionState(sessionId);
+        if (!executionState) {
+            return { type: 'unavailable' };
+        }
+        if (executionState.snapshot.provider !== provider) {
+            return { type: 'provider-mismatch', provider: executionState.snapshot.provider };
+        }
+
+        const pending = executionState.snapshot.pending;
+        if (pending) {
+            executionState.snapshot = {
+                ...executionState.snapshot,
+                revision: executionState.snapshot.revision + 1,
+                current: cloneExecutionSelection(pending),
+            };
+            delete executionState.snapshot.pending;
+        }
+        return {
+            type: 'consumed',
+            response: {
+                ...cloneExecutionSnapshot(executionState.snapshot),
+                didApplyPending: Boolean(pending),
+            },
+        };
+    };
+
     const markDaemonRunnerStopping = (sessionId: string): DaemonRunnerLifecycleResult => {
         const tracked = findDaemonOwnedTrackedSession(sessionId);
         if (!tracked) {
@@ -2446,6 +2614,19 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
             existingSession.remcliSessionId = sessionId;
             existingSession.remcliSessionMetadataFromLocalWebhook = sessionMetadata;
+            if (existingSession.startedBy === 'daemon' && existingSession.executionSeed) {
+                const seed = existingSession.executionSeed;
+                existingSession.executionState = {
+                    snapshot: {
+                        sessionId,
+                        provider: seed.provider,
+                        revision: 0,
+                        current: cloneExecutionSelection(seed.current),
+                    },
+                    ...(seed.codexPermissionMode ? { codexPermissionMode: seed.codexPermissionMode } : {}),
+                    ...(seed.cursorRunner ? { cursorRunner: { ...seed.cursorRunner } } : {}),
+                };
+            }
             logger.debug(`[DAEMON RUN] Updated tracked session ${sessionId} with metadata`);
 
             // Resolve any awaiter for this PID
@@ -2806,6 +2987,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 };
                 daemonTmuxRunners.set(tmuxSessionName, daemonTmuxRunner);
 
+                const executionSeed = createSessionExecutionSeed(options, agent);
                 const trackedSession: TrackedSession = {
                     startedBy: 'daemon',
                     pid: tmuxResult.ownership.panePid,
@@ -2815,6 +2997,9 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                     expectedResumeSessionId: options.resumeSessionId,
                     expectedResumeKey: resumeKeyOf(agent, options.resumeSessionId) ?? undefined,
                     expectedDirectory: directory,
+                    ...(executionSeed
+                        ? { executionSeed }
+                        : {}),
                     ...(agent === 'cursor' && cursorSessionLineage && options.resumeSessionId
                         ? {
                             cursorResumeLineage: {
@@ -3387,6 +3572,10 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     return {
         getChildren,
         getConfirmedOwnedChildPids,
+        getSessionExecution,
+        getSessionExecutionState,
+        setSessionExecution,
+        consumeSessionExecution,
         bindNativeCodexThread,
         bindNativeCursorSession,
         acquireCursorHeadlessWriterLease,

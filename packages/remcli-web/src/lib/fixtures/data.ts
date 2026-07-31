@@ -143,6 +143,24 @@ interface SessionSeed {
 }
 
 function makeSession(seed: SessionSeed): Session {
+    const nativeSessionId = `${seed.id}-agent`;
+    const providerMetadata = seed.flavor === 'codex'
+        ? {
+            agentSessionId: nativeSessionId,
+            codexSessionId: nativeSessionId,
+            codexExecution: {
+                model: 'gpt-5.6-luna',
+                reasoningEffort: 'xhigh',
+                permissionMode: 'workspace-write' as const,
+            },
+        }
+        : seed.flavor === 'cursor'
+            ? {
+                agentSessionId: nativeSessionId,
+                cursorSessionId: nativeSessionId,
+                cursorExecution: { model: 'auto' },
+            }
+            : { claudeSessionId: nativeSessionId };
     return {
         id: seed.id,
         seq: seed.seq,
@@ -158,7 +176,7 @@ function makeSession(seed: SessionSeed): Session {
             startedBy: seed.startedBy,
             flavor: seed.flavor ?? null,
             name: seed.path.split('/').pop(),
-            claudeSessionId: `${seed.id}-agent`,
+            ...providerMetadata,
             resumedFromRemcliSessionId: seed.resumedFromRemcliSessionId,
             summary: seed.summary ? { text: seed.summary, updatedAt: seed.activeAt } : undefined,
             executionOutcome: seed.executionOutcome,
@@ -182,6 +200,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         id: FIXTURE_CHAT_SESSION_ID,
         seq: 10,
         path: '/Users/dev/projects/remcli',
+        flavor: 'codex',
         startedBy: 'daemon',
         machineId: 'fx-machine-online',
         host: 'macbook-pro.local',

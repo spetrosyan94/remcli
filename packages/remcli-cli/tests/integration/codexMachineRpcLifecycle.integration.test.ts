@@ -433,6 +433,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
         const controlServer = await startDaemonControlServer({
             instanceId: controlInstanceId,
             getChildren: sessionManager.getChildren,
+            consumeSessionExecution: sessionManager.consumeSessionExecution,
             stopSession: sessionManager.stopSession,
             spawnSession: sessionManager.spawnSession,
             requestShutdown: () => undefined,
@@ -501,6 +502,9 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
             cursorCapabilities,
             spawnSession: sessionManager.spawnSession,
             stopSession: sessionManager.stopSession,
+            getSessionExecution: sessionManager.getSessionExecution,
+            getSessionExecutionState: sessionManager.getSessionExecutionState,
+            setSessionExecution: sessionManager.setSessionExecution,
             requestShutdown: () => undefined,
         });
         cleanupTasks.push({ label: 'controlled machine socket', run: () => machineSocket.close() });

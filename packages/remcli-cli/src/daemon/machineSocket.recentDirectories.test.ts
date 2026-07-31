@@ -11,8 +11,12 @@ import {
     getDefaultCodexExecution,
     type CodexCapabilityClient,
 } from '@/codex/codexCapabilities';
-import { CursorCapabilitiesService } from '@/cursor/cursorCapabilities';
-import { bootstrapMachineSocket, type MachineSocketHandle } from '@/daemon/machineSocket';
+import { CursorCapabilitiesService, getDefaultCursorExecution } from '@/cursor/cursorCapabilities';
+import {
+    bootstrapMachineSocket,
+    type MachineSocketDeps,
+    type MachineSocketHandle,
+} from '@/daemon/machineSocket';
 import { PairingRekeyCoordinator } from '@/daemon/p2p/pairingRekey';
 import { deriveBearerToken, generateSharedSecret } from '@/daemon/p2p/p2pAuth';
 import { calculateRequestProofMac } from '@/daemon/p2p/p2pRequestProof';
@@ -24,6 +28,7 @@ import {
     type RecentDirectoriesStore,
 } from '@/daemon/recentDirectories';
 import type { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
+import type { SessionExecutionSnapshot } from '@/api/types';
 
 const TEST_MACHINE_ID = 'machine-recent-directories-rpc';
 const RPC_TIMEOUT_MS = 5_000;
@@ -87,6 +92,27 @@ function createCursorCapabilities(): CursorCapabilitiesService {
         readModelList: async () => ({ executable: 'agent', version: 'test', output: '' }),
     });
 }
+
+function createReadyCursorCapabilities(): CursorCapabilitiesService {
+    return new CursorCapabilitiesService({
+        readModelList: async () => ({
+            executable: 'agent',
+            version: 'test-cursor',
+            output: 'Available models\ncursor-model - Cursor Model (default)\nTip: select a model',
+        }),
+    });
+}
+
+type SessionExecutionHarnessDeps = Pick<
+    MachineSocketDeps,
+    'getSessionExecution' | 'getSessionExecutionState' | 'setSessionExecution'
+>;
+
+const unavailableSessionExecution: SessionExecutionHarnessDeps = {
+    getSessionExecution: () => ({ type: 'unavailable' }),
+    getSessionExecutionState: () => undefined,
+    setSessionExecution: () => ({ type: 'unavailable' }),
+};
 
 function createPairingRekeyCoordinator(secret: Uint8Array): PairingRekeyCoordinator {
     return new PairingRekeyCoordinator({
@@ -184,6 +210,8 @@ async function startHarness(
     recentDirectories: RecentDirectoriesStore,
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>,
     codexCapabilities: CodexCapabilitiesService = createCodexCapabilities(),
+    sessionExecution: SessionExecutionHarnessDeps = unavailableSessionExecution,
+    cursorCapabilities: CursorCapabilitiesService = createCursorCapabilities(),
 ): Promise<Uint8Array> {
     const secret = generateSharedSecret();
     const bearerToken = deriveBearerToken(secret);
@@ -208,9 +236,10 @@ async function startHarness(
         contentSecret: secret,
         pairingRekeyCoordinator: createPairingRekeyCoordinator(secret),
         codexCapabilities,
-        cursorCapabilities: createCursorCapabilities(),
+        cursorCapabilities,
         spawnSession,
         stopSession: () => ({ success: false }),
+        ...sessionExecution,
         requestShutdown: () => undefined,
         recentDirectories,
     });
@@ -337,6 +366,63 @@ describe('machine RPC recent directories', { timeout: 15_000 }, () => {
             permissionMode: 'workspace-write',
             codexExecution: execution,
         }));
+    });
+
+    it('validates a fresh Cursor selection and rejects a changed runner identity', async () => {
+        const cursorCapabilities = createReadyCursorCapabilities();
+        const capabilitySnapshot = await cursorCapabilities.getCapabilities();
+        const execution = getDefaultCursorExecution(capabilitySnapshot);
+        expect(execution).not.toBeNull();
+        if (!execution) throw new Error('Expected a Cursor execution selection.');
+
+        const runner = await cursorCapabilities.validateSelection(execution);
+        const snapshot: SessionExecutionSnapshot = {
+            sessionId: 'cursor-session',
+            provider: 'cursor',
+            revision: 0,
+            current: { provider: 'cursor', ...execution },
+        };
+        let hasMatchingRunnerIdentity = true;
+        const setSessionExecution = vi.fn(() => ({ type: 'updated' as const, snapshot }));
+        const sessionExecution: SessionExecutionHarnessDeps = {
+            getSessionExecution: () => ({ type: 'found', snapshot }),
+            getSessionExecutionState: () => ({
+                snapshot,
+                cursorRunner: hasMatchingRunnerIdentity
+                    ? runner
+                    : { ...runner, cliFingerprint: '0000000000000000' },
+            }),
+            setSessionExecution,
+        };
+        testDirectory = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-cursor-execution-'));
+        const recentDirectories = createRecentDirectoriesStore({
+            machineId: TEST_MACHINE_ID,
+            filePath: join(testDirectory, 'recent-directories.json'),
+        });
+        const secret = await startHarness(
+            recentDirectories,
+            async () => ({ type: 'success', sessionId: 'unused' }),
+            createCodexCapabilities(),
+            sessionExecution,
+            cursorCapabilities,
+        );
+
+        await expect(callMachineRpc(secret, 'set-session-execution', {
+            sessionId: snapshot.sessionId,
+            expectedRevision: snapshot.revision,
+            execution: snapshot.current,
+        })).resolves.toEqual(snapshot);
+        expect(setSessionExecution).toHaveBeenCalledOnce();
+
+        hasMatchingRunnerIdentity = false;
+        await expect(callMachineRpc(secret, 'set-session-execution', {
+            sessionId: snapshot.sessionId,
+            expectedRevision: snapshot.revision,
+            execution: snapshot.current,
+        })).resolves.toEqual(expect.objectContaining({
+            error: expect.stringContaining('runner_identity_changed'),
+        }));
+        expect(setSessionExecution).toHaveBeenCalledOnce();
     });
 
     it('returns a daemon terminal-unavailable status through encrypted machine RPC', async () => {

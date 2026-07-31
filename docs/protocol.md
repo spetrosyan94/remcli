@@ -242,6 +242,12 @@ auth: {
 - `rpc-call`
   - `{ method, params }` -> callback `{ ok, result? | error? }`
   - Сервер пересылает вызов зарегистрированному сокету через `rpc-request` (на основе ack).
+  - `get-session-execution { sessionId }` возвращает daemon-owned
+    `{ sessionId, provider, revision, current, pending? }` только для активной
+    Codex/Cursor wrapper-сессии.
+  - `set-session-execution { sessionId, expectedRevision, execution }` принимает
+    provider-discriminated selection, повторно проверяет свежий catalog и
+    возвращает новый snapshot. Raw selection из chat message не используется.
 
 ## HTTP-endpoint'ы по областям
 

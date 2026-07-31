@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { RetryableUserMessageDeliveryError, type DeliveredUserMessage, type UserMessage } from '@/api/types';
+import {
+    RetryableUserMessageDeliveryError,
+    type DeliveredUserMessage,
+    type SessionExecutionConsumeResponse,
+    type UserMessage,
+} from '@/api/types';
 import {
     forgetSessionRunnerCredential,
     rememberSessionRunnerCredential,
@@ -87,6 +92,10 @@ interface InterruptedTurnCompletedNotification {
     status: string;
 }
 
+type TestSessionExecutionConsumeResult =
+    | { ok: true; data: SessionExecutionConsumeResponse }
+    | { ok: false; error: string };
+
 interface TestState {
     incomingMessages: DeliveredUserMessage[];
     appServerEvents: TestAppServerEvent[];
@@ -115,6 +124,14 @@ interface TestState {
     p2pSessionCreateCalls: number;
     p2pSessionConnectCallCounts: number[];
     p2pSessionMetadata: Array<Record<string, unknown>>;
+    sessionMetadata: Record<string, unknown>;
+    sessionMetadataUpdates: Array<Record<string, unknown>>;
+    sessionMetadataUpdateFailures: Array<{
+        error: Error;
+        codexReasoningEffort?: string;
+    }>;
+    consumePendingExecution: boolean;
+    consumeSessionExecutionResults: TestSessionExecutionConsumeResult[];
     sessionStartedResults: Array<{ error?: string }>;
     daemonRunnerPreflightCalls: Array<{
         agent: 'codex';
@@ -223,6 +240,11 @@ const testState = vi.hoisted(() => {
         p2pSessionCreateCalls: 0,
         p2pSessionConnectCallCounts: [],
         p2pSessionMetadata: [],
+        sessionMetadata: {},
+        sessionMetadataUpdates: [],
+        sessionMetadataUpdateFailures: [],
+        consumePendingExecution: false,
+        consumeSessionExecutionResults: [],
         sessionStartedResults: [],
         daemonRunnerPreflightCalls: [],
         daemonRunnerPreflightResults: [],
@@ -312,6 +334,11 @@ const testState = vi.hoisted(() => {
             state.p2pSessionCreateCalls = 0;
             state.p2pSessionConnectCallCounts = [];
             state.p2pSessionMetadata = [];
+            state.sessionMetadata = {};
+            state.sessionMetadataUpdates = [];
+            state.sessionMetadataUpdateFailures = [];
+            state.consumePendingExecution = false;
+            state.consumeSessionExecutionResults = [];
             state.sessionStartedResults = [];
             state.daemonRunnerPreflightCalls = [];
             state.daemonRunnerPreflightResults = [];
@@ -457,7 +484,25 @@ vi.mock('@/api/api', () => ({
                 keepAlive: vi.fn(),
                 flush: vi.fn(async () => undefined),
                 close: vi.fn(async () => undefined),
-                updateMetadata: vi.fn(),
+                updateMetadata: vi.fn(async (handler: (metadata: Record<string, unknown>) => Record<string, unknown>) => {
+                    const updatedMetadata = handler(testState.state.sessionMetadata);
+                    const pendingFailure = testState.state.sessionMetadataUpdateFailures[0];
+                    const reasoningEffort = (
+                        updatedMetadata.codexExecution as { reasoningEffort?: unknown } | undefined
+                    )?.reasoningEffort;
+                    if (
+                        pendingFailure
+                        && (
+                            pendingFailure.codexReasoningEffort === undefined
+                            || reasoningEffort === pendingFailure.codexReasoningEffort
+                        )
+                    ) {
+                        testState.state.sessionMetadataUpdateFailures.shift();
+                        throw pendingFailure.error;
+                    }
+                    testState.state.sessionMetadata = updatedMetadata;
+                    testState.state.sessionMetadataUpdates.push({ ...testState.state.sessionMetadata });
+                }),
                 updateAgentState: vi.fn(),
                 rpcHandlerManager: {
                     registerHandler: vi.fn((method: string, handler: () => void | Promise<void>) => {
@@ -514,6 +559,23 @@ vi.mock('@/daemon/controlClient', () => ({
             data: { type: 'verified' as const },
         };
     }),
+    consumeDaemonSessionExecution: vi.fn(async () => (
+        testState.state.consumeSessionExecutionResults.shift() ?? {
+            ok: true,
+            data: {
+                sessionId: 'remcli-session',
+                provider: 'codex' as const,
+                revision: testState.state.consumePendingExecution ? 1 : 0,
+                current: {
+                    provider: 'codex' as const,
+                    model: 'gpt-5.6-luna',
+                    reasoningEffort: testState.state.consumePendingExecution ? 'high' : 'xhigh',
+                    catalogVersion: 'test-catalog',
+                },
+                didApplyPending: testState.state.consumePendingExecution,
+            },
+        }
+    )),
     openDaemonCodexRemoteTui: vi.fn(async (request: {
         agent: string;
         nativeThreadId: string;
@@ -1098,6 +1160,157 @@ describe('runCodex app-server integration', () => {
         expect(JSON.stringify(testState.state.p2pSessionMetadata)).not.toContain('catalogVersion');
     });
 
+    it('preserves the current Codex permission while applying a pending execution change', async () => {
+        testState.state.sessionMetadata = {
+            codexExecution: {
+                model: 'gpt-5.6-luna',
+                reasoningEffort: 'xhigh',
+                permissionMode: 'workspace-write',
+            },
+        };
+        testState.state.consumePendingExecution = true;
+        testState.state.incomingMessages = [createIncomingMessage()];
+
+        await runTestCodex({
+            startedBy: 'daemon',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution('xhigh'),
+        });
+
+        expect(testState.state.sessionMetadataUpdates).toContainEqual(expect.objectContaining({
+            codexExecution: expect.objectContaining({
+                model: 'gpt-5.6-luna',
+                reasoningEffort: 'high',
+                permissionMode: 'workspace-write',
+            }),
+        }));
+    });
+
+    it('keeps a durable Codex prompt pending when execution consume is temporarily unavailable', async () => {
+        const deliveryId = 'p2p:remcli-session:consume-unavailable';
+        testState.state.consumeSessionExecutionResults = [{
+            ok: false,
+            error: 'Request failed: /session-execution-consume, HTTP 503',
+        }];
+
+        const runner = runTestCodex({
+            startedBy: 'daemon',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution('xhigh'),
+        });
+        await vi.waitFor(() => expect(testState.state.userMessageCallback).not.toBeNull());
+        const callback = testState.state.userMessageCallback;
+        if (!callback) {
+            throw new Error('Codex user-message handler was not registered.');
+        }
+        const delivery = createIncomingMessage({}, deliveryId);
+
+        await expect(Promise.resolve(callback(delivery))).rejects.toEqual(expect.objectContaining({
+            name: 'RetryableUserMessageDeliveryError',
+            message: 'Codex execution selection could not be applied: Request failed: /session-execution-consume, HTTP 503',
+        }));
+        expect(testState.state.cancelledDeliveryIds).toEqual([]);
+        expect(testState.state.beginTurns).toEqual([]);
+        expect(testState.state.sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Codex execution selection could not be applied: Request failed: /session-execution-consume, HTTP 503',
+            isError: true,
+        });
+
+        testState.state.closeQueueWhenEmpty = true;
+        await callback(delivery);
+        await runner;
+
+        expect(testState.state.acknowledgedDeliveryIds).toEqual([deliveryId]);
+        expect(testState.state.cancelledDeliveryIds).toEqual([]);
+    });
+
+    it('reconciles consumed Codex execution metadata on replay and still defers the changed execution', async () => {
+        const deliveryId = 'p2p:remcli-session:metadata-retry';
+        testState.state.nativeThreadId = 'native-resume-thread';
+        testState.state.resumedActiveTurnId = 'terminal-turn-before-metadata-retry';
+        testState.state.consumeSessionExecutionResults = [
+            {
+                ok: true,
+                data: {
+                    sessionId: 'remcli-session',
+                    provider: 'codex',
+                    revision: 1,
+                    current: {
+                        provider: 'codex',
+                        model: 'gpt-5.6-luna',
+                        reasoningEffort: 'high',
+                        catalogVersion: 'test-catalog',
+                    },
+                    didApplyPending: true,
+                },
+            },
+            {
+                ok: true,
+                data: {
+                    sessionId: 'remcli-session',
+                    provider: 'codex',
+                    revision: 1,
+                    current: {
+                        provider: 'codex',
+                        model: 'gpt-5.6-luna',
+                        reasoningEffort: 'high',
+                        catalogVersion: 'test-catalog',
+                    },
+                    didApplyPending: false,
+                },
+            },
+        ];
+        testState.state.sessionMetadataUpdateFailures = [{
+            error: new Error(
+                'Codex metadata update failed at https://daemon.local/sync?token=codex-secret',
+            ),
+            codexReasoningEffort: 'high',
+        }];
+
+        const runner = runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution('xhigh'),
+        });
+        await vi.waitFor(() => expect(testState.state.userMessageCallback).not.toBeNull());
+        const callback = testState.state.userMessageCallback;
+        if (!callback) {
+            throw new Error('Codex user-message handler was not registered.');
+        }
+        const delivery = createIncomingMessage({}, deliveryId);
+
+        await expect(Promise.resolve(callback(delivery))).rejects.toBeInstanceOf(RetryableUserMessageDeliveryError);
+        expect(testState.state.cancelledDeliveryIds).toEqual([]);
+        expect(testState.state.beginTurns).toEqual([]);
+        expect(testState.state.sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Codex metadata update failed at https://daemon.local/sync?token=[REDACTED]',
+            isError: true,
+        });
+
+        testState.state.closeQueueWhenEmpty = true;
+        await callback(delivery);
+        await runner;
+
+        expect(testState.state.sessionMetadataUpdates).toContainEqual(expect.objectContaining({
+            codexExecution: {
+                model: 'gpt-5.6-luna',
+                reasoningEffort: 'high',
+                permissionMode: 'read-only',
+            },
+        }));
+        expect(testState.state.steeredTurns).toEqual([]);
+        expect(testState.state.beginTurns).toEqual([expect.objectContaining({
+            threadId: 'native-resume-thread',
+            model: 'gpt-5.6-luna',
+            effort: 'high',
+        })]);
+        expect(testState.state.acknowledgedDeliveryIds).toEqual([deliveryId]);
+        expect(testState.state.cancelledDeliveryIds).toEqual([]);
+    });
+
     it('does not attach a shared app-server or remote TUI from a stopping daemon snapshot', async () => {
         vi.mocked(readDaemonState).mockResolvedValueOnce({
             schemaVersion: 1,
@@ -1360,6 +1573,30 @@ describe('runCodex app-server integration', () => {
         expect(testState.state.beginTurns).toEqual([]);
         expect(testState.state.acknowledgedDeliveryIds).toEqual([deliveryId]);
         expect(testState.state.rejectedDeliveryErrors).toEqual([]);
+    });
+
+    it('defers a consumed execution change until an active native turn completes', async () => {
+        const deliveryId = 'p2p:remcli-session:execution-change-active-turn';
+        testState.state.nativeThreadId = 'native-resume-thread';
+        testState.state.resumedActiveTurnId = 'terminal-turn-before-execution-change';
+        testState.state.consumePendingExecution = true;
+        testState.state.incomingMessages = [createIncomingMessage({}, deliveryId)];
+
+        await runTestCodex({
+            startedBy: 'daemon',
+            resumeSessionId: 'native-resume-thread',
+            permissionMode: 'read-only',
+            execution: await createRunnerExecution(),
+        });
+
+        expect(testState.state.steeredTurns).toEqual([]);
+        expect(testState.state.beginTurns).toEqual([expect.objectContaining({
+            threadId: 'native-resume-thread',
+            prompt: 'remote prompt',
+            model: 'gpt-5.6-luna',
+            effort: 'high',
+        })]);
+        expect(testState.state.acknowledgedDeliveryIds).toEqual([deliveryId]);
     });
 
     it('hydrates a terminal turn that began while idle before steering the phone delivery', async () => {

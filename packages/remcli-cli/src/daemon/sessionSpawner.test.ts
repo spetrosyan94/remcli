@@ -520,6 +520,95 @@ describe('createSessionManager resume deduplication', () => {
         });
     });
 
+    it('keeps daemon-owned execution state revisioned, provider-bound, and cancellable', async () => {
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: 'tmux-execution-state',
+            windowId: '@622',
+            paneId: '%622',
+            pid: process.pid,
+        });
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'codex',
+            ...CONTROLLED_CODEX_SELECTION,
+        });
+
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        manager.onRemcliSessionWebhook('remcli-execution-state', createSessionMetadata(process.pid, {
+            startedBy: 'daemon',
+            flavor: 'codex',
+        }), getDaemonRunnerToken());
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-execution-state' });
+
+        expect(manager.getSessionExecution('remcli-execution-state')).toEqual({
+            type: 'found',
+            snapshot: {
+                sessionId: 'remcli-execution-state',
+                provider: 'codex',
+                revision: 0,
+                current: {
+                    provider: 'codex',
+                    model: 'gpt-5.6-luna',
+                    reasoningEffort: 'xhigh',
+                    catalogVersion: 'catalog-1',
+                },
+            },
+        });
+
+        const changedExecution = {
+            provider: 'codex' as const,
+            model: 'gpt-5.6-terra',
+            reasoningEffort: 'high',
+            catalogVersion: 'catalog-2',
+        };
+        expect(manager.setSessionExecution('remcli-execution-state', 0, {
+            provider: 'codex',
+            model: 'gpt-5.6-luna',
+            reasoningEffort: 'xhigh',
+            catalogVersion: 'catalog-1',
+        })).toMatchObject({
+            type: 'updated',
+            snapshot: { revision: 0 },
+        });
+        expect(manager.setSessionExecution('remcli-execution-state', 0, changedExecution)).toMatchObject({
+            type: 'updated',
+            snapshot: { revision: 1, pending: changedExecution },
+        });
+        expect(manager.setSessionExecution('remcli-execution-state', 1, changedExecution)).toMatchObject({
+            type: 'updated',
+            snapshot: { revision: 1, pending: changedExecution },
+        });
+        expect(manager.setSessionExecution('remcli-execution-state', 1, {
+            provider: 'codex',
+            model: 'gpt-5.6-luna',
+            reasoningEffort: 'xhigh',
+            catalogVersion: 'catalog-1',
+        })).toMatchObject({
+            type: 'updated',
+            snapshot: { revision: 2, current: { model: 'gpt-5.6-luna' } },
+        });
+        expect(manager.setSessionExecution('remcli-execution-state', 1, changedExecution)).toMatchObject({
+            type: 'revision-mismatch',
+            snapshot: { revision: 2 },
+        });
+        expect(manager.setSessionExecution('remcli-execution-state', 2, {
+            provider: 'cursor',
+            model: 'cursor-model',
+            catalogVersion: 'cursor-catalog',
+        })).toEqual({ type: 'provider-mismatch', provider: 'codex' });
+        expect(manager.consumeSessionExecution('remcli-execution-state', 'codex')).toMatchObject({
+            type: 'consumed',
+            response: { didApplyPending: false, revision: 2 },
+        });
+        expect(manager.consumeSessionExecution('remcli-execution-state', 'cursor')).toEqual({
+            type: 'provider-mismatch',
+            provider: 'codex',
+        });
+        expect(manager.getSessionExecution('terminal-owned-session')).toEqual({ type: 'unavailable' });
+    });
+
     it('passes the daemon-validated Cursor execution config to the runner before its first turn', async () => {
         tmuxMocks.spawnInTmux.mockResolvedValueOnce({
             success: true,

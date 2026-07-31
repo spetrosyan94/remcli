@@ -24,7 +24,8 @@ import type {
     NativeCodexThreadBinding,
     NativeCodexThreadBindingResult,
     NativeCursorSessionBinding,
-    NativeCursorSessionBindingResult,
+  NativeCursorSessionBindingResult,
+  SessionExecutionConsumeResult,
     StopSessionResult,
 } from './types';
 import type { PairingRekeyApprovalResult } from './p2p/pairingRekey';
@@ -71,6 +72,7 @@ interface ControlServerTestOptions {
     completeDaemonRunnerStopping?: (sessionId: string) => Promise<DaemonRunnerLifecycleResult>;
     openCodexRemoteTui?: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
     approvePairingRekey?: (requestId: string, approvalCode: string) => Promise<PairingRekeyApprovalResult>;
+    consumeSessionExecution?: (sessionId: string, provider: 'codex' | 'cursor') => SessionExecutionConsumeResult;
 }
 
 interface Deferred<T> {
@@ -95,6 +97,7 @@ async function startControlServerForTest(options: ControlServerTestOptions = {})
     return startDaemonControlServer({
         instanceId: options.instanceId,
         getChildren: () => [],
+        consumeSessionExecution: options.consumeSessionExecution ?? (() => ({ type: 'unavailable' })),
         stopSession: options.stopSession ?? (() => ({ success: false })),
         spawnSession: async () => ({
             type: 'success',
@@ -147,6 +150,58 @@ describe('startDaemonControlServer', () => {
         const response = await fetch(`http://127.0.0.1:${server.port}/identity`);
 
         await expect(response.json()).resolves.toEqual({ instanceId });
+    });
+
+    it('consumes pending execution only after the exact runner credential is verified', async () => {
+        const consumeSessionExecution = vi.fn<
+            (sessionId: string, provider: 'codex' | 'cursor') => SessionExecutionConsumeResult
+        >(() => ({
+            type: 'consumed',
+            response: {
+                sessionId: 'daemon-codex-session',
+                provider: 'codex',
+                revision: 3,
+                current: {
+                    provider: 'codex',
+                    model: 'gpt-5.6-terra',
+                    reasoningEffort: 'high',
+                    catalogVersion: 'catalog-2',
+                },
+                didApplyPending: true,
+            },
+        }));
+        const server = await startControlServerForTest({
+            verifySessionRunnerCredential: (sessionId, credential) => (
+                sessionId === 'daemon-codex-session' && credential === 'runner-credential'
+            ),
+            consumeSessionExecution,
+        });
+        stopServer = server.stop;
+
+        const response = await fetch(`http://127.0.0.1:${server.port}/session-execution-consume`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                sessionId: 'daemon-codex-session',
+                provider: 'codex',
+                runnerCredential: 'runner-credential',
+            }),
+        });
+
+        expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toEqual({
+            sessionId: 'daemon-codex-session',
+            provider: 'codex',
+            revision: 3,
+            current: {
+                provider: 'codex',
+                model: 'gpt-5.6-terra',
+                reasoningEffort: 'high',
+                catalogVersion: 'catalog-2',
+            },
+            didApplyPending: true,
+        });
+        expect(consumeSessionExecution).toHaveBeenCalledWith('daemon-codex-session', 'codex');
     });
 
     it('cancels a pending auto-update synchronously when /stop is requested', async () => {

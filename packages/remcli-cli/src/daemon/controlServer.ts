@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import { logger } from '@/ui/logger';
-import type { Metadata } from '@/api/types';
+import type { Metadata, SessionExecutionConsumeResponse, SessionExecutionSnapshot } from '@/api/types';
 import type {
   CodexRemoteTuiOpenRequest,
   CodexRemoteTuiOpenResult,
@@ -27,6 +27,7 @@ import type {
   NativeCodexThreadBindingResult,
   NativeCursorSessionBinding,
   NativeCursorSessionBindingResult,
+  SessionExecutionConsumeResult,
   StopSessionResult,
   TrackedSession,
 } from './types';
@@ -123,6 +124,53 @@ const daemonRunnerLifecycleResultSchema = z.object({
   accepted: z.boolean(),
 });
 
+const sessionExecutionSelectionSchema = z.discriminatedUnion('provider', [
+  z.object({
+    provider: z.literal('codex'),
+    model: z.string().min(1),
+    reasoningEffort: z.string().min(1).optional(),
+    catalogVersion: z.string().min(1),
+  }).strict(),
+  z.object({
+    provider: z.literal('cursor'),
+    model: z.string().min(1),
+    catalogVersion: z.string().min(1),
+  }).strict(),
+]);
+
+const sessionExecutionSnapshotObjectSchema = z.object({
+  sessionId: z.string().min(1),
+  provider: z.enum(['codex', 'cursor']),
+  revision: z.number().int().nonnegative(),
+  current: sessionExecutionSelectionSchema,
+  pending: sessionExecutionSelectionSchema.optional(),
+}).strict();
+
+function validateSessionExecutionSnapshotProvider(
+  snapshot: z.infer<typeof sessionExecutionSnapshotObjectSchema>,
+  context: z.RefinementCtx,
+): void {
+  if (snapshot.current.provider !== snapshot.provider) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Current selection provider mismatch.' });
+  }
+  if (snapshot.pending && snapshot.pending.provider !== snapshot.provider) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Pending selection provider mismatch.' });
+  }
+}
+
+const sessionExecutionSnapshotSchema = sessionExecutionSnapshotObjectSchema
+  .superRefine(validateSessionExecutionSnapshotProvider);
+
+const sessionExecutionConsumeRequestSchema = z.object({
+  sessionId: z.string().min(1),
+  provider: z.enum(['codex', 'cursor']),
+  runnerCredential: z.string().min(1),
+}).strict();
+
+const sessionExecutionConsumeResponseSchema = sessionExecutionSnapshotObjectSchema.extend({
+  didApplyPending: z.boolean(),
+}).strict().superRefine(validateSessionExecutionSnapshotProvider);
+
 const metadataSchema = z.object({
   path: z.string(),
   host: z.string(),
@@ -175,6 +223,10 @@ const INVALID_SESSION_RUNNER_CREDENTIAL_ERROR = 'invalid-runner-credential';
 
 const runnerCredentialDeniedResponseSchema = z.object({
   error: z.literal(INVALID_SESSION_RUNNER_CREDENTIAL_ERROR),
+});
+
+const sessionExecutionUnavailableResponseSchema = z.object({
+  error: z.literal('session-execution-unavailable'),
 });
 
 const SESSION_WEBHOOK_REJECTED_ERROR = 'session-webhook-rejected';
@@ -291,6 +343,7 @@ const codexRemoteTuiOpenResultSchema = z.discriminatedUnion('type', [
 
 export function startDaemonControlServer({
   getChildren,
+  consumeSessionExecution,
   stopSession,
   spawnSession,
   requestShutdown,
@@ -311,6 +364,7 @@ export function startDaemonControlServer({
   instanceId = randomUUID(),
 }: {
   getChildren: () => TrackedSession[];
+  consumeSessionExecution: (sessionId: string, provider: 'codex' | 'cursor') => SessionExecutionConsumeResult;
   stopSession: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
   spawnSession: (options: SpawnSessionOptions) => Promise<DaemonSpawnSessionResult>;
   requestShutdown: () => void;
@@ -353,6 +407,29 @@ export function startDaemonControlServer({
         },
       },
     }, async () => ({ instanceId }));
+
+    typed.post('/session-execution-consume', {
+      schema: {
+        body: sessionExecutionConsumeRequestSchema,
+        response: {
+          200: sessionExecutionConsumeResponseSchema,
+          403: runnerCredentialDeniedResponseSchema,
+          409: sessionExecutionUnavailableResponseSchema,
+        },
+      },
+    }, async (request, reply): Promise<SessionExecutionConsumeResponse | { error: 'invalid-runner-credential' | 'session-execution-unavailable' }> => {
+      const { sessionId, provider, runnerCredential } = request.body;
+      if (!verifySessionRunnerCredential(sessionId, runnerCredential)) {
+        reply.code(403);
+        return { error: INVALID_SESSION_RUNNER_CREDENTIAL_ERROR };
+      }
+      const result = consumeSessionExecution(sessionId, provider);
+      if (result.type !== 'consumed') {
+        reply.code(409);
+        return { error: 'session-execution-unavailable' };
+      }
+      return result.response;
+    });
 
     // Session reports itself after creation
     typed.post('/session-started', {

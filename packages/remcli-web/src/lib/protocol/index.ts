@@ -44,7 +44,9 @@ export {
     // fixture-aware обёртки над socket.ts (в fixture-режиме — локальный ответ)
     machineGetCodexCapabilities,
     machineGetCursorCapabilities,
+    machineGetSessionExecution,
     machineSpawnNewSession,
+    machineSetSessionExecution,
     machineListAgentSessions,
     machineListDirectory,
     machineListRecentDirectories,
@@ -97,6 +99,7 @@ export {
     type CursorLaunchControls,
     type CursorModelCapability,
     type CursorSandboxMode,
+    type CodexSessionExecutionSelection,
     type DirectoryEntry,
     type DirectoryHome,
     type DirectoryListing,
@@ -104,6 +107,9 @@ export {
     type RecentDirectory,
     type RecentDirectoriesErrorCode,
     RecentDirectoriesRpcError,
+    type CursorSessionExecutionSelection,
+    type SessionExecutionSelection,
+    type SessionExecutionSnapshot,
     type SpawnSessionOptions,
     type SpawnSessionResult
 } from '@/lib/protocol/socket';

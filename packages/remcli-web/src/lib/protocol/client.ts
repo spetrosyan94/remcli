@@ -10,6 +10,7 @@ import {
     fixtureAnswerPermission,
     fixtureGetCodexCapabilities,
     fixtureGetCursorCapabilities,
+    fixtureGetSessionExecution,
     fixtureListAgentSessions,
     fixtureListDirectory,
     fixtureListRecentDirectories,
@@ -19,6 +20,7 @@ import {
     fixtureRefreshSessions,
     fixtureRestConfig,
     fixtureSpawnNewSession,
+    fixtureSetSessionExecution,
     fixtureStopSession,
     initFixturesIfEnabled
 } from '@/lib/fixtures';
@@ -56,12 +58,14 @@ import {
     machineListAgentSessions as socketMachineListAgentSessions,
     machineGetCodexCapabilities as socketMachineGetCodexCapabilities,
     machineGetCursorCapabilities as socketMachineGetCursorCapabilities,
+    machineGetSessionExecution as socketMachineGetSessionExecution,
     machineListDirectory as socketMachineListDirectory,
     machineListRecentDirectories as socketMachineListRecentDirectories,
     machineCancelPairingRekey as socketMachineCancelPairingRekey,
     machineRequestPairingRekey as socketMachineRequestPairingRekey,
     machineShowPairingQr as socketMachineShowPairingQr,
     machineSpawnNewSession as socketMachineSpawnNewSession,
+    machineSetSessionExecution as socketMachineSetSessionExecution,
     machineStopSession as socketMachineStopSession,
     onSocketMessage,
     onSocketReconnected,
@@ -77,6 +81,8 @@ import {
     type RecentDirectory,
     type CodexCapabilitiesSnapshot,
     type CursorCapabilitiesSnapshot,
+    type SessionExecutionSelection,
+    type SessionExecutionSnapshot,
     type SpawnSessionOptions,
     type SpawnSessionResult,
     type PairingRekeyCancellationResult,
@@ -430,6 +436,30 @@ export async function machineGetCursorCapabilities(
         return fixtureGetCursorCapabilities();
     }
     return await socketMachineGetCursorCapabilities(machineId, forceRefresh);
+}
+
+/** Read active session execution controls; fixture mode mirrors daemon ownership rules. */
+export async function machineGetSessionExecution(
+    machineId: string,
+    sessionId: string,
+): Promise<SessionExecutionSnapshot> {
+    if (isFixturesActive) {
+        return fixtureGetSessionExecution(machineId, sessionId);
+    }
+    return socketMachineGetSessionExecution(machineId, sessionId);
+}
+
+/** Stage an atomic provider selection for the next user message. */
+export async function machineSetSessionExecution(
+    machineId: string,
+    sessionId: string,
+    expectedRevision: number,
+    execution: SessionExecutionSelection,
+): Promise<SessionExecutionSnapshot> {
+    if (isFixturesActive) {
+        return fixtureSetSessionExecution(machineId, sessionId, expectedRevision, execution);
+    }
+    return socketMachineSetSessionExecution(machineId, sessionId, expectedRevision, execution);
 }
 
 /** Spawn a new agent session on a machine; fixture mode creates a local store session. */

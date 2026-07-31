@@ -268,9 +268,29 @@ machine-RPC integration используют fake app-server client и mocked sp
 boundary; это не real-provider gate. Реальный `thread/start + turn/start` gate
 запускается только opt-in с действующими credentials, не в обычном CI.
 
-Переключения model, reasoning и permission внутри открытого чата пока нет.
-Raw per-message metadata намеренно игнорируется daemon-created Codex session и
-не может обойти этот contract.
+### Модель и reasoning в открытом чате
+
+Для активной daemon-owned сессии Web читает daemon-owned snapshot через
+`get-session-execution` и ставит выбор для следующего сообщения через
+`set-session-execution`. Snapshot содержит `revision`, `current` и
+необязательный `pending`; запись использует CAS и повторную fresh validation
+того же account-visible catalog. Raw model/reasoning в message metadata
+по-прежнему игнорируются и не могут обойти этот contract.
+
+Перед обработкой phone prompt runner атомарно вызывает защищённый loopback
+`session-execution-consume`. Если pending существует, daemon переносит его в
+current, повышает revision и возвращает runner-у уже проверенный tuple. После
+этого `runCodex`:
+
+- обновляет `metadata.codexExecution` без изменения текущего permission mode;
+- передаёт новые `model + reasoningEffort` в следующий `turn/start`;
+- не отправляет prompt через `turn/steer`, если в native thread ещё выполняется
+  старый turn: сообщение ждёт его завершения и начинает новый turn;
+- ACK-ит P2P delivery только после принятия prompt app-server.
+
+Pending хранится только в памяти активного daemon wrapper. После reconnect Web
+заново читает snapshot; завершённая или terminal-owned сессия этот control не
+показывает.
 
 ## Terminal / TUI parity
 

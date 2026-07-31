@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { RetryableUserMessageDeliveryError } from '@/api/types';
 import { CursorTurnError } from './cursorQuery';
 import type { CursorLaunchControls } from './cursorLaunchControls';
 import type { CursorStreamEvent } from './types';
@@ -35,6 +36,7 @@ interface TestSession {
     keepAlive: ReturnType<typeof vi.fn>;
     sendAgentMessage: ReturnType<typeof vi.fn>;
     sendSessionEvent: ReturnType<typeof vi.fn>;
+    cancelPendingUserMessageDelivery: ReturnType<typeof vi.fn>;
     onUserMessage: ReturnType<typeof vi.fn>;
     rpcHandlerManager: {
         registerHandler: ReturnType<typeof vi.fn>;
@@ -49,6 +51,8 @@ interface QueuedMessage {
     };
     isolate: boolean;
     hash: string;
+    acknowledge?: () => void;
+    reject?: (error: unknown) => void;
 }
 
 interface ReconnectionOptions {
@@ -79,10 +83,15 @@ const testState = vi.hoisted(() => {
         static instances: FakeMessageQueue[] = [];
 
         private resolver: ((message: QueuedMessage | null) => void) | null = null;
+        private resolveAcceptance: (() => void) | null = null;
+        private rejectAcceptance: ((error: unknown) => void) | null = null;
+        private readonly modeHasher: (mode: unknown) => string;
         public waitCount = 0;
         public pushed: Array<{ message: string; mode: { launchControls: CursorLaunchControls; model?: string } }> = [];
+        public modeHashes: string[] = [];
 
-        public constructor(_hash: unknown) {
+        public constructor(modeHasher: (mode: unknown) => string) {
+            this.modeHasher = modeHasher;
             FakeMessageQueue.instances.push(this);
         }
 
@@ -99,13 +108,40 @@ const testState = vi.hoisted(() => {
         }
 
         public push(message: string, mode: unknown): void {
+            this.modeHashes.push(this.modeHasher(mode));
             this.pushed.push({
                 message,
                 mode: mode as { launchControls: CursorLaunchControls; model?: string },
             });
         }
 
+        public pushWithAcceptance(message: string, mode: unknown): Promise<void> {
+            this.push(message, mode);
+            return new Promise((resolve, reject) => {
+                this.resolveAcceptance = resolve;
+                this.rejectAcceptance = reject;
+            });
+        }
+
         public resolve(message: QueuedMessage | null): void {
+            if (message?.acknowledge) {
+                const acknowledge = message.acknowledge;
+                message.acknowledge = () => {
+                    acknowledge();
+                    this.resolveAcceptance?.();
+                    this.resolveAcceptance = null;
+                    this.rejectAcceptance = null;
+                };
+            }
+            if (message) {
+                const reject = message.reject;
+                message.reject = (error) => {
+                    reject?.(error);
+                    this.rejectAcceptance?.(error);
+                    this.resolveAcceptance = null;
+                    this.rejectAcceptance = null;
+                };
+            }
             this.resolver?.(message);
         }
     }
@@ -122,6 +158,7 @@ const testState = vi.hoisted(() => {
         acquireDaemonRunnerCredential: vi.fn(),
         reportTerminalSessionStarted: vi.fn(),
         bindDaemonCursorSession: vi.fn(),
+        consumeDaemonSessionExecution: vi.fn(),
         acquireDaemonCursorHeadlessWriterLease: vi.fn(),
         releaseDaemonCursorNativeWriterLease: vi.fn(),
         preflightDaemonCursorRunner: vi.fn(),
@@ -152,6 +189,21 @@ const testState = vi.hoisted(() => {
             this.acquireDaemonRunnerCredential.mockReset();
             this.reportTerminalSessionStarted.mockReset();
             this.bindDaemonCursorSession.mockReset();
+            this.consumeDaemonSessionExecution.mockReset();
+            this.consumeDaemonSessionExecution.mockResolvedValue({
+                ok: true,
+                data: {
+                    sessionId: 'cursor-session',
+                    provider: 'cursor',
+                    revision: 0,
+                    current: {
+                        provider: 'cursor',
+                        model: 'controlled-cursor-model',
+                        catalogVersion: 'controlled-cursor-catalog',
+                    },
+                    didApplyPending: false,
+                },
+            });
             this.acquireDaemonCursorHeadlessWriterLease.mockReset();
             this.acquireDaemonCursorHeadlessWriterLease.mockResolvedValue({
                 ok: true,
@@ -206,6 +258,7 @@ vi.mock('@/utils/daemonRunnerCredentialBootstrap', () => ({
 vi.mock('@/daemon/controlClient', () => ({
     acquireDaemonCursorHeadlessWriterLease: testState.acquireDaemonCursorHeadlessWriterLease,
     bindDaemonCursorSession: testState.bindDaemonCursorSession,
+    consumeDaemonSessionExecution: testState.consumeDaemonSessionExecution,
     preflightDaemonCursorRunner: testState.preflightDaemonCursorRunner,
     reportDaemonCursorRunnerBootstrapFailure: testState.reportDaemonCursorRunnerBootstrapFailure,
     releaseDaemonCursorNativeWriterLease: testState.releaseDaemonCursorNativeWriterLease,
@@ -260,9 +313,13 @@ vi.mock('@/utils/caffeinate', () => ({
     stopCaffeinate: vi.fn(),
 }));
 
-vi.mock('@/utils/redaction', () => ({
-    redactDiagnosticData: (value: unknown): unknown => value,
-}));
+vi.mock('@/utils/redaction', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/utils/redaction')>();
+    return {
+        ...actual,
+        redactDiagnosticData: (value: unknown): unknown => value,
+    };
+});
 
 vi.mock('@/utils/serverConnectionErrors', () => ({
     connectionState: { setBackend: vi.fn() },
@@ -308,6 +365,7 @@ function createTestSession(sessionId: string, metadata: Record<string, unknown> 
         keepAlive: vi.fn(),
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn(),
+        cancelPendingUserMessageDelivery: vi.fn(() => true),
         onUserMessage: vi.fn(),
         rpcHandlerManager: {
             registerHandler: vi.fn(),
@@ -1554,6 +1612,502 @@ describe('runCursor lifecycle', () => {
         await runPromise;
     });
 
+    it('resumes the same native Cursor chat with a consumed model change and acknowledges only after init binding and metadata', async () => {
+        const session = createTestSession('cursor-session');
+        testState.response = { id: 'cursor-session' };
+        testState.initialSession = session;
+        testState.acquireDaemonRunnerCredential.mockResolvedValue(true);
+        testState.consumeDaemonSessionExecution.mockResolvedValue({
+            ok: true,
+            data: {
+                sessionId: 'cursor-session',
+                provider: 'cursor',
+                revision: 2,
+                current: {
+                    provider: 'cursor',
+                    model: 'changed-cursor-model',
+                    catalogVersion: 'catalog-2',
+                },
+                didApplyPending: true,
+            },
+        });
+        testState.acquireDaemonCursorHeadlessWriterLease.mockResolvedValue({
+            ok: true,
+            data: {
+                type: 'acquired',
+                writerLease: { ...TEST_HEADLESS_WRITER_LEASE, nativeSessionId: 'existing-native-session' },
+            },
+        });
+        testState.bindDaemonCursorSession.mockResolvedValue({
+            ok: true,
+            data: {
+                type: 'bound',
+                wrapper: {
+                    agent: 'cursor',
+                    nativeSessionId: 'existing-native-session',
+                    remcliSessionId: 'cursor-session',
+                },
+                writerLease: { ...TEST_HEADLESS_WRITER_LEASE, nativeSessionId: 'existing-native-session' },
+            },
+        });
+        testState.runCursorTurn.mockImplementation(async (
+            _options: unknown,
+            onEvent: (event: CursorStreamEvent) => void | Promise<void>,
+        ) => {
+            await onEvent({ type: 'system', subtype: 'init', session_id: 'existing-native-session' });
+            return { sessionId: 'existing-native-session', response: 'done', exitCode: 0 };
+        });
+
+        const runPromise = runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+            resumeSessionId: 'existing-native-session',
+            execution: { model: 'initial-cursor-model', catalogVersion: 'catalog-1' },
+            launchControls: { ...TEST_CURSOR_LAUNCH_CONTROLS },
+            runner: { ...TEST_CURSOR_RUNNER },
+        });
+        const queue = await waitForMessageQueue();
+        const userMessageHandler = session.onUserMessage.mock.calls[0]?.[0] as ((message: {
+            content: { text: string };
+            deliveryId: string;
+        }) => Promise<void>) | undefined;
+        if (!userMessageHandler) {
+            throw new Error('Cursor user-message handler was not registered.');
+        }
+
+        const userDelivery = userMessageHandler({
+            content: { text: 'next prompt' },
+            deliveryId: 'p2p:cursor-session:1',
+        });
+        await vi.waitFor(() => expect(queue.pushed).toEqual([{
+            message: 'next prompt',
+            mode: expect.objectContaining({ model: 'changed-cursor-model' }),
+        }]));
+        const acknowledge = vi.fn();
+        queue.resolve({
+            message: 'next prompt',
+            mode: queue.pushed[0]!.mode,
+            isolate: false,
+            hash: 'launch-controls-only',
+            acknowledge,
+        });
+
+        await userDelivery;
+        await vi.waitFor(() => expect(testState.runCursorTurn).toHaveBeenCalledWith(expect.objectContaining({
+            model: 'changed-cursor-model',
+            resumeSessionId: 'existing-native-session',
+        }), expect.any(Function)));
+        expect(acknowledge).toHaveBeenCalledOnce();
+        expect(session.metadataUpdates).toContainEqual(expect.objectContaining({
+            cursorExecution: { model: 'changed-cursor-model' },
+        }));
+
+        process.emit('SIGTERM');
+        await runPromise;
+    });
+
+    it('reconciles post-init metadata without acknowledging or executing a durable Cursor prompt twice', async () => {
+        const session = createTestSession('cursor-session');
+        testState.response = { id: 'cursor-session' };
+        testState.initialSession = session;
+        testState.acquireDaemonRunnerCredential.mockResolvedValue(true);
+        session.updateMetadata
+            .mockRejectedValueOnce(new Error(
+                'Cursor native metadata timeout at https://daemon.local/sync?token=first-secret',
+            ))
+            .mockRejectedValueOnce(new Error(
+                'Cursor native metadata still unavailable at https://daemon.local/sync?token=second-secret',
+            ));
+        testState.bindDaemonCursorSession.mockResolvedValue({
+            ok: true,
+            data: {
+                type: 'bound',
+                wrapper: {
+                    agent: 'cursor',
+                    nativeSessionId: 'cursor-native-post-init',
+                    remcliSessionId: 'cursor-session',
+                },
+                writerLease: {
+                    ...TEST_HEADLESS_WRITER_LEASE,
+                    nativeSessionId: 'cursor-native-post-init',
+                },
+            },
+        });
+        testState.runCursorTurn.mockImplementation(async (
+            _options: unknown,
+            onEvent: (event: CursorStreamEvent) => void | Promise<void>,
+        ) => {
+            await onEvent({
+                type: 'system',
+                subtype: 'init',
+                session_id: 'cursor-native-post-init',
+            });
+            return {
+                sessionId: 'cursor-native-post-init',
+                response: 'single native response',
+                exitCode: 0,
+            };
+        });
+
+        const runPromise = runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+            execution: { model: 'controlled-cursor-model', catalogVersion: 'controlled-cursor-catalog' },
+            runner: { ...TEST_CURSOR_RUNNER },
+        });
+        const queue = await waitForMessageQueue();
+        const userMessageHandler = session.onUserMessage.mock.calls[0]?.[0] as ((message: {
+            content: { text: string };
+            deliveryId: string;
+        }) => Promise<void>) | undefined;
+        if (!userMessageHandler) {
+            throw new Error('Cursor user-message handler was not registered.');
+        }
+
+        const deliveryId = 'p2p:cursor-session:post-init-metadata';
+        const delivery = {
+            content: { text: 'execute exactly once' },
+            deliveryId,
+        };
+        const firstAttempt = userMessageHandler(delivery);
+        await vi.waitFor(() => expect(queue.pushed).toHaveLength(1));
+        const acknowledge = vi.fn();
+        const reject = vi.fn();
+        queue.resolve({
+            message: 'execute exactly once',
+            mode: queue.pushed[0]!.mode,
+            isolate: false,
+            hash: 'post-init-metadata',
+            acknowledge,
+            reject,
+        });
+
+        await expect(firstAttempt).rejects.toBeInstanceOf(RetryableUserMessageDeliveryError);
+        expect(acknowledge).not.toHaveBeenCalled();
+        expect(reject).toHaveBeenCalledOnce();
+        expect(session.cancelPendingUserMessageDelivery).not.toHaveBeenCalled();
+        expect(session.sendAgentMessage).toHaveBeenCalledWith('cursor', {
+            type: 'message',
+            message: 'Cursor native metadata still unavailable at https://daemon.local/sync?token=[REDACTED]',
+            isError: true,
+        });
+        expect(session.metadata).not.toHaveProperty('cursorSessionId');
+        expect(testState.runCursorTurn).toHaveBeenCalledOnce();
+
+        await expect(userMessageHandler(delivery)).resolves.toBeUndefined();
+
+        expect(queue.pushed).toHaveLength(1);
+        expect(testState.consumeDaemonSessionExecution).toHaveBeenCalledOnce();
+        expect(testState.bindDaemonCursorSession).toHaveBeenCalledOnce();
+        expect(testState.runCursorTurn).toHaveBeenCalledOnce();
+        expect(session.cancelPendingUserMessageDelivery).not.toHaveBeenCalled();
+        expect(session.metadata).toMatchObject({
+            agentSessionId: 'cursor-native-post-init',
+            cursorSessionId: 'cursor-native-post-init',
+            cursorExecution: { model: 'controlled-cursor-model' },
+        });
+        expect(session.sendAgentMessage).toHaveBeenCalledTimes(4);
+
+        process.emit('SIGTERM');
+        await runPromise;
+    });
+
+    it('keeps rapid durable prompts in separate batches across a model change', async () => {
+        const session = createTestSession('cursor-session');
+        testState.response = { id: 'cursor-session' };
+        testState.initialSession = session;
+        testState.acquireDaemonRunnerCredential.mockResolvedValue(true);
+        testState.consumeDaemonSessionExecution
+            .mockResolvedValueOnce({
+                ok: true,
+                data: {
+                    sessionId: 'cursor-session',
+                    provider: 'cursor',
+                    revision: 0,
+                    current: { provider: 'cursor', model: 'cursor-model-a', catalogVersion: 'catalog-a' },
+                    didApplyPending: false,
+                },
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                data: {
+                    sessionId: 'cursor-session',
+                    provider: 'cursor',
+                    revision: 1,
+                    current: { provider: 'cursor', model: 'cursor-model-b', catalogVersion: 'catalog-b' },
+                    didApplyPending: true,
+                },
+            });
+
+        const runPromise = runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+            execution: { model: 'cursor-model-a', catalogVersion: 'catalog-a' },
+            runner: { ...TEST_CURSOR_RUNNER },
+        });
+        const queue = await waitForMessageQueue();
+        const userMessageHandler = session.onUserMessage.mock.calls[0]?.[0] as ((message: {
+            content: { text: string };
+            deliveryId: string;
+        }) => Promise<void>) | undefined;
+        if (!userMessageHandler) {
+            throw new Error('Cursor user-message handler was not registered.');
+        }
+
+        void userMessageHandler({ content: { text: 'first durable prompt' }, deliveryId: 'p2p:cursor-session:1' });
+        void userMessageHandler({ content: { text: 'second durable prompt' }, deliveryId: 'p2p:cursor-session:2' });
+
+        await vi.waitFor(() => expect(queue.pushed).toEqual([
+            expect.objectContaining({ message: 'first durable prompt', mode: expect.objectContaining({ model: 'cursor-model-a' }) }),
+            expect.objectContaining({ message: 'second durable prompt', mode: expect.objectContaining({ model: 'cursor-model-b' }) }),
+        ]));
+        expect(queue.modeHashes).toHaveLength(2);
+        expect(queue.modeHashes[0]).not.toBe(queue.modeHashes[1]);
+
+        process.emit('SIGTERM');
+        await runPromise;
+    });
+
+    it('does not block an unchanged daemon Cursor prompt on a metadata write', async () => {
+        const session = createTestSession('cursor-session');
+        testState.response = { id: 'cursor-session' };
+        testState.initialSession = session;
+        testState.acquireDaemonRunnerCredential.mockResolvedValue(true);
+
+        const runPromise = runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+            execution: { model: 'controlled-cursor-model', catalogVersion: 'controlled-cursor-catalog' },
+            runner: { ...TEST_CURSOR_RUNNER },
+        });
+        const queue = await waitForMessageQueue();
+        const userMessageHandler = session.onUserMessage.mock.calls[0]?.[0] as ((message: {
+            content: { text: string };
+            deliveryId: string;
+        }) => Promise<void>) | undefined;
+        if (!userMessageHandler) {
+            throw new Error('Cursor user-message handler was not registered.');
+        }
+
+        void userMessageHandler({
+            content: { text: 'unchanged execution prompt' },
+            deliveryId: 'p2p:cursor-session:unchanged',
+        });
+        await vi.waitFor(() => expect(queue.pushed).toHaveLength(1));
+        expect(session.updateMetadata).not.toHaveBeenCalled();
+
+        process.emit('SIGTERM');
+        await runPromise;
+    });
+
+    it('keeps a durable Cursor prompt pending when execution consume is temporarily unavailable', async () => {
+        const session = createTestSession('cursor-session');
+        testState.response = { id: 'cursor-session' };
+        testState.initialSession = session;
+        testState.acquireDaemonRunnerCredential.mockResolvedValue(true);
+        testState.consumeDaemonSessionExecution.mockResolvedValueOnce({
+            ok: false,
+            error: 'Request failed: /session-execution-consume, HTTP 503',
+        });
+
+        const runPromise = runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+            execution: { model: 'controlled-cursor-model', catalogVersion: 'controlled-cursor-catalog' },
+            runner: { ...TEST_CURSOR_RUNNER },
+        });
+        const queue = await waitForMessageQueue();
+        const userMessageHandler = session.onUserMessage.mock.calls[0]?.[0] as ((message: {
+            content: { text: string };
+            deliveryId: string;
+        }) => Promise<void>) | undefined;
+        if (!userMessageHandler) {
+            throw new Error('Cursor user-message handler was not registered.');
+        }
+
+        const deliveryId = 'p2p:cursor-session:consume-unavailable';
+        await expect(userMessageHandler({
+            content: { text: 'retry after daemon recovery' },
+            deliveryId,
+        })).rejects.toEqual(expect.objectContaining({
+            name: 'RetryableUserMessageDeliveryError',
+            message: 'Cursor execution selection could not be applied: Request failed: /session-execution-consume, HTTP 503',
+        }));
+
+        expect(queue.pushed).toEqual([]);
+        expect(session.cancelPendingUserMessageDelivery).not.toHaveBeenCalled();
+        expect(session.sendAgentMessage).toHaveBeenCalledWith('cursor', {
+            type: 'message',
+            message: 'Cursor execution selection could not be applied: Request failed: /session-execution-consume, HTTP 503',
+            isError: true,
+        });
+
+        process.emit('SIGTERM');
+        await runPromise;
+    });
+
+    it('reconciles consumed Cursor execution metadata on replay without dropping the delivery', async () => {
+        const session = createTestSession('cursor-session');
+        testState.response = { id: 'cursor-session' };
+        testState.initialSession = session;
+        testState.acquireDaemonRunnerCredential.mockResolvedValue(true);
+        testState.consumeDaemonSessionExecution
+            .mockResolvedValueOnce({
+                ok: true,
+                data: {
+                    sessionId: 'cursor-session',
+                    provider: 'cursor',
+                    revision: 1,
+                    current: { provider: 'cursor', model: 'cursor-model-b', catalogVersion: 'catalog-b' },
+                    didApplyPending: true,
+                },
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                data: {
+                    sessionId: 'cursor-session',
+                    provider: 'cursor',
+                    revision: 1,
+                    current: { provider: 'cursor', model: 'cursor-model-b', catalogVersion: 'catalog-b' },
+                    didApplyPending: false,
+                },
+            });
+        session.updateMetadata.mockRejectedValueOnce(new Error(
+            'Cursor metadata update failed at https://daemon.local/sync?token=cursor-secret',
+        ));
+        testState.bindDaemonCursorSession.mockResolvedValue({
+            ok: true,
+            data: {
+                type: 'bound',
+                wrapper: {
+                    agent: 'cursor',
+                    nativeSessionId: 'cursor-native-after-retry',
+                    remcliSessionId: 'cursor-session',
+                },
+                writerLease: {
+                    ...TEST_HEADLESS_WRITER_LEASE,
+                    nativeSessionId: 'cursor-native-after-retry',
+                },
+            },
+        });
+        testState.runCursorTurn.mockImplementation(async (
+            _options: unknown,
+            onEvent: (event: CursorStreamEvent) => void | Promise<void>,
+        ) => {
+            await onEvent({ type: 'system', subtype: 'init', session_id: 'cursor-native-after-retry' });
+            return { sessionId: 'cursor-native-after-retry', response: 'done', exitCode: 0 };
+        });
+
+        const runPromise = runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+            execution: { model: 'cursor-model-a', catalogVersion: 'catalog-a' },
+            runner: { ...TEST_CURSOR_RUNNER },
+        });
+        const queue = await waitForMessageQueue();
+        const userMessageHandler = session.onUserMessage.mock.calls[0]?.[0] as ((message: {
+            content: { text: string };
+            deliveryId: string;
+        }) => Promise<void>) | undefined;
+        if (!userMessageHandler) {
+            throw new Error('Cursor user-message handler was not registered.');
+        }
+
+        const deliveryId = 'p2p:cursor-session:metadata-retry';
+        const delivery = {
+            content: { text: 'retry metadata before Cursor turn' },
+            deliveryId,
+        };
+        await expect(userMessageHandler(delivery)).rejects.toBeInstanceOf(RetryableUserMessageDeliveryError);
+        expect(queue.pushed).toEqual([]);
+        expect(session.cancelPendingUserMessageDelivery).not.toHaveBeenCalled();
+        expect(session.sendAgentMessage).toHaveBeenCalledWith('cursor', {
+            type: 'message',
+            message: 'Cursor metadata update failed at https://daemon.local/sync?token=[REDACTED]',
+            isError: true,
+        });
+
+        const replay = userMessageHandler(delivery);
+        await vi.waitFor(() => expect(queue.pushed).toEqual([{
+            message: 'retry metadata before Cursor turn',
+            mode: expect.objectContaining({ model: 'cursor-model-b', deliveryId }),
+        }]));
+        expect(session.metadataUpdates).toContainEqual(expect.objectContaining({
+            cursorExecution: { model: 'cursor-model-b' },
+        }));
+
+        const acknowledge = vi.fn();
+        queue.resolve({
+            message: 'retry metadata before Cursor turn',
+            mode: queue.pushed[0]!.mode,
+            isolate: false,
+            hash: 'retry-delivery',
+            acknowledge,
+        });
+        await replay;
+
+        expect(testState.consumeDaemonSessionExecution).toHaveBeenCalledTimes(2);
+        expect(session.cancelPendingUserMessageDelivery).not.toHaveBeenCalled();
+        expect(acknowledge).toHaveBeenCalledOnce();
+
+        process.emit('SIGTERM');
+        await runPromise;
+    });
+
+    it('cancels and acknowledges an exact P2P delivery when Cursor exits before system init', async () => {
+        const session = createTestSession('cursor-session');
+        testState.response = { id: 'cursor-session' };
+        testState.initialSession = session;
+        testState.acquireDaemonRunnerCredential.mockResolvedValue(true);
+        testState.runCursorTurn.mockResolvedValue({
+            sessionId: 'unconfirmed-native-session',
+            response: '',
+            exitCode: 0,
+        });
+
+        const runPromise = runCursor({
+            credentials: createCredentials(),
+            startedBy: 'daemon',
+            execution: { model: 'controlled-cursor-model', catalogVersion: 'controlled-cursor-catalog' },
+            runner: { ...TEST_CURSOR_RUNNER },
+        });
+        const queue = await waitForMessageQueue();
+        const userMessageHandler = session.onUserMessage.mock.calls[0]?.[0] as ((message: {
+            content: { text: string };
+            deliveryId: string;
+        }) => Promise<void>) | undefined;
+        if (!userMessageHandler) {
+            throw new Error('Cursor user-message handler was not registered.');
+        }
+
+        const deliveryId = 'p2p:cursor-session:missing-init';
+        const delivery = userMessageHandler({
+            content: { text: 'prompt requiring init' },
+            deliveryId,
+        });
+        await vi.waitFor(() => expect(queue.pushed).toHaveLength(1));
+        const acknowledge = vi.fn();
+        queue.resolve({
+            message: 'prompt requiring init',
+            mode: queue.pushed[0]!.mode,
+            isolate: false,
+            hash: 'launch-controls-only',
+            acknowledge,
+        });
+
+        await delivery;
+        await vi.waitFor(() => expect(session.sendAgentMessage).toHaveBeenCalledWith('cursor', expect.objectContaining({
+            type: 'message',
+            message: 'Cursor did not initialize the native session before accepting the P2P prompt.',
+            isError: true,
+        })));
+        expect(session.cancelPendingUserMessageDelivery).toHaveBeenCalledWith(deliveryId);
+        expect(acknowledge).toHaveBeenCalledOnce();
+
+        process.emit('SIGTERM');
+        await runPromise;
+    });
+
     it('ignores a forged lineage environment value for a terminal Cursor session', async () => {
         const session = createTestSession('cursor-session');
         process.env.REMCLI_CURSOR_RESUMED_FROM_SESSION_ID = 'forged-parent-remcli-session';
@@ -1589,6 +2143,7 @@ describe('runCursor lifecycle', () => {
         } | undefined;
         expect(getOrCreateOptions?.metadata).not.toHaveProperty('resumedFromRemcliSessionId');
         expect(session.metadata).not.toHaveProperty('resumedFromRemcliSessionId');
+        expect(session.metadata).not.toHaveProperty('cursorExecution');
 
         process.emit('SIGTERM');
         await runPromise;

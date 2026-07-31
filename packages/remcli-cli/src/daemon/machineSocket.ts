@@ -9,6 +9,7 @@
 
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 
 import { logger } from '@/ui/logger';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
@@ -34,7 +35,13 @@ import {
     CursorCapabilitiesError,
     CursorCapabilitiesService,
 } from '@/cursor/cursorCapabilities';
-import type { StopSessionResult } from '@/daemon/types';
+import type {
+    DaemonSessionExecutionState,
+    SessionExecutionLookupResult,
+    SessionExecutionSetResult,
+    StopSessionResult,
+} from '@/daemon/types';
+import type { SessionExecutionSelection } from '@/api/types';
 import { parseProviderSpawnRequest } from '@/daemon/providerSpawnRequest';
 import type { PairingRekeyCoordinator } from './p2p/pairingRekey';
 import {
@@ -54,8 +61,46 @@ export interface MachineSocketDeps {
     cursorCapabilities: CursorCapabilitiesService;
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
     stopSession: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
+    getSessionExecution: (sessionId: string) => SessionExecutionLookupResult;
+    getSessionExecutionState: (sessionId: string) => DaemonSessionExecutionState | undefined;
+    setSessionExecution: (
+        sessionId: string,
+        expectedRevision: number,
+        execution: SessionExecutionSelection,
+    ) => SessionExecutionSetResult;
     requestShutdown: () => void;
     recentDirectories?: RecentDirectoriesStore;
+}
+
+const sessionExecutionSelectionSchema = z.discriminatedUnion('provider', [
+    z.object({
+        provider: z.literal('codex'),
+        model: z.string().min(1),
+        reasoningEffort: z.string().min(1).optional(),
+        catalogVersion: z.string().min(1),
+    }).strict(),
+    z.object({
+        provider: z.literal('cursor'),
+        model: z.string().min(1),
+        catalogVersion: z.string().min(1),
+    }).strict(),
+]);
+
+const getSessionExecutionParamsSchema = z.object({
+    sessionId: z.string().min(1),
+}).strict();
+
+const setSessionExecutionParamsSchema = z.object({
+    sessionId: z.string().min(1),
+    expectedRevision: z.number().int().nonnegative(),
+    execution: sessionExecutionSelectionSchema,
+}).strict();
+
+function requireExecutionSnapshot(result: SessionExecutionLookupResult): SessionExecutionSelection {
+    if (result.type === 'found') {
+        return result.snapshot.current;
+    }
+    throw new Error('Daemon-owned session execution is unavailable.');
 }
 
 export interface MachineSocketHandle {
@@ -100,6 +145,9 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         cursorCapabilities,
         spawnSession,
         stopSession,
+        getSessionExecution,
+        getSessionExecutionState,
+        setSessionExecution,
         requestShutdown,
         recentDirectories = createRecentDirectoriesStore({ machineId }),
     } = deps;
@@ -189,6 +237,63 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
     machineRpcManager.registerHandler('get-cursor-capabilities', async (params: { forceRefresh?: unknown }) => {
         const forceRefresh = params?.forceRefresh === true;
         return await cursorCapabilities.getCapabilities(forceRefresh);
+    });
+
+    machineRpcManager.registerHandler('get-session-execution', (params: unknown) => {
+        const { sessionId } = getSessionExecutionParamsSchema.parse(params);
+        const result = getSessionExecution(sessionId);
+        if (result.type !== 'found') {
+            throw new Error('Daemon-owned session execution is unavailable.');
+        }
+        return result.snapshot;
+    });
+
+    machineRpcManager.registerHandler('set-session-execution', async (params: unknown) => {
+        const { sessionId, expectedRevision, execution } = setSessionExecutionParamsSchema.parse(params);
+        const executionState = getSessionExecutionState(sessionId);
+        const current = requireExecutionSnapshot(getSessionExecution(sessionId));
+        if (current.provider !== execution.provider || !executionState) {
+            throw new Error('Session execution provider does not match the daemon-owned runner.');
+        }
+
+        if (execution.provider === 'codex') {
+            if (!executionState.codexPermissionMode) {
+                throw new Error('Daemon-owned Codex permission selection is unavailable.');
+            }
+            try {
+                await codexCapabilities.validateSelection(execution, executionState.codexPermissionMode);
+            } catch (error) {
+                if (error instanceof CodexCapabilitiesError) {
+                    throw new Error(`Codex capability selection rejected: ${error.code}.`);
+                }
+                throw new Error('Codex capability discovery is unavailable. Refresh and try again.');
+            }
+        } else {
+            try {
+                const freshRunner = await cursorCapabilities.validateSelection(execution);
+                if (!executionState.cursorRunner
+                    || freshRunner.executable !== executionState.cursorRunner.executable
+                    || freshRunner.cliFingerprint !== executionState.cursorRunner.cliFingerprint) {
+                    throw new Error('Cursor capability selection rejected: runner_identity_changed.');
+                }
+            } catch (error) {
+                if (error instanceof CursorCapabilitiesError) {
+                    throw new Error(`Cursor capability selection rejected: ${error.code}.`);
+                }
+                throw error instanceof Error
+                    ? error
+                    : new Error('Cursor capability discovery is unavailable. Refresh and try again.');
+            }
+        }
+
+        const result = setSessionExecution(sessionId, expectedRevision, execution);
+        if (result.type === 'updated') {
+            return result.snapshot;
+        }
+        if (result.type === 'revision-mismatch') {
+            throw new Error(`Session execution revision mismatch: ${result.snapshot.revision}.`);
+        }
+        throw new Error('Daemon-owned session execution is unavailable.');
     });
 
     machineRpcManager.registerHandler('stop-session', async (params: { sessionId?: string }) => {

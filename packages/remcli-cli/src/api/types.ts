@@ -14,6 +14,36 @@ export type GeminiPermissionMode = 'manual' | 'auto_edit' | 'plan'
  */
 export type PermissionMode = ClaudePermissionMode | CodexPermissionMode | GeminiPermissionMode
 
+/** Public, daemon-owned Codex selection. Permission remains private to the daemon. */
+export interface CodexSessionExecutionSelection {
+  provider: 'codex';
+  model: string;
+  reasoningEffort?: string;
+  catalogVersion: string;
+}
+
+/** Public, daemon-owned Cursor selection. Runner identity remains private to the daemon. */
+export interface CursorSessionExecutionSelection {
+  provider: 'cursor';
+  model: string;
+  catalogVersion: string;
+}
+
+export type SessionExecutionSelection = CodexSessionExecutionSelection | CursorSessionExecutionSelection
+
+/** Revisioned execution state exposed through the machine RPC only. */
+export interface SessionExecutionSnapshot {
+  sessionId: string;
+  provider: 'codex' | 'cursor';
+  revision: number;
+  current: SessionExecutionSelection;
+  pending?: SessionExecutionSelection;
+}
+
+export interface SessionExecutionConsumeResponse extends SessionExecutionSnapshot {
+  didApplyPending: boolean;
+}
+
 /**
  * Usage data type from Claude
  */
@@ -359,6 +389,10 @@ export type Metadata = {
     model: string,
     reasoningEffort?: string,
     permissionMode: Extract<PermissionMode, 'read-only' | 'workspace-write' | 'danger-full-access'>,
+  },
+  /** Daemon-owned Cursor execution projection. The runner identity is never serialized. */
+  cursorExecution?: {
+    model: string,
   },
   cursorSessionId?: string, // Cursor agent session ID
   geminiSessionId?: string, // Gemini ACP session ID

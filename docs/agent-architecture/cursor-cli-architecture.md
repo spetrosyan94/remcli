@@ -47,10 +47,12 @@ agent --print --output-format stream-json --trust \
   headless runner. Рабочую директорию пользователь выбирает до spawn.
 - Успех принимается только после `system/init` с native ID, terminal
   `result.success` без `is_error` и exit code `0`.
-- Модель и `Agent` / `Plan` / `Ask` выбираются daemon-validated только при
-  spawn/resume. Телефонный prompt несёт текст и безопасную метку источника;
-  injected model, permission или другие launch controls в нём не переопределяют
-  Cursor turn и отклоняются на provider ingress boundary.
+- Модель выбирается daemon-validated при spawn/resume и может быть поставлена
+  для следующего phone prompt через session-scoped execution contract.
+  `Agent` / `Plan` / `Ask` и остальные launch controls остаются зафиксированы
+  для wrapper. Телефонный prompt несёт текст и безопасную метку источника;
+  injected model, permission или launch controls в нём не переопределяют Cursor
+  turn и отклоняются на provider ingress boundary.
 - В телефонный чат сначала передаётся непустой terminal `result`. Если текущий
   Cursor CLI подтвердил успех без этого поля, Remcli использует только text
   chunks из `assistant` events после `system/init` того же native session;
@@ -200,6 +202,29 @@ toggle-selector-ами и не получают этот признак. Лок�
    Fresh validation также связывает executable и version fingerprint; runner
    перепроверяет его перед созданием P2P metadata. Concierge получает тот же
    daemon-owned selection или не запускает Cursor вовсе.
+
+### Модель в открытом чате
+
+Web использует те же strict `get-session-execution` / `set-session-execution`
+machine RPC, CAS revision и fresh account catalog, что и Codex. Cursor snapshot
+содержит только `model + catalogVersion`: отдельного reasoning selector нет,
+потому что CLI не публикует machine-readable effort contract.
+
+Перед следующим durable prompt `runCursor` получает current selection через
+runner-credential-protected consume endpoint. При смене модели он запускает
+следующий headless turn как
+`agent --resume <same-native-id> --model <new-model>`: native session и context
+сохраняются, а reset boundary по-прежнему определяется только launch controls.
+Durable prompts не объединяются между разными model/delivery id. После matching
+`system/init` и native bind runner подтверждает delivery только когда metadata
+содержит фактически принятую модель. Если metadata временно недоступна, повтор
+того же delivery в живом runner повторяет только reconciliation и не запускает
+native prompt второй раз. Raw model в message metadata игнорируется.
+
+Reconciliation пока хранится в памяти runner. Одновременный metadata outage и
+аварийный restart между native acceptance и ACK требует отдельного daemon-side
+outbox или стабильного restart handoff; этот редкий cross-runner сценарий не
+выдаётся за гарантию текущего контракта.
 
 ## Ошибки и остановка
 

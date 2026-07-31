@@ -5,7 +5,7 @@
 // resume завершённой сессии — provider-specific: Cursor через New Session,
 // доступный provider через machineSpawnNewSession({resumeSessionId}), deferred provider блокируется до RPC.
 import * as React from "react";
-import { ArrowLeft, ChevronDown, Loader2, Mic, MoreHorizontal, Send, Square, Terminal } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Loader2, Mic, MoreHorizontal, RefreshCw, Send, Square, Terminal } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import {
@@ -15,20 +15,22 @@ import {
 } from "@/components/kit";
 import { SessionsSidebar, StopSessionDialog, type StopTarget } from "@/components/app/SessionsSidebar";
 import { sessionStatus } from "@/components/app/sessionDisplay";
-import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
+import { Drawer, DrawerContent, DrawerDescription, DrawerTitle } from "@/components/ui/drawer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { getAgentPermissionLabel, getAgentPermissionModes, normalizeAgentPermissionMode } from "@/lib/agentPermissions";
 import { copyText } from "@/lib/clipboard";
-import { getCodexResumeSelection } from "@/lib/codexCapabilities";
+import { createCodexExecutionForModel, getCodexResumeSelection } from "@/lib/codexCapabilities";
 import { isProviderAvailable } from "@/lib/providerAvailability";
 import { canStopSession, type IStopMachineTarget } from "@/lib/sessionCapabilities";
 import { t } from "@/lib/i18n";
 import {
     fetchWhisperStatus, getRestConfig, isClientStarted, loadSessionMessages,
-    machineGetCodexCapabilities, machineSpawnNewSession, refreshSessions, restoreProtocolClient, sendSessionMessage,
+    machineGetCodexCapabilities, machineGetCursorCapabilities, machineGetSessionExecution,
+    machineSetSessionExecution, machineSpawnNewSession, refreshSessions, restoreProtocolClient, sendSessionMessage,
     sessionAllow, sessionDeny, useConnectionStatus, useMachines, useProtocolStore,
     useSession, useSessionMessages, useSessionMessagesLoaded, useSessions,
-    type NormalizedMessage, type PermissionMode, type Session,
+    type CodexCapabilitiesSnapshot, type CursorCapabilitiesSnapshot, type NormalizedMessage,
+    type PermissionMode, type Session, type SessionExecutionSelection, type SessionExecutionSnapshot,
 } from "@/lib/protocol";
 import { onProtocolReconnected, type SessionMessagesPage } from "@/lib/protocol/client";
 import { useVoiceRecorder } from "@/lib/voice/recorder";
@@ -38,13 +40,54 @@ import { useTts, useTtsAvailability } from "@/lib/voice/tts";
 const DANGEROUS_COMMAND_RE = /\brm\s+-\w*[rf]|--force\b|force[- ]push|\bdrop\s+(table|database|schema)\b|\bmkfs\b|\bdd\s+if=/i;
 
 const PERMISSION_SHEET_CONTENT_CLASS =
-    "data-[vaul-drawer-direction=bottom]:rounded-t-[20px] border-border bg-card pb-[max(10px,env(safe-area-inset-bottom))] " +
+    "max-h-[80dvh] overflow-y-auto overscroll-contain data-[vaul-drawer-direction=bottom]:rounded-t-[20px] border-border bg-card pb-[max(10px,env(safe-area-inset-bottom))] " +
     "[&>div:first-child]:mt-2 [&>div:first-child]:mb-1 [&>div:first-child]:h-[4.5px] [&>div:first-child]:w-[38px] [&>div:first-child]:bg-muted-foreground/40";
 
 const CODE_FENCE_PATTERN = /^```([^`]*)$/;
 const HEADING_PATTERN = /^(#{1,6})\s+(.+)$/;
 const UNORDERED_LIST_ITEM_PATTERN = /^\s*[-*+]\s+(.+)$/;
 const ORDERED_LIST_ITEM_PATTERN = /^\s*(\d+)[.)]\s+(.+)$/;
+const EXECUTION_MODEL_LIST_CLASS = "max-h-44 overflow-y-auto overscroll-contain";
+
+type SessionExecutionLoadState = "idle" | "loading" | "ready" | "error";
+
+function isSessionExecutionEqual(
+    left: SessionExecutionSelection | undefined,
+    right: SessionExecutionSelection | undefined,
+): boolean {
+    if (!left || !right || left.provider !== right.provider) return left === right;
+    return left.model === right.model
+        && left.catalogVersion === right.catalogVersion
+        && (left.provider === "cursor"
+            || left.reasoningEffort === (right.provider === "codex" ? right.reasoningEffort : undefined));
+}
+
+function compactExecutionModelLabel(displayName: string, modelId: string): string {
+    const normalizedDisplayName = displayName.trim();
+    if (normalizedDisplayName.length <= 24) return normalizedDisplayName;
+    const normalizedModelId = modelId.trim();
+    return normalizedModelId.length <= normalizedDisplayName.length
+        ? normalizedModelId
+        : normalizedDisplayName;
+}
+
+function executionSelectionLabel(
+    selection: SessionExecutionSelection,
+    codexCapabilities: CodexCapabilitiesSnapshot | null,
+    cursorCapabilities: CursorCapabilitiesSnapshot | null,
+    compact: boolean = false,
+): string {
+    const model = selection.provider === "codex"
+        ? codexCapabilities?.models.find((item) => item.id === selection.model)
+        : cursorCapabilities?.models.find((item) => item.id === selection.model);
+    const displayName = model?.displayName ?? selection.model;
+    const modelLabel = compact
+        ? compactExecutionModelLabel(displayName, selection.model)
+        : displayName;
+    return selection.provider === "codex" && selection.reasoningEffort
+        ? `${modelLabel} · ${selection.reasoningEffort}`
+        : modelLabel;
+}
 
 // ─── Маппинг протокола на модель ленты ───────────────────────────
 
@@ -1007,9 +1050,20 @@ export function ChatPage() {
     const [isResuming, setIsResuming] = React.useState(false);
     const [hasDetachedAutoscroll, setHasDetachedAutoscroll] = React.useState(false);
     const [isPermissionSheetOpen, setIsPermissionSheetOpen] = React.useState(false);
+    const [isExecutionSheetOpen, setIsExecutionSheetOpen] = React.useState(false);
+    const [executionLoadState, setExecutionLoadState] = React.useState<SessionExecutionLoadState>("idle");
+    const [executionSnapshot, setExecutionSnapshot] = React.useState<SessionExecutionSnapshot | null>(null);
+    const [draftExecution, setDraftExecution] = React.useState<SessionExecutionSelection | null>(null);
+    const [codexCapabilities, setCodexCapabilities] = React.useState<CodexCapabilitiesSnapshot | null>(null);
+    const [cursorCapabilities, setCursorCapabilities] = React.useState<CursorCapabilitiesSnapshot | null>(null);
+    const [executionError, setExecutionError] = React.useState<string | null>(null);
+    const [isApplyingExecution, setIsApplyingExecution] = React.useState(false);
     const [stopTarget, setStopTarget] = React.useState<StopTarget | null>(null);
     const [lineageHistoryState, setLineageHistoryState] = React.useState<LineageHistoryState>("idle");
     const feedRef = React.useRef<HTMLElement>(null);
+    const executionTriggerRef = React.useRef<HTMLButtonElement>(null);
+    const appliedExecutionRefreshKeyRef = React.useRef<string | null>(null);
+    const executionRequestGenerationRef = React.useRef(0);
     const hadConnectedRef = React.useRef(false);
     const hasDetachedAutoscrollRef = React.useRef(false);
 
@@ -1528,6 +1582,164 @@ export function ChatPage() {
     const isEnded = session ? session.presence !== "online" : false;
     const hasResumeTarget = isEnded && !!resumeAgentSessionId && !!session?.metadata?.path && !!rpcMachineId;
     const canStop = canStopSession(session, stopMachine);
+    const canManageSessionExecution = !isEnded
+        && session?.metadata?.startedBy === "daemon"
+        && (agent === "codex" || agent === "cursor")
+        && Boolean(rpcMachineId);
+
+    const loadSessionExecution = React.useCallback(async (forceRefresh: boolean = false) => {
+        const requestGeneration = ++executionRequestGenerationRef.current;
+        if (!rpcMachineId || !canManageSessionExecution) {
+            setExecutionLoadState("idle");
+            setExecutionSnapshot(null);
+            setDraftExecution(null);
+            setExecutionError(null);
+            return;
+        }
+
+        setExecutionLoadState("loading");
+        setExecutionSnapshot(null);
+        setDraftExecution(null);
+        setCodexCapabilities(null);
+        setCursorCapabilities(null);
+        setExecutionError(null);
+        try {
+            const [snapshot, capabilities] = await Promise.all([
+                machineGetSessionExecution(rpcMachineId, sessionId),
+                agent === "codex"
+                    ? machineGetCodexCapabilities(rpcMachineId, forceRefresh)
+                    : machineGetCursorCapabilities(rpcMachineId, forceRefresh),
+            ]);
+            if (requestGeneration !== executionRequestGenerationRef.current) return;
+            if (snapshot.provider !== agent) {
+                throw new Error(t("chat.execution.providerMismatch"));
+            }
+            if (capabilities.status !== "ready") {
+                throw new Error(t("chat.execution.unavailable"));
+            }
+            if (agent === "codex") {
+                setCodexCapabilities(capabilities as CodexCapabilitiesSnapshot);
+                setCursorCapabilities(null);
+            } else {
+                setCursorCapabilities(capabilities as CursorCapabilitiesSnapshot);
+                setCodexCapabilities(null);
+            }
+            setExecutionSnapshot(snapshot);
+            setDraftExecution(snapshot.pending ?? snapshot.current);
+            setExecutionLoadState("ready");
+        } catch (error) {
+            if (requestGeneration !== executionRequestGenerationRef.current) return;
+            setExecutionLoadState("error");
+            setExecutionError(error instanceof Error ? error.message : t("chat.execution.unavailable"));
+        }
+    }, [agent, canManageSessionExecution, rpcMachineId, sessionId]);
+
+    React.useEffect(() => {
+        void loadSessionExecution();
+    }, [loadSessionExecution]);
+
+    React.useEffect(() => {
+        if (!canManageSessionExecution) return;
+        return onProtocolReconnected(() => {
+            void loadSessionExecution(true);
+        });
+    }, [canManageSessionExecution, loadSessionExecution]);
+
+    React.useEffect(() => {
+        const pending = executionSnapshot?.pending;
+        if (!pending) return;
+        const didApplyPending = pending.provider === "codex"
+            ? session?.metadata?.codexExecution?.model === pending.model
+                && session.metadata.codexExecution.reasoningEffort === pending.reasoningEffort
+            : session?.metadata?.cursorExecution?.model === pending.model;
+        if (!didApplyPending) return;
+
+        const refreshKey = `${sessionId}:${executionSnapshot.revision}:${pending.provider}:${pending.model}:${pending.provider === "codex" ? pending.reasoningEffort ?? "" : ""}`;
+        if (appliedExecutionRefreshKeyRef.current === refreshKey) return;
+        appliedExecutionRefreshKeyRef.current = refreshKey;
+        void loadSessionExecution();
+    }, [executionSnapshot, loadSessionExecution, session?.metadata?.codexExecution, session?.metadata?.cursorExecution]);
+
+    const effectiveExecution = executionSnapshot?.pending ?? executionSnapshot?.current ?? null;
+    const executionHeaderLabel = effectiveExecution
+        ? executionSelectionLabel(effectiveExecution, codexCapabilities, cursorCapabilities, true)
+        : agent === "codex"
+            ? session?.metadata?.codexExecution?.model ?? agent
+            : session?.metadata?.cursorExecution?.model ?? agent;
+    const executionFullLabel = effectiveExecution
+        ? executionSelectionLabel(effectiveExecution, codexCapabilities, cursorCapabilities)
+        : executionHeaderLabel;
+    const hasExecutionDraftChanges = Boolean(
+        draftExecution
+        && effectiveExecution
+        && !isSessionExecutionEqual(draftExecution, effectiveExecution),
+    );
+    const executionModels = agent === "codex"
+        ? codexCapabilities?.models ?? []
+        : agent === "cursor"
+            ? cursorCapabilities?.models ?? []
+            : [];
+    const selectedCodexExecutionModel = draftExecution?.provider === "codex"
+        ? codexCapabilities?.models.find((model) => model.id === draftExecution.model) ?? null
+        : null;
+
+    const selectExecutionModel = (modelId: string) => {
+        if (agent === "codex" && codexCapabilities) {
+            const selected = createCodexExecutionForModel(codexCapabilities, modelId);
+            if (!selected) return;
+            setDraftExecution({ provider: "codex", ...selected });
+            return;
+        }
+        if (agent === "cursor" && cursorCapabilities?.status === "ready" && cursorCapabilities.catalogVersion) {
+            if (!cursorCapabilities.models.some((model) => model.id === modelId)) return;
+            setDraftExecution({
+                provider: "cursor",
+                model: modelId,
+                catalogVersion: cursorCapabilities.catalogVersion,
+            });
+        }
+    };
+
+    const selectExecutionReasoning = (reasoningEffort: string) => {
+        if (draftExecution?.provider !== "codex" || !codexCapabilities) return;
+        const selected = createCodexExecutionForModel(
+            codexCapabilities,
+            draftExecution.model,
+            reasoningEffort,
+        );
+        if (selected) setDraftExecution({ provider: "codex", ...selected });
+    };
+
+    const applySessionExecution = async () => {
+        if (!rpcMachineId || !executionSnapshot || !draftExecution || isApplyingExecution) return;
+        const requestGeneration = executionRequestGenerationRef.current;
+        setIsApplyingExecution(true);
+        setExecutionError(null);
+        try {
+            const updated = await machineSetSessionExecution(
+                rpcMachineId,
+                sessionId,
+                executionSnapshot.revision,
+                draftExecution,
+            );
+            if (requestGeneration !== executionRequestGenerationRef.current) return;
+            setExecutionSnapshot(updated);
+            setDraftExecution(updated.pending ?? updated.current);
+            setExecutionLoadState("ready");
+            setIsExecutionSheetOpen(false);
+            toast.success(updated.pending
+                ? t("chat.execution.queued")
+                : t("chat.execution.cancelled"));
+        } catch (error) {
+            if (requestGeneration !== executionRequestGenerationRef.current) return;
+            setExecutionLoadState("error");
+            setExecutionError(t("chat.execution.applyFailed"));
+        } finally {
+            if (requestGeneration === executionRequestGenerationRef.current) {
+                setIsApplyingExecution(false);
+            }
+        }
+    };
 
     const requestStop = () => {
         if (!session || !canStopSession(session, stopMachine)) return;
@@ -1659,9 +1871,7 @@ export function ChatPage() {
         setDraft("");
         const options = isCursorSession
             ? {}
-            : navState.hasModelOverride
-                ? { permissionMode: activePermissionMode!, model: navState.model ?? null }
-                : { permissionMode: activePermissionMode! };
+            : { permissionMode: activePermissionMode! };
         void createChatMessageSender(sessionId)(text, options)
             .catch((error: unknown) => {
                 const message = error instanceof Error ? error.message : String(error);
@@ -1697,10 +1907,33 @@ export function ChatPage() {
                 </button>
                 <div className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate font-mono text-[13.5px] font-semibold">{displayPath(session)}</span>
-                    <span className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[10px] text-muted-foreground">
-                        <StatusDot status={status} className="size-1.5" />
-                        <span className="min-w-0 truncate">{agent}{host ? ` · ${host}` : ""} · {statusLabel(status)}</span>
-                    </span>
+                    {canManageSessionExecution ? (
+                        <button
+                            ref={executionTriggerRef}
+                            type="button"
+                            onClick={() => setIsExecutionSheetOpen(true)}
+                            aria-label={`${t("chat.execution.open")}: ${executionFullLabel}. ${statusLabel(status)}`}
+                            aria-haspopup="dialog"
+                            aria-expanded={isExecutionSheetOpen}
+                            aria-controls="chat-next-message-drawer"
+                            title={executionFullLabel}
+                            className="flex min-h-11 min-w-0 max-w-full items-center gap-1.5 self-start overflow-hidden whitespace-nowrap rounded-[6px] pr-1 font-mono text-[10px] text-muted-foreground transition-[background-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] hover:text-foreground active:scale-[0.98]"
+                        >
+                            <StatusDot status={status} className="size-1.5" />
+                            <span className="shrink-0">{agent}</span>
+                            <span aria-hidden="true">·</span>
+                            <span className="min-w-0 truncate">{executionHeaderLabel}</span>
+                            {executionSnapshot?.pending && (
+                                <span className="shrink-0 text-accent">{t("chat.execution.nextShort")}</span>
+                            )}
+                            <ChevronDown className="size-2.5 shrink-0" />
+                        </button>
+                    ) : (
+                        <span className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[10px] text-muted-foreground">
+                            <StatusDot status={status} className="size-1.5" />
+                            <span className="min-w-0 truncate">{agent}{host ? ` · ${host}` : ""} · {statusLabel(status)}</span>
+                        </span>
+                    )}
                 </div>
                 {/* Терминал доступен на desktop; сегменты — только когда для них достаточно места. */}
                 <div className="hidden items-center gap-2 lg:flex">
@@ -1901,6 +2134,172 @@ export function ChatPage() {
                     )}
                 </div>
             </footer>
+            <Drawer
+                open={canManageSessionExecution && isExecutionSheetOpen}
+                onOpenChange={(isOpen) => {
+                    setIsExecutionSheetOpen(isOpen);
+                    if (isOpen && (executionLoadState === "idle" || executionLoadState === "error")) {
+                        void loadSessionExecution(executionLoadState === "error");
+                    }
+                }}
+            >
+                <DrawerContent
+                    id="chat-next-message-drawer"
+                    aria-describedby={executionLoadState === "ready"
+                        ? "chat-next-message-description chat-turn-stability-note"
+                        : "chat-next-message-description"}
+                    className={PERMISSION_SHEET_CONTENT_CLASS}
+                    onOpenAutoFocus={(event) => {
+                        event.preventDefault();
+                        const content = event.currentTarget;
+                        if (!(content instanceof HTMLElement)) return;
+                        const focusTarget = content.querySelector<HTMLElement>("input[type=radio]:checked")
+                            ?? content.querySelector<HTMLButtonElement>("button:not([disabled])")
+                            ?? content;
+                        focusTarget.focus();
+                    }}
+                    onCloseAutoFocus={(event) => {
+                        event.preventDefault();
+                        if (executionTriggerRef.current?.isConnected) executionTriggerRef.current.focus();
+                    }}
+                >
+                    <div className="flex items-start gap-3 px-[18px] pb-2 pt-1">
+                        <div className="min-w-0 flex-1">
+                            <DrawerTitle className="text-[14.5px] font-semibold">{t("chat.execution.title")}</DrawerTitle>
+                            <DrawerDescription id="chat-next-message-description" className="mt-1 font-mono text-[10px] leading-relaxed text-muted-foreground">
+                                {agent === "cursor"
+                                    ? `Cursor: ${t("new.reasoningUnsupported")}`
+                                    : `${t("new.model")} · ${t("new.reasoning")}`}
+                            </DrawerDescription>
+                        </div>
+                        <span className="ml-auto font-mono text-[10px] text-muted-foreground">{agent}</span>
+                    </div>
+
+                    {executionLoadState === "loading" && (
+                        <div className="flex min-h-24 items-center justify-center gap-2 border-t border-border px-[18px] font-mono text-[11px] text-muted-foreground">
+                            <Loader2 className="size-4 animate-spin" />
+                            {t("chat.execution.loading")}
+                        </div>
+                    )}
+
+                    {executionLoadState === "error" && (
+                        <div className="border-t border-border px-[18px] py-4" role="alert">
+                            <p className="break-words font-mono text-[11px] leading-relaxed text-status-error">
+                                {executionError ?? t("chat.execution.unavailable")}
+                            </p>
+                            <button
+                                type="button"
+                                onClick={() => void loadSessionExecution(true)}
+                                className="mt-3 flex min-h-11 items-center gap-2 rounded-[9px] border border-border px-3 font-mono text-[11px] text-foreground transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]"
+                            >
+                                <RefreshCw className="size-3.5" />
+                                {t("connect.retry")}
+                            </button>
+                        </div>
+                    )}
+
+                    {executionLoadState === "ready" && executionSnapshot && draftExecution && (
+                        <>
+                            <div className="border-t border-border px-[18px] py-3 font-mono text-[10px] leading-relaxed text-muted-foreground">
+                                <span className="block">
+                                    {t("chat.execution.current")}: {executionSelectionLabel(executionSnapshot.current, codexCapabilities, cursorCapabilities)}
+                                </span>
+                                {executionSnapshot.pending && (
+                                    <span className="mt-1 block text-accent">
+                                        {t("chat.execution.pending")}: {executionSelectionLabel(executionSnapshot.pending, codexCapabilities, cursorCapabilities)}
+                                    </span>
+                                )}
+                            </div>
+
+                            <div className="border-t border-border px-[18px] pb-2 pt-3">
+                                <span className="font-mono text-[10px] font-semibold text-muted-foreground">{t("new.model")}</span>
+                            </div>
+                            <div role="radiogroup" aria-label={t("new.model")} className={EXECUTION_MODEL_LIST_CLASS}>
+                                {executionModels.map((model) => {
+                                    const isSelected = model.id === draftExecution.model;
+                                    return (
+                                        <label
+                                            key={model.id}
+                                            title={model.displayName}
+                                            className="flex min-h-11 w-full cursor-pointer items-center gap-3 border-t border-border px-[18px] py-2.5 text-left transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.98] has-[:focus-visible]:bg-muted/50"
+                                        >
+                                            <input
+                                                type="radio"
+                                                name="chat-session-execution-model"
+                                                value={model.id}
+                                                checked={isSelected}
+                                                onChange={() => selectExecutionModel(model.id)}
+                                                className="sr-only"
+                                            />
+                                            <span className={`min-w-0 flex-1 whitespace-normal break-words font-mono text-[12.5px] ${isSelected ? "text-foreground" : "text-muted-foreground"}`}>
+                                                {model.displayName}
+                                            </span>
+                                            <span aria-hidden="true" className={`flex size-4 shrink-0 items-center justify-center rounded-full border ${isSelected ? "border-accent bg-accent text-accent-foreground" : "border-border"}`}>
+                                                {isSelected && <Check className="size-2.5" />}
+                                            </span>
+                                        </label>
+                                    );
+                                })}
+                            </div>
+
+                            {draftExecution.provider === "codex" && selectedCodexExecutionModel && (
+                                <>
+                                    <div className="border-t border-border px-[18px] pb-2 pt-3">
+                                        <span className="font-mono text-[10px] font-semibold text-muted-foreground">{t("new.reasoning")}</span>
+                                    </div>
+                                    {selectedCodexExecutionModel.supportedReasoningEfforts.length > 0 ? (
+                                        <div role="radiogroup" aria-label={t("new.reasoning")}>
+                                            {selectedCodexExecutionModel.supportedReasoningEfforts.map((effort) => {
+                                                const isSelected = effort === draftExecution.reasoningEffort;
+                                                return (
+                                                    <label
+                                                        key={effort}
+                                                        className="flex min-h-11 w-full cursor-pointer items-center gap-3 border-t border-border px-[18px] py-2.5 text-left transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.98] has-[:focus-visible]:bg-muted/50"
+                                                    >
+                                                        <input
+                                                            type="radio"
+                                                            name="chat-session-execution-reasoning"
+                                                            value={effort}
+                                                            checked={isSelected}
+                                                            onChange={() => selectExecutionReasoning(effort)}
+                                                            className="sr-only"
+                                                        />
+                                                        <span className={`min-w-0 flex-1 whitespace-normal break-words font-mono text-[12.5px] ${isSelected ? "text-foreground" : "text-muted-foreground"}`}>{effort}</span>
+                                                        <span aria-hidden="true" className={`flex size-4 shrink-0 items-center justify-center rounded-full border ${isSelected ? "border-accent bg-accent text-accent-foreground" : "border-border"}`}>
+                                                            {isSelected && <Check className="size-2.5" />}
+                                                        </span>
+                                                    </label>
+                                                );
+                                            })}
+                                        </div>
+                                    ) : (
+                                        <p className="border-t border-border px-[18px] py-3 font-mono text-[10.5px] text-muted-foreground">
+                                            {t("new.reasoningUnsupported")}
+                                        </p>
+                                    )}
+                                </>
+                            )}
+
+                            <div className="border-t border-border px-[18px] pb-3 pt-3">
+                                <p id="chat-turn-stability-note" className="mb-3 font-mono text-[10px] leading-relaxed text-muted-foreground">
+                                    {t("chat.execution.nextMessageNote")}
+                                </p>
+                                <button
+                                    type="button"
+                                    disabled={!hasExecutionDraftChanges || isApplyingExecution}
+                                    onClick={() => void applySessionExecution()}
+                                    className="flex min-h-11 w-full items-center justify-center gap-2 rounded-[10px] bg-accent px-4 text-[13px] font-semibold text-accent-foreground transition-[opacity,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.98] disabled:opacity-45"
+                                >
+                                    {isApplyingExecution && <Loader2 className="size-4 animate-spin" />}
+                                    {executionSnapshot.pending && isSessionExecutionEqual(draftExecution, executionSnapshot.current)
+                                        ? t("chat.execution.cancelPending")
+                                        : t("chat.execution.apply")}
+                                </button>
+                            </div>
+                        </>
+                    )}
+                </DrawerContent>
+            </Drawer>
             <Drawer open={!isCursorSession && isPermissionSheetOpen} onOpenChange={setIsPermissionSheetOpen}>
                 <DrawerContent id="chat-access-level-sheet" className={PERMISSION_SHEET_CONTENT_CLASS}>
                     <div className="flex items-center px-[18px] pb-2 pt-1">

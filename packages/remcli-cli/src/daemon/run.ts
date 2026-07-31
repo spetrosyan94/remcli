@@ -605,6 +605,9 @@ export async function startDaemon(): Promise<void> {
             cursorCapabilities,
             spawnSession: sessionManager.spawnSession,
             stopSession: sessionManager.stopSession,
+            getSessionExecution: sessionManager.getSessionExecution,
+            getSessionExecutionState: sessionManager.getSessionExecutionState,
+            setSessionExecution: sessionManager.setSessionExecution,
             requestShutdown: () => requestShutdown('remcli-web'),
           });
         }, 0);
@@ -615,6 +618,7 @@ export async function startDaemon(): Promise<void> {
     const { port: controlPort, stop: stopControlServer } = await startDaemonControlServer({
       instanceId: daemonInstanceId,
       getChildren: sessionManager.getChildren,
+      consumeSessionExecution: sessionManager.consumeSessionExecution,
       stopSession: sessionManager.stopSession,
       spawnSession: sessionManager.spawnSession,
       requestShutdown: () => requestShutdown('remcli-cli'),
@@ -819,6 +823,9 @@ export async function startDaemon(): Promise<void> {
         cursorCapabilities,
         spawnSession: sessionManager.spawnSession,
         stopSession: sessionManager.stopSession,
+        getSessionExecution: sessionManager.getSessionExecution,
+        getSessionExecutionState: sessionManager.getSessionExecutionState,
+        setSessionExecution: sessionManager.setSessionExecution,
         requestShutdown: () => requestShutdown('remcli-web')
     });
 

@@ -537,7 +537,7 @@ test("new session keeps deferred providers visible but non-interactive", async (
     expect(pageIssues).toEqual([]);
 });
 
-test("Claude 1024 keeps metadata readable with a compact permission picker", async ({ page }, testInfo) => {
+test("Codex 1024 keeps metadata readable with a compact permission picker", async ({ page }, testInfo) => {
     test.skip(isMobileProject(testInfo), "Desktop breakpoint regression.");
     const pageIssues = collectPageIssues(page);
 
@@ -545,10 +545,10 @@ test("Claude 1024 keeps metadata readable with a compact permission picker", asy
     await openFixtureRoute(page, "/session/fx-chat?fixtures=1");
 
     const header = page.locator("header");
-    const picker = header.getByRole("button", { name: "access level: manual", exact: true });
+    const picker = header.getByRole("button", { name: "access level: workspace-write", exact: true });
     await expect(picker).toHaveCount(1);
     await expect(picker).toBeVisible();
-    for (const label of CLAUDE_PERMISSION_LABELS.slice(1)) {
+    for (const label of CODEX_PERMISSION_LABELS.slice(1)) {
         await expect(header.getByRole("button", { name: label, exact: true })).toHaveCount(0);
     }
     await expect(header.getByRole("link", { name: /terminal/i })).toBeVisible();
@@ -557,7 +557,7 @@ test("Claude 1024 keeps metadata readable with a compact permission picker", asy
     await picker.click();
     const drawer = page.locator('[data-slot="drawer-content"]');
     await expect(drawer).toBeVisible();
-    await assertPermissionLabelsAreFullyVisible(drawer, CLAUDE_PERMISSION_LABELS);
+    await assertPermissionLabelsAreFullyVisible(drawer, CODEX_PERMISSION_LABELS);
 
     await assertNoHorizontalOverflow(page);
     expect(pageIssues).toEqual([]);
@@ -572,6 +572,52 @@ test("Codex 1280 keeps every desktop permission segment fully visible", async ({
 
     await assertPermissionLabelsAreFullyVisible(page.locator("header"), CODEX_PERMISSION_LABELS);
     await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("chat stages Codex model and reasoning for the next message", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/session/fx-chat?fixtures=1");
+
+    const executionTrigger = page.getByRole("button", { name: /next message settings/i });
+    await expect(executionTrigger).toBeVisible();
+    await executionTrigger.click();
+
+    const drawer = page.locator("#chat-next-message-drawer");
+    await expect(drawer.getByRole("heading", { name: "Next message" })).toBeVisible();
+    const terra = drawer.getByRole("radio", { name: "GPT-5.6-Terra", exact: true });
+    await terra.click();
+    await drawer.getByRole("radio", { name: "high", exact: true }).click();
+    await drawer.getByRole("button", { name: "Apply to next message", exact: true }).click();
+
+    await expect(executionTrigger).toContainText("GPT-5.6-Terra");
+    await expect(executionTrigger).toContainText("next");
+
+    const input = page.getByPlaceholder("Message the agent…");
+    await input.fill("Continue with the selected model");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(executionTrigger).not.toContainText("next");
+
+    await executionTrigger.click();
+    await expect(drawer).toContainText("current: GPT-5.6-Terra · high");
+    await page.keyboard.press("Escape");
+    await expect(executionTrigger).toBeFocused();
+
+    await executionTrigger.click();
+    await drawer.getByRole("radio", { name: "GPT-5.6-Luna", exact: true }).click();
+    await drawer.getByRole("radio", { name: "medium", exact: true }).click();
+    await drawer.getByRole("button", { name: "Apply to next message", exact: true }).click();
+    await input.fill("Continue again without a stale revision");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(executionTrigger).not.toContainText("next");
+    await executionTrigger.click();
+    await expect(drawer).toContainText("current: GPT-5.6-Luna · medium");
+    await page.keyboard.press("Escape");
+
+    await assertNoHorizontalOverflow(page);
+    if (isMobileProject(testInfo)) await assertMobileTouchTargets(page);
     expect(pageIssues).toEqual([]);
 });
 

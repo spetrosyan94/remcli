@@ -25,6 +25,7 @@ import { MessageBuffer } from "@/ui/ink/messageBuffer";
 import { CodexDisplay } from "@/ui/ink/CodexDisplay";
 import {
     bindDaemonCodexThread,
+    consumeDaemonSessionExecution,
     openDaemonCodexRemoteTui,
     preflightDaemonCursorRunner,
 } from "@/daemon/controlClient";
@@ -86,6 +87,11 @@ interface ScheduledDeliveryRecovery {
     deliveryId: string;
     timeout: ReturnType<typeof setTimeout>;
 }
+
+const EXECUTION_METADATA_UPDATE_OPTIONS = {
+    maxAttempts: 2,
+    timeoutMs: 1_000,
+} as const;
 
 function isCodexPermissionMode(permissionMode: unknown): permissionMode is CodexSandbox {
     return permissionMode === 'read-only'
@@ -300,6 +306,7 @@ export async function runCodex(opts: {
         permissionMode: CodexSandbox;
         model?: string;
         reasoningEffort?: string;
+        didApplyExecution?: boolean;
         clientUserMessageId?: string;
         abortGeneration: number;
     }
@@ -537,14 +544,63 @@ export async function runCodex(opts: {
     // Use shared PermissionMode type from api/types for cross-agent compatibility
     let currentPermissionMode: CodexSandbox | undefined = opts.permissionMode;
     let currentModel: string | undefined = opts.execution?.model;
-    const currentReasoningEffort = opts.execution
+    let currentReasoningEffort = opts.execution
         ? opts.execution.reasoningEffort
         : opts.reasoningEffort;
+    let doesExecutionMetadataNeedReconciliation = false;
+    let hasUnacceptedExecutionChange = false;
 
     userMessageConsumer = async (message) => {
         if (message.meta?.sentFrom === 'history' || message.meta?.sentFrom === 'native-app-server') {
             logger.debug(`[Codex] Ignoring ${message.meta.sentFrom} user message in turn queue`);
             return;
+        }
+
+        let didApplyExecution = false;
+        if (opts.startedBy === 'daemon') {
+            const executionResult = await consumeDaemonSessionExecution(session.sessionId, 'codex');
+            if (!executionResult.ok) {
+                const failure = publishSessionError(
+                    `Codex execution selection could not be applied: ${executionResult.error}`,
+                    'Codex execution selection could not be applied.',
+                );
+                throw new RetryableUserMessageDeliveryError(new Error(failure));
+            }
+            if (executionResult.data.current.provider !== 'codex') {
+                const failure = 'Daemon returned an invalid Codex execution selection.';
+                if (message.deliveryId) {
+                    session.cancelPendingUserMessageDelivery(message.deliveryId);
+                }
+                publishSessionError(failure, 'Codex execution selection could not be applied.');
+                return;
+            }
+
+            const execution = executionResult.data.current;
+            if (executionResult.data.didApplyPending) {
+                doesExecutionMetadataNeedReconciliation = true;
+                hasUnacceptedExecutionChange = true;
+            }
+            didApplyExecution = hasUnacceptedExecutionChange;
+            if (doesExecutionMetadataNeedReconciliation) {
+                currentModel = execution.model;
+                currentReasoningEffort = execution.reasoningEffort;
+                try {
+                    await session.updateMetadata((currentMetadata) => ({
+                        ...currentMetadata,
+                        codexExecution: {
+                            model: execution.model,
+                            ...(execution.reasoningEffort ? { reasoningEffort: execution.reasoningEffort } : {}),
+                            permissionMode: currentMetadata.codexExecution?.permissionMode
+                                ?? opts.permissionMode
+                                ?? CODEX_DEFAULT_PERMISSION_MODE,
+                        },
+                    }), EXECUTION_METADATA_UPDATE_OPTIONS);
+                    doesExecutionMetadataNeedReconciliation = false;
+                } catch (error) {
+                    const failure = publishSessionError(error, 'Codex execution metadata update failed.');
+                    throw new RetryableUserMessageDeliveryError(new Error(failure));
+                }
+            }
         }
 
         // A daemon-created session receives a capability-validated permission
@@ -584,10 +640,14 @@ export async function runCodex(opts: {
             permissionMode: messagePermissionMode || CODEX_DEFAULT_PERMISSION_MODE,
             model: currentModel,
             reasoningEffort: currentReasoningEffort,
+            didApplyExecution,
             clientUserMessageId: message.deliveryId,
             abortGeneration,
         };
         await messageQueue.pushWithAcceptance(message.content.text, enhancedMode);
+        if (didApplyExecution) {
+            hasUnacceptedExecutionChange = false;
+        }
     };
     session.onUserMessage(userMessageConsumer);
     let thinking = false;
@@ -1489,6 +1549,13 @@ export async function runCodex(opts: {
                 }
 
                 const steerActiveTurn = async (threadId: string, turnId: string): Promise<void> => {
+                    if (message.mode.didApplyExecution) {
+                        logger.debug('[Codex] Execution changed before an active native turn; deferring the P2P prompt until the next turn.');
+                        await waitForThreadToBecomeIdle(threadId, turnId, turnSignal);
+                        activeCodexThreadId = threadId;
+                        nativeThreadBootstrap = { state: 'ready', threadId };
+                        return;
+                    }
                     try {
                         const steeredTurnId = await appServerClient.steerTurn({
                             threadId,

@@ -170,6 +170,12 @@ export const CodexSessionExecutionSchema = z.object({
 
 export type CodexSessionExecution = z.infer<typeof CodexSessionExecutionSchema>;
 
+export const CursorSessionExecutionSchema = z.object({
+    model: z.string().min(1),
+});
+
+export type CursorSessionExecution = z.infer<typeof CursorSessionExecutionSchema>;
+
 export const MetadataSchema = z.object({
     path: z.string(),
     host: z.string(),
@@ -190,6 +196,7 @@ export const MetadataSchema = z.object({
     codexSessionId: z.string().optional(),
     codexExecution: CodexSessionExecutionSchema.optional(),
     cursorSessionId: z.string().optional(),
+    cursorExecution: CursorSessionExecutionSchema.optional(),
     geminiSessionId: z.string().optional(),
     resumedFromRemcliSessionId: z.string().min(1).optional(),
     tools: z.array(z.string()).optional(),

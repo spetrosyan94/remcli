@@ -311,6 +311,31 @@ export interface CursorCapabilitiesSnapshot {
     errorCode?: 'unavailable' | 'expired' | 'unsupported_selection';
 }
 
+export interface CodexSessionExecutionSelection {
+    provider: 'codex';
+    model: string;
+    reasoningEffort?: CodexReasoningEffort;
+    catalogVersion: string;
+}
+
+export interface CursorSessionExecutionSelection {
+    provider: 'cursor';
+    model: string;
+    catalogVersion: string;
+}
+
+export type SessionExecutionSelection =
+    | CodexSessionExecutionSelection
+    | CursorSessionExecutionSelection;
+
+export interface SessionExecutionSnapshot {
+    sessionId: string;
+    provider: SessionExecutionSelection['provider'];
+    revision: number;
+    current: SessionExecutionSelection;
+    pending?: SessionExecutionSelection;
+}
+
 export interface SpawnSessionOptions {
     machineId: string;
     directory: string;
@@ -558,6 +583,40 @@ function isCursorCapabilitiesSnapshot(value: unknown): value is CursorCapabiliti
         && value.models.length === 0;
 }
 
+function isSessionExecutionSelection(value: unknown): value is SessionExecutionSelection {
+    if (!isRecord(value)
+        || (value.provider !== 'codex' && value.provider !== 'cursor')
+        || typeof value.model !== 'string'
+        || value.model.trim().length === 0
+        || typeof value.catalogVersion !== 'string'
+        || value.catalogVersion.trim().length === 0) {
+        return false;
+    }
+
+    if (value.provider === 'cursor') {
+        return value.reasoningEffort === undefined;
+    }
+
+    return value.reasoningEffort === undefined
+        || (typeof value.reasoningEffort === 'string' && value.reasoningEffort.trim().length > 0);
+}
+
+function isSessionExecutionSnapshot(value: unknown): value is SessionExecutionSnapshot {
+    if (!isRecord(value)
+        || typeof value.sessionId !== 'string'
+        || value.sessionId.trim().length === 0
+        || (value.provider !== 'codex' && value.provider !== 'cursor')
+        || !Number.isSafeInteger(value.revision)
+        || (value.revision as number) < 0
+        || !isSessionExecutionSelection(value.current)
+        || value.current.provider !== value.provider) {
+        return false;
+    }
+
+    return value.pending === undefined
+        || (isSessionExecutionSelection(value.pending) && value.pending.provider === value.provider);
+}
+
 function isSealedPairingQr(value: unknown): value is SealedPairingQr {
     return isRecord(value)
         && value.format === 'nacl-box-v1'
@@ -716,6 +775,50 @@ export async function machineGetCursorCapabilities(
     }
     if (!isCursorCapabilitiesSnapshot(result)) {
         throw new Error('Cursor capability RPC returned invalid response');
+    }
+    return result;
+}
+
+/** Read the daemon-owned execution selection for an active session. */
+export async function machineGetSessionExecution(
+    machineId: string,
+    sessionId: string,
+): Promise<SessionExecutionSnapshot> {
+    const result = await machineRpc<unknown, { sessionId: string }>(
+        machineId,
+        'get-session-execution',
+        { sessionId },
+    );
+    if (isRpcErrorEnvelope(result)) {
+        throw new Error(result.error || 'Session execution RPC failed');
+    }
+    if (!isSessionExecutionSnapshot(result)) {
+        throw new Error('Session execution RPC returned invalid response');
+    }
+    return result;
+}
+
+/** Stage a provider-validated selection for the next user message. */
+export async function machineSetSessionExecution(
+    machineId: string,
+    sessionId: string,
+    expectedRevision: number,
+    execution: SessionExecutionSelection,
+): Promise<SessionExecutionSnapshot> {
+    const result = await machineRpc<unknown, {
+        sessionId: string;
+        expectedRevision: number;
+        execution: SessionExecutionSelection;
+    }>(machineId, 'set-session-execution', {
+        sessionId,
+        expectedRevision,
+        execution,
+    });
+    if (isRpcErrorEnvelope(result)) {
+        throw new Error(result.error || 'Session execution update failed');
+    }
+    if (!isSessionExecutionSnapshot(result)) {
+        throw new Error('Session execution update returned invalid response');
     }
     return result;
 }

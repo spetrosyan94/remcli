@@ -123,8 +123,8 @@ describe('fixture resume history', () => {
     it('copies seeded history for both direct-chat and resume-sheet session ids', async () => {
         const sourceSession = useProtocolStore.getState().sessions[FIXTURE_CHAT_SESSION_ID];
         const resumeSessionIds = [
-            sourceSession?.metadata?.claudeSessionId,
-            `fixture-claude-${FIXTURE_CHAT_SESSION_ID}`,
+            sourceSession?.metadata?.codexSessionId,
+            `fixture-codex-${FIXTURE_CHAT_SESSION_ID}`,
         ];
 
         for (const resumeSessionId of resumeSessionIds) {
@@ -134,7 +134,13 @@ describe('fixture resume history', () => {
             const resumedSessionId = getSpawnedSessionId(await fixtureSpawnNewSession({
                 machineId: 'fx-machine-online',
                 directory: FIXTURE_DIRECTORY,
-                agent: 'claude',
+                agent: 'codex',
+                permissionMode: 'workspace-write',
+                codexExecution: {
+                    model: 'gpt-5.6-luna',
+                    reasoningEffort: 'xhigh',
+                    catalogVersion: 'fixture-codex-v1',
+                },
                 resumeSessionId,
             }));
             const resumedHistory = useProtocolStore.getState().sessionMessages[resumedSessionId]?.messages ?? [];

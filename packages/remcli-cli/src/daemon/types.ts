@@ -2,8 +2,29 @@
  * Daemon-specific types (not related to API/server communication)
  */
 
-import { Metadata } from '@/api/types';
+import {
+  Metadata,
+  SessionExecutionConsumeResponse,
+  SessionExecutionSelection,
+  SessionExecutionSnapshot,
+} from '@/api/types';
 import { ChildProcess } from 'child_process';
+import type { CodexSandbox } from '@/codex/types';
+import type { CursorRunnerIdentity } from '@/cursor/cursorCapabilities';
+
+/** Private state retained only by the daemon for a daemon-owned wrapper. */
+export interface DaemonSessionExecutionState {
+  snapshot: SessionExecutionSnapshot;
+  codexPermissionMode?: CodexSandbox;
+  cursorRunner?: CursorRunnerIdentity;
+}
+
+export interface DaemonSessionExecutionSeed {
+  provider: 'codex' | 'cursor';
+  current: SessionExecutionSelection;
+  codexPermissionMode?: CodexSandbox;
+  cursorRunner?: CursorRunnerIdentity;
+}
 
 export interface NativeCodexThreadBinding {
   agent: 'codex';
@@ -224,6 +245,22 @@ export interface DaemonSessionWebhookResult {
   error?: string;
 }
 
+export type SessionExecutionLookupResult =
+  | { type: 'found'; snapshot: SessionExecutionSnapshot }
+  | { type: 'unavailable' }
+  | { type: 'provider-mismatch'; provider: 'codex' | 'cursor' };
+
+export type SessionExecutionSetResult =
+  | { type: 'updated'; snapshot: SessionExecutionSnapshot }
+  | { type: 'revision-mismatch'; snapshot: SessionExecutionSnapshot }
+  | { type: 'unavailable' }
+  | { type: 'provider-mismatch'; provider: 'codex' | 'cursor' };
+
+export type SessionExecutionConsumeResult =
+  | { type: 'consumed'; response: SessionExecutionConsumeResponse }
+  | { type: 'unavailable' }
+  | { type: 'provider-mismatch'; provider: 'codex' | 'cursor' };
+
 /** A daemon-owned runner acknowledged a graceful local shutdown transition. */
 export interface DaemonRunnerLifecycleResult {
   accepted: boolean;
@@ -258,6 +295,10 @@ export interface TrackedSession {
   expectedResumeKey?: string;
   /** Daemon-selected working directory before the runner has published metadata. */
   expectedDirectory?: string;
+  /** Private daemon-only state created from validated spawn options. */
+  executionSeed?: DaemonSessionExecutionSeed;
+  /** Private daemon-only state attached after the wrapper reports its P2P session ID. */
+  executionState?: DaemonSessionExecutionState;
   /** In-memory resume relation eligible only for a capability-bound Cursor preflight. */
   cursorResumeLineage?: CursorResumeLineage;
   nativeCodexThreadId?: string;
