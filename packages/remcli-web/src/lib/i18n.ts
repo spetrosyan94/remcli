@@ -27,8 +27,9 @@ function matchNavigatorLanguage(raw: string): LocaleId | null {
 }
 
 function detectLocale(): LocaleId {
-    const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
+    const stored = typeof localStorage === "undefined" ? null : localStorage.getItem(LOCALE_STORAGE_KEY);
     if (isLocaleId(stored)) return stored;
+    if (typeof navigator === "undefined") return "en";
     const candidates = navigator.languages?.length ? navigator.languages : [navigator.language];
     for (const candidate of candidates) {
         if (!candidate) continue;
