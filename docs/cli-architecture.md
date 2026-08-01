@@ -275,21 +275,29 @@ SPA-fallback роут отдаёт `index.html` на любой несматче
 
 | Платформа | Механизм | Ресурс |
 |-----------|----------|--------|
+| macOS | LaunchAgent | `~/Library/LaunchAgents/com.remcli-cli.daemon.plist` |
 | Linux | `systemd --user` | `~/.config/systemd/user/remcli.service` |
 | Windows | Task Scheduler | `RemcliDaemonAutostart` |
 
-Оба адаптера запускают absolute `process.execPath` и текущий
+Все три адаптера запускают absolute `process.execPath` и текущий
 `dist/index.mjs daemon start-sync`; `--tunnel` сохраняется только как launch
 argument. Pairing files, ключи и произвольное окружение в unit/task не
 записываются. Ресурс имеет owner marker `remcli-managed-autostart-v1`: чужой
-unit/task не перезаписывается и не удаляется.
+plist/unit/task не перезаписывается и не удаляется.
 
-Linux adapter проверяет доступность user manager, но не включает lingering.
-Unit использует `Restart=no`. Windows task запускается при logon текущего
-пользователя с `InteractiveToken` и `LeastPrivilege`, без restart policy.
+macOS adapter работает только в `gui/<uid>` текущего пользователя, не требует
+`sudo`, не создаёт системный сервис и не использует `KeepAlive`, `WatchPaths`
+или `StartInterval`. Linux adapter проверяет доступность user manager, но не
+включает lingering; unit использует `Restart=no`. Windows task запускается при
+logon текущего пользователя с `InteractiveToken` и `LeastPrivilege`, без
+restart policy.
 Поэтому явный `remcli daemon stop` оставляет daemon остановленным до ручного
 старта или следующего входа пользователя. Удаление autostart не завершает уже
 работающий daemon; для этого отдельно используется `remcli daemon stop`.
+Если autostart удалён во время работы daemon, текущий проверенный LaunchAgent
+помечается как stale до явного stop: повторная установка не останавливает его
+сама. После `remcli daemon stop` следующий install безопасно выгружает только
+остановленный Remcli job и создаёт свежий user-level autostart.
 
 `remcli daemon autostart status` показывает missing/foreign/installed/stale,
 режим tunnel и устаревший absolute Node/package path. Повторная установка

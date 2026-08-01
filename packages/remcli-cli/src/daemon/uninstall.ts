@@ -1,38 +1,70 @@
 import { logger } from '@/ui/logger';
-import { uninstall as uninstallMac } from './mac/uninstall';
 import { uninstallLinuxSystemdAutostart } from './autostart/linuxSystemd';
-import { createWindowsTaskSchedulerAutostart } from './autostart/windowsTaskScheduler';
+import {
+    createWindowsTaskSchedulerAutostart,
+    WINDOWS_AUTOSTART_TASK_NAME,
+} from './autostart/windowsTaskScheduler';
+import {
+    createMacosLaunchAgentAutostart,
+    type MacosLaunchAgentAutostart,
+} from './autostart/macosLaunchAgent';
+import type { DaemonAutostartStatus } from './install';
 
-export async function uninstallDaemonAutostart(): Promise<void> {
-    if (process.platform === 'linux') {
-        await uninstallLinuxSystemdAutostart();
-        logger.info('Remcli systemd user autostart removed (or was not installed).');
-        return;
-    }
-
-    if (process.platform === 'win32') {
-        await createWindowsTaskSchedulerAutostart().uninstall();
-        logger.info('Remcli Task Scheduler autostart removed.');
-        return;
-    }
-
-    throw new Error(`User-level daemon autostart is not supported on ${process.platform}`);
+export interface DaemonAutostartUninstallDependencies {
+    platform: NodeJS.Platform;
+    macosAutostart: MacosLaunchAgentAutostart;
 }
 
-export async function uninstall(): Promise<void> {
-    if (process.platform === 'linux' || process.platform === 'win32') {
-        await uninstallDaemonAutostart();
-        return;
+const defaultDependencies: DaemonAutostartUninstallDependencies = {
+    platform: process.platform,
+    macosAutostart: createMacosLaunchAgentAutostart(),
+};
+
+export async function uninstallDaemonAutostart(
+    dependencies: DaemonAutostartUninstallDependencies = defaultDependencies,
+): Promise<DaemonAutostartStatus> {
+    if (dependencies.platform === 'linux') {
+        const status = await uninstallLinuxSystemdAutostart();
+        logger.info('Remcli systemd user autostart removed (or was not installed).');
+        return {
+            platform: 'linux',
+            state: status.state,
+            resource: status.unitPath,
+            isTunnelEnabled: status.isTunnelEnabled,
+            details: [],
+        };
     }
 
-    if (process.platform !== 'darwin') {
-        throw new Error(`Daemon autostart is not supported on ${process.platform}`);
+    if (dependencies.platform === 'win32') {
+        const autostart = createWindowsTaskSchedulerAutostart();
+        await autostart.uninstall();
+        logger.info('Remcli Task Scheduler autostart removed.');
+        return {
+            platform: 'win32',
+            state: 'missing',
+            resource: `Task Scheduler / ${WINDOWS_AUTOSTART_TASK_NAME}`,
+            isTunnelEnabled: false,
+            details: [],
+        };
     }
-    
-    if (process.getuid && process.getuid() !== 0) {
-        throw new Error('Daemon uninstallation requires sudo privileges. Please run with sudo.');
+
+    if (dependencies.platform === 'darwin') {
+        const status = await dependencies.macosAutostart.uninstall();
+        logger.info('Remcli macOS LaunchAgent autostart removed (or was not installed).');
+        return {
+            platform: 'darwin',
+            state: status.state,
+            resource: status.plistPath,
+            isTunnelEnabled: status.isTunnelEnabled,
+            details: status.staleParts,
+        };
     }
-    
-    logger.info('Uninstalling Remcli daemon for macOS...');
-    await uninstallMac();
+
+    throw new Error(`User-level daemon autostart is not supported on ${dependencies.platform}`);
+}
+
+export async function uninstall(
+    dependencies: DaemonAutostartUninstallDependencies = defaultDependencies,
+): Promise<DaemonAutostartStatus> {
+    return uninstallDaemonAutostart(dependencies);
 }

@@ -80,7 +80,7 @@ npm run start:tunnel
 | `npm run start:tunnel` | Основной удалённый режим: при установленном `cloudflared` запускает HTTPS Cloudflare Tunnel. |
 | `npm start` | Локальный режим для одной Wi-Fi сети без tunnel. |
 | `npm run status` | Показывает состояние daemon и запущенных процессов. |
-| `npm run autostart:install:tunnel` | Включает запуск Remcli при входе пользователя сразу с удалённым HTTPS-режимом (Linux/Windows). |
+| `npm run autostart:install:tunnel` | Включает запуск Remcli при входе текущего пользователя сразу с удалённым HTTPS-режимом (macOS/Linux/Windows). |
 | `npm run autostart:status` | Проверяет автозапуск и обнаруживает устаревший путь Node/Remcli. |
 | `npm run autostart:uninstall` | Удаляет только созданный Remcli user-level автозапуск. |
 | `npm run qr` | Показывает QR-код повторно. |

@@ -688,8 +688,8 @@ ${chalk.bold('Usage:')}
                                      Approve a pending UI pairing-key rotation locally
   remcli daemon list               List active sessions
   remcli daemon autostart install [--tunnel]
-                                     Start Remcli at user login (Linux/Windows)
-  remcli daemon autostart status    Show autostart ownership and stale paths
+                                     Start Remcli at user login (macOS/Linux/Windows)
+  remcli daemon autostart status    Show macOS/Linux/Windows autostart ownership and stale paths
   remcli daemon autostart uninstall Remove user-login autostart
 
   If you want to kill all remcli related processes run 
