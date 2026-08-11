@@ -863,12 +863,23 @@ test("Zen confirms deletion, preserves the linked session, and restores focus", 
     await openFixtureRoute(page, "/zen?fixtures=1");
 
     const firstTask = page.getByText("Показать латентность в пилюле соединения", { exact: true });
+    const firstTaskToggle = page.getByRole("button", { name: /toggle task: Показать латентность/i });
     const firstTrigger = page.getByRole("button", { name: /Actions for Показать латентность/i });
+    await expect(firstTaskToggle).toHaveAttribute("aria-pressed", "false");
+    await page.evaluate(() => {
+        let didObserveOverlap = false;
+        const observer = new MutationObserver(() => {
+            didObserveOverlap ||= Boolean(document.querySelector('[role="menu"]') && document.querySelector('[role="dialog"]'));
+        });
+        observer.observe(document.body, { attributes: true, childList: true, subtree: true });
+        (window as Window & { remcliZenMenuDialogOverlap?: () => boolean }).remcliZenMenuDialogOverlap = () => didObserveOverlap;
+    });
     await firstTrigger.click();
     await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
 
     const dialog = page.getByRole("dialog", { name: "Delete task?", exact: true });
     await expect(dialog).toBeVisible();
+    expect(await page.evaluate(() => (window as Window & { remcliZenMenuDialogOverlap?: () => boolean }).remcliZenMenuDialogOverlap?.())).toBe(false);
     await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();

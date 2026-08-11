@@ -1,7 +1,8 @@
 // remcli-web — Command Palette (⌘K / кнопка поиска). Оверлей поверх любого экрана.
 // Референс: design/screens/palette.tsx (разметка/классы 1:1); живые сессии из P2P-стора,
 // действия: новая сессия · настройки · отключиться (logout + редирект на /connect).
-// shadcn <Command> (cmdk) в Radix Dialog; появление: scale 0.98→1 + fade 160ms (MOTION.md §7).
+// shadcn <Command> (cmdk) в Radix Dialog; появление: scale 0.98→1 + fade 160ms.
+// Reduced motion переопределяет это на opacity-only 120ms в index.css (MOTION.md §7).
 import * as React from "react";
 import { Command as CommandPrimitive } from "cmdk";
 import { Plus, Search, Settings, Unplug } from "lucide-react";
@@ -93,6 +94,7 @@ export function CommandPalette() {
                 <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/55 backdrop-blur-[2px] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-[160ms] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-200" />
                 <DialogPrimitive.Content
                     aria-describedby={undefined}
+                    data-command-palette-content
                     className="fixed left-1/2 top-[calc(env(safe-area-inset-top)+22px)] z-50 w-[calc(100%-28px)] max-w-[390px] -translate-x-1/2 overflow-hidden rounded-2xl border border-border bg-card shadow-2xl shadow-black/60 outline-none duration-[160ms] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-[0.98] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.98] sm:max-w-xl lg:max-w-2xl"
                 >
                     <DialogPrimitive.Title className="sr-only">{t("palette.placeholder")}</DialogPrimitive.Title>

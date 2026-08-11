@@ -11,6 +11,7 @@ export type FixtureTheme = "dark" | "light";
 export const FIXTURE_ROUTES: readonly FixtureRoute[] = [
     { name: "home", path: "/" },
     { name: "new-session", path: "/new" },
+    { name: "new-session-long-values", path: "/new?longValues=1" },
     { name: "chat", path: "/session/fx-chat" },
     { name: "terminal", path: "/session/fx-running/terminal" },
     { name: "zen", path: "/zen" },

@@ -165,6 +165,24 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
+    [data-command-palette-content][data-state="closed"] {
+        animation: remcli-reduced-fade-out var(--dur-micro) var(--ease-out) both !important;
+    }
+
+    [data-command-palette-content][data-state="open"] {
+        animation: remcli-reduced-fade-in var(--dur-micro) var(--ease-out) both !important;
+    }
+
+    [data-slot="dropdown-menu-content"][data-state="closed"],
+    [data-slot="dropdown-menu-sub-content"][data-state="closed"] {
+        animation: remcli-reduced-fade-out var(--dur-micro) var(--ease-out) both !important;
+    }
+
+    [data-slot="dropdown-menu-content"][data-state="open"],
+    [data-slot="dropdown-menu-sub-content"][data-state="open"] {
+        animation: remcli-reduced-fade-in var(--dur-micro) var(--ease-out) both !important;
+    }
+
     [data-vaul-drawer][data-vaul-snap-points="false"],
     [data-vaul-overlay][data-vaul-snap-points="false"] {
         transition: opacity var(--dur-micro) var(--ease-out) !important;

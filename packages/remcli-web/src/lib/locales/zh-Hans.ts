@@ -154,7 +154,7 @@ export const zhHans: Dictionary = {
     "zen.openCount": "未完成",
     "zen.workOnTask": "处理该任务",
     "zen.newTask": "新任务…",
-    "zen.toggleTask": "切换任务",
+    "zen.toggleTask": "切换任务：{title}",
     "zen.syncFailed": "任务同步失败",
     "zen.taskActions": "{title} 的操作",
     "zen.empty": "暂无任务。请在下方添加。",

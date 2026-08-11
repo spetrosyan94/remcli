@@ -154,7 +154,7 @@ export const it: Dictionary = {
     "zen.openCount": "aperte",
     "zen.workOnTask": "Lavora sull'attività",
     "zen.newTask": "nuova attività…",
-    "zen.toggleTask": "attiva/disattiva attività",
+    "zen.toggleTask": "attiva/disattiva attività: {title}",
     "zen.syncFailed": "impossibile sincronizzare le attività",
     "zen.taskActions": "Azioni per {title}",
     "zen.empty": "Nessuna attività. Aggiungine una qui sotto.",

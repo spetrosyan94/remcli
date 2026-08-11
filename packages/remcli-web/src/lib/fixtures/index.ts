@@ -47,7 +47,7 @@ import type {
 } from '@/lib/protocol/socket';
 import { RecentDirectoriesRpcError } from '@/lib/protocol/socket';
 import { useProtocolStore } from '@/lib/protocol/store';
-import type { AgentKind, AgentSessionInfo, Session, SessionMetadata } from '@/lib/protocol/types';
+import type { AgentKind, AgentSessionInfo, Machine, Session, SessionMetadata } from '@/lib/protocol/types';
 
 export { FIXTURE_CHAT_SESSION_ID };
 
@@ -69,6 +69,9 @@ const CURSOR_ACCOUNT_MODEL_LABELS = [
     'Cursor account model · fixture 07',
     'Cursor account model · fixture 08',
 ] as const;
+
+const FIXTURE_LONG_MACHINE_HOST = "macbook-pro-engineering-workstation-with-an-intentionally-long-hostname.local";
+const FIXTURE_LONG_CODEX_MODEL_LABEL = "GPT-5.6-Luna extended-context engineering profile with a deliberately long display name";
 
 // ─── Детект флага (?fixtures=1 / localStorage) ───────────────────
 
@@ -321,6 +324,22 @@ const FIXTURE_CODEX_LIFECYCLE_CHAT_SESSION: Session = {
 function fixtureQueryParameter(name: string): string | null {
     if (typeof window === 'undefined') return null;
     return new URLSearchParams(window.location.search).get(name);
+}
+
+function fixtureMachines(): Machine[] {
+    if (fixtureQueryParameter("longValues") !== "1") return FIXTURE_MACHINES;
+
+    return FIXTURE_MACHINES.map((machine) => (
+        machine.id === "fx-machine-online" && machine.metadata
+            ? {
+                ...machine,
+                metadata: {
+                    ...machine.metadata,
+                    host: FIXTURE_LONG_MACHINE_HOST,
+                },
+            }
+            : machine
+    ));
 }
 
 function fixtureSessions(): Session[] {
@@ -653,7 +672,7 @@ export function initFixturesIfEnabled(): boolean {
     fixtureRecentDirectoriesByMachine = createFixtureRecentDirectoriesByMachine();
     getFixtureLineageMetricsState();
     const store = useProtocolStore.getState();
-    store.applyMachines(FIXTURE_MACHINES);
+    store.applyMachines(fixtureMachines());
     store.applySessions(fixtureSessions());
     store.applyMessages(FIXTURE_CHAT_SESSION_ID, fixtureChatMessages(), { markLoaded: true });
     if (fixtureQueryParameter('chatResume') === 'cursor') {
@@ -929,6 +948,23 @@ export async function fixtureGetCodexCapabilities(): Promise<CodexCapabilitiesSn
             models: [],
             permissionModes: [],
             errorCode: 'unavailable',
+        };
+    }
+    if (fixtureQueryParameter("longValues") === "1") {
+        return {
+            agent: "codex",
+            status: "ready",
+            fetchedAt: FIXTURE_BASE_TIME,
+            expiresAt: FIXTURE_BASE_TIME + (5 * 60 * 1_000),
+            catalogVersion: "fixture-codex-long-values-v1",
+            models: [{
+                id: "gpt-5.6-luna-long-display",
+                displayName: FIXTURE_LONG_CODEX_MODEL_LABEL,
+                defaultReasoningEffort: "xhigh",
+                supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+                isDefault: true,
+            }],
+            permissionModes: ["read-only", "workspace-write", "danger-full-access"],
         };
     }
     if (scenario === 'choose-required') {

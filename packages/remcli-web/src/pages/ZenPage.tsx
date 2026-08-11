@@ -32,12 +32,13 @@ import {
     type ZenTask,
 } from "@/lib/zenTasks";
 
-function TaskCheckbox({ isDone, onToggle }: { isDone: boolean; onToggle: () => void }) {
+function TaskCheckbox({ title, isDone, onToggle }: { title: string; isDone: boolean; onToggle: () => void }) {
     return (
         <span className="relative mt-0.5 size-[18px] shrink-0">
             <button
                 type="button"
-                aria-label={t("zen.toggleTask")}
+                aria-label={t("zen.toggleTask", { title })}
+                aria-pressed={isDone}
                 onClick={onToggle}
                 className="absolute left-1/2 top-1/2 flex size-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-lg transition-transform active:scale-[0.96]"
             >
@@ -60,8 +61,25 @@ interface TaskActionsProps {
 }
 
 function TaskActions({ task, setTriggerRef, onDelete }: TaskActionsProps) {
+    const [isOpen, setIsOpen] = useState(false);
+    const [isDeletePending, setIsDeletePending] = useState(false);
+
+    const requestDelete = () => {
+        if (isDeletePending) return;
+        setIsDeletePending(true);
+        setIsOpen(false);
+    };
+
+    const openDeleteAfterMenuExit = (event: React.AnimationEvent<HTMLDivElement>) => {
+        if (!isDeletePending || event.target !== event.currentTarget || event.currentTarget.dataset.state !== "closed") return;
+        setIsDeletePending(false);
+        requestAnimationFrame(() => {
+            onDelete(task);
+        });
+    };
+
     return (
-        <DropdownMenu>
+        <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
             <DropdownMenuTrigger asChild>
                 <button
                     ref={setTriggerRef}
@@ -72,11 +90,11 @@ function TaskActions({ task, setTriggerRef, onDelete }: TaskActionsProps) {
                     <MoreHorizontal className="size-[17px]" />
                 </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-36">
+            <DropdownMenuContent align="end" className="min-w-36" onAnimationEnd={openDeleteAfterMenuExit}>
                 <DropdownMenuItem
                     variant="destructive"
                     className="min-h-11 font-mono text-xs"
-                    onSelect={() => onDelete(task)}
+                    onSelect={requestDelete}
                 >
                     <Trash2 className="size-3.5" />
                     {t("common.delete")}
@@ -215,7 +233,7 @@ export function ZenPage() {
 
                     return (
                         <div key={task.id} className={`flex min-w-0 items-start gap-3 px-2 py-3.5${rowBorder}`}>
-                            <TaskCheckbox isDone={task.isDone} onToggle={() => applyMutation(toggleZenTask(task.id))} />
+                            <TaskCheckbox title={task.title} isDone={task.isDone} onToggle={() => applyMutation(toggleZenTask(task.id))} />
                             <div className="flex min-w-0 flex-1 flex-col gap-2">
                                 <span className={`min-w-0 break-words text-[14.5px] leading-snug [overflow-wrap:anywhere] ${task.isDone ? "text-muted-foreground line-through" : ""}`}>
                                     {task.title}

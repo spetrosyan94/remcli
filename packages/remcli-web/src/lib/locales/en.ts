@@ -154,7 +154,7 @@ export const en: Dictionary = {
     "zen.openCount": "open",
     "zen.workOnTask": "Work on task",
     "zen.newTask": "new task…",
-    "zen.toggleTask": "toggle task",
+    "zen.toggleTask": "toggle task: {title}",
     "zen.syncFailed": "failed to sync tasks",
     "zen.taskActions": "Actions for {title}",
     "zen.empty": "No tasks yet. Add one below.",
