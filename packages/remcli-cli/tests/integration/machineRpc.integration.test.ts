@@ -17,7 +17,11 @@ import { decodeBase64, decrypt, encodeBase64, encrypt } from '@/api/encryption';
 import type { ListDirectoryResponse } from '@/daemon/directoryBrowser/types';
 import type { MachineSocketHandle } from '@/daemon/machineSocket';
 import type { P2PServer } from '@/daemon/p2p/p2pServer';
-import { calculateRequestProofMac, REQUEST_PROOF_VERSION } from '@/daemon/p2p/p2pRequestProof';
+import {
+    calculateRequestProofMac,
+    REQUEST_PROOF_TTL_MS,
+    REQUEST_PROOF_VERSION,
+} from '@/daemon/p2p/p2pRequestProof';
 import type { StopSessionResult } from '@/daemon/types';
 
 const SOCKET_CONNECT_TIMEOUT_MS = 5_000;
@@ -234,17 +238,19 @@ async function fetchMachines(port: number, bearerToken: string): Promise<Machine
 
 function createSocketProof(authSecret: Uint8Array, operation: string, payload: Record<string, string>) {
     const id = randomUUID();
+    const expiresAt = Date.now() + REQUEST_PROOF_TTL_MS;
     const mac = calculateRequestProofMac(authSecret, {
         v: REQUEST_PROOF_VERSION,
         transport: 'socket',
         operation,
         requestId: id,
+        expiresAt,
         payload,
     });
     if (!mac) {
         throw new Error('Could not create request proof');
     }
-    return { v: REQUEST_PROOF_VERSION, id, mac };
+    return { v: REQUEST_PROOF_VERSION, id, expiresAt, mac };
 }
 
 async function emitRpcCall(

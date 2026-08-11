@@ -7,7 +7,12 @@ import { getEffectiveServerUrl } from '@/daemon/p2p/p2pSession';
 import { Credentials } from '@/persistence';
 import { connectionState, isNetworkError } from '@/utils/serverConnectionErrors';
 import { randomUUID } from 'node:crypto';
-import { calculateRequestProofMac, type JsonValue } from '@/daemon/p2p/p2pRequestProof';
+import {
+  calculateRequestProofMac,
+  REQUEST_PROOF_TTL_MS,
+  REQUEST_PROOF_VERSION,
+  type JsonValue,
+} from '@/daemon/p2p/p2pRequestProof';
 
 const SESSION_CREATION_OPERATION = 'POST /v1/sessions';
 
@@ -72,19 +77,22 @@ export class ApiClient {
 
     if (this.credential.p2pAuthSecret) {
       const requestId = randomUUID();
+      const expiresAt = Date.now() + REQUEST_PROOF_TTL_MS;
       const mac = calculateRequestProofMac(this.credential.p2pAuthSecret, {
-        v: 1,
+        v: REQUEST_PROOF_VERSION,
         transport: 'http',
         operation: SESSION_CREATION_OPERATION,
         requestId,
+        expiresAt,
         payload: requestBody,
       });
       if (!mac) {
         throw new Error('Could not create P2P session request proof');
       }
 
-      headers['X-Remcli-Request-Proof-Version'] = '1';
+      headers['X-Remcli-Request-Proof-Version'] = String(REQUEST_PROOF_VERSION);
       headers['X-Remcli-Request-Proof-Id'] = requestId;
+      headers['X-Remcli-Request-Proof-Expires-At'] = String(expiresAt);
       headers['X-Remcli-Request-Proof-Mac'] = mac;
     }
 

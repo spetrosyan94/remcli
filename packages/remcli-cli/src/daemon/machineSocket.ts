@@ -46,6 +46,7 @@ import { parseProviderSpawnRequest } from '@/daemon/providerSpawnRequest';
 import type { PairingRekeyCoordinator } from './p2p/pairingRekey';
 import {
     calculateRequestProofMac,
+    REQUEST_PROOF_TTL_MS,
     REQUEST_PROOF_VERSION,
     type P2PRequestProof,
 } from './p2p/p2pRequestProof';
@@ -118,18 +119,20 @@ function signMachineRpcRegistration(
     }
 
     const id = randomUUID();
+    const expiresAt = Date.now() + REQUEST_PROOF_TTL_MS;
     const mac = calculateRequestProofMac(authSecret, {
         v: REQUEST_PROOF_VERSION,
         transport: 'socket',
         operation,
         requestId: id,
+        expiresAt,
         payload: { method: payload.method },
     });
     if (!mac) {
         throw new Error('Could not create machine RPC request proof');
     }
 
-    const proof: P2PRequestProof = { v: REQUEST_PROOF_VERSION, id, mac };
+    const proof: P2PRequestProof = { v: REQUEST_PROOF_VERSION, id, expiresAt, mac };
     return { ...payload, proof };
 }
 

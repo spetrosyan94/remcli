@@ -59,16 +59,22 @@ describe('socket reconnect lifecycle', () => {
             message: 'encrypted-message',
             localId: 'local-1',
             sentFrom: 'web',
-            proof: expect.objectContaining({ v: 1, id: expect.any(String), mac: expect.any(String) }),
+            proof: expect.objectContaining({
+                v: 2,
+                id: expect.any(String),
+                expiresAt: expect.any(Number),
+                mac: expect.any(String),
+            }),
         }));
         const emitted = (fakeSocket.socket.emit as unknown as {
             mock: { calls: Array<[string, Record<string, unknown>]> };
         }).mock.calls[0][1];
-        const proof = emitted.proof as { v: 1; id: string; mac: string };
+        const proof = emitted.proof as { v: 2; id: string; expiresAt: number; mac: string };
         expect(proof).toEqual(createRequestProof(authSecret, {
             transport: 'socket',
             operation: 'message',
             requestId: proof.id,
+            expiresAt: proof.expiresAt,
             payload: emitted,
         }));
 
@@ -96,11 +102,12 @@ describe('socket reconnect lifecycle', () => {
         await expect(machineListAgentSessions('machine-1', 'codex')).resolves.toEqual([]);
 
         const emitted = emitWithAck.mock.calls[0][1] as Record<string, unknown>;
-        const proof = emitted.proof as { v: 1; id: string; mac: string };
+        const proof = emitted.proof as { v: 2; id: string; expiresAt: number; mac: string };
         expect(proof).toEqual(createRequestProof(authSecret, {
             transport: 'socket',
             operation: 'rpc-call',
             requestId: proof.id,
+            expiresAt: proof.expiresAt,
             payload: emitted,
         }));
         expect(emitted).toEqual(expect.objectContaining({
@@ -129,11 +136,12 @@ describe('socket reconnect lifecycle', () => {
         await expect(socketEmitWithAck('machine-update-metadata', payload)).resolves.toEqual({ result: 'success' });
 
         const emitted = emitWithAck.mock.calls[0][1] as Record<string, unknown>;
-        const proof = emitted.proof as { v: 1; id: string; mac: string };
+        const proof = emitted.proof as { v: 2; id: string; expiresAt: number; mac: string };
         expect(proof).toEqual(createRequestProof(authSecret, {
             transport: 'socket',
             operation: 'machine-update-metadata',
             requestId: proof.id,
+            expiresAt: proof.expiresAt,
             payload: emitted,
         }));
 

@@ -16,7 +16,11 @@ import {
 } from '@/api/types';
 import { configuration } from '@/configuration';
 import { deriveBearerToken, generateSharedSecret } from '@/daemon/p2p/p2pAuth';
-import { calculateRequestProofMac, REQUEST_PROOF_VERSION } from '@/daemon/p2p/p2pRequestProof';
+import {
+    calculateRequestProofMac,
+    REQUEST_PROOF_TTL_MS,
+    REQUEST_PROOF_VERSION,
+} from '@/daemon/p2p/p2pRequestProof';
 import { startP2PServer, type P2PServer } from '@/daemon/p2p/p2pServer';
 import { P2PStore } from '@/daemon/p2p/p2pStore';
 import {
@@ -225,11 +229,13 @@ function sendPhonePrompt(
         })),
     };
     const id = randomUUID();
+    const expiresAt = Date.now() + REQUEST_PROOF_TTL_MS;
     const mac = calculateRequestProofMac(sharedSecret, {
         v: REQUEST_PROOF_VERSION,
         transport: 'socket',
         operation: 'message',
         requestId: id,
+        expiresAt,
         payload,
     });
     if (!mac) {
@@ -237,7 +243,7 @@ function sendPhonePrompt(
     }
     phoneSocket.emit('message', {
         ...payload,
-        proof: { v: REQUEST_PROOF_VERSION, id, mac },
+        proof: { v: REQUEST_PROOF_VERSION, id, expiresAt, mac },
     });
 }
 

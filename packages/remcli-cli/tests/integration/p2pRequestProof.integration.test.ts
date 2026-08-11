@@ -5,6 +5,7 @@ import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import { deriveBearerToken, generateSharedSecret } from '@/daemon/p2p/p2pAuth';
 import {
     REQUEST_PROOF_VERSION,
+    REQUEST_PROOF_TTL_MS,
     calculateRequestProofMac,
     type JsonValue,
     type P2PRequestProof,
@@ -109,19 +110,21 @@ function createProof(
     operation: string,
     payload: JsonValue,
     id = randomUUID(),
+    expiresAt = Date.now() + REQUEST_PROOF_TTL_MS,
 ): P2PRequestProof {
     const mac = calculateRequestProofMac(authSecret, {
         v: REQUEST_PROOF_VERSION,
         transport,
         operation,
         requestId: id,
+        expiresAt,
         payload,
     });
     if (!mac) {
         throw new Error('Could not create request proof');
     }
 
-    return { v: REQUEST_PROOF_VERSION, id, mac };
+    return { v: REQUEST_PROOF_VERSION, id, expiresAt, mac };
 }
 
 function withSocketProof<T extends Record<string, JsonValue>>(
@@ -144,6 +147,7 @@ function requestProofHeaders(
     return {
         'X-Remcli-Request-Proof-Version': String(proof.v),
         'X-Remcli-Request-Proof-Id': proof.id,
+        'X-Remcli-Request-Proof-Expires-At': String(proof.expiresAt),
         'X-Remcli-Request-Proof-Mac': proof.mac,
     };
 }
@@ -206,6 +210,75 @@ describe('P2P request proof integrity', { timeout: 15_000 }, () => {
 
         expect(store.getMessageCount(sessionA.id)).toBe(1);
         expect(store.getMessageCount(sessionB.id)).toBe(0);
+    });
+
+    it('advertises the proof expiry header in the browser CORS preflight response', async () => {
+        const authSecret = generateSharedSecret();
+        server = await startP2PServer({
+            port: 0,
+            host: '127.0.0.1',
+            authSecret,
+            store: new P2PStore({ kvFilePath: null }),
+        });
+
+        const response = await fetch(`http://127.0.0.1:${server.port}/v1/sessions`, {
+            method: 'OPTIONS',
+            headers: {
+                Origin: 'https://remcli.local',
+                'Access-Control-Request-Method': 'POST',
+                'Access-Control-Request-Headers': 'authorization,x-remcli-request-proof-expires-at',
+            },
+        });
+
+        expect(response.status).toBe(204);
+        expect(response.headers.get('access-control-allow-headers')).toContain(
+            'X-Remcli-Request-Proof-Expires-At',
+        );
+    });
+
+    it('accepts a fresh mutation after expired replay entries release bounded capacity', async () => {
+        let currentTime = 1_000;
+        const authSecret = generateSharedSecret();
+        const bearerToken = deriveBearerToken(authSecret);
+        const store = new P2PStore({ kvFilePath: null });
+        const session = store.createSession('request-proof-capacity', '{}', null);
+        server = await startP2PServer({
+            port: 0,
+            host: '127.0.0.1',
+            authSecret,
+            store,
+            requestProofVerifierOptions: {
+                replayCapacity: 1,
+                maxProofLifetimeMs: 100,
+                now: () => currentTime,
+            },
+        });
+
+        const userSocket = createSocket(server.port, bearerToken, { clientType: 'user-scoped' });
+        await connectSocket(userSocket);
+
+        const firstPayload = { sid: session.id, message: 'first' };
+        userSocket.emit('message', {
+            ...firstPayload,
+            proof: createProof(authSecret, 'socket', 'message', firstPayload, 'proof-first', 1_050),
+        });
+        await waitForCondition(() => store.getMessageCount(session.id) === 1);
+
+        const blockedPayload = { sid: session.id, message: 'blocked' };
+        userSocket.emit('message', {
+            ...blockedPayload,
+            proof: createProof(authSecret, 'socket', 'message', blockedPayload, 'proof-blocked', 1_050),
+        });
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        expect(store.getMessageCount(session.id)).toBe(1);
+
+        currentTime = 1_051;
+        const freshPayload = { sid: session.id, message: 'fresh' };
+        userSocket.emit('message', {
+            ...freshPayload,
+            proof: createProof(authSecret, 'socket', 'message', freshPayload, 'proof-fresh', 1_100),
+        });
+        await waitForCondition(() => store.getMessageCount(session.id) === 2);
     });
 
     it('blocks bearer-only session and machine scope escalation while retaining acknowledged runners', async () => {

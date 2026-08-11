@@ -111,6 +111,7 @@ async function request(config: RestConfig, path: string, init?: RequestInit): Pr
             });
             headers.set(REQUEST_PROOF_HEADERS.version, String(proof.v));
             headers.set(REQUEST_PROOF_HEADERS.id, proof.id);
+            headers.set(REQUEST_PROOF_HEADERS.expiresAt, String(proof.expiresAt));
             headers.set(REQUEST_PROOF_HEADERS.mac, proof.mac);
             if (!hasFormDataBody && body !== undefined && body !== null) {
                 body = JSON.stringify(normalizedBody);

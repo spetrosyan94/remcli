@@ -1,11 +1,13 @@
 import { encodeBase64 } from '@/lib/protocol/encoding';
 import { hmacSha512 } from '@/lib/protocol/encryption';
 
-export const REQUEST_PROOF_VERSION = 1 as const;
+export const REQUEST_PROOF_VERSION = 2 as const;
+export const REQUEST_PROOF_TTL_MS = 60_000;
 
 export const REQUEST_PROOF_HEADERS = {
     version: 'X-Remcli-Request-Proof-Version',
     id: 'X-Remcli-Request-Proof-Id',
+    expiresAt: 'X-Remcli-Request-Proof-Expires-At',
     mac: 'X-Remcli-Request-Proof-Mac',
 } as const;
 
@@ -16,6 +18,7 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
 export interface RequestProof {
     v: typeof REQUEST_PROOF_VERSION;
     id: string;
+    expiresAt: number;
     mac: string;
 }
 
@@ -23,6 +26,7 @@ export interface RequestProofInput {
     transport: RequestProofTransport;
     operation: string;
     requestId: string;
+    expiresAt?: number;
     payload: unknown;
 }
 
@@ -78,12 +82,14 @@ export function canonicalizeJson(value: JsonValue): string {
 }
 
 export function createRequestProof(authSecret: Uint8Array, input: RequestProofInput): RequestProof {
+    const expiresAt = input.expiresAt ?? Date.now() + REQUEST_PROOF_TTL_MS;
     const canonicalPayload = withoutRequestProof(normalizeRequestPayload(input.payload));
     const canonicalRequest: JsonValue = {
         v: REQUEST_PROOF_VERSION,
         transport: input.transport,
         operation: input.operation,
         requestId: input.requestId,
+        expiresAt,
         payload: canonicalPayload,
     };
     const mac = hmacSha512(authSecret, new TextEncoder().encode(canonicalizeJson(canonicalRequest)));
@@ -91,6 +97,7 @@ export function createRequestProof(authSecret: Uint8Array, input: RequestProofIn
     return {
         v: REQUEST_PROOF_VERSION,
         id: input.requestId,
+        expiresAt,
         mac: encodeBase64(mac, 'base64url'),
     };
 }

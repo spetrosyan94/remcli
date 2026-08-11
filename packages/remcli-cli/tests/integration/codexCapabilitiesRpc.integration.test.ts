@@ -22,7 +22,11 @@ import {
 } from '@/daemon/machineSocket';
 import { PairingRekeyCoordinator } from '@/daemon/p2p/pairingRekey';
 import { deriveBearerToken, generateSharedSecret } from '@/daemon/p2p/p2pAuth';
-import { calculateRequestProofMac } from '@/daemon/p2p/p2pRequestProof';
+import {
+    calculateRequestProofMac,
+    REQUEST_PROOF_TTL_MS,
+    REQUEST_PROOF_VERSION,
+} from '@/daemon/p2p/p2pRequestProof';
 import { P2PStore } from '@/daemon/p2p/p2pStore';
 import { startP2PServer, type P2PServer } from '@/daemon/p2p/p2pServer';
 import type { CodexSandbox } from '@/codex/types';
@@ -174,18 +178,21 @@ async function emitRpcCall(
 ): Promise<RpcCallAck> {
     const payload = { method, params };
     const id = randomUUID();
+    const expiresAt = Date.now() + REQUEST_PROOF_TTL_MS;
     const response = await socket
         .timeout(RPC_ACK_TIMEOUT_MS)
         .emitWithAck('rpc-call', {
             ...payload,
             proof: {
-                v: 1,
+                v: REQUEST_PROOF_VERSION,
                 id,
+                expiresAt,
                 mac: calculateRequestProofMac(authSecret, {
-                    v: 1,
+                    v: REQUEST_PROOF_VERSION,
                     transport: 'socket',
                     operation: 'rpc-call',
                     requestId: id,
+                    expiresAt,
                     payload,
                 }),
             },

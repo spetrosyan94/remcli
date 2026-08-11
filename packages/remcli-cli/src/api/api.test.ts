@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ApiClient } from './api';
 import axios from 'axios';
 import { connectionState } from '@/utils/serverConnectionErrors';
-import { calculateRequestProofMac, type JsonValue } from '@/daemon/p2p/p2pRequestProof';
+import {
+    calculateRequestProofMac,
+    REQUEST_PROOF_VERSION,
+    type JsonValue,
+} from '@/daemon/p2p/p2pRequestProof';
 
 // Use vi.hoisted to ensure mock functions are available when vi.mock factory runs
 const { mockPost, mockIsAxiosError, mockGetEffectiveServerUrl } = vi.hoisted(() => ({
@@ -108,17 +112,20 @@ describe('Api server error handling', () => {
             ];
             const headers = requestConfig.headers;
             const requestId = headers['X-Remcli-Request-Proof-Id'];
+            const expiresAt = Number(headers['X-Remcli-Request-Proof-Expires-At']);
 
             expect(headers).toMatchObject({
                 Authorization: 'Bearer p2p-bearer-token',
-                'X-Remcli-Request-Proof-Version': '1',
+                'X-Remcli-Request-Proof-Version': String(REQUEST_PROOF_VERSION),
                 'X-Remcli-Request-Proof-Id': expect.any(String),
+                'X-Remcli-Request-Proof-Expires-At': expect.any(String),
             });
             expect(headers['X-Remcli-Request-Proof-Mac']).toBe(calculateRequestProofMac(p2pAuthSecret, {
-                v: 1,
+                v: REQUEST_PROOF_VERSION,
                 transport: 'http',
                 operation: 'POST /v1/sessions',
                 requestId,
+                expiresAt,
                 payload: requestBody as JsonValue,
             }));
         });

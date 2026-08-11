@@ -66,6 +66,7 @@ export interface PairingRekeyDeliveryReader {
 
 const REQUEST_PROOF_VERSION_HEADER = 'x-remcli-request-proof-version';
 const REQUEST_PROOF_ID_HEADER = 'x-remcli-request-proof-id';
+const REQUEST_PROOF_EXPIRES_AT_HEADER = 'x-remcli-request-proof-expires-at';
 const REQUEST_PROOF_MAC_HEADER = 'x-remcli-request-proof-mac';
 
 const REQUEST_PROOF_PROTECTED_POST_PATHS = new Set([
@@ -108,6 +109,16 @@ function readRequestProofVersion(value: string | string[] | undefined): number |
     return readRequestHeader(value) === String(REQUEST_PROOF_VERSION)
         ? REQUEST_PROOF_VERSION
         : undefined;
+}
+
+function readRequestProofExpiry(value: string | string[] | undefined): number | undefined {
+    const expiry = readRequestHeader(value);
+    if (!expiry || !/^\d+$/.test(expiry)) {
+        return undefined;
+    }
+
+    const parsedExpiry = Number(expiry);
+    return Number.isSafeInteger(parsedExpiry) ? parsedExpiry : undefined;
 }
 
 // ─── Register Routes ─────────────────────────────────────────────
@@ -162,6 +173,7 @@ export function registerP2PRestRoutes(
             proof: {
                 v: readRequestProofVersion(request.headers[REQUEST_PROOF_VERSION_HEADER]),
                 id: readRequestHeader(request.headers[REQUEST_PROOF_ID_HEADER]),
+                expiresAt: readRequestProofExpiry(request.headers[REQUEST_PROOF_EXPIRES_AT_HEADER]),
                 mac: readRequestHeader(request.headers[REQUEST_PROOF_MAC_HEADER]),
             },
         });

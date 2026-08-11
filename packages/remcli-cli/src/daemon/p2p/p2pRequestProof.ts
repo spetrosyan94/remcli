@@ -8,8 +8,9 @@
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-export const REQUEST_PROOF_VERSION = 1;
+export const REQUEST_PROOF_VERSION = 2;
 export const REQUEST_PROOF_REPLAY_CAPACITY = 10_000;
+export const REQUEST_PROOF_TTL_MS = 60_000;
 
 const REQUEST_PROOF_MAC_PATTERN = /^[A-Za-z0-9_-]{86}$/;
 const REQUEST_PROOF_ID_MAX_LENGTH = 128;
@@ -20,6 +21,7 @@ export type RequestProofTransport = 'socket' | 'http';
 export interface P2PRequestProof {
     v: number;
     id: string;
+    expiresAt: number;
     mac: string;
 }
 
@@ -28,6 +30,7 @@ export interface P2PRequestProofInput {
     transport: RequestProofTransport;
     operation: string;
     requestId: string;
+    expiresAt: number;
     payload: JsonValue;
 }
 
@@ -38,11 +41,14 @@ export interface P2PRequestProofVerifier {
         payload: unknown;
         proof: unknown;
     }) => boolean;
+    resetReplayState: () => void;
 }
 
-interface P2PRequestProofVerifierOptions {
+export interface P2PRequestProofVerifierOptions {
     getAuthSecret: () => Uint8Array;
     replayCapacity?: number;
+    maxProofLifetimeMs?: number;
+    now?: () => number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -105,6 +111,8 @@ function parseRequestProof(value: unknown): P2PRequestProof | null {
         typeof value.id !== 'string'
         || value.id.length === 0
         || value.id.length > REQUEST_PROOF_ID_MAX_LENGTH
+        || typeof value.expiresAt !== 'number'
+        || !Number.isSafeInteger(value.expiresAt)
         || typeof value.mac !== 'string'
         || !REQUEST_PROOF_MAC_PATTERN.test(value.mac)
     ) {
@@ -114,6 +122,7 @@ function parseRequestProof(value: unknown): P2PRequestProof | null {
     return {
         v: value.v,
         id: value.id,
+        expiresAt: value.expiresAt,
         mac: value.mac,
     };
 }
@@ -145,12 +154,25 @@ function hasMatchingMac(expected: string, actual: string): boolean {
 export function createP2PRequestProofVerifier(
     options: P2PRequestProofVerifierOptions,
 ): P2PRequestProofVerifier {
-    const replayedRequestIds = new Set<string>();
+    const replayedRequestIds = new Map<string, number>();
     const replayCapacity = options.replayCapacity ?? REQUEST_PROOF_REPLAY_CAPACITY;
+    const maxProofLifetimeMs = options.maxProofLifetimeMs ?? REQUEST_PROOF_TTL_MS;
+    const now = options.now ?? Date.now;
 
     if (!Number.isSafeInteger(replayCapacity) || replayCapacity <= 0) {
         throw new Error('P2P request proof replay capacity must be a positive integer');
     }
+    if (!Number.isSafeInteger(maxProofLifetimeMs) || maxProofLifetimeMs <= 0) {
+        throw new Error('P2P request proof lifetime must be a positive integer');
+    }
+
+    const pruneExpiredRequestIds = (currentTime: number): void => {
+        for (const [requestId, expiresAt] of replayedRequestIds) {
+            if (expiresAt <= currentTime) {
+                replayedRequestIds.delete(requestId);
+            }
+        }
+    };
 
     return {
         verify: ({ transport, operation, payload, proof }) => {
@@ -159,23 +181,36 @@ export function createP2PRequestProofVerifier(
                 return false;
             }
 
+            const currentTime = now();
+            if (
+                parsedProof.expiresAt <= currentTime
+                || parsedProof.expiresAt > currentTime + maxProofLifetimeMs
+            ) {
+                return false;
+            }
+
             const expectedMac = calculateRequestProofMac(options.getAuthSecret(), {
                 v: REQUEST_PROOF_VERSION,
                 transport,
                 operation,
                 requestId: parsedProof.id,
+                expiresAt: parsedProof.expiresAt,
                 payload: payload as JsonValue,
             });
             if (!expectedMac || !hasMatchingMac(expectedMac, parsedProof.mac)) {
                 return false;
             }
 
+            pruneExpiredRequestIds(currentTime);
             if (replayedRequestIds.has(parsedProof.id) || replayedRequestIds.size >= replayCapacity) {
                 return false;
             }
 
-            replayedRequestIds.add(parsedProof.id);
+            replayedRequestIds.set(parsedProof.id, parsedProof.expiresAt);
             return true;
+        },
+        resetReplayState: () => {
+            replayedRequestIds.clear();
         },
     };
 }

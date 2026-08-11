@@ -49,13 +49,16 @@ describe('REST request proof', () => {
             const init = fetchMock.mock.calls[index][1] as RequestInit;
             const headers = proofHeaders(init);
             const requestId = headers.get(REQUEST_PROOF_HEADERS.id);
-            expect(headers.get(REQUEST_PROOF_HEADERS.version)).toBe('1');
+            const expiresAt = Number(headers.get(REQUEST_PROOF_HEADERS.expiresAt));
+            expect(headers.get(REQUEST_PROOF_HEADERS.version)).toBe('2');
             expect(requestId).toEqual(expect.any(String));
+            expect(expiresAt).toEqual(expect.any(Number));
             expect(headers.get(REQUEST_PROOF_HEADERS.mac)).toBe(
                 createRequestProof(authSecret, {
                     transport: 'http',
                     operation: `${expected.method} ${expected.pathname}`,
                     requestId: requestId!,
+                    expiresAt,
                     payload: expected.payload,
                 }).mac
             );
@@ -71,13 +74,16 @@ describe('REST request proof', () => {
         const init = fetchMock.mock.calls[0][1] as RequestInit;
         const headers = proofHeaders(init);
         const requestId = headers.get(REQUEST_PROOF_HEADERS.id);
-        expect(headers.get(REQUEST_PROOF_HEADERS.version)).toBe('1');
+        const expiresAt = Number(headers.get(REQUEST_PROOF_HEADERS.expiresAt));
+        expect(headers.get(REQUEST_PROOF_HEADERS.version)).toBe('2');
         expect(requestId).toEqual(expect.any(String));
+        expect(expiresAt).toEqual(expect.any(Number));
         expect(headers.get(REQUEST_PROOF_HEADERS.mac)).toBe(
             createRequestProof(authSecret, {
                 transport: 'http',
                 operation: 'POST /v1/voice/transcribe',
                 requestId: requestId!,
+                expiresAt,
                 payload: null,
             }).mac
         );
@@ -98,6 +104,7 @@ describe('REST request proof', () => {
             const headers = proofHeaders(call[1] as RequestInit);
             expect(headers.has(REQUEST_PROOF_HEADERS.version)).toBe(false);
             expect(headers.has(REQUEST_PROOF_HEADERS.id)).toBe(false);
+            expect(headers.has(REQUEST_PROOF_HEADERS.expiresAt)).toBe(false);
             expect(headers.has(REQUEST_PROOF_HEADERS.mac)).toBe(false);
         }
     });

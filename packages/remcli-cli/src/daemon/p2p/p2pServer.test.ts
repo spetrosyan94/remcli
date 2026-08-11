@@ -8,6 +8,7 @@ import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import { deriveBearerToken, generateSharedSecret } from './p2pAuth';
 import {
     calculateRequestProofMac,
+    REQUEST_PROOF_TTL_MS,
     REQUEST_PROOF_VERSION,
     type JsonValue,
 } from './p2pRequestProof';
@@ -32,20 +33,22 @@ function withRequestProof<T extends Record<string, JsonValue>>(
     authSecret: Uint8Array,
     operation: string,
     payload: T,
-): T & { proof: { v: number; id: string; mac: string } } {
+): T & { proof: { v: number; id: string; expiresAt: number; mac: string } } {
     const id = randomUUID();
+    const expiresAt = Date.now() + REQUEST_PROOF_TTL_MS;
     const mac = calculateRequestProofMac(authSecret, {
         v: REQUEST_PROOF_VERSION,
         transport: 'socket',
         operation,
         requestId: id,
+        expiresAt,
         payload,
     });
     if (!mac) {
         throw new Error('Could not create request proof');
     }
 
-    return { ...payload, proof: { v: REQUEST_PROOF_VERSION, id, mac } };
+    return { ...payload, proof: { v: REQUEST_PROOF_VERSION, id, expiresAt, mac } };
 }
 
 async function connectSocket(socket: ClientSocket): Promise<void> {

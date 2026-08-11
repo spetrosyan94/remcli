@@ -21,7 +21,11 @@ import {
     type ControlledCursorAgent,
 } from './controlledCursorAgent';
 import type { CursorLaunchControls } from '@/cursor/cursorLaunchControls';
-import { calculateRequestProofMac } from '@/daemon/p2p/p2pRequestProof';
+import {
+    calculateRequestProofMac,
+    REQUEST_PROOF_TTL_MS,
+    REQUEST_PROOF_VERSION,
+} from '@/daemon/p2p/p2pRequestProof';
 
 const SOCKET_TIMEOUT_MS = 8_000;
 const RPC_REGISTRATION_TIMEOUT_MS = 8_000;
@@ -306,18 +310,20 @@ function signSocketMutation(
     payload: Record<string, unknown>,
 ): Record<string, unknown> {
     const id = randomUUID();
+    const expiresAt = Date.now() + REQUEST_PROOF_TTL_MS;
     const mac = calculateRequestProofMac(authSecret, {
-        v: 1,
+        v: REQUEST_PROOF_VERSION,
         transport: 'socket',
         operation,
         requestId: id,
+        expiresAt,
         payload,
     });
     if (!mac) {
         throw new Error('Could not create a controlled Cursor request proof.');
     }
 
-    return { ...payload, proof: { v: 1, id, mac } };
+    return { ...payload, proof: { v: REQUEST_PROOF_VERSION, id, expiresAt, mac } };
 }
 
 async function emitRpcCall(

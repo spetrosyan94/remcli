@@ -14,7 +14,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { io as ioClient, type Socket } from 'socket.io-client';
 import type { CursorLaunchControls } from '@/cursor/cursorLaunchControls';
-import { calculateRequestProofMac } from '@/daemon/p2p/p2pRequestProof';
+import {
+    calculateRequestProofMac,
+    REQUEST_PROOF_TTL_MS,
+    REQUEST_PROOF_VERSION,
+} from '@/daemon/p2p/p2pRequestProof';
 
 const shouldRunRealCursor = process.env.REMCLI_REAL_CURSOR === '1';
 const realCursorDescribe = shouldRunRealCursor ? describe : describe.skip;
@@ -246,18 +250,20 @@ function signSocketMutation(
     payload: Record<string, unknown>,
 ): Record<string, unknown> {
     const id = randomUUID();
+    const expiresAt = Date.now() + REQUEST_PROOF_TTL_MS;
     const mac = calculateRequestProofMac(authSecret, {
-        v: 1,
+        v: REQUEST_PROOF_VERSION,
         transport: 'socket',
         operation,
         requestId: id,
+        expiresAt,
         payload,
     });
     if (!mac) {
         throw new Error('Could not create a real Cursor request proof.');
     }
 
-    return { ...payload, proof: { v: 1, id, mac } };
+    return { ...payload, proof: { v: REQUEST_PROOF_VERSION, id, expiresAt, mac } };
 }
 
 async function emitRpcCall(

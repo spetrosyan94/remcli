@@ -18,7 +18,10 @@ import { P2PEventRouter, P2PClientConnection, ConnectionType } from './p2pEventR
 import { registerSocketHandlers } from './p2pSocketHandlers';
 import { registerP2PRestRoutes } from './p2pRestRoutes';
 import { verifyBearerToken } from './p2pAuth';
-import { createP2PRequestProofVerifier } from './p2pRequestProof';
+import {
+    createP2PRequestProofVerifier,
+    type P2PRequestProofVerifierOptions,
+} from './p2pRequestProof';
 import { P2PRunnerCredentialStore, SESSION_MESSAGE_ACK_VERSION } from './p2pRunnerCredentials';
 import { ConciergeDeps } from '../concierge/types';
 import { logger } from '@/ui/logger';
@@ -36,6 +39,7 @@ export interface P2PServerConfig {
     conciergeDeps?: ConciergeDeps; // Optional local concierge capabilities
     runnerCredentialStore?: P2PRunnerCredentialStore;
     pairingRekeyDeliveryReader?: PairingRekeyDeliveryReader;
+    requestProofVerifierOptions?: Omit<P2PRequestProofVerifierOptions, 'getAuthSecret'>;
 }
 
 export interface P2PServer {
@@ -139,6 +143,7 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
     let currentAuthSecret = authSecret;
     const retiredRunnerAuthSecrets: Uint8Array[] = [];
     const requestProofVerifier = createP2PRequestProofVerifier({
+        ...config.requestProofVerifierOptions,
         getAuthSecret: () => currentAuthSecret,
     });
 
@@ -173,7 +178,7 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
         reply.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
         reply.header(
             'Access-Control-Allow-Headers',
-            'Content-Type, Authorization, X-Remcli-Request-Proof-Version, X-Remcli-Request-Proof-Id, X-Remcli-Request-Proof-Mac',
+            'Content-Type, Authorization, X-Remcli-Request-Proof-Version, X-Remcli-Request-Proof-Id, X-Remcli-Request-Proof-Expires-At, X-Remcli-Request-Proof-Mac',
         );
 
         if (request.method === 'OPTIONS') {
@@ -530,6 +535,7 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
                     }
                     retiredRunnerAuthSecrets.push(currentAuthSecret);
                     currentAuthSecret = nextAuthSecret;
+                    requestProofVerifier.resetReplayState();
 
                     for (const socket of io.sockets.sockets.values()) {
                         const auth = socket.handshake.auth as unknown;
