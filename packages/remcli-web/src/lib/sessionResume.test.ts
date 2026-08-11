@@ -105,6 +105,23 @@ describe("resumeCodexSession", () => {
         expect(spawn).not.toHaveBeenCalled();
     });
 
+    it("fails closed when the spawned session never reaches the local store", async () => {
+        const refreshSessions = vi.fn(async () => undefined);
+        const sleep = vi.fn(async () => undefined);
+
+        const result = await resumeCodexSession(createSession(), "machine-online", {
+            getCapabilities: vi.fn(async () => createCapabilities()),
+            spawn: vi.fn(async () => ({ type: "success" as const, sessionId: "resumed-session" })),
+            refreshSessions,
+            hasSession: () => false,
+            sleep,
+        });
+
+        expect(result).toEqual({ type: "spawn-error", errorMessage: "" });
+        expect(refreshSessions).toHaveBeenCalledTimes(10);
+        expect(sleep).toHaveBeenCalledTimes(10);
+    });
+
     it("does not spawn when fresh capabilities reject the original selection", async () => {
         const spawn = vi.fn();
         const result = await resumeCodexSession(createSession(), "machine-online", {

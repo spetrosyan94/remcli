@@ -114,5 +114,9 @@ export async function resumeCodexSession(
         await sleep(DEFAULT_RESUME_POLL_DELAY_MS);
     }
 
+    if (!dependencies.hasSession(result.sessionId)) {
+        return { type: "spawn-error", errorMessage: "" };
+    }
+
     return { type: "success", sessionId: result.sessionId };
 }
