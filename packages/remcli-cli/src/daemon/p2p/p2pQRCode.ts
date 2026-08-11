@@ -15,13 +15,13 @@ export interface P2PConnectionInfo {
     mode: 'p2p';
     host: string;      // LAN IP (e.g. "192.168.1.5") or full tunnel URL (e.g. "https://xxx.trycloudflare.com")
     port: number;       // Socket.IO server port (0 when using tunnel)
-    key: string;        // Base64-encoded shared secret
+    key: string;        // Base64-encoded v2 pairing material
     v: 2;               // Protocol version
 }
 
-/** Compact hash payload — only the shared secret key and protocol version */
+/** Compact hash payload — only v2 pairing material and protocol version. */
 interface CompactHashPayload {
-    k: string;  // Base64-encoded shared secret
+    k: string;  // Base64-encoded v2 pairing material
     v: number;  // Protocol version
 }
 
@@ -47,8 +47,8 @@ export function buildP2PConnectionInfo(
 /**
  * Build a URL that, when opened in a browser, loads the web app and auto-connects.
  *
- * The hash fragment contains a base64-encoded compact JSON with only the shared
- * secret and version — host/port are derived from the URL by the web client.
+ * The hash fragment contains a base64-encoded compact JSON with only the v2
+ * pairing material and version — host/port are derived from the URL by the web client.
  * This keeps the QR code ~30-40% smaller than encoding the full JSON.
  *
  * LAN:    http://192.168.1.x:PORT/terminal/connect#<base64>

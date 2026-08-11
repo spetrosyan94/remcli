@@ -17,15 +17,17 @@
   изменить без ключа.
 - Каждый изменяющий P2P-запрос, аутентифицированный bearer, несёт одноразовый
   request proof: HMAC-SHA512 от уже существующего `authSecret`, привязанный к
-  версии протокола, транспорту, операции, request id и payload. Исключение —
-  daemon-issued session runner с проверенным `runnerCredential`; он имеет более
-  узкую session scope. Daemon принимает request id один раз в рамках своего
-  запуска.
+  версии протокола, транспорту, операции, request id, подписанному `expiresAt`
+  и payload. Исключение — daemon-issued session runner с проверенным
+  `runnerCredential`; он имеет более узкую session scope. Daemon принимает
+  request id один раз до его подписанного expiry; replay cache очищается после
+  expiry и ограничен по capacity, временно fail-closed пока все записи живы.
 
 Последний пункт защищает от повторной отправки перехваченного bearer вместе с
-ранее валидным запросом, включая перенос зашифрованного сообщения в другую
-сессию. Для него не меняются QR-формат, алгоритмы шифрования или зависимости:
-используется уже существующий ключ pairing и HMAC-SHA512.
+ранее валидным запросом в пределах validity window, включая перенос
+зашифрованного сообщения в другую сессию. Для него не меняются QR-формат,
+алгоритмы шифрования или зависимости: используется уже существующий ключ
+pairing и HMAC-SHA512.
 
 Для JSON HTTP endpoint proof привязан к итоговому JSON body. `POST
 /v1/voice/transcribe` принимает multipart: его proof намеренно использует
@@ -76,7 +78,8 @@ encrypted record. Служебные идентификаторы, версии,
 Для каждого нового изменяющего P2P endpoint/event нужны negative tests:
 
 1. отсутствующий или неверный proof не вызывает handler/store side effect;
-2. повтор того же proof/request id отклоняется;
+2. повтор того же proof/request id отклоняется до подписанного expiry, а новая
+   корректная mutation принимается после очистки истёкшего cache window;
 3. payload нельзя перенести между session, route или Socket.IO/HTTP transport;
 4. корректный browser и runner flow продолжают работать;
 5. в ошибках и логах нет bearer, pairing material или proof.

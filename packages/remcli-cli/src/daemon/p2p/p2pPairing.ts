@@ -1,10 +1,10 @@
 /**
  * Persistent P2P pairing storage
  *
- * Keeps the shared secret and the last bound P2P port across daemon restarts,
+ * Keeps v2 auth/content pairing secrets and the last bound P2P port across daemon restarts,
  * so phones paired via QR code stay connected after `remcli daemon` restarts.
  * Stored at ~/.remcli/p2p-pairing.json with 0600 permissions (atomic writes).
- * `remcli daemon rekey` deletes this file to force a fresh secret.
+ * Host-approved rekey atomically rotates only its revocable auth secret.
  */
 
 import { existsSync, readFileSync, writeFileSync, renameSync, chmodSync, unlinkSync } from 'node:fs';
@@ -172,10 +172,7 @@ export function replacePairing(pairing: PersistedPairing): PersistedPairing {
     return nextPairing;
 }
 
-/**
- * Delete the pairing file (used by `remcli daemon rekey`).
- * Returns true when a file existed and was removed.
- */
+/** Delete pairing material for explicit local reset flows. */
 export function clearPairing(): boolean {
     const filePath = getPairingFilePath();
     if (!existsSync(filePath)) return false;

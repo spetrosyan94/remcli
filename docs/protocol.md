@@ -35,10 +35,12 @@ Bearer аутентифицирует соединение. Все изменя�
 работающие по bearer, дополнительно несут одноразовый request proof, построенный
 от `authSecret` и привязанный к transport, операции, request id и payload.
 Исключение — daemon-issued session runner с проверенным `runnerCredential` и
-ограниченной session scope. Daemon отклоняет отсутствующий, неверный или уже
-использованный proof до handler/store side effect. Контракт заголовков/полей и
-canonical payload должен оставаться общим для CLI и web; security model и
-ограничения — в `p2p-security.md`.
+ограниченной session scope. Proof содержит подписанный `expiresAt`; daemon
+отклоняет отсутствующий, неверный или повторно использованный proof до
+handler/store side effect, хранит replay id только до expiry и временно
+fail-closed при заполненном живыми id bounded cache. Контракт
+заголовков/полей и canonical payload должен оставаться общим для CLI и web;
+security model и ограничения — в `p2p-security.md`.
 
 Для JSON HTTP endpoint canonical payload — parsed JSON body. Для multipart
 `POST /v1/voice/transcribe` proof имеет action-level payload `null`: он

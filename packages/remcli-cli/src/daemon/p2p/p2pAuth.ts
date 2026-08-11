@@ -1,6 +1,6 @@
 /**
- * P2P authentication using shared secret
- * No accounts, no user IDs — the shared secret IS the identity
+ * P2P authentication using the revocable pairing auth secret.
+ * No accounts or user IDs — pairing material establishes remote trust.
  * QR code scan proves physical proximity and establishes trust
  */
 
@@ -18,7 +18,7 @@ export interface PairingSecrets {
 }
 
 /**
- * Generate a new random shared secret (32 bytes)
+ * Generate one new random 32-byte pairing secret.
  */
 export function generateSharedSecret(): Uint8Array {
     return new Uint8Array(randomBytes(PAIRING_SECRET_SIZE));
@@ -88,14 +88,14 @@ export function verifyBearerToken(token: string, authSecret: Uint8Array): boolea
 }
 
 /**
- * Encode shared secret for QR code (base64)
+ * Encode one 32-byte pairing secret as base64 for pairing storage or QR material.
  */
 export function encodeSharedSecret(secret: Uint8Array): string {
     return encodeBase64(secret);
 }
 
 /**
- * Decode shared secret from QR code (base64)
+ * Decode one 32-byte pairing secret from pairing storage or QR material.
  */
 export function decodeSharedSecret(encoded: string): Uint8Array {
     const secret = decodeBase64(encoded);

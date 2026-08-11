@@ -64,7 +64,7 @@ graph LR
 
     subgraph "Legacy"
         L1[XSalsa20-Poly1305]
-        L2[32-byte shared secret]
+        L2[32-byte contentSecret]
     end
 
     subgraph "DataKey"
@@ -79,7 +79,8 @@ graph LR
 Сейчас клиенты используют один из двух вариантов шифрования:
 
 ### 1) legacy (NaCl secretbox)
-Используется, когда у клиента есть только общий секретный ключ.
+Используется, когда у клиента есть `contentSecret` pairing v2 или legacy v1
+секрет, мигрированный в эту роль.
 
 **Алгоритм**: `tweetnacl.secretbox` (XSalsa20-Poly1305)
 - **Длина nonce**: 24 байта
