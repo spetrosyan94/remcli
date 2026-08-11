@@ -290,64 +290,105 @@ describe('socket reconnect lifecycle', () => {
         socketDisconnect();
     });
 
-    it('returns validated machine-scoped recent directories', async () => {
+    it('returns validated machine-scoped directory projects', async () => {
         const fakeSocket = createFakeSocket();
-        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-recent-directories' });
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-directory-projects' });
         (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
         const io = vi.fn(() => fakeSocket.socket);
         vi.doMock('socket.io-client', () => ({ io }));
         const cipher = {
             encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
             decryptRaw: vi.fn().mockResolvedValue({
-                directories: [{
+                projects: [{
                     canonicalPath: '/Users/dev/projects/remcli',
                     displayPath: '~/projects/remcli',
                     lastUsedAt: 1_700_000_000_000,
+                    isPinned: true,
+                    lastAgent: 'codex',
+                    branchAtLastLaunch: 'main',
                 }],
             }),
         } as unknown as Cipher;
 
-        const { machineListRecentDirectories, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        const { machineListDirectoryProjects, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
         socketConnect(
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
             { getSessionCipher: () => null, getMachineCipher: () => cipher },
         );
 
-        await expect(machineListRecentDirectories('machine-1')).resolves.toEqual([{
+        await expect(machineListDirectoryProjects('machine-1')).resolves.toEqual([{
             canonicalPath: '/Users/dev/projects/remcli',
             displayPath: '~/projects/remcli',
             lastUsedAt: 1_700_000_000_000,
+            isPinned: true,
+            lastAgent: 'codex',
+            branchAtLastLaunch: 'main',
         }]);
         expect(emitWithAck).toHaveBeenCalledWith('rpc-call', expect.objectContaining({
-            method: 'machine-1:list-recent-directories',
+            method: 'machine-1:list-directory-projects',
         }));
 
         socketDisconnect();
     });
 
-    it('surfaces the typed recent-directory daemon error', async () => {
+    it('sends only the selected path and pin state for a project pin mutation', async () => {
         const fakeSocket = createFakeSocket();
-        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-recent-directory-error' });
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-directory-project-pin' });
         (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
         const io = vi.fn(() => fakeSocket.socket);
         vi.doMock('socket.io-client', () => ({ io }));
         const cipher = {
             encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
             decryptRaw: vi.fn().mockResolvedValue({
-                error: { code: 'unavailable', message: 'Recent directories are unavailable.' },
+                projects: [{
+                    canonicalPath: '/Users/dev/projects/remcli',
+                    displayPath: '~/projects/remcli',
+                    lastUsedAt: 1_700_000_000_000,
+                    isPinned: true,
+                    lastAgent: 'codex',
+                    branchAtLastLaunch: 'main',
+                }],
             }),
         } as unknown as Cipher;
 
-        const { machineListRecentDirectories, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        const { machineSetDirectoryProjectPin, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
         socketConnect(
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
             { getSessionCipher: () => null, getMachineCipher: () => cipher },
         );
 
-        await expect(machineListRecentDirectories('machine-1')).rejects.toMatchObject({
-            name: 'RecentDirectoriesRpcError',
+        await expect(machineSetDirectoryProjectPin('machine-1', '/Users/dev/projects/remcli', true))
+            .resolves.toEqual([expect.objectContaining({ isPinned: true })]);
+        expect(emitWithAck).toHaveBeenCalledWith('rpc-call', expect.objectContaining({
+            method: 'machine-1:set-directory-project-pin',
+        }));
+
+        socketDisconnect();
+    });
+
+    it('surfaces the typed directory-project daemon error', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-directory-project-error' });
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const cipher = {
+            encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
+            decryptRaw: vi.fn().mockResolvedValue({
+                error: { code: 'unavailable', message: 'Directory projects are unavailable.' },
+            }),
+        } as unknown as Cipher;
+
+        const { machineListDirectoryProjects, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+
+        await expect(machineListDirectoryProjects('machine-1')).rejects.toMatchObject({
+            name: 'DirectoryProjectsRpcError',
             code: 'unavailable',
-            message: 'Recent directories are unavailable.',
+            message: 'Directory projects are unavailable.',
         });
 
         socketDisconnect();

@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-    MAX_RECENT_DIRECTORIES,
-    createRecentDirectoriesStore,
+    MAX_DIRECTORY_PROJECTS,
+    createDirectoryProjectsStore,
 } from './recentDirectories';
 
 let testDirectory: string;
@@ -13,7 +13,7 @@ let homeDirectory: string;
 let storeFilePath: string;
 
 function createStore(machineId: string, now: () => number = Date.now) {
-    return createRecentDirectoriesStore({
+    return createDirectoryProjectsStore({
         machineId,
         filePath: storeFilePath,
         getHomeDirectory: () => homeDirectory,
@@ -22,7 +22,7 @@ function createStore(machineId: string, now: () => number = Date.now) {
 }
 
 beforeEach(() => {
-    testDirectory = mkdtempSync(join(tmpdir(), 'remcli-recent-directories-'));
+    testDirectory = mkdtempSync(join(tmpdir(), 'remcli-directory-projects-'));
     homeDirectory = join(testDirectory, 'home');
     storeFilePath = join(testDirectory, 'state', 'recent-directories.json');
     mkdirSync(homeDirectory);
@@ -32,108 +32,136 @@ afterEach(() => {
     rmSync(testDirectory, { recursive: true, force: true });
 });
 
-describe('recentDirectories', () => {
-    it('returns an empty list when no MRU has been persisted', () => {
-        expect(createStore('machine-a').list()).toEqual({ directories: [] });
+describe('directoryProjects', () => {
+    it('returns an empty list when no project has been persisted', () => {
+        expect(createStore('machine-a').listProjects()).toEqual({ projects: [] });
     });
 
-    it('records a successful spawn with canonical and display paths', () => {
+    it('records the safe launch snapshot after a successful spawn', () => {
         const workspace = join(homeDirectory, 'workspace');
         mkdirSync(workspace);
 
         const store = createStore('machine-a', () => 100);
-        store.recordSuccessfulSpawn(workspace);
+        store.recordSuccessfulSpawn(workspace, { agent: 'codex', branchAtLastLaunch: 'main' });
         const canonicalWorkspace = realpathSync(workspace);
 
-        expect(store.list()).toEqual({
-            directories: [{
+        expect(store.listProjects()).toEqual({
+            projects: [{
                 canonicalPath: canonicalWorkspace,
                 displayPath: '~/workspace',
                 lastUsedAt: 100,
+                isPinned: false,
+                lastAgent: 'codex',
+                branchAtLastLaunch: 'main',
             }],
         });
     });
 
-    it('deduplicates canonical paths and sorts the newest record first', () => {
-        const alpha = join(homeDirectory, 'alpha');
-        const beta = join(homeDirectory, 'beta');
-        mkdirSync(alpha);
-        mkdirSync(beta);
-        const timestamps = [100, 200, 300];
-        const store = createStore('machine-a', () => {
-            const timestamp = timestamps.shift();
-            if (timestamp === undefined) {
-                throw new Error('Unexpected MRU timestamp request');
-            }
-            return timestamp;
-        });
-
-        store.recordSuccessfulSpawn(join(alpha, '..', 'alpha'));
-        store.recordSuccessfulSpawn(beta);
-        store.recordSuccessfulSpawn(alpha);
-        const canonicalAlpha = realpathSync(alpha);
-        const canonicalBeta = realpathSync(beta);
-
-        expect(store.list()).toEqual({
-            directories: [
-                { canonicalPath: canonicalAlpha, displayPath: '~/alpha', lastUsedAt: 300 },
-                { canonicalPath: canonicalBeta, displayPath: '~/beta', lastUsedAt: 200 },
-            ],
-        });
-    });
-
-    it('persists records across a daemon restart', () => {
+    it('keeps a user pin while refreshing the last launch snapshot', () => {
         const workspace = join(homeDirectory, 'workspace');
         mkdirSync(workspace);
+        const timestamps = [100, 200, 300];
+        const store = createStore('machine-a', () => timestamps.shift() ?? 400);
 
-        createStore('machine-a', () => 100).recordSuccessfulSpawn(workspace);
-        const canonicalWorkspace = realpathSync(workspace);
+        store.recordSuccessfulSpawn(workspace, { agent: 'codex', branchAtLastLaunch: 'main' });
+        store.setProjectPinned(workspace, true);
+        store.recordSuccessfulSpawn(join(workspace, '..', 'workspace'), {
+            agent: 'cursor',
+            branchAtLastLaunch: 'feature/mobile',
+        });
 
-        expect(createStore('machine-a').list().directories).toEqual([
-            { canonicalPath: canonicalWorkspace, displayPath: '~/workspace', lastUsedAt: 100 },
-        ]);
+        expect(store.listProjects().projects).toEqual([{
+            canonicalPath: realpathSync(workspace),
+            displayPath: '~/workspace',
+            lastUsedAt: 300,
+            isPinned: true,
+            lastAgent: 'cursor',
+            branchAtLastLaunch: 'feature/mobile',
+        }]);
     });
 
-    it('treats malformed or corrupt on-disk data as an empty cache and safely replaces it', () => {
+    it('migrates the v1 MRU cache without inventing launch metadata', () => {
+        const workspace = join(homeDirectory, 'workspace');
+        mkdirSync(workspace);
         mkdirSync(join(testDirectory, 'state'));
-        writeFileSync(storeFilePath, '{not valid json', 'utf-8');
+        writeFileSync(storeFilePath, JSON.stringify({
+            v: 1,
+            machines: {
+                'machine-a': [{
+                    canonicalPath: realpathSync(workspace),
+                    displayPath: '~/workspace',
+                    lastUsedAt: 100,
+                }],
+            },
+        }), 'utf-8');
+
+        const store = createStore('machine-a', () => 200);
+        expect(store.listProjects().projects).toEqual([{
+            canonicalPath: realpathSync(workspace),
+            displayPath: '~/workspace',
+            lastUsedAt: 100,
+            isPinned: false,
+            lastAgent: null,
+            branchAtLastLaunch: null,
+        }]);
+
+        store.setProjectPinned(workspace, true);
+        expect(JSON.parse(readFileSync(storeFilePath, 'utf-8'))).toMatchObject({ v: 2 });
+    });
+
+    it('does not surface stale paths and rejects arbitrary missing pin targets', () => {
         const workspace = join(homeDirectory, 'workspace');
         mkdirSync(workspace);
         const store = createStore('machine-a', () => 100);
+        store.recordSuccessfulSpawn(workspace, { agent: 'codex', branchAtLastLaunch: null });
+        rmSync(workspace, { recursive: true });
 
-        expect(store.list()).toEqual({ directories: [] });
-
-        store.recordSuccessfulSpawn(workspace);
-
-        expect(store.list().directories).toHaveLength(1);
-
-        writeFileSync(storeFilePath, JSON.stringify({ v: 1, machines: { 'machine-a': 'corrupt' } }), 'utf-8');
-        expect(store.list()).toEqual({ directories: [] });
+        expect(store.listProjects()).toEqual({ projects: [] });
+        expect(() => store.setProjectPinned(workspace, true)).toThrow('directory project is unavailable');
     });
 
-    it('keeps machine-scoped records isolated in a shared persistent file', () => {
+    it('prunes stale pinned projects before a new successful spawn is limited', () => {
+        const staleRoot = join(homeDirectory, 'stale-projects');
+        mkdirSync(staleRoot);
+        const store = createStore('machine-a', () => 100);
+        for (let index = 0; index < MAX_DIRECTORY_PROJECTS; index += 1) {
+            const staleProject = join(staleRoot, `project-${index}`);
+            mkdirSync(staleProject);
+            store.recordSuccessfulSpawn(staleProject, { agent: 'codex', branchAtLastLaunch: null });
+            store.setProjectPinned(staleProject, true);
+        }
+        rmSync(staleRoot, { recursive: true });
+        const freshProject = join(homeDirectory, 'fresh-project');
+        mkdirSync(freshProject);
+
+        store.recordSuccessfulSpawn(freshProject, { agent: 'cursor', branchAtLastLaunch: 'main' });
+
+        expect(store.listProjects().projects).toEqual([expect.objectContaining({
+            canonicalPath: realpathSync(freshProject),
+            lastAgent: 'cursor',
+        })]);
+    });
+
+    it('keeps projects machine-scoped and bounds the persisted list', () => {
+        const firstMachineStore = createStore('machine-a', () => 100);
+        const secondMachineStore = createStore('machine-b', () => 200);
         const alpha = join(homeDirectory, 'alpha');
         const beta = join(homeDirectory, 'beta');
         mkdirSync(alpha);
         mkdirSync(beta);
-        const firstMachineStore = createStore('machine-a', () => 100);
-        const secondMachineStore = createStore('machine-b', () => 200);
 
-        firstMachineStore.recordSuccessfulSpawn(alpha);
-        secondMachineStore.recordSuccessfulSpawn(beta);
-
-        expect(firstMachineStore.list().directories.map((item) => item.canonicalPath)).toEqual([realpathSync(alpha)]);
-        expect(secondMachineStore.list().directories.map((item) => item.canonicalPath)).toEqual([realpathSync(beta)]);
-    });
-
-    it('limits each machine MRU to the explicit maximum size', () => {
-        const store = createStore('machine-a');
-        for (let index = 0; index < MAX_RECENT_DIRECTORIES + 1; index += 1) {
+        firstMachineStore.recordSuccessfulSpawn(alpha, { agent: 'codex', branchAtLastLaunch: 'main' });
+        secondMachineStore.recordSuccessfulSpawn(beta, { agent: 'cursor', branchAtLastLaunch: null });
+        for (let index = 0; index < MAX_DIRECTORY_PROJECTS; index += 1) {
             const workspace = join(homeDirectory, `workspace-${index}`);
             mkdirSync(workspace);
-            store.recordSuccessfulSpawn(workspace);
+            firstMachineStore.recordSuccessfulSpawn(workspace, { agent: 'codex', branchAtLastLaunch: null });
         }
 
-        expect(store.list().directories).toHaveLength(MAX_RECENT_DIRECTORIES);
+        expect(firstMachineStore.listProjects().projects).toHaveLength(MAX_DIRECTORY_PROJECTS);
+        expect(secondMachineStore.listProjects().projects).toEqual([expect.objectContaining({
+            canonicalPath: realpathSync(beta),
+            lastAgent: 'cursor',
+        })]);
     });
 });

@@ -74,7 +74,8 @@ const componentHooks = vi.hoisted(() => {
 const machineSpawnNewSessionMock = vi.hoisted(() => vi.fn());
 const machineGetCodexCapabilitiesMock = vi.hoisted(() => vi.fn());
 const machineGetCursorCapabilitiesMock = vi.hoisted(() => vi.fn());
-const machineListRecentDirectoriesMock = vi.hoisted(() => vi.fn());
+const machineListDirectoryProjectsMock = vi.hoisted(() => vi.fn());
+const machineSetDirectoryProjectPinMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
 const toastErrorMock = vi.hoisted(() => vi.fn());
 const toastWarningMock = vi.hoisted(() => vi.fn());
@@ -138,7 +139,8 @@ vi.mock('@/lib/i18n', () => ({
 vi.mock('@/lib/protocol', () => ({
     machineListAgentSessions: vi.fn(),
     machineListDirectory: vi.fn(),
-    machineListRecentDirectories: machineListRecentDirectoriesMock,
+    machineListDirectoryProjects: machineListDirectoryProjectsMock,
+    machineSetDirectoryProjectPin: machineSetDirectoryProjectPinMock,
     machineGetCodexCapabilities: machineGetCodexCapabilitiesMock,
     machineGetCursorCapabilities: machineGetCursorCapabilitiesMock,
     machineSpawnNewSession: machineSpawnNewSessionMock,
@@ -277,9 +279,10 @@ let buildNewSessionSpawnOptions: typeof import('@/pages/NewSessionPage').buildNe
 let isCodexCapabilityRejection: typeof import('@/pages/NewSessionPage').isCodexCapabilityRejection = (_result, _agent) => false;
 let isCursorCapabilityRejection: typeof import('@/pages/NewSessionPage').isCursorCapabilityRejection = (_result, _agent) => false;
 let resolveSheetOpenChange: typeof import('@/pages/NewSessionPage').resolveSheetOpenChange = (_renderedSheet, currentSheet) => currentSheet;
+let isCurrentDirectoryProjectsRequest: typeof import('@/pages/NewSessionPage').isCurrentDirectoryProjectsRequest = () => false;
 let NewSessionPage: typeof import('@/pages/NewSessionPage').NewSessionPage;
 let ResumeSheetContent: typeof import('@/pages/NewSessionPage').ResumeSheetContent;
-let RecentDirectoryList: typeof import('@/pages/NewSessionPage').RecentDirectoryList;
+let DirectoryProjectList: typeof import('@/pages/NewSessionPage').DirectoryProjectList;
 let directorySheetContentClass = '';
 let resumeSheetContentClass = '';
 
@@ -315,9 +318,10 @@ beforeAll(async () => {
     isCodexCapabilityRejection = pageModule.isCodexCapabilityRejection;
     isCursorCapabilityRejection = pageModule.isCursorCapabilityRejection;
     resolveSheetOpenChange = pageModule.resolveSheetOpenChange;
+    isCurrentDirectoryProjectsRequest = pageModule.isCurrentDirectoryProjectsRequest;
     NewSessionPage = pageModule.NewSessionPage;
     ResumeSheetContent = pageModule.ResumeSheetContent;
-    RecentDirectoryList = pageModule.RecentDirectoryList;
+    DirectoryProjectList = pageModule.DirectoryProjectList;
     directorySheetContentClass = pageModule.DIRECTORY_SHEET_CONTENT_CLASS;
     resumeSheetContentClass = pageModule.RESUME_SHEET_CONTENT_CLASS;
 });
@@ -339,8 +343,9 @@ beforeEach(() => {
         models: [],
     });
     machineGetCursorCapabilitiesMock.mockReset();
-    machineListRecentDirectoriesMock.mockReset();
-    machineListRecentDirectoriesMock.mockResolvedValue([]);
+    machineListDirectoryProjectsMock.mockReset();
+    machineListDirectoryProjectsMock.mockResolvedValue([]);
+    machineSetDirectoryProjectPinMock.mockReset();
     machineSpawnNewSessionMock.mockReset();
     machineSpawnNewSessionMock.mockResolvedValue({ type: 'success', sessionId: 'session-1' });
     navigateMock.mockReset();
@@ -1142,43 +1147,85 @@ describe('NewSessionPage Cursor capability selection', () => {
 });
 
 describe('NewSessionPage directory and resume sheets', () => {
+    it('ignores a directory-project mutation response after machine or request changes', () => {
+        expect(isCurrentDirectoryProjectsRequest({
+            requestVersion: 2,
+            currentVersion: 2,
+            requestedMachineId: 'machine-a',
+            activeMachineId: 'machine-a',
+        })).toBe(true);
+        expect(isCurrentDirectoryProjectsRequest({
+            requestVersion: 2,
+            currentVersion: 3,
+            requestedMachineId: 'machine-a',
+            activeMachineId: 'machine-a',
+        })).toBe(false);
+        expect(isCurrentDirectoryProjectsRequest({
+            requestVersion: 2,
+            currentVersion: 2,
+            requestedMachineId: 'machine-a',
+            activeMachineId: 'machine-b',
+        })).toBe(false);
+        expect(isCurrentDirectoryProjectsRequest({
+            requestVersion: 2,
+            currentVersion: 4,
+            requestedMachineId: 'machine-a',
+            activeMachineId: 'machine-a',
+        })).toBe(false);
+    });
+
     it('falls back to the selected directory for a legacy empty Cursor project path', () => {
         expect(getResumeDirectory('', '/workspace/remcli')).toBe('/workspace/remcli');
         expect(getResumeDirectory('/workspace/cursor', '/workspace/remcli')).toBe('/workspace/cursor');
     });
 
-    it('renders daemon-provided canonical/display paths and selects the canonical value', () => {
+    it('renders a daemon-provided project without exposing its canonical path and selects it', () => {
         const path = '/Users/solidhard1/Projects/pet-projects/remcli/packages/remcli-web/src/pages';
         const onSelect = vi.fn();
-        const directory = { canonicalPath: path, displayPath: '~/Projects/remcli/packages/remcli-web/src/pages', lastUsedAt: 10 };
-        const content = RecentDirectoryList({
-            directories: [directory],
+        const onTogglePin = vi.fn();
+        const project = {
+            canonicalPath: path,
+            displayPath: '~/Projects/remcli/packages/remcli-web/src/pages',
+            lastUsedAt: 10,
+            isPinned: true,
+            lastAgent: 'codex' as const,
+            branchAtLastLaunch: 'main',
+        };
+        const content = DirectoryProjectList({
+            projects: [project],
             activePath: path,
             error: null,
             isLoading: false,
             isBrowseDisabled: false,
+            pinningPath: null,
             onSelect,
+            onTogglePin,
             onRetry: vi.fn(),
             onBrowse: vi.fn(),
         });
-        const pathRow = findElement(content, (element) => element.type === 'button' && elementText(element).includes(directory.displayPath));
-        const pathLabel = findElement(content, (element) => element.type === 'span' && elementText(element) === directory.displayPath);
+        const pathRow = findElement(content, (element) => element.type === 'button' && elementText(element).includes(project.displayPath));
+        const pathLabel = findElement(content, (element) => element.type === 'span' && elementText(element) === project.displayPath);
+        const pinButton = findElement(content, (element) => element.type === 'button' && element.props['aria-label'] === 'new.dirUnpin');
 
         expect(pathLabel.props.className).toContain('truncate');
         pathRow.props.onClick?.();
-        expect(onSelect).toHaveBeenCalledWith(directory);
+        pinButton.props.onClick?.();
+        expect(onSelect).toHaveBeenCalledWith(project);
+        expect(onTogglePin).toHaveBeenCalledWith(project);
     });
 
-    it('keeps the recent-directory error retryable while retaining the directory browser fallback', () => {
+    it('keeps the project-list error retryable while retaining the directory browser fallback', () => {
         const onRetry = vi.fn();
         const onBrowse = vi.fn();
-        const content = RecentDirectoryList({
-            directories: null,
+        const content = DirectoryProjectList({
+            projects: null,
             activePath: '/workspace',
-            error: 'Recent directories are unavailable.',
+            error: 'Directory projects are unavailable.',
             isLoading: false,
             isBrowseDisabled: false,
+            pinningPath: null,
             onSelect: vi.fn(),
+            onTogglePin: vi.fn(),
             onRetry,
             onBrowse,
         });
@@ -1186,7 +1233,7 @@ describe('NewSessionPage directory and resume sheets', () => {
         const retryButton = findElement(content, (element) => element.type === 'button' && elementText(element) === 'new.dirRetry');
         const browseButton = findElement(content, (element) => element.type === 'button' && elementText(element) === 'new.dirBrowse');
 
-        expect(elementText(errorState)).toContain('Recent directories are unavailable.');
+        expect(elementText(errorState)).toContain('Directory projects are unavailable.');
         retryButton.props.onClick?.();
         browseButton.props.onClick?.();
         expect(onRetry).toHaveBeenCalledOnce();

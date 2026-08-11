@@ -8,6 +8,7 @@
  */
 
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
@@ -16,10 +17,10 @@ import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import { registerCommonHandlers, SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 import { listDirectoryForBrowser } from '@/daemon/directoryBrowser/directoryBrowserService';
 import {
-    createRecentDirectoriesStore,
-    RecentDirectoriesError,
-    type ListRecentDirectoriesRpcResponse,
-    type RecentDirectoriesStore,
+    createDirectoryProjectsStore,
+    DirectoryProjectsError,
+    type DirectoryProjectsStore,
+    type ListDirectoryProjectsRpcResponse,
 } from '@/daemon/recentDirectories';
 import { buildSafeSpawnSessionLogPayload } from '@/daemon/spawnSessionLog';
 import type {
@@ -70,7 +71,8 @@ export interface MachineSocketDeps {
         execution: SessionExecutionSelection,
     ) => SessionExecutionSetResult;
     requestShutdown: () => void;
-    recentDirectories?: RecentDirectoriesStore;
+    directoryProjects?: DirectoryProjectsStore;
+    getDirectoryProjectBranch?: (directory: string) => Promise<string | null>;
 }
 
 const sessionExecutionSelectionSchema = z.discriminatedUnion('provider', [
@@ -96,6 +98,53 @@ const setSessionExecutionParamsSchema = z.object({
     expectedRevision: z.number().int().nonnegative(),
     execution: sessionExecutionSelectionSchema,
 }).strict();
+
+const setDirectoryProjectPinParamsSchema = z.object({
+    path: z.string().min(1),
+    isPinned: z.boolean(),
+}).strict();
+
+const DIRECTORY_PROJECT_BRANCH_TIMEOUT_MS = 500;
+
+function getDirectoryProjectBranch(directory: string): Promise<string | null> {
+    return new Promise((resolve) => {
+        execFile(
+            'git',
+            ['-C', directory, 'symbolic-ref', '--short', 'HEAD'],
+            {
+                encoding: 'utf-8',
+                maxBuffer: 1024,
+                timeout: DIRECTORY_PROJECT_BRANCH_TIMEOUT_MS,
+                windowsHide: true,
+            },
+            (error, stdout) => {
+                if (error || typeof stdout !== 'string') {
+                    resolve(null);
+                    return;
+                }
+                const branch = stdout.trim();
+                resolve(branch.length > 0 && branch.length <= 256 ? branch : null);
+            },
+        );
+    });
+}
+
+function directoryProjectsErrorResponse(error: unknown): ListDirectoryProjectsRpcResponse {
+    if (error instanceof DirectoryProjectsError) {
+        return {
+            error: {
+                code: error.code,
+                message: error.message,
+            },
+        };
+    }
+    return {
+        error: {
+            code: 'unavailable',
+            message: 'Directory projects are unavailable.',
+        },
+    };
+}
 
 function requireExecutionSnapshot(result: SessionExecutionLookupResult): SessionExecutionSelection {
     if (result.type === 'found') {
@@ -152,7 +201,8 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         getSessionExecutionState,
         setSessionExecution,
         requestShutdown,
-        recentDirectories = createRecentDirectoriesStore({ machineId }),
+        directoryProjects = createDirectoryProjectsStore({ machineId }),
+        getDirectoryProjectBranch: resolveDirectoryProjectBranch = getDirectoryProjectBranch,
     } = deps;
 
     const machineSocket: ClientSocket = ioClient(`http://127.0.0.1:${p2pPort}`, {
@@ -212,11 +262,21 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
 
         switch (result.type) {
             case 'success':
+                let branchAtLastLaunch: string | null = null;
                 try {
-                    recentDirectories.recordSuccessfulSpawn(request.directory);
+                    branchAtLastLaunch = await resolveDirectoryProjectBranch(request.directory);
+                } catch {
+                    // Project metadata is a convenience only; never fail a
+                    // successfully started agent because git is unavailable.
+                }
+                try {
+                    directoryProjects.recordSuccessfulSpawn(request.directory, {
+                        agent: request.agent,
+                        branchAtLastLaunch,
+                    });
                 } catch (error) {
-                    const code = error instanceof RecentDirectoriesError ? error.code : 'unavailable';
-                    logger.warn(`[DAEMON RUN] Recent directory persistence failed: ${code}`);
+                    const code = error instanceof DirectoryProjectsError ? error.code : 'unavailable';
+                    logger.warn(`[DAEMON RUN] Directory project persistence failed: ${code}`);
                 }
                 logger.debug(`[DAEMON RUN] RPC spawned session ${result.sessionId}`);
                 return {
@@ -330,25 +390,20 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         return await listDirectoryForBrowser(params);
     });
 
-    machineRpcManager.registerHandler<unknown, ListRecentDirectoriesRpcResponse>('list-recent-directories', () => {
+    machineRpcManager.registerHandler<unknown, ListDirectoryProjectsRpcResponse>('list-directory-projects', () => {
         try {
-            return recentDirectories.list();
+            return directoryProjects.listProjects();
         } catch (error) {
-            if (error instanceof RecentDirectoriesError) {
-                return {
-                    error: {
-                        code: error.code,
-                        message: error.message,
-                    },
-                };
-            }
+            return directoryProjectsErrorResponse(error);
+        }
+    });
 
-            return {
-                error: {
-                    code: 'unavailable',
-                    message: 'Recent directories are unavailable.',
-                },
-            };
+    machineRpcManager.registerHandler<unknown, ListDirectoryProjectsRpcResponse>('set-directory-project-pin', (params) => {
+        const { path, isPinned } = setDirectoryProjectPinParamsSchema.parse(params);
+        try {
+            return directoryProjects.setProjectPinned(path, isPinned);
+        } catch (error) {
+            return directoryProjectsErrorResponse(error);
         }
     });
 

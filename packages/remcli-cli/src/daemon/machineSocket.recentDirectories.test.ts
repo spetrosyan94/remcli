@@ -27,9 +27,9 @@ import {
 import { P2PStore } from '@/daemon/p2p/p2pStore';
 import { startP2PServer, type P2PServer } from '@/daemon/p2p/p2pServer';
 import {
-    RecentDirectoriesError,
-    createRecentDirectoriesStore,
-    type RecentDirectoriesStore,
+    DirectoryProjectsError,
+    createDirectoryProjectsStore,
+    type DirectoryProjectsStore,
 } from '@/daemon/recentDirectories';
 import type { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 import type { SessionExecutionSnapshot } from '@/api/types';
@@ -214,7 +214,7 @@ async function callMachineRpc(secret: Uint8Array, method: string, params: unknow
 }
 
 async function startHarness(
-    recentDirectories: RecentDirectoriesStore,
+    directoryProjects: DirectoryProjectsStore,
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>,
     codexCapabilities: CodexCapabilitiesService = createCodexCapabilities(),
     sessionExecution: SessionExecutionHarnessDeps = unavailableSessionExecution,
@@ -248,7 +248,8 @@ async function startHarness(
         stopSession: () => ({ success: false }),
         ...sessionExecution,
         requestShutdown: () => undefined,
-        recentDirectories,
+        directoryProjects,
+        getDirectoryProjectBranch: async () => null,
     });
     appSocket = await connectUserSocket(p2pServer.port, bearerToken);
 
@@ -268,18 +269,18 @@ afterEach(async () => {
     }
 });
 
-describe('machine RPC recent directories', { timeout: 15_000 }, () => {
-    it('records only a successful spawn and returns the MRU through authenticated machine RPC', async () => {
+describe('machine RPC directory projects', { timeout: 15_000 }, () => {
+    it('records only a successful spawn and returns safe project metadata through authenticated machine RPC', async () => {
         testDirectory = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-recent-'));
         const workspace = join(testDirectory, 'workspace');
         mkdirSync(workspace);
-        const recentDirectories = createRecentDirectoriesStore({
+        const directoryProjects = createDirectoryProjectsStore({
             machineId: TEST_MACHINE_ID,
             filePath: join(testDirectory, 'recent-directories.json'),
             getHomeDirectory: () => testDirectory!,
             now: () => 100,
         });
-        const secret = await startHarness(recentDirectories, async () => ({
+        const secret = await startHarness(directoryProjects, async () => ({
             type: 'success',
             sessionId: 'spawned-session',
         }));
@@ -292,23 +293,62 @@ describe('machine RPC recent directories', { timeout: 15_000 }, () => {
             type: 'success',
             sessionId: 'spawned-session',
         });
-        expect(await callMachineRpc(secret, 'list-recent-directories', {})).toEqual({
-            directories: [{
+        expect(await callMachineRpc(secret, 'list-directory-projects', {})).toEqual({
+            projects: [{
                 canonicalPath: realpathSync(workspace),
                 displayPath: '~/workspace',
                 lastUsedAt: 100,
+                isPinned: false,
+                lastAgent: 'claude',
+                branchAtLastLaunch: null,
             }],
         });
+    });
+
+    it('validates a pin mutation and returns the daemon-owned updated project list', async () => {
+        testDirectory = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-project-pin-'));
+        const workspace = join(testDirectory, 'workspace');
+        mkdirSync(workspace);
+        const directoryProjects = createDirectoryProjectsStore({
+            machineId: TEST_MACHINE_ID,
+            filePath: join(testDirectory, 'recent-directories.json'),
+            getHomeDirectory: () => testDirectory!,
+            now: () => 100,
+        });
+        const secret = await startHarness(directoryProjects, async () => ({
+            type: 'success',
+            sessionId: 'spawned-session',
+        }));
+
+        await callMachineRpc(secret, 'spawn-remcli-session', {
+            type: 'spawn-in-directory',
+            agent: 'claude',
+            directory: workspace,
+        });
+
+        await expect(callMachineRpc(secret, 'set-directory-project-pin', {
+            path: workspace,
+            isPinned: true,
+        })).resolves.toEqual({
+            projects: [expect.objectContaining({
+                canonicalPath: realpathSync(workspace),
+                isPinned: true,
+                lastAgent: 'claude',
+            })],
+        });
+        await expect(callMachineRpc(secret, 'set-directory-project-pin', {
+            path: workspace,
+        })).resolves.toEqual(expect.objectContaining({ error: expect.any(String) }));
     });
 
     it('rejects missing or unknown providers and foreign provider controls before spawn', async () => {
         const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'unused' }));
         testDirectory = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-provider-'));
-        const recentDirectories = createRecentDirectoriesStore({
+        const directoryProjects = createDirectoryProjectsStore({
             machineId: TEST_MACHINE_ID,
             filePath: join(testDirectory, 'recent-directories.json'),
         });
-        const secret = await startHarness(recentDirectories, spawn);
+        const secret = await startHarness(directoryProjects, spawn);
 
         const invalidRequests = [
             { directory: process.cwd() },
@@ -355,11 +395,11 @@ describe('machine RPC recent directories', { timeout: 15_000 }, () => {
         const execution = getDefaultCodexExecution(snapshot);
         expect(execution).not.toBeNull();
         testDirectory = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-codex-'));
-        const recentDirectories = createRecentDirectoriesStore({
+        const directoryProjects = createDirectoryProjectsStore({
             machineId: TEST_MACHINE_ID,
             filePath: join(testDirectory, 'recent-directories.json'),
         });
-        const secret = await startHarness(recentDirectories, spawn, codexCapabilities);
+        const secret = await startHarness(directoryProjects, spawn, codexCapabilities);
 
         await expect(callMachineRpc(secret, 'spawn-remcli-session', {
             type: 'spawn-in-directory',
@@ -402,12 +442,12 @@ describe('machine RPC recent directories', { timeout: 15_000 }, () => {
             setSessionExecution,
         };
         testDirectory = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-cursor-execution-'));
-        const recentDirectories = createRecentDirectoriesStore({
+        const directoryProjects = createDirectoryProjectsStore({
             machineId: TEST_MACHINE_ID,
             filePath: join(testDirectory, 'recent-directories.json'),
         });
         const secret = await startHarness(
-            recentDirectories,
+            directoryProjects,
             async () => ({ type: 'success', sessionId: 'unused' }),
             createCodexCapabilities(),
             sessionExecution,
@@ -439,11 +479,11 @@ describe('machine RPC recent directories', { timeout: 15_000 }, () => {
             terminal: { type: 'unavailable' as const, error: 'terminal-unavailable' as const },
         }));
         testDirectory = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-terminal-'));
-        const recentDirectories = createRecentDirectoriesStore({
+        const directoryProjects = createDirectoryProjectsStore({
             machineId: TEST_MACHINE_ID,
             filePath: join(testDirectory, 'recent-directories.json'),
         });
-        const secret = await startHarness(recentDirectories, spawn);
+        const secret = await startHarness(directoryProjects, spawn);
 
         await expect(callMachineRpc(secret, 'spawn-remcli-session', {
             type: 'spawn-in-directory',
@@ -457,21 +497,22 @@ describe('machine RPC recent directories', { timeout: 15_000 }, () => {
     });
 
     it('keeps a typed persistence failure inside the encrypted RPC error boundary', async () => {
-        const recentDirectories: RecentDirectoriesStore = {
-            list: () => {
-                throw new RecentDirectoriesError('unavailable');
+        const directoryProjects: DirectoryProjectsStore = {
+            listProjects: () => {
+                throw new DirectoryProjectsError('unavailable');
             },
             recordSuccessfulSpawn: () => undefined,
+            setProjectPinned: () => ({ projects: [] }),
         };
-        const secret = await startHarness(recentDirectories, async () => ({
+        const secret = await startHarness(directoryProjects, async () => ({
             type: 'success',
             sessionId: 'unused',
         }));
 
-        expect(await callMachineRpc(secret, 'list-recent-directories', {})).toEqual({
+        expect(await callMachineRpc(secret, 'list-directory-projects', {})).toEqual({
             error: {
                 code: 'unavailable',
-                message: 'Recent directories are unavailable.',
+                message: 'Directory projects are unavailable.',
             },
         });
     });

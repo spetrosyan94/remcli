@@ -1,12 +1,13 @@
 /**
- * Daemon-owned persistent MRU for working directories.
+ * Daemon-owned persistent project list for working directories.
  *
- * The store is intentionally separate from the in-memory P2P/session state.
- * It contains only machine-scoped paths and timestamps; prompts, tokens, and
- * session metadata are never persisted here.
+ * The store is intentionally separate from in-memory P2P/session state. It
+ * keeps only machine-scoped paths, timestamps, pin preference and a safe
+ * launch snapshot. Prompts, session IDs, tokens and transcripts are never
+ * persisted here.
  */
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync, chmodSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { configuration } from '@/configuration';
@@ -16,53 +17,80 @@ import {
     type DirectoryPathContractDeps,
 } from '@/daemon/directoryBrowser/pathContract';
 
-export const MAX_RECENT_DIRECTORIES = 20;
+export const MAX_DIRECTORY_PROJECTS = 20;
 
-const RECENT_DIRECTORIES_FILE_NAME = 'recent-directories.json';
-const RECENT_DIRECTORIES_FILE_MODE = 0o600;
-const RECENT_DIRECTORIES_FILE_VERSION = 1;
+const DIRECTORY_PROJECTS_FILE_NAME = 'recent-directories.json';
+const DIRECTORY_PROJECTS_FILE_MODE = 0o600;
+const DIRECTORY_PROJECTS_FILE_VERSION = 2;
 
-export type RecentDirectoriesErrorCode = 'unavailable' | 'invalid_machine_id';
+export type DirectoryProjectAgent = 'claude' | 'codex' | 'cursor' | 'gemini';
+export type DirectoryProjectsErrorCode = 'unavailable' | 'invalid_machine_id' | 'invalid_directory';
 
-export class RecentDirectoriesError extends Error {
-    constructor(readonly code: RecentDirectoriesErrorCode) {
+export class DirectoryProjectsError extends Error {
+    constructor(readonly code: DirectoryProjectsErrorCode) {
         super(code === 'invalid_machine_id'
-            ? 'Recent directories are unavailable because this machine is not identified.'
-            : 'Recent directories are unavailable.');
-        this.name = 'RecentDirectoriesError';
+            ? 'Directory projects are unavailable because this machine is not identified.'
+            : code === 'invalid_directory'
+                ? 'The directory project is unavailable.'
+                : 'Directory projects are unavailable.');
+        this.name = 'DirectoryProjectsError';
     }
 }
 
-export interface RecentDirectory {
+export interface DirectoryProject {
+    canonicalPath: string;
+    displayPath: string;
+    lastUsedAt: number;
+    isPinned: boolean;
+    lastAgent: DirectoryProjectAgent | null;
+    branchAtLastLaunch: string | null;
+}
+
+export interface DirectoryProjectLaunchSnapshot {
+    agent: DirectoryProjectAgent;
+    branchAtLastLaunch: string | null;
+}
+
+export interface ListDirectoryProjectsResponse {
+    projects: DirectoryProject[];
+}
+
+export interface ListDirectoryProjectsErrorResponse {
+    error: {
+        code: DirectoryProjectsErrorCode;
+        message: string;
+    };
+}
+
+export type ListDirectoryProjectsRpcResponse = ListDirectoryProjectsResponse | ListDirectoryProjectsErrorResponse;
+
+export interface DirectoryProjectsStore {
+    listProjects(): ListDirectoryProjectsResponse;
+    recordSuccessfulSpawn(directory: string, snapshot: DirectoryProjectLaunchSnapshot): void;
+    setProjectPinned(directory: string, isPinned: boolean): ListDirectoryProjectsResponse;
+}
+
+interface PersistedDirectoryProject {
+    canonicalPath: string;
+    displayPath: string;
+    lastUsedAt: number;
+    pinnedAt: number | null;
+    lastAgent: DirectoryProjectAgent | null;
+    branchAtLastLaunch: string | null;
+}
+
+interface LegacyRecentDirectory {
     canonicalPath: string;
     displayPath: string;
     lastUsedAt: number;
 }
 
-export interface ListRecentDirectoriesResponse {
-    directories: RecentDirectory[];
+interface PersistedDirectoryProjects {
+    v: typeof DIRECTORY_PROJECTS_FILE_VERSION;
+    machines: Record<string, PersistedDirectoryProject[]>;
 }
 
-export interface ListRecentDirectoriesErrorResponse {
-    error: {
-        code: RecentDirectoriesErrorCode;
-        message: string;
-    };
-}
-
-export type ListRecentDirectoriesRpcResponse = ListRecentDirectoriesResponse | ListRecentDirectoriesErrorResponse;
-
-export interface RecentDirectoriesStore {
-    list(): ListRecentDirectoriesResponse;
-    recordSuccessfulSpawn(directory: string): void;
-}
-
-interface PersistedRecentDirectories {
-    v: typeof RECENT_DIRECTORIES_FILE_VERSION;
-    machines: Record<string, RecentDirectory[]>;
-}
-
-export interface RecentDirectoriesStoreDeps extends DirectoryPathContractDeps {
+export interface DirectoryProjectsStoreDeps extends DirectoryPathContractDeps {
     machineId: string;
     filePath?: string;
     now?: () => number;
@@ -73,63 +101,131 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isRecentDirectory(value: unknown): value is RecentDirectory {
-    if (!isRecord(value)) return false;
-
-    return typeof value.canonicalPath === 'string'
-        && value.canonicalPath.length > 0
-        && typeof value.displayPath === 'string'
-        && value.displayPath.length > 0
-        && typeof value.lastUsedAt === 'number'
-        && Number.isFinite(value.lastUsedAt)
-        && value.lastUsedAt >= 0;
+function isNonEmptyString(value: unknown): value is string {
+    return typeof value === 'string' && value.trim().length > 0;
 }
 
-function parsePersistedRecentDirectories(value: unknown): PersistedRecentDirectories | null {
-    if (!isRecord(value) || value.v !== RECENT_DIRECTORIES_FILE_VERSION || !isRecord(value.machines)) {
+function isTimestamp(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isDirectoryProjectAgent(value: unknown): value is DirectoryProjectAgent {
+    return value === 'claude' || value === 'codex' || value === 'cursor' || value === 'gemini';
+}
+
+function isNullableString(value: unknown): value is string | null {
+    return value === null || (typeof value === 'string' && value.length <= 256);
+}
+
+function isLegacyRecentDirectory(value: unknown): value is LegacyRecentDirectory {
+    if (!isRecord(value)) return false;
+
+    return isNonEmptyString(value.canonicalPath)
+        && isNonEmptyString(value.displayPath)
+        && isTimestamp(value.lastUsedAt);
+}
+
+function isPersistedDirectoryProject(value: unknown): value is PersistedDirectoryProject {
+    if (!isRecord(value)) return false;
+
+    return isLegacyRecentDirectory(value)
+        && (value.pinnedAt === null || isTimestamp(value.pinnedAt))
+        && (value.lastAgent === null || isDirectoryProjectAgent(value.lastAgent))
+        && isNullableString(value.branchAtLastLaunch);
+}
+
+function parsePersistedDirectoryProjects(value: unknown): PersistedDirectoryProjects | null {
+    if (!isRecord(value) || !isRecord(value.machines)) {
         return null;
     }
 
-    const machines: Record<string, RecentDirectory[]> = {};
-    for (const [machineId, directories] of Object.entries(value.machines)) {
-        if (!Array.isArray(directories) || !directories.every(isRecentDirectory)) {
-            return null;
+    const machines: Record<string, PersistedDirectoryProject[]> = {};
+    if (value.v === 1) {
+        for (const [machineId, directories] of Object.entries(value.machines)) {
+            if (!Array.isArray(directories) || !directories.every(isLegacyRecentDirectory)) {
+                return null;
+            }
+            machines[machineId] = directories.map((directory) => ({
+                ...directory,
+                pinnedAt: null,
+                lastAgent: null,
+                branchAtLastLaunch: null,
+            }));
         }
-
-        machines[machineId] = directories.map((directory) => ({ ...directory }));
+        return { v: DIRECTORY_PROJECTS_FILE_VERSION, machines };
     }
 
-    return { v: RECENT_DIRECTORIES_FILE_VERSION, machines };
+    if (value.v !== DIRECTORY_PROJECTS_FILE_VERSION) {
+        return null;
+    }
+
+    for (const [machineId, projects] of Object.entries(value.machines)) {
+        if (!Array.isArray(projects) || !projects.every(isPersistedDirectoryProject)) {
+            return null;
+        }
+        machines[machineId] = projects.map((project) => ({ ...project }));
+    }
+
+    return { v: DIRECTORY_PROJECTS_FILE_VERSION, machines };
 }
 
-function sortRecentDirectories(directories: RecentDirectory[]): RecentDirectory[] {
-    return [...directories].sort((left, right) => {
+function sortDirectoryProjects(projects: PersistedDirectoryProject[]): PersistedDirectoryProject[] {
+    return [...projects].sort((left, right) => {
+        const leftIsPinned = left.pinnedAt !== null;
+        const rightIsPinned = right.pinnedAt !== null;
+        if (leftIsPinned !== rightIsPinned) {
+            return leftIsPinned ? -1 : 1;
+        }
         if (left.lastUsedAt !== right.lastUsedAt) {
             return right.lastUsedAt - left.lastUsedAt;
         }
-
         return left.canonicalPath.localeCompare(right.canonicalPath);
     });
 }
 
-export function getRecentDirectoriesFilePath(): string {
-    return join(configuration.remcliHomeDir, RECENT_DIRECTORIES_FILE_NAME);
+function isExistingDirectory(path: string): boolean {
+    try {
+        return statSync(path).isDirectory();
+    } catch {
+        return false;
+    }
+}
+
+function toDirectoryProject(project: PersistedDirectoryProject): DirectoryProject {
+    return {
+        canonicalPath: project.canonicalPath,
+        displayPath: project.displayPath,
+        lastUsedAt: project.lastUsedAt,
+        isPinned: project.pinnedAt !== null,
+        lastAgent: project.lastAgent,
+        branchAtLastLaunch: project.branchAtLastLaunch,
+    };
+}
+
+function normalizeBranchSnapshot(branch: string | null): string | null {
+    if (branch === null) return null;
+    const normalized = branch.trim();
+    return normalized.length > 0 && normalized.length <= 256 ? normalized : null;
+}
+
+export function getDirectoryProjectsFilePath(): string {
+    return join(configuration.remcliHomeDir, DIRECTORY_PROJECTS_FILE_NAME);
 }
 
 /**
- * Creates a file-backed MRU store scoped to one persistent machine identity.
+ * Creates a file-backed project list scoped to one persistent machine identity.
  * Invalid/corrupt contents are treated as an empty cache; filesystem failures
- * become a typed, path-free error safe to return over encrypted RPC.
+ * become typed, path-free errors safe to return over encrypted RPC.
  */
-export function createRecentDirectoriesStore(deps: RecentDirectoriesStoreDeps): RecentDirectoriesStore {
+export function createDirectoryProjectsStore(deps: DirectoryProjectsStoreDeps): DirectoryProjectsStore {
     const machineId = deps.machineId;
-    const filePath = deps.filePath ?? getRecentDirectoriesFilePath();
+    const filePath = deps.filePath ?? getDirectoryProjectsFilePath();
     const now = deps.now ?? Date.now;
     const resolveRealPath = deps.resolveRealPath ?? realpathSync;
     const initialPathContext = createDirectoryPathContext(deps);
 
     if (!machineId) {
-        throw new RecentDirectoriesError('invalid_machine_id');
+        throw new DirectoryProjectsError('invalid_machine_id');
     }
 
     let canonicalHomePath = initialPathContext.homePath;
@@ -144,75 +240,134 @@ export function createRecentDirectoriesStore(deps: RecentDirectoriesStoreDeps): 
         homePath: canonicalHomePath,
     };
 
-    function readPersisted(): PersistedRecentDirectories {
+    function readPersisted(): PersistedDirectoryProjects {
         if (!existsSync(filePath)) {
-            return { v: RECENT_DIRECTORIES_FILE_VERSION, machines: {} };
+            return { v: DIRECTORY_PROJECTS_FILE_VERSION, machines: {} };
         }
 
         try {
-            const parsed = parsePersistedRecentDirectories(JSON.parse(readFileSync(filePath, 'utf-8')) as unknown);
-            return parsed ?? { v: RECENT_DIRECTORIES_FILE_VERSION, machines: {} };
+            const parsed = parsePersistedDirectoryProjects(JSON.parse(readFileSync(filePath, 'utf-8')) as unknown);
+            return parsed ?? { v: DIRECTORY_PROJECTS_FILE_VERSION, machines: {} };
         } catch (error) {
             if (error instanceof SyntaxError) {
-                return { v: RECENT_DIRECTORIES_FILE_VERSION, machines: {} };
+                return { v: DIRECTORY_PROJECTS_FILE_VERSION, machines: {} };
             }
-
-            throw new RecentDirectoriesError('unavailable');
+            throw new DirectoryProjectsError('unavailable');
         }
     }
 
-    function writePersisted(data: PersistedRecentDirectories): void {
+    function writePersisted(data: PersistedDirectoryProjects): void {
         const tempFilePath = `${filePath}.tmp`;
 
         try {
             mkdirSync(dirname(filePath), { recursive: true });
             writeFileSync(tempFilePath, JSON.stringify(data, null, 2), {
                 encoding: 'utf-8',
-                mode: RECENT_DIRECTORIES_FILE_MODE,
+                mode: DIRECTORY_PROJECTS_FILE_MODE,
             });
             renameSync(tempFilePath, filePath);
-            chmodSync(filePath, RECENT_DIRECTORIES_FILE_MODE);
+            chmodSync(filePath, DIRECTORY_PROJECTS_FILE_MODE);
         } catch {
-            throw new RecentDirectoriesError('unavailable');
+            throw new DirectoryProjectsError('unavailable');
         }
     }
 
+    function listFrom(data: PersistedDirectoryProjects): ListDirectoryProjectsResponse {
+        const projects = sortDirectoryProjects(data.machines[machineId] ?? [])
+            .filter((project) => isExistingDirectory(project.canonicalPath))
+            .slice(0, MAX_DIRECTORY_PROJECTS)
+            .map(toDirectoryProject);
+        return { projects };
+    }
+
+    function getLiveProjects(data: PersistedDirectoryProjects): PersistedDirectoryProject[] {
+        return (data.machines[machineId] ?? []).filter((project) => isExistingDirectory(project.canonicalPath));
+    }
+
     return {
-        list(): ListRecentDirectoriesResponse {
-            const data = readPersisted();
-            return {
-                directories: sortRecentDirectories(data.machines[machineId] ?? [])
-                    .slice(0, MAX_RECENT_DIRECTORIES),
-            };
+        listProjects(): ListDirectoryProjectsResponse {
+            return listFrom(readPersisted());
         },
 
-        recordSuccessfulSpawn(directory: string): void {
+        recordSuccessfulSpawn(directory: string, snapshot: DirectoryProjectLaunchSnapshot): void {
             let canonicalPath: string;
             try {
                 canonicalPath = resolveRealPath(directory);
             } catch {
-                throw new RecentDirectoriesError('unavailable');
+                throw new DirectoryProjectsError('invalid_directory');
+            }
+            if (!isExistingDirectory(canonicalPath)) {
+                throw new DirectoryProjectsError('invalid_directory');
             }
 
             const data = readPersisted();
-            const recordedDirectory: RecentDirectory = {
+            const currentProjects = getLiveProjects(data);
+            const previousProject = currentProjects.find((project) => project.canonicalPath === canonicalPath);
+            const recordedProject: PersistedDirectoryProject = {
                 canonicalPath,
                 displayPath: getDirectoryDisplayPath(canonicalPath, pathContext),
                 lastUsedAt: now(),
+                pinnedAt: previousProject?.pinnedAt ?? null,
+                lastAgent: snapshot.agent,
+                branchAtLastLaunch: normalizeBranchSnapshot(snapshot.branchAtLastLaunch),
             };
-            const currentDirectories = data.machines[machineId] ?? [];
-            const nextDirectories = sortRecentDirectories([
-                recordedDirectory,
-                ...currentDirectories.filter((item) => item.canonicalPath !== canonicalPath),
-            ]).slice(0, MAX_RECENT_DIRECTORIES);
+            const nextProjects = sortDirectoryProjects([
+                recordedProject,
+                ...currentProjects.filter((project) => project.canonicalPath !== canonicalPath),
+            ]).slice(0, MAX_DIRECTORY_PROJECTS);
 
             writePersisted({
-                v: RECENT_DIRECTORIES_FILE_VERSION,
+                v: DIRECTORY_PROJECTS_FILE_VERSION,
                 machines: {
                     ...data.machines,
-                    [machineId]: nextDirectories,
+                    [machineId]: nextProjects,
                 },
             });
+        },
+
+        setProjectPinned(directory: string, isPinned: boolean): ListDirectoryProjectsResponse {
+            let canonicalPath: string;
+            try {
+                canonicalPath = resolveRealPath(directory);
+            } catch {
+                throw new DirectoryProjectsError('invalid_directory');
+            }
+            if (!isExistingDirectory(canonicalPath)) {
+                throw new DirectoryProjectsError('invalid_directory');
+            }
+
+            const data = readPersisted();
+            const currentProjects = getLiveProjects(data);
+            const previousProject = currentProjects.find((project) => project.canonicalPath === canonicalPath);
+            if (!previousProject && !isPinned) {
+                return listFrom(data);
+            }
+
+            const project: PersistedDirectoryProject = previousProject
+                ? {
+                    ...previousProject,
+                    pinnedAt: isPinned ? previousProject.pinnedAt ?? now() : null,
+                }
+                : {
+                    canonicalPath,
+                    displayPath: getDirectoryDisplayPath(canonicalPath, pathContext),
+                    lastUsedAt: now(),
+                    pinnedAt: now(),
+                    lastAgent: null,
+                    branchAtLastLaunch: null,
+                };
+            const nextData: PersistedDirectoryProjects = {
+                v: DIRECTORY_PROJECTS_FILE_VERSION,
+                machines: {
+                    ...data.machines,
+                    [machineId]: sortDirectoryProjects([
+                        project,
+                        ...currentProjects.filter((item) => item.canonicalPath !== canonicalPath),
+                    ]).slice(0, MAX_DIRECTORY_PROJECTS),
+                },
+            };
+            writePersisted(nextData);
+            return listFrom(nextData);
         },
     };
 }

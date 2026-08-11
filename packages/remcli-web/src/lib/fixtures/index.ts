@@ -40,13 +40,13 @@ import type {
     CodexCapabilitiesSnapshot,
     CursorCapabilitiesSnapshot,
     DirectoryListing,
-    RecentDirectory,
+    DirectoryProject,
     SessionExecutionSelection,
     SessionExecutionSnapshot,
     SpawnSessionOptions,
     SpawnSessionResult,
 } from '@/lib/protocol/socket';
-import { RecentDirectoriesRpcError } from '@/lib/protocol/socket';
+import { DirectoryProjectsRpcError } from '@/lib/protocol/socket';
 import { useProtocolStore } from '@/lib/protocol/store';
 import type { AgentKind, AgentSessionInfo, Machine, Session, SessionMetadata } from '@/lib/protocol/types';
 
@@ -443,39 +443,66 @@ const FIXTURE_DIRECTORY_CHILDREN: Record<string, string[]> = {
     '/home/ci/releases/pipeline': ['jobs', 'logs']
 };
 
-const FIXTURE_RECENT_DIRECTORIES: readonly RecentDirectory[] = [
+const FIXTURE_DIRECTORY_PROJECTS: readonly DirectoryProject[] = [
     {
         canonicalPath: '/Users/dev/projects/remcli',
         displayPath: '~/projects/remcli',
         lastUsedAt: FIXTURE_BASE_TIME,
+        isPinned: true,
+        lastAgent: 'codex',
+        branchAtLastLaunch: 'main',
     },
     {
         canonicalPath: '/Users/dev/projects/webapp',
         displayPath: '~/projects/webapp',
         lastUsedAt: FIXTURE_BASE_TIME - 1 * 60_000,
+        isPinned: false,
+        lastAgent: 'cursor',
+        branchAtLastLaunch: 'feature/mobile-nav',
     },
     {
         canonicalPath: '/Users/dev/projects/api-server',
         displayPath: '~/projects/api-server',
         lastUsedAt: FIXTURE_BASE_TIME - 2 * 60_000,
+        isPinned: true,
+        lastAgent: 'codex',
+        branchAtLastLaunch: 'release/2026.08',
     },
     {
         canonicalPath: '/Users/dev/projects/docs',
         displayPath: '~/projects/docs',
         lastUsedAt: FIXTURE_BASE_TIME - 30 * 60_000,
+        isPinned: false,
+        lastAgent: null,
+        branchAtLastLaunch: null,
     },
 ];
 
-function createFixtureRecentDirectoriesByMachine(): Map<string, RecentDirectory[]> {
+function sortFixtureDirectoryProjects(projects: DirectoryProject[]): DirectoryProject[] {
+    return [...projects].sort((left, right) => {
+        if (left.isPinned !== right.isPinned) return left.isPinned ? -1 : 1;
+        if (left.lastUsedAt !== right.lastUsedAt) return right.lastUsedAt - left.lastUsedAt;
+        return left.canonicalPath.localeCompare(right.canonicalPath);
+    });
+}
+
+function createFixtureDirectoryProjectsByMachine(): Map<string, DirectoryProject[]> {
     return new Map(FIXTURE_MACHINES.map((machine) => [
         machine.id,
         machine.id === 'fx-machine-online'
-            ? FIXTURE_RECENT_DIRECTORIES.map((directory) => ({ ...directory }))
+            ? FIXTURE_DIRECTORY_PROJECTS.map((project) => ({ ...project }))
             : [],
     ]));
 }
 
-let fixtureRecentDirectoriesByMachine = createFixtureRecentDirectoriesByMachine();
+let fixtureDirectoryProjectsByMachine = createFixtureDirectoryProjectsByMachine();
+
+function fixtureDirectoryExists(path: string): boolean {
+    if (Object.prototype.hasOwnProperty.call(FIXTURE_DIRECTORY_CHILDREN, path)) return true;
+    return Object.entries(FIXTURE_DIRECTORY_CHILDREN).some(([parentPath, childNames]) =>
+        childNames.some((name) => (parentPath === '/' ? `/${name}` : `${parentPath}/${name}`) === path),
+    );
+}
 
 function trimTrailingSlash(path: string): string {
     if (path === '/') return path;
@@ -678,7 +705,7 @@ export function initFixturesIfEnabled(): boolean {
     fixtureSessionExecutionConflictAttempts = 0;
     fixtureSessionExecutionBySessionId.clear();
     fixtureSpawnCallCount = 0;
-    fixtureRecentDirectoriesByMachine = createFixtureRecentDirectoriesByMachine();
+    fixtureDirectoryProjectsByMachine = createFixtureDirectoryProjectsByMachine();
     getFixtureLineageMetricsState();
     const store = useProtocolStore.getState();
     store.applyMachines(fixtureMachines());
@@ -1191,23 +1218,61 @@ export function fixtureListDirectory(machineId: string, path?: string): Director
     };
 }
 
-/** Локальный machine-scoped MRU для `/new?fixtures=1`: shape совпадает с daemon RPC. */
-export async function fixtureListRecentDirectories(machineId: string): Promise<RecentDirectory[]> {
+/** Локальный machine-scoped список проектов для `/new?fixtures=1`: shape совпадает с daemon RPC. */
+export async function fixtureListDirectoryProjects(machineId: string): Promise<DirectoryProject[]> {
     const machine = FIXTURE_MACHINES.find((item) => item.id === machineId);
     if (!machine?.metadata) {
-        throw new RecentDirectoriesRpcError('unavailable', 'Recent directories are unavailable.');
+        throw new DirectoryProjectsRpcError('unavailable', 'Directory projects are unavailable.');
     }
 
-    const scenario = fixtureQueryParameter('recentDirectories');
+    const scenario = fixtureQueryParameter('directoryProjects');
     if (scenario === 'slow') {
         await new Promise((resolve) => setTimeout(resolve, 250));
     }
     if (scenario === 'error') {
-        throw new RecentDirectoriesRpcError('unavailable', 'Recent directories are unavailable.');
+        throw new DirectoryProjectsRpcError('unavailable', 'Directory projects are unavailable.');
     }
     if (scenario === 'empty') return [];
 
-    return (fixtureRecentDirectoriesByMachine.get(machineId) ?? []).map((directory) => ({ ...directory }));
+    return sortFixtureDirectoryProjects(fixtureDirectoryProjectsByMachine.get(machineId) ?? [])
+        .map((project) => ({ ...project }));
+}
+
+export async function fixtureSetDirectoryProjectPin(
+    machineId: string,
+    path: string,
+    isPinned: boolean,
+): Promise<DirectoryProject[]> {
+    const machine = FIXTURE_MACHINES.find((item) => item.id === machineId);
+    if (!machine?.metadata) {
+        throw new DirectoryProjectsRpcError('unavailable', 'Directory projects are unavailable.');
+    }
+    const projects = fixtureDirectoryProjectsByMachine.get(machineId);
+    if (!projects) {
+        throw new DirectoryProjectsRpcError('unavailable', 'Directory projects are unavailable.');
+    }
+    const project = projects.find((item) => item.canonicalPath === path);
+    if (!project && !fixtureDirectoryExists(path)) {
+        throw new DirectoryProjectsRpcError('invalid_directory', 'The directory project is unavailable.');
+    }
+    if (project) {
+        project.isPinned = isPinned;
+        return sortFixtureDirectoryProjects(projects).map((item) => ({ ...item }));
+    }
+    const newProject: DirectoryProject = {
+        canonicalPath: path,
+        displayPath: fixtureDisplayPath(path, machine.metadata.homeDir),
+        lastUsedAt: FIXTURE_BASE_TIME,
+        isPinned,
+        lastAgent: null,
+        branchAtLastLaunch: null,
+    };
+    fixtureDirectoryProjectsByMachine.set(machineId, sortFixtureDirectoryProjects([
+        newProject,
+        ...projects,
+    ]));
+    return sortFixtureDirectoryProjects(fixtureDirectoryProjectsByMachine.get(machineId) ?? [])
+        .map((item) => ({ ...item }));
 }
 
 function fixtureLongResumeSessions(agent?: string): AgentSessionInfo[] {
@@ -1450,15 +1515,19 @@ export async function fixtureSpawnNewSession(options: SpawnSessionOptions): Prom
         : [];
     store.applySessions([session]);
     store.applyMessages(sessionId, cloneFixtureHistory(resumeHistory, sessionId), { markLoaded: true });
-    const machineRecentDirectories = fixtureRecentDirectoriesByMachine.get(options.machineId) ?? [];
-    fixtureRecentDirectoriesByMachine.set(options.machineId, [
+    const machineDirectoryProjects = fixtureDirectoryProjectsByMachine.get(options.machineId) ?? [];
+    const previousProject = machineDirectoryProjects.find((item) => item.canonicalPath === directory);
+    fixtureDirectoryProjectsByMachine.set(options.machineId, sortFixtureDirectoryProjects([
         {
             canonicalPath: directory,
             displayPath: fixtureDisplayPath(directory, machine.metadata.homeDir),
             lastUsedAt: now,
+            isPinned: previousProject?.isPinned ?? false,
+            lastAgent: options.agent ?? null,
+            branchAtLastLaunch: 'main',
         },
-        ...machineRecentDirectories.filter((item) => item.canonicalPath !== directory),
-    ]);
+        ...machineDirectoryProjects.filter((item) => item.canonicalPath !== directory),
+    ]));
     return { type: 'success', sessionId };
 }
 

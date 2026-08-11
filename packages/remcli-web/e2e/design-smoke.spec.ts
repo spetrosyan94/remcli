@@ -508,6 +508,35 @@ test("new session keeps its primary action fully visible", async ({ page }) => {
     expect(pageIssues).toEqual([]);
 });
 
+test("new session groups pinned projects and keeps their controls overflow-safe", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/new?fixtures=1");
+
+    await expect(page.getByText("directory · projects", { exact: true })).toBeVisible();
+    await expect(page.getByText("pinned", { exact: true })).toBeVisible();
+    const projectRow = page.getByRole("button", { name: /~\/projects\/webapp.*Cursor.*feature\/mobile-nav/i });
+    await expect(projectRow).toBeVisible();
+    await expect(projectRow).not.toHaveAttribute("aria-current", "true");
+
+    const pinButton = page.getByRole("button", { name: "Pin project", exact: true }).first();
+    await expect(pinButton).toBeVisible();
+    const pinBox = await pinButton.boundingBox();
+    expect(pinBox?.width).toBeGreaterThanOrEqual(MOBILE_TOUCH_TARGET_MIN_PX);
+    expect(pinBox?.height).toBeGreaterThanOrEqual(MOBILE_TOUCH_TARGET_MIN_PX);
+    await pinButton.click();
+
+    await expect(page.getByRole("button", { name: /~\/projects\/webapp.*Cursor.*feature\/mobile-nav/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Unpin project", exact: true })).toHaveCount(3);
+    await projectRow.click();
+    await expect(projectRow).toHaveAttribute("aria-current", "true");
+    await expect(page.getByRole("button", { name: /Start codex in ~\/projects\/webapp/i })).toBeVisible();
+
+    await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
 test("new session keeps deferred providers visible but non-interactive", async ({ page }, testInfo) => {
     const pageIssues = collectPageIssues(page);
 

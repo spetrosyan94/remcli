@@ -13,7 +13,8 @@ import {
     fixtureGetSessionExecution,
     fixtureListAgentSessions,
     fixtureListDirectory,
-    fixtureListRecentDirectories,
+    fixtureListDirectoryProjects,
+    fixtureSetDirectoryProjectPin,
     fixtureLoadSessionMessages,
     fixtureRecordProtocolReconnect,
     fixtureRecordSentSession,
@@ -60,9 +61,10 @@ import {
     machineGetCursorCapabilities as socketMachineGetCursorCapabilities,
     machineGetSessionExecution as socketMachineGetSessionExecution,
     machineListDirectory as socketMachineListDirectory,
-    machineListRecentDirectories as socketMachineListRecentDirectories,
+    machineListDirectoryProjects as socketMachineListDirectoryProjects,
     machineCancelPairingRekey as socketMachineCancelPairingRekey,
     machineRequestPairingRekey as socketMachineRequestPairingRekey,
+    machineSetDirectoryProjectPin as socketMachineSetDirectoryProjectPin,
     machineShowPairingQr as socketMachineShowPairingQr,
     machineSpawnNewSession as socketMachineSpawnNewSession,
     machineSetSessionExecution as socketMachineSetSessionExecution,
@@ -78,7 +80,7 @@ import {
     socketEmitWithAck,
     waitForSocketConnection,
     type DirectoryListing,
-    type RecentDirectory,
+    type DirectoryProject,
     type CodexCapabilitiesSnapshot,
     type CursorCapabilitiesSnapshot,
     type SessionExecutionSelection,
@@ -408,12 +410,24 @@ export async function machineListDirectory(machineId: string, path?: string): Pr
     return socketMachineListDirectory(machineId, path);
 }
 
-/** List daemon-owned, machine-scoped recent directories; fixture mode uses the same response shape. */
-export async function machineListRecentDirectories(machineId: string): Promise<RecentDirectory[]> {
+/** List daemon-owned, machine-scoped project directories; fixture mode uses the same response shape. */
+export async function machineListDirectoryProjects(machineId: string): Promise<DirectoryProject[]> {
     if (isFixturesActive) {
-        return fixtureListRecentDirectories(machineId);
+        return fixtureListDirectoryProjects(machineId);
     }
-    return socketMachineListRecentDirectories(machineId);
+    return socketMachineListDirectoryProjects(machineId);
+}
+
+/** Toggle a daemon-owned project pin; fixture mode uses the same response shape. */
+export async function machineSetDirectoryProjectPin(
+    machineId: string,
+    path: string,
+    isPinned: boolean,
+): Promise<DirectoryProject[]> {
+    if (isFixturesActive) {
+        return fixtureSetDirectoryProjectPin(machineId, path, isPinned);
+    }
+    return socketMachineSetDirectoryProjectPin(machineId, path, isPinned);
 }
 
 /** Read the normalized Codex model/reasoning catalog for New Session. */

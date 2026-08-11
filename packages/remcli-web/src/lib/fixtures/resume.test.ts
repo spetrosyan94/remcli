@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     fixtureListAgentSessions,
-    fixtureListRecentDirectories,
+    fixtureListDirectoryProjects,
+    fixtureSetDirectoryProjectPin,
     fixtureSpawnNewSession,
 } from '@/lib/fixtures';
 import {
@@ -169,8 +170,8 @@ describe('fixture resume history', () => {
         ]));
     });
 
-    it('keeps fixture recent directories isolated by machine after a successful spawn', async () => {
-        const offlineBefore = await fixtureListRecentDirectories('fx-machine-offline');
+    it('keeps fixture directory projects isolated by machine after a successful spawn', async () => {
+        const offlineBefore = await fixtureListDirectoryProjects('fx-machine-offline');
         const spawnedDirectory = '/Users/dev/projects/mobile';
 
         getSpawnedSessionId(await fixtureSpawnNewSession({
@@ -179,10 +180,24 @@ describe('fixture resume history', () => {
             agent: 'codex',
         }));
 
-        await expect(fixtureListRecentDirectories('fx-machine-online')).resolves.toEqual(expect.arrayContaining([
+        await expect(fixtureListDirectoryProjects('fx-machine-online')).resolves.toEqual(expect.arrayContaining([
             expect.objectContaining({ canonicalPath: spawnedDirectory }),
         ]));
-        await expect(fixtureListRecentDirectories('fx-machine-offline')).resolves.toEqual(offlineBefore);
+        await expect(fixtureListDirectoryProjects('fx-machine-offline')).resolves.toEqual(offlineBefore);
+    });
+
+    it('allows pinning an existing browser directory before it has a launch record', async () => {
+        const selectedDirectory = '/Users/dev/projects/remcli/packages/remcli-cli';
+
+        await expect(fixtureSetDirectoryProjectPin('fx-machine-online', selectedDirectory, true))
+            .resolves.toEqual(expect.arrayContaining([
+                expect.objectContaining({
+                    canonicalPath: selectedDirectory,
+                    isPinned: true,
+                    lastAgent: null,
+                    branchAtLastLaunch: null,
+                }),
+            ]));
     });
 
     it('serves opaque Cursor resume rows with project context and honors the requested limit', async () => {

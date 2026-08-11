@@ -385,32 +385,35 @@ export interface DirectoryListing {
     entries: DirectoryEntry[];
 }
 
-export type RecentDirectoriesErrorCode = 'unavailable' | 'invalid_machine_id';
+export type DirectoryProjectsErrorCode = 'unavailable' | 'invalid_machine_id' | 'invalid_directory';
 
-export interface RecentDirectory {
+export interface DirectoryProject {
     canonicalPath: string;
     displayPath: string;
     lastUsedAt: number;
+    isPinned: boolean;
+    lastAgent: AgentKind | null;
+    branchAtLastLaunch: string | null;
 }
 
-interface RecentDirectoriesResponse {
-    directories: RecentDirectory[];
+interface DirectoryProjectsResponse {
+    projects: DirectoryProject[];
 }
 
-interface RecentDirectoriesErrorResponse {
+interface DirectoryProjectsErrorResponse {
     error: {
-        code: RecentDirectoriesErrorCode;
+        code: DirectoryProjectsErrorCode;
         message: string;
     };
 }
 
-export class RecentDirectoriesRpcError extends Error {
-    readonly code: RecentDirectoriesErrorCode;
+export class DirectoryProjectsRpcError extends Error {
+    readonly code: DirectoryProjectsErrorCode;
 
-    constructor(code: RecentDirectoriesErrorCode, message: string) {
+    constructor(code: DirectoryProjectsErrorCode, message: string) {
         super(message);
         this.code = code;
-        this.name = 'RecentDirectoriesRpcError';
+        this.name = 'DirectoryProjectsRpcError';
     }
 }
 
@@ -493,11 +496,11 @@ function isDirectoryListing(value: unknown): value is DirectoryListing {
     );
 }
 
-function isRecentDirectoriesErrorCode(value: unknown): value is RecentDirectoriesErrorCode {
-    return value === 'unavailable' || value === 'invalid_machine_id';
+function isDirectoryProjectsErrorCode(value: unknown): value is DirectoryProjectsErrorCode {
+    return value === 'unavailable' || value === 'invalid_machine_id' || value === 'invalid_directory';
 }
 
-function isRecentDirectory(value: unknown): value is RecentDirectory {
+function isDirectoryProject(value: unknown): value is DirectoryProject {
     if (!isRecord(value)) return false;
     return typeof value.canonicalPath === 'string'
         && value.canonicalPath.trim().length > 0
@@ -505,18 +508,21 @@ function isRecentDirectory(value: unknown): value is RecentDirectory {
         && value.displayPath.trim().length > 0
         && typeof value.lastUsedAt === 'number'
         && Number.isFinite(value.lastUsedAt)
-        && value.lastUsedAt >= 0;
+        && value.lastUsedAt >= 0
+        && typeof value.isPinned === 'boolean'
+        && (value.lastAgent === null || isAgentKind(value.lastAgent))
+        && (value.branchAtLastLaunch === null || typeof value.branchAtLastLaunch === 'string');
 }
 
-function isRecentDirectoriesResponse(value: unknown): value is RecentDirectoriesResponse {
+function isDirectoryProjectsResponse(value: unknown): value is DirectoryProjectsResponse {
     return isRecord(value)
-        && Array.isArray(value.directories)
-        && value.directories.every(isRecentDirectory);
+        && Array.isArray(value.projects)
+        && value.projects.every(isDirectoryProject);
 }
 
-function isRecentDirectoriesErrorResponse(value: unknown): value is RecentDirectoriesErrorResponse {
+function isDirectoryProjectsErrorResponse(value: unknown): value is DirectoryProjectsErrorResponse {
     if (!isRecord(value) || !isRecord(value.error)) return false;
-    return isRecentDirectoriesErrorCode(value.error.code)
+    return isDirectoryProjectsErrorCode(value.error.code)
         && typeof value.error.message === 'string'
         && value.error.message.trim().length > 0;
 }
@@ -839,20 +845,40 @@ export async function machineListDirectory(machineId: string, path?: string): Pr
     return result;
 }
 
-/** List daemon-owned, machine-scoped recent directories (RPC `list-recent-directories`). */
-export async function machineListRecentDirectories(machineId: string): Promise<RecentDirectory[]> {
+/** List daemon-owned, machine-scoped project directories (RPC `list-directory-projects`). */
+export async function machineListDirectoryProjects(machineId: string): Promise<DirectoryProject[]> {
     const result = await machineRpc<unknown, Record<string, never>>(
         machineId,
-        'list-recent-directories',
+        'list-directory-projects',
         {},
     );
-    if (isRecentDirectoriesErrorResponse(result)) {
-        throw new RecentDirectoriesRpcError(result.error.code, result.error.message);
+    if (isDirectoryProjectsErrorResponse(result)) {
+        throw new DirectoryProjectsRpcError(result.error.code, result.error.message);
     }
-    if (!isRecentDirectoriesResponse(result)) {
-        throw new Error('Recent directories RPC returned invalid response');
+    if (!isDirectoryProjectsResponse(result)) {
+        throw new Error('Directory projects RPC returned invalid response');
     }
-    return result.directories;
+    return result.projects;
+}
+
+/** Toggle daemon-owned pin preference for an existing working directory project. */
+export async function machineSetDirectoryProjectPin(
+    machineId: string,
+    path: string,
+    isPinned: boolean,
+): Promise<DirectoryProject[]> {
+    const result = await machineRpc<unknown, { path: string; isPinned: boolean }>(
+        machineId,
+        'set-directory-project-pin',
+        { path, isPinned },
+    );
+    if (isDirectoryProjectsErrorResponse(result)) {
+        throw new DirectoryProjectsRpcError(result.error.code, result.error.message);
+    }
+    if (!isDirectoryProjectsResponse(result)) {
+        throw new Error('Directory project pin RPC returned invalid response');
+    }
+    return result.projects;
 }
 
 /** List past agent sessions on a machine (resume feature, RPC `list-agent-sessions`). */

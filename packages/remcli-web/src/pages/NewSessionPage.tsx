@@ -5,7 +5,7 @@
 // Модели/режимы — daemon-normalized provider capabilities; static options
 // остаются только у ещё не capability-driven providers.
 import * as React from "react";
-import { ArrowUp, Check, ChevronDown, Folder, FolderOpen, Loader2, RotateCcw, SlidersHorizontal, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, Folder, FolderOpen, Loader2, Pin, PinOff, RotateCcw, SlidersHorizontal, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { AgentIcon, StatusDot, type AgentId } from "@/components/kit";
@@ -24,7 +24,8 @@ import {
     machineListAgentSessions,
     machineGetCodexCapabilities,
     machineGetCursorCapabilities,
-    machineListRecentDirectories,
+    machineListDirectoryProjects,
+    machineSetDirectoryProjectPin,
     machineSpawnNewSession,
     refreshSessions,
     sendSessionMessage,
@@ -42,7 +43,7 @@ import {
     type DirectoryListing,
     type Machine,
     type PermissionMode,
-    type RecentDirectory,
+    type DirectoryProject,
     type SpawnSessionOptions,
     type SpawnSessionResult,
 } from "@/lib/protocol";
@@ -389,7 +390,7 @@ function formatDirectoryError(error: unknown): string {
     return details ? `${t("new.dirError")} ${details}` : t("new.dirError");
 }
 
-function formatRecentDirectoriesError(error: unknown): string {
+function formatDirectoryProjectsError(error: unknown): string {
     if (typeof error === "object" && error !== null && "code" in error && "message" in error) {
         const message = (error as { code?: unknown; message?: unknown }).message;
         if ((error as { code?: unknown }).code === "unavailable" && typeof message === "string" && message.trim().length > 0) {
@@ -488,53 +489,129 @@ export const RESUME_SHEET_CONTENT_CLASS =
 export const MODEL_SHEET_CONTENT_CLASS =
     `${SHEET_CONTENT_CLASS} overflow-hidden data-[vaul-drawer-direction=bottom]:max-h-[min(80dvh,28rem)]`;
 
-export function RecentDirectoryList({
-    directories,
-    selectedDirectory,
+function getDirectoryProjectMeta(project: DirectoryProject): string {
+    const agentName = project.lastAgent
+        ? AGENT_OPTIONS.find((agent) => agent.id === project.lastAgent)?.name ?? project.lastAgent
+        : t("new.dirAgentUnknown");
+    const branch = project.branchAtLastLaunch ?? t("new.dirBranchUnknown");
+    return `${agentName} · ${t("new.dirBranch")} ${branch} · ${formatRelativeTime(project.lastUsedAt)}`;
+}
+
+export function isCurrentDirectoryProjectsRequest({
+    requestVersion,
+    currentVersion,
+    requestedMachineId,
+    activeMachineId,
+}: {
+    requestVersion: number;
+    currentVersion: number;
+    requestedMachineId: string;
+    activeMachineId: string | undefined;
+}): boolean {
+    return requestVersion === currentVersion && requestedMachineId === activeMachineId;
+}
+
+export function DirectoryProjectList({
+    projects,
+    selectedProject,
     activePath,
     error,
     isLoading,
     isBrowseDisabled,
+    pinningPath,
     browseRef,
     onSelect,
+    onTogglePin,
     onRetry,
     onBrowse,
 }: {
-    directories: RecentDirectory[] | null;
-    selectedDirectory?: { canonicalPath: string; displayPath: string } | null;
+    projects: DirectoryProject[] | null;
+    selectedProject?: DirectoryProject | null;
     activePath: string;
     error: string | null;
     isLoading: boolean;
     isBrowseDisabled: boolean;
+    pinningPath: string | null;
     browseRef?: React.RefObject<HTMLButtonElement | null>;
-    onSelect: (directory: { canonicalPath: string; displayPath: string }) => void;
+    onSelect: (project: DirectoryProject) => void;
+    onTogglePin: (project: DirectoryProject) => void;
     onRetry: () => void;
     onBrowse: () => void;
 }) {
-    const hasSelectedDirectory = selectedDirectory !== null && selectedDirectory !== undefined;
-    const hasRecentDirectories = directories !== null && directories.length > 0;
+    const hasSelectedProject = selectedProject !== null && selectedProject !== undefined;
+    const pinnedProjects = projects?.filter((project) => project.isPinned) ?? [];
+    const recentProjects = projects?.filter((project) => !project.isPinned) ?? [];
+    const hasProjects = projects !== null && projects.length > 0;
+
+    const renderProject = (project: DirectoryProject, index: number) => {
+        const isActive = activePath === project.canonicalPath;
+        const isPinPending = pinningPath === project.canonicalPath;
+        return (
+            <div
+                key={project.canonicalPath}
+                className={`flex min-h-[62px] min-w-0 items-stretch gap-1 px-2 py-1.5 ${index > 0 ? "border-t border-border" : ""}`}
+            >
+                <button
+                    type="button"
+                    onClick={() => onSelect(project)}
+                    aria-current={isActive ? "true" : undefined}
+                    className={`flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-[8px] px-1.5 py-1.5 text-left font-mono transition-colors duration-[var(--dur-std)] ease-[var(--ease-out)] ${isActive ? "bg-secondary text-foreground" : "text-muted-foreground"}`}
+                >
+                    <Folder className={`size-3.5 shrink-0 ${isActive ? "text-accent" : "text-muted-foreground/50"}`} aria-hidden="true" />
+                    <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[12.5px]">{project.displayPath}</span>
+                        <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{getDirectoryProjectMeta(project)}</span>
+                    </span>
+                    {isActive && <Check className="size-3.5 shrink-0 text-accent" aria-hidden="true" />}
+                </button>
+                <button
+                    type="button"
+                    onClick={() => onTogglePin(project)}
+                    disabled={isPinPending}
+                    aria-label={project.isPinned ? t("new.dirUnpin") : t("new.dirPin")}
+                    className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-[8px] transition-colors duration-[var(--dur-std)] ease-[var(--ease-out)] disabled:opacity-50 ${project.isPinned ? "text-accent" : "text-muted-foreground"}`}
+                >
+                    {project.isPinned
+                        ? <Pin className="size-3.5" aria-hidden="true" />
+                        : <PinOff className="size-3.5" aria-hidden="true" />}
+                </button>
+            </div>
+        );
+    };
 
     return (
         <div className="overflow-hidden rounded-xl border border-border">
-            {hasSelectedDirectory && (
-                <button
-                    type="button"
-                    onClick={() => onSelect(selectedDirectory)}
-                    className="flex min-h-11 w-full min-w-0 items-center gap-2.5 overflow-hidden bg-secondary px-3.5 py-3 text-left font-mono text-[12.5px]"
-                >
-                    <FolderOpen className="size-3.5 shrink-0 text-accent" />
-                    <span className="min-w-0 flex-1 truncate">{selectedDirectory.displayPath}</span>
-                    <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{t("new.dirSelected")}</span>
-                </button>
+            {hasSelectedProject && (
+                <div className="flex min-h-[62px] min-w-0 items-stretch gap-1 bg-secondary px-2 py-1.5">
+                    <button
+                        type="button"
+                        onClick={() => onSelect(selectedProject)}
+                        aria-current="true"
+                        className="flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-[8px] px-1.5 py-1.5 text-left font-mono text-[12.5px] text-foreground"
+                    >
+                        <FolderOpen className="size-3.5 shrink-0 text-accent" aria-hidden="true" />
+                        <span className="min-w-0 flex-1 truncate">{selectedProject.displayPath}</span>
+                        <span className="shrink-0 text-[10px] text-muted-foreground">{t("new.dirSelected")}</span>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => onTogglePin(selectedProject)}
+                        disabled={pinningPath === selectedProject.canonicalPath}
+                        aria-label={selectedProject.isPinned ? t("new.dirUnpin") : t("new.dirPin")}
+                        className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground transition-colors duration-[var(--dur-std)] ease-[var(--ease-out)] disabled:opacity-50"
+                    >
+                        <PinOff className="size-3.5" aria-hidden="true" />
+                    </button>
+                </div>
             )}
             {isLoading && (
-                <div role="status" aria-live="polite" className={`flex min-h-11 items-center gap-2 border-t border-border px-3.5 py-3 font-mono text-[11.5px] text-muted-foreground motion-reduce:transition-opacity motion-reduce:duration-[120ms] ${hasSelectedDirectory ? "" : "border-t-0"}`}>
-                    <Loader2 className="size-3.5 animate-spin" />
-                    {t("new.dirLoading")}
+                <div role="status" aria-live="polite" className={`flex min-h-[62px] items-center border-t border-border px-3.5 py-3 ${hasSelectedProject ? "" : "border-t-0"}`}>
+                    <span className="sr-only">{t("new.dirLoading")}</span>
+                    <span className="h-3 w-2/3 animate-pulse rounded bg-muted motion-reduce:animate-none" aria-hidden="true" />
                 </div>
             )}
             {!isLoading && error !== null && (
-                <div role="alert" aria-live="assertive" className={`flex min-h-11 items-center gap-2 border-t border-border px-3.5 py-2.5 font-mono text-[11.5px] text-destructive motion-reduce:transition-opacity motion-reduce:duration-[120ms] ${hasSelectedDirectory ? "" : "border-t-0"}`}>
+                <div role="alert" aria-live="assertive" className={`flex min-h-11 items-center gap-2 border-t border-border px-3.5 py-2.5 font-mono text-[11.5px] text-destructive ${hasSelectedProject ? "" : "border-t-0"}`}>
                     <span className="min-w-0 flex-1 break-words">{error}</span>
                     <button
                         type="button"
@@ -545,32 +622,25 @@ export function RecentDirectoryList({
                     </button>
                 </div>
             )}
-            {!isLoading && error === null && directories !== null && !hasRecentDirectories && (
-                <div className={`min-h-11 border-t border-border px-3.5 py-3 font-mono text-[11.5px] text-muted-foreground motion-reduce:transition-opacity motion-reduce:duration-[120ms] ${hasSelectedDirectory ? "" : "border-t-0"}`}>
+            {!isLoading && error === null && projects !== null && !hasProjects && (
+                <div className={`min-h-11 border-t border-border px-3.5 py-3 font-mono text-[11.5px] text-muted-foreground ${hasSelectedProject ? "" : "border-t-0"}`}>
                     {t("new.dirRecentEmpty")}
                 </div>
             )}
-            {!isLoading && error === null && directories?.map((directory, index) => {
-                const isActive = activePath === directory.canonicalPath;
-                return (
-                    <button
-                        key={directory.canonicalPath}
-                        type="button"
-                        onClick={() => onSelect(directory)}
-                        className={`flex min-h-11 w-full min-w-0 items-center gap-2.5 overflow-hidden px-3.5 py-3 text-left font-mono text-[12.5px] transition-[background-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] motion-reduce:active:scale-100 ${(index > 0 || hasSelectedDirectory || directories.length > 0) ? "border-t border-border " : ""}${isActive ? "bg-secondary" : "bg-card text-muted-foreground"}`}
-                    >
-                        <Folder className={`size-3.5 shrink-0 ${isActive ? "text-accent" : "text-muted-foreground/40"}`} />
-                        <span className="min-w-0 flex-1 truncate">{directory.displayPath}</span>
-                        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{formatRelativeTime(directory.lastUsedAt)}</span>
-                    </button>
-                );
-            })}
+            {!isLoading && error === null && pinnedProjects.length > 0 && (
+                <div className="border-t border-border px-3.5 pb-1 pt-2 font-mono text-[10px] text-muted-foreground">{t("new.dirPinned")}</div>
+            )}
+            {!isLoading && error === null && pinnedProjects.map((project, index) => renderProject(project, index))}
+            {!isLoading && error === null && recentProjects.length > 0 && (
+                <div className="border-t border-border px-3.5 pb-1 pt-2 font-mono text-[10px] text-muted-foreground">{t("new.dirRecent")}</div>
+            )}
+            {!isLoading && error === null && recentProjects.map((project, index) => renderProject(project, index))}
             <button
                 type="button"
                 ref={browseRef}
                 onClick={onBrowse}
                 disabled={isBrowseDisabled}
-                className={`flex min-h-11 w-full items-center gap-2.5 bg-card px-3.5 py-3 font-mono text-[12.5px] text-muted-foreground transition-[background-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] motion-reduce:active:scale-100 disabled:opacity-50 ${(hasSelectedDirectory || hasRecentDirectories || isLoading || error !== null) ? "border-t border-border" : ""}`}
+                className={`flex min-h-11 w-full items-center gap-2.5 bg-card px-3.5 py-3 font-mono text-[12.5px] text-muted-foreground transition-colors duration-[var(--dur-std)] ease-[var(--ease-out)] disabled:opacity-50 ${(hasSelectedProject || hasProjects || isLoading || error !== null) ? "border-t border-border" : ""}`}
             >
                 <FolderOpen className="size-3.5 shrink-0" />
                 {t("new.dirBrowse")}
@@ -726,9 +796,10 @@ export function NewSessionPage() {
     const [cursorCapabilitiesReloadKey, setCursorCapabilitiesReloadKey] = React.useState(0);
     const [dir, setDir] = React.useState<string | null>(() => navigationState.cursorResume?.directory ?? null);
     const [dirDisplayPath, setDirDisplayPath] = React.useState<string | null>(null);
-    const [recentDirectories, setRecentDirectories] = React.useState<RecentDirectory[] | null>(null);
-    const [recentDirectoriesError, setRecentDirectoriesError] = React.useState<string | null>(null);
-    const [recentDirectoriesReloadKey, setRecentDirectoriesReloadKey] = React.useState(0);
+    const [directoryProjects, setDirectoryProjects] = React.useState<DirectoryProject[] | null>(null);
+    const [directoryProjectsError, setDirectoryProjectsError] = React.useState<string | null>(null);
+    const [directoryProjectsReloadKey, setDirectoryProjectsReloadKey] = React.useState(0);
+    const [pinningDirectoryPath, setPinningDirectoryPath] = React.useState<string | null>(null);
     const [directoryRequestPath, setDirectoryRequestPath] = React.useState<string | undefined>(undefined);
     const [directoryListing, setDirectoryListing] = React.useState<DirectoryListing | null>(null);
     const [directoryError, setDirectoryError] = React.useState<string | null>(null);
@@ -751,6 +822,15 @@ export function NewSessionPage() {
     // A Cursor resume preset must never silently fall back to another machine.
     const machine = selectedMachine ?? (cursorResumePreset ? null : machines[0] ?? null);
     const activeMachineId = machine?.id;
+    const activeMachineIdRef = React.useRef<string | undefined>(activeMachineId);
+    activeMachineIdRef.current = activeMachineId;
+    const directoryProjectsMutationRef = React.useRef(0);
+    const directoryProjectsMachineRef = React.useRef<string | undefined>(activeMachineId);
+    if (directoryProjectsMachineRef.current !== activeMachineId) {
+        // A prior request for machine A must stay stale after A -> B -> A.
+        directoryProjectsMachineRef.current = activeMachineId;
+        directoryProjectsMutationRef.current += 1;
+    }
     const homeDir = machine?.metadata?.homeDir;
     const sheetKind = sheet?.kind ?? null;
     // Vaul keeps a ref to its latest onOpenChange callback. A newly opened sheet
@@ -831,10 +911,14 @@ export function NewSessionPage() {
         hasReasoningSelection: hasCodexReasoningSelection,
     });
 
-    const activeDir = dir ?? recentDirectories?.[0]?.canonicalPath ?? homeDir ?? "";
+    const mostRecentDirectoryProject = directoryProjects?.reduce<DirectoryProject | null>((mostRecent, project) => {
+        if (mostRecent === null || project.lastUsedAt > mostRecent.lastUsedAt) return project;
+        return mostRecent;
+    }, null) ?? null;
+    const activeDir = dir ?? mostRecentDirectoryProject?.canonicalPath ?? homeDir ?? "";
     const activeDirDisplayPath = dir
-        ? (dirDisplayPath ?? dir)
-        : (recentDirectories?.[0]?.displayPath ?? homeDir ?? "");
+        ? (dirDisplayPath ?? t("new.dirSelectedPath"))
+        : (mostRecentDirectoryProject?.displayPath ?? t("new.dirSelectedPath"));
     const isResumePresetCompatible = isCursorResumePresetCompatible(cursorResumePreset, machine?.id, activeDir);
     const cursorResumeTarget: ResumeTarget | undefined = cursorResumePreset
         ? {
@@ -851,14 +935,24 @@ export function NewSessionPage() {
             firstMessage: null,
         }, "cursor")
         : null;
-    const hasActiveDirInRecent = recentDirectories?.some((directory) => directory.canonicalPath === activeDir) ?? false;
-    const isRecentDirectoriesLoaded = recentDirectories !== null || recentDirectoriesError !== null;
-    const shouldShowSelectedDir = isRecentDirectoriesLoaded && activeDir !== "" && !hasActiveDirInRecent;
+    const hasActiveDirInProjects = directoryProjects?.some((project) => project.canonicalPath === activeDir) ?? false;
+    const isDirectoryProjectsLoaded = directoryProjects !== null || directoryProjectsError !== null;
+    const shouldShowSelectedProject = isDirectoryProjectsLoaded && activeDir !== "" && !hasActiveDirInProjects;
+    const selectedDirectoryProject: DirectoryProject | null = shouldShowSelectedProject
+        ? {
+            canonicalPath: activeDir,
+            displayPath: activeDirDisplayPath,
+            lastUsedAt: 0,
+            isPinned: false,
+            lastAgent: null,
+            branchAtLastLaunch: null,
+        }
+        : null;
     const directoryHeaderPath = directoryListing?.path ?? directoryRequestPath ?? activeDir;
     const directoryHeaderDisplayPath = directoryListing?.displayPath
         ?? (directoryHeaderPath === activeDir
             ? activeDirDisplayPath
-            : directoryHeaderPath);
+            : t("new.dirSelectedPath"));
     const canSelectDirectoryHeaderPath = directoryHeaderPath !== "" && !isDirectoryLoading && !directoryError && directoryListing !== null;
     const directoryParentPath = directoryListing?.parent ?? (directoryError ? directoryBackTarget?.path ?? null : null);
     const directoryParentDisplayPath = directoryListing?.parentDisplayPath ?? (directoryError ? directoryBackTarget?.displayPath ?? null : null);
@@ -950,26 +1044,28 @@ export function NewSessionPage() {
         return () => { isStale = true; };
     }, [activeMachineId, agent, cursorCapabilitiesReloadKey, cursorResumePreset]);
 
-    // Recent directories are daemon-owned machine state, never session metadata.
+    // Project rows are daemon-owned machine state, never session metadata.
     React.useEffect(() => {
         if (!activeMachineId) {
-            setRecentDirectories(null);
-            setRecentDirectoriesError(null);
+            setDirectoryProjects(null);
+            setDirectoryProjectsError(null);
+            setPinningDirectoryPath(null);
             return;
         }
         let isStale = false;
-        setRecentDirectories(null);
-        setRecentDirectoriesError(null);
-        void machineListRecentDirectories(activeMachineId)
-            .then((directories) => {
-                if (!isStale) setRecentDirectories(directories);
+        setPinningDirectoryPath(null);
+        setDirectoryProjects(null);
+        setDirectoryProjectsError(null);
+        void machineListDirectoryProjects(activeMachineId)
+            .then((projects) => {
+                if (!isStale) setDirectoryProjects(projects);
             })
             .catch((error: unknown) => {
                 if (isStale) return;
-                setRecentDirectoriesError(formatRecentDirectoriesError(error));
+                setDirectoryProjectsError(formatDirectoryProjectsError(error));
             });
         return () => { isStale = true; };
-    }, [activeMachineId, recentDirectoriesReloadKey]);
+    }, [activeMachineId, directoryProjectsReloadKey]);
 
     // resume-sheet: RPC list-agent-sessions с фильтром по агенту
     React.useEffect(() => {
@@ -1031,6 +1127,46 @@ export function NewSessionPage() {
         if (cursorResumePreset && path !== cursorResumePreset.directory) setCursorResumePreset(null);
         setDir(path);
         setDirDisplayPath(displayPath ?? null);
+    };
+
+    const toggleDirectoryProjectPin = async (project: DirectoryProject) => {
+        if (!activeMachineId || pinningDirectoryPath !== null) return;
+        const requestedMachineId = activeMachineId;
+        const requestVersion = directoryProjectsMutationRef.current + 1;
+        directoryProjectsMutationRef.current = requestVersion;
+        setPinningDirectoryPath(project.canonicalPath);
+        try {
+            const updatedProjects = await machineSetDirectoryProjectPin(
+                requestedMachineId,
+                project.canonicalPath,
+                !project.isPinned,
+            );
+            if (!isCurrentDirectoryProjectsRequest({
+                requestVersion,
+                currentVersion: directoryProjectsMutationRef.current,
+                requestedMachineId,
+                activeMachineId: activeMachineIdRef.current,
+            })) return;
+            setDirectoryProjects(updatedProjects);
+            setDirectoryProjectsError(null);
+        } catch (error: unknown) {
+            if (!isCurrentDirectoryProjectsRequest({
+                requestVersion,
+                currentVersion: directoryProjectsMutationRef.current,
+                requestedMachineId,
+                activeMachineId: activeMachineIdRef.current,
+            })) return;
+            toast.error(formatDirectoryProjectsError(error));
+        } finally {
+            if (isCurrentDirectoryProjectsRequest({
+                requestVersion,
+                currentVersion: directoryProjectsMutationRef.current,
+                requestedMachineId,
+                activeMachineId: activeMachineIdRef.current,
+            })) {
+                setPinningDirectoryPath(null);
+            }
+        }
     };
 
     const openSheet = (kind: SheetKind, trigger: HTMLButtonElement | null = null) => {
@@ -1139,11 +1275,11 @@ export function NewSessionPage() {
             return;
         }
         try {
-            const refreshedDirectories = await machineListRecentDirectories(options.machineId);
-            setRecentDirectories(refreshedDirectories);
-            setRecentDirectoriesError(null);
+            const refreshedProjects = await machineListDirectoryProjects(options.machineId);
+            setDirectoryProjects(refreshedProjects);
+            setDirectoryProjectsError(null);
         } catch (error: unknown) {
-            setRecentDirectoriesError(formatRecentDirectoriesError(error));
+            setDirectoryProjectsError(formatDirectoryProjectsError(error));
         }
         if (result.terminal?.type === "unavailable") {
             toast.warning(t("new.terminalUnavailable"));
@@ -1393,19 +1529,21 @@ export function NewSessionPage() {
                     )}
                 </section>
 
-                {/* директория — недавние quick picks + browser/picker через RPC list-directory */}
+                {/* директория — daemon-owned проекты + browser/picker через RPC list-directory */}
                 <section className="flex flex-col gap-2">
-                    <span className="font-mono text-[10px] text-muted-foreground">{t("new.dirRecent")}</span>
-                    <RecentDirectoryList
-                        directories={recentDirectories}
-                        selectedDirectory={shouldShowSelectedDir ? { canonicalPath: activeDir, displayPath: activeDirDisplayPath } : null}
+                    <span className="font-mono text-[10px] text-muted-foreground">{t("new.dirProjects")}</span>
+                    <DirectoryProjectList
+                        projects={directoryProjects}
+                        selectedProject={selectedDirectoryProject}
                         activePath={activeDir}
-                        error={recentDirectoriesError}
-                        isLoading={recentDirectories === null && recentDirectoriesError === null}
+                        error={directoryProjectsError}
+                        isLoading={directoryProjects === null && directoryProjectsError === null}
                         isBrowseDisabled={!machine}
+                        pinningPath={pinningDirectoryPath}
                         browseRef={directoryTriggerRef}
-                        onSelect={(directory) => selectDir(directory.canonicalPath, directory.displayPath)}
-                        onRetry={() => setRecentDirectoriesReloadKey((value) => value + 1)}
+                        onSelect={(project) => selectDir(project.canonicalPath, project.displayPath)}
+                        onTogglePin={toggleDirectoryProjectPin}
+                        onRetry={() => setDirectoryProjectsReloadKey((value) => value + 1)}
                         onBrowse={openDirectoryPicker}
                     />
                 </section>
