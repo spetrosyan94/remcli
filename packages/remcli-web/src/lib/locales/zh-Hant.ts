@@ -25,6 +25,9 @@ export const zhHant: Dictionary = {
     "permission.allow": "允許",
     "permission.deny": "拒絕",
     "permission.alwaysHint": "A — 一律允許",
+    "permission.sending": "正在傳送回覆…",
+    "permission.responseFailed": "無法傳送回覆",
+    "permission.retry": "重試",
 
     "chat.thinking": "思考中",
     "chat.copy": "複製",

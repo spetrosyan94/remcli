@@ -90,6 +90,12 @@ function readFixtureFlag(): boolean {
     }
 }
 
+function getFixturePermissionResponseMode(): "delayed" | "error-once" | null {
+    if (typeof window === "undefined") return null;
+    const value = new URLSearchParams(window.location.search).get("permissionResponse");
+    return value === "delayed" || value === "error-once" ? value : null;
+}
+
 // ─── Локальный REST (fetch-перехват) ─────────────────────────────
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -108,6 +114,7 @@ let fixtureResumeRetryAttempts = 0;
 let fixtureCodexCapabilityRejectionAttempts = 0;
 let fixtureCursorResumeSpawnAttempts = 0;
 let fixtureSessionExecutionConflictAttempts = 0;
+let fixturePermissionResponseFailureAttempts = 0;
 const fixtureSessionExecutionBySessionId = new Map<string, SessionExecutionSnapshot>();
 
 interface FixtureLineageMetricsState {
@@ -120,6 +127,7 @@ interface FixtureLineageMetricsState {
 let fixtureLineageMetricsState: FixtureLineageMetricsState | null = null;
 
 const FIXTURE_RESUME_RESPONSE_DELAY_MS = 1_000;
+const FIXTURE_PERMISSION_RESPONSE_DELAY_MS = 1_000;
 const FIXTURE_LONG_RESUME_ROW_COUNT = 24;
 const FIXTURE_LONG_CHAT_PATH = `/Users/dev/projects/remcli/${'nested-directory/'.repeat(36)}calculate.js:195`;
 const FIXTURE_LONG_CHAT_LINK = `https://en.wikipedia.org/wiki/Function_(mathematics)?trace=${'trace-segment-'.repeat(36)}`;
@@ -1435,11 +1443,20 @@ export function fixtureStopSession(machineId: string, sessionId: string): { mess
  * Локальный ответ на permission-запрос: карточка убирается из
  * agentState.requests (переезжает в completedRequests) без RPC.
  */
-export function fixtureAnswerPermission(
+export async function fixtureAnswerPermission(
     sessionId: string,
     permissionId: string,
     status: 'approved' | 'denied'
-): void {
+): Promise<void> {
+    const responseMode = getFixturePermissionResponseMode();
+    if (responseMode === "delayed") {
+        await new Promise((resolve) => setTimeout(resolve, FIXTURE_PERMISSION_RESPONSE_DELAY_MS));
+    }
+    if (responseMode === "error-once" && fixturePermissionResponseFailureAttempts === 0) {
+        fixturePermissionResponseFailureAttempts += 1;
+        throw new Error("Fixture permission response failed");
+    }
+
     const store = useProtocolStore.getState();
     const session = store.sessions[sessionId];
     const request = session?.agentState?.requests?.[permissionId];

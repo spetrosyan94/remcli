@@ -23,6 +23,7 @@ import { createCodexExecutionForModel, getCodexResumeSelection } from "@/lib/cod
 import { isProviderAvailable } from "@/lib/providerAvailability";
 import { canStopSession, type IStopMachineTarget } from "@/lib/sessionCapabilities";
 import { t } from "@/lib/i18n";
+import { createPermissionDecision, createPermissionDecisionGate, type PermissionDecisionAction } from "@/lib/permissionDecision";
 import {
     fetchWhisperStatus, getRestConfig, isClientStarted, loadSessionMessages,
     machineGetCodexCapabilities, machineGetCursorCapabilities, machineGetSessionExecution,
@@ -50,6 +51,11 @@ const ORDERED_LIST_ITEM_PATTERN = /^\s*(\d+)[.)]\s+(.+)$/;
 const EXECUTION_MODEL_LIST_CLASS = "max-h-44 overflow-y-auto overscroll-contain";
 
 type SessionExecutionLoadState = "idle" | "loading" | "ready" | "error";
+
+interface PermissionResponseState {
+    action: PermissionDecisionAction;
+    state: "sending" | "error";
+}
 
 function isSessionExecutionEqual(
     left: SessionExecutionSelection | undefined,
@@ -1044,6 +1050,7 @@ export function ChatPage() {
     const [draft, setDraft] = React.useState("");
     const [uiMode, setUiMode] = React.useState<PermissionMode | null>(() => navState.permissionMode ?? null);
     const [busyPermissionIds, setBusyPermissionIds] = React.useState<readonly string[]>([]);
+    const [permissionResponseStates, setPermissionResponseStates] = React.useState<Record<string, PermissionResponseState>>({});
     const [expandedTools, setExpandedTools] = React.useState<Record<string, boolean>>({});
     const [isWhisperAvailable, setIsWhisperAvailable] = React.useState(false);
     const [banner, setBanner] = React.useState<"ok" | "lost" | "restored">("ok");
@@ -1066,6 +1073,11 @@ export function ChatPage() {
     const executionRequestGenerationRef = React.useRef(0);
     const hadConnectedRef = React.useRef(false);
     const hasDetachedAutoscrollRef = React.useRef(false);
+    const permissionDecisionGateRef = React.useRef<ReturnType<typeof createPermissionDecisionGate> | null>(null);
+
+    if (permissionDecisionGateRef.current === null) {
+        permissionDecisionGateRef.current = createPermissionDecisionGate();
+    }
 
     const lineageMessageGroups = React.useMemo(
         () => mergeLineageMessages(lineageParentMessages, messages),
@@ -1092,6 +1104,22 @@ export function ChatPage() {
         (permission: string) => getAgentPermissionLabel(agent, permission as PermissionMode),
         [agent],
     );
+
+    React.useEffect(() => {
+        const pendingPermissionIds = new Set(pendingPermissions.map((permission) => permission.id));
+        setPermissionResponseStates((current) => {
+            let hasRemovedState = false;
+            const next: Record<string, PermissionResponseState> = {};
+            for (const [permissionId, responseState] of Object.entries(current)) {
+                if (pendingPermissionIds.has(permissionId)) {
+                    next[permissionId] = responseState;
+                } else {
+                    hasRemovedState = true;
+                }
+            }
+            return hasRemovedState ? next : current;
+        });
+    }, [pendingPermissions]);
 
     React.useEffect(() => {
         if (!session) return;
@@ -1842,27 +1870,43 @@ export function ChatPage() {
     };
 
     // Ответ на permission-запрос (референс PermissionFooter.tsx: codex — через decision)
-    const answerPermission = (permission: PendingPermission, action: "allow" | "deny" | "always") => {
-        if (busyPermissionIds.includes(permission.id)) return;
+    const answerPermission = (permission: PendingPermission, action: PermissionDecisionAction) => {
+        if (
+            busyPermissionIds.includes(permission.id)
+            || permissionResponseStates[permission.id]?.state === "sending"
+            || !permissionDecisionGateRef.current?.tryAcquire(permission.id)
+        ) return;
+
         setBusyPermissionIds((ids) => [...ids, permission.id]);
-        const isCodex = agent === "codex";
+        setPermissionResponseStates((current) => ({
+            ...current,
+            [permission.id]: { action, state: "sending" },
+        }));
+        const decision = createPermissionDecision({
+            action,
+            agent,
+            command: permission.command,
+            tool: permission.tool,
+        });
         const run = async () => {
-            if (action === "allow") {
-                await sessionAllow(sessionId, permission.id, undefined, undefined, isCodex ? "approved" : undefined);
-            } else if (action === "deny") {
-                await sessionDeny(sessionId, permission.id, undefined, undefined, isCodex ? "abort" : undefined);
-            } else if (isCodex) {
-                await sessionAllow(sessionId, permission.id, undefined, undefined, "approved_for_session");
+            if (decision.approved) {
+                await sessionAllow(sessionId, permission.id, undefined, decision.allowedTools, decision.decision);
             } else {
-                const toolIdentifier = permission.tool === "Bash" && permission.command
-                    ? `Bash(${permission.command})`
-                    : permission.tool;
-                await sessionAllow(sessionId, permission.id, undefined, [toolIdentifier]);
+                await sessionDeny(sessionId, permission.id, undefined, undefined, decision.decision);
             }
         };
         void run()
-            .catch((error: unknown) => console.error("[ChatPage] permission response failed:", error))
-            .finally(() => setBusyPermissionIds((ids) => ids.filter((busyId) => busyId !== permission.id)));
+            .catch((error: unknown) => {
+                console.error("[ChatPage] permission response failed:", error);
+                setPermissionResponseStates((current) => ({
+                    ...current,
+                    [permission.id]: { action, state: "error" },
+                }));
+            })
+            .finally(() => {
+                permissionDecisionGateRef.current?.release(permission.id);
+                setBusyPermissionIds((ids) => ids.filter((busyId) => busyId !== permission.id));
+            });
     };
 
     const sendDraft = () => {
@@ -2042,21 +2086,26 @@ export function ChatPage() {
                     {feed.map(renderFeedItem)}
 
                     {/* живые permission-запросы из agentState.requests (вход: MOTION.md §6) */}
-                    {pendingPermissions.map((permission) => (
-                        <div key={permission.id} className="animate-in fade-in slide-in-from-bottom-2.5 zoom-in-[.98] duration-[var(--dur-enter)] ease-[var(--ease-out)]">
-                            <PermissionCard
-                                tool={permission.tool}
-                                time={permission.createdAt ? formatTime(permission.createdAt) : undefined}
-                                command={permission.command}
-                                comment={permission.comment}
-                                danger={permission.isDanger}
-                                alwaysLabel={permission.isDanger ? undefined : t("chat.alwaysAllowCommand", { command: permission.command })}
-                                onAllow={() => answerPermission(permission, "allow")}
-                                onDeny={() => answerPermission(permission, "deny")}
-                                onAlways={() => answerPermission(permission, "always")}
-                            />
-                        </div>
-                    ))}
+                    {pendingPermissions.map((permission) => {
+                        const responseState = permissionResponseStates[permission.id];
+                        return (
+                            <div key={permission.id} className="animate-in fade-in slide-in-from-bottom-2.5 zoom-in-[.98] duration-[var(--dur-enter)] ease-[var(--ease-out)]">
+                                <PermissionCard
+                                    tool={permission.tool}
+                                    time={permission.createdAt ? formatTime(permission.createdAt) : undefined}
+                                    command={permission.command}
+                                    comment={permission.comment}
+                                    danger={permission.isDanger}
+                                    alwaysLabel={permission.isDanger ? undefined : t("chat.alwaysAllowCommand", { command: permission.command })}
+                                    responseState={responseState?.state}
+                                    onAllow={() => answerPermission(permission, "allow")}
+                                    onDeny={() => answerPermission(permission, "deny")}
+                                    onAlways={() => answerPermission(permission, "always")}
+                                    onRetry={responseState?.state === "error" ? () => answerPermission(permission, responseState.action) : undefined}
+                                />
+                            </div>
+                        );
+                    })}
 
                     {/* индикатор «думает» — ephemeral activity (session.thinking) */}
                     {session.thinking && <ThinkingRow agent={agent} />}

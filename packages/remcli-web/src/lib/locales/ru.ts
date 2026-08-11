@@ -26,6 +26,9 @@ export const ru = {
     "permission.allow": "Разрешить",
     "permission.deny": "Запретить",
     "permission.alwaysHint": "A — всегда",
+    "permission.sending": "отправляем ответ…",
+    "permission.responseFailed": "не удалось отправить ответ",
+    "permission.retry": "Повторить",
 
     "chat.thinking": "думает",
     "chat.copy": "копировать",

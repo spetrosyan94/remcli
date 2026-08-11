@@ -25,6 +25,9 @@ export const ja: Dictionary = {
     "permission.allow": "許可",
     "permission.deny": "拒否",
     "permission.alwaysHint": "A — 常に許可",
+    "permission.sending": "応答を送信中…",
+    "permission.responseFailed": "応答を送信できませんでした",
+    "permission.retry": "再試行",
 
     "chat.thinking": "思考中",
     "chat.copy": "コピー",

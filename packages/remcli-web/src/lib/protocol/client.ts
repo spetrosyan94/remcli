@@ -935,7 +935,7 @@ export async function sessionAllow(
     decision?: 'approved' | 'approved_for_session'
 ): Promise<void> {
     if (isFixturesActive) {
-        fixtureAnswerPermission(sessionId, id, 'approved');
+        await fixtureAnswerPermission(sessionId, id, 'approved');
         return;
     }
     await socketSessionAllow(sessionId, id, mode, allowedTools, decision);
@@ -950,7 +950,7 @@ export async function sessionDeny(
     decision?: 'denied' | 'abort'
 ): Promise<void> {
     if (isFixturesActive) {
-        fixtureAnswerPermission(sessionId, id, 'denied');
+        await fixtureAnswerPermission(sessionId, id, 'denied');
         return;
     }
     await socketSessionDeny(sessionId, id, mode, allowedTools, decision);

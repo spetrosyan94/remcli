@@ -25,6 +25,9 @@ export const pt: Dictionary = {
     "permission.allow": "Permitir",
     "permission.deny": "Negar",
     "permission.alwaysHint": "A — sempre",
+    "permission.sending": "enviando resposta…",
+    "permission.responseFailed": "não foi possível enviar a resposta",
+    "permission.retry": "Tentar novamente",
 
     "chat.thinking": "pensando",
     "chat.copy": "copiar",

@@ -25,6 +25,9 @@ export const ca: Dictionary = {
     "permission.allow": "Permet",
     "permission.deny": "Denega",
     "permission.alwaysHint": "A — sempre",
+    "permission.sending": "enviant la resposta…",
+    "permission.responseFailed": "no s'ha pogut enviar la resposta",
+    "permission.retry": "Torna-ho a provar",
 
     "chat.thinking": "pensant",
     "chat.copy": "copia",
