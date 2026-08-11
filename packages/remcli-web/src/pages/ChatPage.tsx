@@ -5,8 +5,8 @@
 // resume завершённой сессии — provider-specific: Cursor через New Session,
 // доступный provider через machineSpawnNewSession({resumeSessionId}), deferred provider блокируется до RPC.
 import * as React from "react";
-import { ArrowLeft, Check, ChevronDown, Loader2, Mic, MoreHorizontal, RefreshCw, Send, Square, Terminal } from "lucide-react";
-import { Link, useLocation, useNavigate, useParams } from "react-router";
+import { ArrowLeft, Check, ChevronDown, Loader2, Mic, MonitorSmartphone, MoreHorizontal, RefreshCw, Send, Square } from "lucide-react";
+import { useLocation, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import {
     AgentMeta, Caret, ConnectionBanner, DiffView, ListenButton, PermissionCard,
@@ -31,6 +31,7 @@ import {
 import { resolveOnlineMachineForResume } from "@/lib/homeSessionTriage";
 import { t } from "@/lib/i18n";
 import { createPermissionDecision, createPermissionDecisionGate, type PermissionDecisionAction } from "@/lib/permissionDecision";
+import { terminalMachineForSession, terminalPlatform, TERMINAL_PLATFORM_LABEL_KEYS } from "@/lib/terminalHandoff";
 import {
     fetchWhisperStatus, getRestConfig, isClientStarted, loadSessionMessages,
     machineGetCodexCapabilities, machineGetCursorCapabilities, machineGetSessionExecution,
@@ -1020,6 +1021,7 @@ export function ChatPage() {
     const lineageParentMessagesLoaded = useSessionMessagesLoaded(lineageParentId);
     const connectionStatus = useConnectionStatus();
     const machines = useMachines();
+    const sessionMachine = terminalMachineForSession(session, machines);
     const agent = agentOf(session);
 
     const [isBooting, setIsBooting] = React.useState(true);
@@ -1894,6 +1896,9 @@ export function ChatPage() {
     };
 
     const host = session.metadata?.host;
+    const sessionPlatformLabel = t(TERMINAL_PLATFORM_LABEL_KEYS[
+        terminalPlatform(session.metadata?.os ?? sessionMachine?.metadata?.platform)
+    ]);
     // локальный const — TS сужает union состояния рекордера в JSX-ветках
     const recorderState = recorder.recorderState;
     const isRecorderError = recorderState === "error";
@@ -1944,7 +1949,7 @@ export function ChatPage() {
                         </span>
                     )}
                 </div>
-                {/* Терминал доступен на desktop; сегменты — только когда для них достаточно места. */}
+                {/* Данные о host показывают место работы сессии, но не заявляют состояние native terminal. */}
                 <div className="hidden items-center gap-2 lg:flex">
                     {!isCursorSession && (
                         <div className="hidden xl:block">
@@ -1957,10 +1962,13 @@ export function ChatPage() {
                             />
                         </div>
                     )}
-                    <Link to={`/session/${session.id}/terminal`}
-                        className="flex h-10 items-center rounded-lg border border-border px-3 font-mono text-[11px] text-muted-foreground">
-                        {t("chat.terminal")}
-                    </Link>
+                    <span
+                        title={host ? `${sessionPlatformLabel} · ${host}` : sessionPlatformLabel}
+                        className="hidden min-h-10 max-w-[210px] min-w-0 items-center gap-1.5 rounded-lg px-2 font-mono text-[10px] text-muted-foreground xl:flex"
+                    >
+                        <MonitorSmartphone className="size-3 shrink-0" aria-hidden="true" />
+                        <span className="truncate">{sessionPlatformLabel}{host ? ` · ${host}` : ""}</span>
+                    </span>
                 </div>
                 {/* Компактный picker нужен на mobile и узком desktop; полные labels — в Drawer. */}
                 {!isCursorSession && (
@@ -1982,10 +1990,6 @@ export function ChatPage() {
                         </button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="min-w-44">
-                        <DropdownMenuItem className="min-h-11 font-mono text-xs" onSelect={() => navigate(`/session/${session.id}/terminal`)}>
-                            <Terminal className="size-4" />
-                            {t("chat.terminal")}
-                        </DropdownMenuItem>
                         {canStop && (
                             <DropdownMenuItem
                                 variant="destructive"

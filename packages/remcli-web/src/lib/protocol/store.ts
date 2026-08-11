@@ -58,6 +58,8 @@ interface ProtocolState {
     latencyMs: number | null;
     machines: Record<string, Machine>;
     sessions: Record<string, Session>;
+    /** True only after an authoritative session-list snapshot has replaced the store. */
+    hasLoadedSessions: boolean;
     sessionMessages: Record<string, SessionMessagesState>;
 }
 
@@ -83,6 +85,7 @@ const initialState: ProtocolState = {
     latencyMs: null,
     machines: {},
     sessions: {},
+    hasLoadedSessions: false,
     sessionMessages: {}
 };
 
@@ -113,7 +116,11 @@ export const useProtocolStore = create<ProtocolState & ProtocolActions>()((set) 
                 nextSessionMessages[session.id] = messages;
             }
         }
-        return { sessions: nextSessions, sessionMessages: nextSessionMessages };
+        return {
+            sessions: nextSessions,
+            hasLoadedSessions: true,
+            sessionMessages: nextSessionMessages
+        };
     }),
 
     removeSession: (sessionId) => set((state) => {
@@ -232,6 +239,11 @@ export function useSessions(): Session[] {
 
 export function useSession(sessionId: string | null | undefined): Session | null {
     return useProtocolStore((state) => (sessionId ? state.sessions[sessionId] ?? null : null));
+}
+
+/** True once an authoritative session-list snapshot has been received. */
+export function useSessionsLoaded(): boolean {
+    return useProtocolStore((state) => state.hasLoadedSessions);
 }
 
 /** Normalized messages of a session in display order (oldest first). */

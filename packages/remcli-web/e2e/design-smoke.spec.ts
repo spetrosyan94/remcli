@@ -580,7 +580,7 @@ test("Codex 1024 keeps metadata readable with a compact permission picker", asyn
     for (const label of CODEX_PERMISSION_LABELS.slice(1)) {
         await expect(header.getByRole("button", { name: label, exact: true })).toHaveCount(0);
     }
-    await expect(header.getByRole("link", { name: /terminal/i })).toBeVisible();
+    await expect(header.getByRole("link", { name: /terminal/i })).toHaveCount(0);
     await assertChatHeaderHasSpace(page);
 
     await picker.click();
@@ -599,7 +599,9 @@ test("Codex 1280 keeps every desktop permission segment fully visible", async ({
     await page.setViewportSize({ width: 1280, height: 800 });
     await openFixtureRoute(page, "/session/fx-running?fixtures=1");
 
-    await assertPermissionLabelsAreFullyVisible(page.locator("header"), CODEX_PERMISSION_LABELS);
+    const header = page.locator("header");
+    await assertPermissionLabelsAreFullyVisible(header, CODEX_PERMISSION_LABELS);
+    await expect(header.getByTitle(/^Session on Mac/)).toBeVisible();
     await assertNoHorizontalOverflow(page);
     expect(pageIssues).toEqual([]);
 });
@@ -702,7 +704,7 @@ test("daemon fixture Codex chat stop and resume keeps seeded history visible", a
     await openFixtureRoute(page, "/session/fixture-codex-lifecycle-chat?fixtures=1&chatLifecycle=codex");
     await page.getByRole("button", { name: "Menu" }).click();
 
-    await expect(page.getByRole("menuitem", { name: /terminal/i })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: /terminal/i })).toHaveCount(0);
     const stopMenuItem = page.getByRole("menuitem", { name: /^stop$/i });
     await expect(stopMenuItem).toBeVisible();
     await stopMenuItem.click();
@@ -781,13 +783,13 @@ test("Codex lifecycle fixture rejects incomplete or stale capability selections"
     expect(pageIssues).toEqual([]);
 });
 
-test("terminal fixture hides Stop across chat, Home, and sidebar", async ({ page }, testInfo) => {
+test("terminal-origin fixture hides Stop across chat, Home, and sidebar", async ({ page }, testInfo) => {
     const pageIssues = collectPageIssues(page);
 
     await openFixtureRoute(page, "/session/fx-running?fixtures=1");
     await page.getByRole("button", { name: "Menu" }).click();
 
-    await expect(page.getByRole("menuitem", { name: /terminal/i })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: /terminal/i })).toHaveCount(0);
     await expect(page.getByRole("menuitem", { name: /^stop$/i })).toHaveCount(0);
     await page.keyboard.press("Escape");
 
@@ -802,6 +804,54 @@ test("terminal fixture hides Stop across chat, Home, and sidebar", async ({ page
         await assertMobileTouchTargets(page);
     }
 
+    expect(pageIssues).toEqual([]);
+});
+
+test("terminal handoff reports the session platform and returns to chat", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/session/fx-running/terminal?fixtures=1");
+
+    await expect(page.getByText("Session on Mac", { exact: true })).toBeVisible();
+    await expect(page.getByText("Continue in chat", { exact: true })).toBeVisible();
+    await expect(page.getByText("Terminal is only available on the host", { exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "To chat", exact: true }).click();
+    await expect(page).toHaveURL(/\/session\/fx-running(?:\?|$)/);
+
+    await assertNoHorizontalOverflow(page);
+    if (isMobileProject(testInfo)) {
+        await assertMobileTouchTargets(page);
+    }
+    expect(pageIssues).toEqual([]);
+});
+
+test("terminal handoff never claims a terminal for unavailable or missing sessions", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/session/fx-host-unavailable/terminal?fixtures=1");
+    await expect(page.getByText("Computer is unavailable", { exact: true })).toBeVisible();
+    await expect(page.getByText("Session on Linux", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "To chat", exact: true })).toBeVisible();
+    await assertNoHorizontalOverflow(page);
+
+    await page.getByRole("button", { name: "To chat", exact: true }).click();
+    await expect(page).toHaveURL(/\/session\/fx-host-unavailable(?:\?|$)/);
+
+    await openFixtureRoute(page, "/session/fx-offline/terminal?fixtures=1");
+    await expect(page.getByText("Session is not active", { exact: true })).toBeVisible();
+    await expect(page.getByText(/Session on /)).toHaveCount(0);
+
+    await openFixtureRoute(page, "/session/does-not-exist/terminal?fixtures=1");
+    await expect(page.locator("main").getByText("session not found", { exact: true })).toBeVisible();
+    await expect(page.getByText(/Session on /)).toHaveCount(0);
+    await page.getByRole("button", { name: "Back to list", exact: true }).click();
+    await expect(page).toHaveURL(/\/$/);
+
+    if (isMobileProject(testInfo)) {
+        await assertMobileTouchTargets(page);
+    }
     expect(pageIssues).toEqual([]);
 });
 

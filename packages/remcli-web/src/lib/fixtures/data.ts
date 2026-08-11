@@ -133,6 +133,7 @@ interface SessionSeed {
     machineId: string;
     host: string;
     homeDir: string;
+    os?: string;
     active: boolean;
     activeAt: number;
     thinking?: boolean;
@@ -172,6 +173,7 @@ function makeSession(seed: SessionSeed): Session {
             path: seed.path,
             host: seed.host,
             homeDir: seed.homeDir,
+            os: seed.os,
             machineId: seed.machineId,
             startedBy: seed.startedBy,
             flavor: seed.flavor ?? null,
@@ -287,8 +289,23 @@ export const FIXTURE_SESSIONS: Session[] = [
         machineId: 'fx-machine-offline',
         host: 'build-server',
         homeDir: '/home/ci',
+        os: 'linux',
         active: false,
         activeAt: T - 3 * HOUR
+    }),
+    // host unavailable: session snapshot is still active, but its known machine is offline.
+    makeSession({
+        id: 'fx-host-unavailable',
+        seq: 16,
+        path: '/home/ci/projects/release',
+        flavor: 'cursor',
+        startedBy: 'daemon',
+        machineId: 'fx-machine-offline',
+        host: 'build-server',
+        homeDir: '/home/ci',
+        os: 'linux',
+        active: true,
+        activeAt: T - 2 * HOUR
     })
 ];
 
@@ -296,7 +313,7 @@ export const FIXTURE_SESSIONS: Session[] = [
 export const FIXTURE_HOME_TRIAGE_SESSIONS: Session[] = [
     makeSession({
         id: "fx-ended-codex",
-        seq: 16,
+        seq: 17,
         path: "/Users/dev/projects/release-notes",
         flavor: "codex",
         startedBy: "daemon",

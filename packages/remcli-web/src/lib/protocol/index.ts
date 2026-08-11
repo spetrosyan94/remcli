@@ -75,6 +75,7 @@ export {
     useMachines,
     useMachine,
     useSessions,
+    useSessionsLoaded,
     useSession,
     useSessionMessages,
     useSessionMessagesLoaded

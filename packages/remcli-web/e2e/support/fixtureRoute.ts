@@ -71,7 +71,7 @@ async function expectFixtureRouteReady(page: Page, route: FixtureRoute): Promise
 
     if (route.name === "terminal") {
         await expect(page.locator("main")).toBeVisible();
-        await expect(page.getByText("Terminal is only available on the host", { exact: true })).toBeVisible();
+        await expect(page.getByText("Session on Mac", { exact: true })).toBeVisible();
         return;
     }
 

@@ -709,7 +709,7 @@ export function initFixturesIfEnabled(): boolean {
     getFixtureLineageMetricsState();
     const store = useProtocolStore.getState();
     store.applyMachines(fixtureMachines());
-    store.applySessions(fixtureSessions());
+    store.replaceSessions(fixtureSessions());
     store.applyMessages(FIXTURE_CHAT_SESSION_ID, fixtureChatMessages(), { markLoaded: true });
     if (fixtureQueryParameter('chatResume') === 'cursor') {
         store.applyMessages(FIXTURE_ENDED_CURSOR_CHAT_SESSION_ID, [], { markLoaded: true });
