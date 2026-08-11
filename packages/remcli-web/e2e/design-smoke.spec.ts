@@ -625,6 +625,7 @@ test("typed execution outcome renders a visible error session card", async ({ pa
     const pageIssues = collectPageIssues(page);
 
     await openFixtureRoute(page, "/?fixtures=1");
+    await page.getByRole("button", { name: "Attention", exact: true }).first().click();
     const errorCard = page.getByRole("button", { name: /mobile error/i });
 
     await expect(errorCard).toBeVisible();
@@ -632,7 +633,7 @@ test("typed execution outcome renders a visible error session card", async ({ pa
     await expect(errorCard).toContainText("error");
     await errorCard.click();
     await expect(page).toHaveURL(/\/session\/fx-error$/);
-    await expect(page.locator("header")).toContainText("error");
+    await expect(page.locator("header")).toContainText("cursor");
     await expect(page.getByText("the last operation ended with an error", { exact: true })).toBeVisible();
     await assertChatHeaderHasSpace(page, isMobileProject(testInfo) ? 160 : CHAT_HEADER_METADATA_MIN_WIDTH_PX);
 

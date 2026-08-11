@@ -29,6 +29,7 @@ import {
     FIXTURE_LINEAGE_PARENT_MESSAGES,
     FIXTURE_LINEAGE_PARENT_SESSION_ID,
     FIXTURE_LINEAGE_SESSIONS,
+    FIXTURE_HOME_TRIAGE_SESSIONS,
     FIXTURE_MACHINES,
     FIXTURE_SESSIONS,
     FIXTURE_ZEN_TASKS,
@@ -206,6 +207,7 @@ const FIXTURE_ENDED_CURSOR_CHAT_SESSION: Session = {
         name: 'Cursor chat resume',
         agentSessionId: 'fixture-cursor-chat-native',
         cursorSessionId: 'fixture-cursor-chat-native',
+        cursorExecution: { model: 'auto' },
         summary: {
             text: 'Остановленная Cursor-сессия для Chat Resume',
             updatedAt: FIXTURE_BASE_TIME - 60_000,
@@ -304,6 +306,11 @@ const FIXTURE_CODEX_LIFECYCLE_CHAT_SESSION: Session = {
         name: 'Codex lifecycle chat resume',
         agentSessionId: 'fixture-codex-lifecycle-chat-native',
         codexSessionId: 'fixture-codex-lifecycle-chat-native',
+        codexExecution: {
+            model: 'gpt-5.6-luna',
+            reasoningEffort: 'xhigh',
+            permissionMode: 'workspace-write',
+        },
         summary: {
             text: 'Остановленная Codex-сессия для lifecycle resume',
             updatedAt: FIXTURE_BASE_TIME,
@@ -346,6 +353,7 @@ function fixtureSessions(): Session[] {
     const chatResume = fixtureQueryParameter('chatResume');
     const sessions = [...FIXTURE_SESSIONS];
 
+    if (fixtureQueryParameter('homeTriage') === 'full') sessions.push(...FIXTURE_HOME_TRIAGE_SESSIONS);
     if (chatResume === 'cursor') sessions.push(FIXTURE_ENDED_CURSOR_CHAT_SESSION);
     if (chatResume === 'deferred') sessions.push(FIXTURE_ENDED_DEFERRED_CHAT_SESSION);
     if (fixtureQueryParameter('chatLifecycle') === 'codex') sessions.push(FIXTURE_CODEX_LIFECYCLE_CHAT_SESSION);
@@ -418,7 +426,7 @@ const FIXTURE_UNKNOWN_RESUME_HISTORY: readonly NormalizedMessage[] = [{
 
 const FIXTURE_DIRECTORY_CHILDREN: Record<string, string[]> = {
     '/Users/dev': ['projects', 'Downloads', '.config'],
-    '/Users/dev/projects': ['remcli', 'webapp', 'api-server', 'docs', 'mobile'],
+    '/Users/dev/projects': ['remcli', 'webapp', 'api-server', 'docs', 'mobile', 'release-notes'],
     '/Users/dev/projects/remcli': ['packages', 'src', 'design', 'restricted', '.claude'],
     '/Users/dev/projects/remcli/packages': ['remcli-web', 'remcli-cli'],
     '/Users/dev/projects/remcli/packages/remcli-web': ['src', 'public'],
@@ -429,6 +437,7 @@ const FIXTURE_DIRECTORY_CHILDREN: Record<string, string[]> = {
     '/Users/dev/projects/api-server': ['src', 'migrations'],
     '/Users/dev/projects/docs': ['guides', 'api'],
     '/Users/dev/projects/mobile': ['app', 'assets'],
+    '/Users/dev/projects/release-notes': ['drafts', 'published'],
     '/home/ci': ['releases', 'workspaces'],
     '/home/ci/releases': ['pipeline'],
     '/home/ci/releases/pipeline': ['jobs', 'logs']

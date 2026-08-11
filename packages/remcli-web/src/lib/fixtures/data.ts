@@ -292,6 +292,23 @@ export const FIXTURE_SESSIONS: Session[] = [
     })
 ];
 
+/** Extra lifecycle matrix used only by Home triage Browser and Playwright coverage. */
+export const FIXTURE_HOME_TRIAGE_SESSIONS: Session[] = [
+    makeSession({
+        id: "fx-ended-codex",
+        seq: 16,
+        path: "/Users/dev/projects/release-notes",
+        flavor: "codex",
+        startedBy: "daemon",
+        machineId: "fx-machine-online",
+        host: "macbook-pro.local",
+        homeDir: "/Users/dev",
+        active: false,
+        activeAt: T - 5 * MINUTE,
+        summary: "Release notes completed",
+    }),
+];
+
 export const FIXTURE_LINEAGE_SESSIONS: Session[] = [
     makeSession({
         id: FIXTURE_LINEAGE_PARENT_SESSION_ID,

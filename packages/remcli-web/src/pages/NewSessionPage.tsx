@@ -114,6 +114,7 @@ export interface CursorResumeNavigationPreset {
     directory: string;
     resumeSessionId: string;
     resumeSessionName: string | null;
+    cursorModel: string;
 }
 
 interface NewSessionNavigationState {
@@ -193,6 +194,7 @@ export function parseNewSessionNavigationState(state: unknown): NewSessionNaviga
         && nonEmptyString(cursorResumeValue.machineId)
         && nonEmptyString(cursorResumeValue.directory)
         && nonEmptyString(cursorResumeValue.resumeSessionId)
+        && nonEmptyString(cursorResumeValue.cursorModel)
         && (cursorResumeValue.resumeSessionName === undefined
             || cursorResumeValue.resumeSessionName === null
             || nonEmptyString(cursorResumeValue.resumeSessionName))) {
@@ -203,6 +205,7 @@ export function parseNewSessionNavigationState(state: unknown): NewSessionNaviga
             resumeSessionName: typeof cursorResumeValue.resumeSessionName === "string"
                 ? cursorResumeValue.resumeSessionName
                 : null,
+            cursorModel: cursorResumeValue.cursorModel,
         };
     }
 
@@ -799,7 +802,8 @@ export function NewSessionPage() {
     const isCursorCapabilityReady = isCursorCatalogReady
         && cursorExecution !== null
         && cursorExecution.catalogVersion === cursorCapabilities.catalogVersion
-        && cursorExecution.model === selectedCursorModel?.id;
+        && cursorExecution.model === selectedCursorModel?.id
+        && (!cursorResumePreset || cursorExecution.model === cursorResumePreset.cursorModel);
     const isCursorCapabilityUnavailable = agent === "cursor"
         && !isCursorCapabilitiesLoading
         && (!cursorCapabilities || cursorCapabilities.status === "unavailable" || selectedCursorModel === null);
@@ -931,9 +935,11 @@ export function NewSessionPage() {
                 if (isStale) return;
                 setCursorCapabilities(capabilities);
                 if (capabilities.status !== "ready") return;
-                const defaultModel = capabilities.models.find((item) => item.isDefault) ?? null;
-                setCursorModelId(defaultModel?.id ?? null);
-                setCursorExecution(defaultModel ? createCursorExecutionForModel(capabilities, defaultModel.id) : null);
+                const selectedModel = cursorResumePreset
+                    ? capabilities.models.find((item) => item.id === cursorResumePreset.cursorModel) ?? null
+                    : capabilities.models.find((item) => item.isDefault) ?? null;
+                setCursorModelId(selectedModel?.id ?? null);
+                setCursorExecution(selectedModel ? createCursorExecutionForModel(capabilities, selectedModel.id) : null);
             })
             .catch(() => {
                 if (!isStale) setCursorCapabilities(null);
@@ -1292,7 +1298,7 @@ export function NewSessionPage() {
                                 <button
                                     type="button"
                                     onClick={(event) => openSheet("model", event?.currentTarget ?? null)}
-                                    disabled={isCapabilityDrivenAgent && !isActiveCapabilityCatalogReady}
+                                    disabled={(isCapabilityDrivenAgent && !isActiveCapabilityCatalogReady) || cursorResumePreset !== null}
                                     aria-label={`${t("new.model")}: ${activeModelLabel}`}
                                     aria-haspopup="dialog"
                                     aria-expanded={sheetKind === "model"}
@@ -1411,6 +1417,9 @@ export function NewSessionPage() {
                             {cursorResumePrimaryLabel}
                         </span>
                         <code className="break-all text-[10px] text-muted-foreground">{getShortResumeId(cursorResumePreset.resumeSessionId)}</code>
+                        {cursorCapabilities?.status === "ready" && selectedCursorModel === null && !isCursorCapabilitiesLoading && (
+                            <span role="alert" className="mt-1 text-destructive">{t("chat.resumeConfigurationUnavailable")}</span>
+                        )}
                         {!isResumePresetCompatible && (
                             <span role="alert" className="mt-1 text-destructive">{t("new.resumePresetMismatch")}</span>
                         )}

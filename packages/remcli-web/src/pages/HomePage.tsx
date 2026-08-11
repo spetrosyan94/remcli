@@ -6,7 +6,9 @@
 import * as React from "react";
 import { ChevronRight, Monitor, Plus, Search, Sparkles } from "lucide-react";
 import { useNavigate } from "react-router";
+import { toast } from "sonner";
 import { ConnectionBanner, EmptyState, Logo, SessionCard, StatusDot } from "@/components/kit";
+import { HomeSessionTriageControls } from "@/components/app/HomeSessionTriage";
 import {
     connectionPillLabel,
     openCommandPalette,
@@ -16,6 +18,7 @@ import {
     useConnectionBanner,
     useMachineGroups,
     type MachineGroup,
+    type HomeTriageState,
     type StopControls,
     type StopTarget,
 } from "@/components/app/SessionsSidebar";
@@ -26,14 +29,22 @@ import {
     sessionPath,
     sessionStatus,
 } from "@/components/app/sessionDisplay";
+import { filterMachineGroups, getHomeQuickResumeCandidate, type HomeSessionFilter } from "@/lib/homeSessionTriage";
+import { buildCursorResumeNavigationState, resumeCodexSession } from "@/lib/sessionResume";
 import { Skeleton } from "@/components/ui/skeleton";
 import { t, tPlural } from "@/lib/i18n";
 import { canStopSession, type IStopMachineTarget } from "@/lib/sessionCapabilities";
 import {
     fetchConciergeStatus,
     getRestConfig,
+    machineGetCodexCapabilities,
+    machineSpawnNewSession,
+    refreshSessions,
     useConnectionStatus,
     useLatencyMs,
+    useMachines,
+    useProtocolStore,
+    useSessions,
 } from "@/lib/protocol";
 
 function sessionsCountLabel(count: number): string {
@@ -90,9 +101,76 @@ function useInitialGraceOver(): boolean {
 }
 
 export function HomePage() {
-    const groups = useMachineGroups();
+    const allGroups = useMachineGroups();
+    const sessions = useSessions();
+    const machines = useMachines();
+    const connectionStatus = useConnectionStatus();
+    const navigate = useNavigate();
     const isConciergeAvailable = useConciergeAvailable();
+    const [filter, setFilter] = React.useState<HomeSessionFilter>("active");
+    const [isResuming, setIsResuming] = React.useState(false);
+    const resumeGateRef = React.useRef(false);
     const [stopTarget, setStopTarget] = React.useState<StopTarget | null>(null);
+    const groups = React.useMemo(() => filterMachineGroups(allGroups, filter), [allGroups, filter]);
+    const quickResumeCandidate = React.useMemo(() => getHomeQuickResumeCandidate({
+        sessions,
+        machines,
+        isConnected: connectionStatus === "connected",
+    }), [connectionStatus, machines, sessions]);
+    const resumeLatest = React.useCallback(async () => {
+        if (!quickResumeCandidate || resumeGateRef.current) return;
+
+        resumeGateRef.current = true;
+        setIsResuming(true);
+        try {
+            if (quickResumeCandidate.agent === "cursor") {
+                if (!quickResumeCandidate.cursorModel) {
+                    toast.error(t("chat.resumeConfigurationUnavailable"));
+                    return;
+                }
+                navigate("/new", {
+                    state: buildCursorResumeNavigationState({
+                        machineId: quickResumeCandidate.machine.id,
+                        directory: quickResumeCandidate.directory,
+                        resumeSessionId: quickResumeCandidate.nativeSessionId,
+                        resumeSessionName: quickResumeCandidate.sessionName ?? undefined,
+                        cursorModel: quickResumeCandidate.cursorModel,
+                    }),
+                });
+                return;
+            }
+
+            const result = await resumeCodexSession(quickResumeCandidate.session, quickResumeCandidate.machine.id, {
+                getCapabilities: machineGetCodexCapabilities,
+                spawn: (options) => machineSpawnNewSession(options),
+                refreshSessions,
+                hasSession: (sessionId) => Boolean(useProtocolStore.getState().sessions[sessionId]),
+            });
+            if (result.type === "capabilities-unavailable") {
+                toast.error(t("new.capabilitiesUnavailable"));
+                return;
+            }
+            if (result.type === "configuration-unavailable") {
+                toast.error(t("chat.resumeConfigurationUnavailable"));
+                return;
+            }
+            if (result.type === "spawn-error") {
+                toast.error(result.errorMessage || t("chat.resumeFailed"));
+                return;
+            }
+            navigate(`/session/${result.sessionId}`);
+        } finally {
+            resumeGateRef.current = false;
+            setIsResuming(false);
+        }
+    }, [navigate, quickResumeCandidate]);
+    const triage: HomeTriageState = {
+        filter,
+        onFilterChange: setFilter,
+        quickResumeCandidate,
+        isResuming,
+        onQuickResume: () => { void resumeLatest(); },
+    };
     const controls: StopControls = {
         requestStop: (session, machine) => {
             if (!canStopSession(session, machine)) return;
@@ -101,8 +179,14 @@ export function HomePage() {
     };
     return (
         <>
-            <MobileHome groups={groups} controls={controls} isConciergeAvailable={isConciergeAvailable} />
-            <DesktopHome />
+            <MobileHome
+                groups={groups}
+                allSessionCount={sessions.length}
+                controls={controls}
+                triage={triage}
+                isConciergeAvailable={isConciergeAvailable}
+            />
+            <DesktopHome groups={groups} triage={triage} />
             <StopSessionDialog target={stopTarget} onClose={() => setStopTarget(null)} />
         </>
     );
@@ -110,9 +194,11 @@ export function HomePage() {
 
 /* ---------- Мобайл <1024 (design/screens/home.tsx) ---------- */
 
-function MobileHome({ groups, controls, isConciergeAvailable }: {
+function MobileHome({ groups, allSessionCount, controls, triage, isConciergeAvailable }: {
     groups: MachineGroup[];
+    allSessionCount: number;
     controls: StopControls;
+    triage: HomeTriageState;
     isConciergeAvailable: boolean;
 }) {
     const navigate = useNavigate();
@@ -122,7 +208,8 @@ function MobileHome({ groups, controls, isConciergeAvailable }: {
     const isGraceOver = useInitialGraceOver();
     const isConnected = connectionStatus === "connected";
     const sessionCount = groups.reduce((sum, group) => sum + group.sessions.length, 0);
-    const isEmpty = sessionCount === 0;
+    const isEmpty = allSessionCount === 0;
+    const isFilterEmpty = !isEmpty && sessionCount === 0;
     const showSkeleton = isEmpty && groups.length === 0 && (connectionStatus === "connecting" || (isConnected && !isGraceOver));
     return (
         <div className="flex min-h-0 flex-1 flex-col lg:hidden">
@@ -176,9 +263,22 @@ function MobileHome({ groups, controls, isConciergeAvailable }: {
                         )}
                     </div>
                 ) : (
-                    groups.map((group, index) => (
-                        <MachineSection key={group.key} group={group} controls={controls} isFirst={index === 0} />
-                    ))
+                    <>
+                        <HomeSessionTriageControls
+                            filter={triage.filter}
+                            onFilterChange={triage.onFilterChange}
+                            quickResumeCandidate={triage.quickResumeCandidate}
+                            isResuming={triage.isResuming}
+                            onQuickResume={triage.onQuickResume}
+                        />
+                        {isFilterEmpty ? (
+                            <div className="py-10 text-center" role="status">
+                                <p className="font-mono text-[11px] text-muted-foreground">{t("home.filter.empty")}</p>
+                            </div>
+                        ) : groups.map((group, index) => (
+                            <MachineSection key={group.key} group={group} controls={controls} isFirst={index === 0} />
+                        ))}
+                    </>
                 )}
             </main>
 
@@ -238,10 +338,10 @@ function MachineSection({ group, controls, isFirst }: { group: MachineGroup; con
 
 /* ---------- Десктоп ≥1024 (design/pages/desktop.html, 3a): сайдбар 288px + правая зона ---------- */
 
-function DesktopHome() {
+function DesktopHome({ groups, triage }: { groups: MachineGroup[]; triage: HomeTriageState }) {
     return (
         <div className="hidden min-h-0 flex-1 lg:grid lg:grid-cols-[288px_1fr]">
-            <SessionsSidebar />
+            <SessionsSidebar groups={groups} homeTriage={triage} />
             <section className="flex min-h-0 flex-col items-center justify-center px-6">
                 <div className="w-full max-w-sm">
                     <EmptyState title={t("home.desktop.pick.title")} hint={t("home.desktop.pick.hint")} />

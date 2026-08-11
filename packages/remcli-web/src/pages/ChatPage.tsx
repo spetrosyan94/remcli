@@ -19,9 +19,16 @@ import { Drawer, DrawerContent, DrawerDescription, DrawerTitle } from "@/compone
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { getAgentPermissionLabel, getAgentPermissionModes, normalizeAgentPermissionMode } from "@/lib/agentPermissions";
 import { copyText } from "@/lib/clipboard";
-import { createCodexExecutionForModel, getCodexResumeSelection } from "@/lib/codexCapabilities";
-import { isProviderAvailable } from "@/lib/providerAvailability";
+import { createCodexExecutionForModel } from "@/lib/codexCapabilities";
 import { canStopSession, type IStopMachineTarget } from "@/lib/sessionCapabilities";
+import {
+    agentSessionIdOf,
+    buildCursorResumeNavigationState,
+    getProviderResumeAction,
+    resumeCodexSession,
+    type ResumeAction,
+} from "@/lib/sessionResume";
+import { resolveOnlineMachineForResume } from "@/lib/homeSessionTriage";
 import { t } from "@/lib/i18n";
 import { createPermissionDecision, createPermissionDecisionGate, type PermissionDecisionAction } from "@/lib/permissionDecision";
 import {
@@ -422,30 +429,7 @@ interface ChatNavState {
     hasModelOverride: boolean;
 }
 
-export interface CursorResumeNavigationState {
-    cursorResume: {
-        machineId: string;
-        directory: string;
-        resumeSessionId: string;
-        resumeSessionName: string | null;
-    };
-}
-
-export function buildCursorResumeNavigationState(input: {
-    machineId: string;
-    directory: string;
-    resumeSessionId: string;
-    resumeSessionName?: string;
-}): CursorResumeNavigationState {
-    return {
-        cursorResume: {
-            machineId: input.machineId,
-            directory: input.directory,
-            resumeSessionId: input.resumeSessionId,
-            resumeSessionName: input.resumeSessionName?.trim() || null,
-        },
-    };
-}
+export type { CursorResumeNavigationState } from "@/lib/sessionResume";
 
 /** Начальные model/permissionMode из navigate state (контракт NewSessionPage → /session/:id). */
 export function parseNavState(state: unknown): ChatNavState {
@@ -462,20 +446,12 @@ export function parseNavState(state: unknown): ChatNavState {
     };
 }
 
-export function agentSessionIdOf(session: Session | null, agent: AgentId): string | undefined {
-    const meta = session?.metadata;
-    if (!meta) return undefined;
-    if (agent === "codex") return meta.codexSessionId ?? meta.agentSessionId;
-    if (agent === "gemini") return meta.geminiSessionId ?? meta.agentSessionId;
-    if (agent === "cursor") return meta.cursorSessionId ?? meta.agentSessionId;
-    return meta.claudeSessionId ?? meta.agentSessionId;
-}
+export { agentSessionIdOf, buildCursorResumeNavigationState } from "@/lib/sessionResume";
 
-export type ChatResumeAction = "deferred" | "cursor-navigation" | "machine-spawn";
+export type ChatResumeAction = ResumeAction;
 
 export function getChatResumeAction(agent: AgentId): ChatResumeAction {
-    if (!isProviderAvailable(agent)) return "deferred";
-    return agent === "cursor" ? "cursor-navigation" : "machine-spawn";
+    return getProviderResumeAction(agent);
 }
 
 export interface EndedSessionResumeProps {
@@ -491,7 +467,7 @@ export function EndedSessionResume({
     onResume,
     onBackToList,
 }: EndedSessionResumeProps) {
-    const isDeferred = !isProviderAvailable(agent);
+    const isDeferred = getProviderResumeAction(agent) === "deferred";
 
     return (
         <div className="flex flex-col items-center gap-2.5 rounded-xl border border-dashed border-border bg-card/50 px-4 py-4">
@@ -1094,7 +1070,8 @@ export function ChatPage() {
     const pendingPermissions = React.useMemo(() => pendingPermissionsOf(session), [session]);
     const status = session ? sessionStatus(session) : "offline";
     const hasVisibleErrorMessage = feed.some((item) => item.kind === "agent-group" && item.tone === "error");
-    const shouldShowExecutionErrorNotice = status === "error" && !hasVisibleErrorMessage;
+    const shouldShowExecutionErrorNotice = session?.metadata?.executionOutcome?.kind === "error"
+        && !hasVisibleErrorMessage;
     const isCursorSession = agent === "cursor";
     const permissionModes = React.useMemo(() => getAgentPermissionModes(agent), [agent]);
     const activePermissionMode = agent === "cursor"
@@ -1587,17 +1564,9 @@ export function ChatPage() {
     };
 
     // ── Resume завершённой сессии: spawn с resumeSessionId + переход в новую сессию ──
-    // RPC-хендлер живёт под id машины из стора демона (не metadata.machineId) — матчим как HomePage
+    // Resume допускает только проверенную online machine; одиночный fallback может отправить RPC stale daemon.
     const rpcMachineId = React.useMemo(() => {
-        const meta = session?.metadata;
-        if (!meta) return null;
-        if (machines.some((machine) => machine.id === meta.machineId)) return meta.machineId ?? null;
-        const byHost = machines.filter((machine) => machine.metadata?.host === meta.host);
-        const onlineByHost = byHost.find((machine) => machine.active);
-        if (onlineByHost) return onlineByHost.id;
-        if (byHost.length > 0) return byHost[0].id;
-        const active = machines.filter((machine) => machine.active);
-        return active.length === 1 ? active[0].id : null;
+        return session ? resolveOnlineMachineForResume(session, machines)?.id ?? null : null;
     }, [machines, session]);
 
     const stopMachine = React.useMemo<IStopMachineTarget | null>(() => {
@@ -1781,10 +1750,16 @@ export function ChatPage() {
             return;
         }
 
-        const meta = session?.metadata;
-        if (!meta?.path || !resumeAgentSessionId || !rpcMachineId || isResuming) return;
+        const sessionToResume = session;
+        const meta = sessionToResume?.metadata;
+        if (!sessionToResume || !meta?.path || !resumeAgentSessionId || !rpcMachineId || isResuming) return;
 
         if (resumeAction === "cursor-navigation") {
+            const cursorModel = meta.cursorExecution?.model;
+            if (!cursorModel) {
+                toast.error(t("chat.resumeConfigurationUnavailable"));
+                return;
+            }
             setIsResuming(true);
             navigate("/new", {
                 state: buildCursorResumeNavigationState({
@@ -1792,46 +1767,36 @@ export function ChatPage() {
                     directory: meta.path,
                     resumeSessionId: resumeAgentSessionId,
                     resumeSessionName: meta.name,
+                    cursorModel,
                 }),
             });
             return;
         }
 
+        if (agent !== "codex") {
+            toast.error(t("chat.resumeConfigurationUnavailable"));
+            return;
+        }
+
         setIsResuming(true);
         try {
-            let codexResumeSelection = null;
-            if (agent === "codex") {
-                try {
-                    codexResumeSelection = getCodexResumeSelection(
-                        await machineGetCodexCapabilities(rpcMachineId, true),
-                        meta.codexExecution,
-                    );
-                } catch {
-                    toast.error(t("new.capabilitiesUnavailable"));
-                    return;
-                }
+            const result = await resumeCodexSession(sessionToResume, rpcMachineId, {
+                getCapabilities: machineGetCodexCapabilities,
+                spawn: (options) => machineSpawnNewSession(options),
+                refreshSessions,
+                hasSession: (id) => Boolean(useProtocolStore.getState().sessions[id]),
+            });
+            if (result.type === "capabilities-unavailable") {
+                toast.error(t("new.capabilitiesUnavailable"));
+                return;
             }
-            if (agent === "codex" && !codexResumeSelection) {
+            if (result.type === "configuration-unavailable") {
                 toast.error(t("chat.resumeConfigurationUnavailable"));
                 return;
             }
-            const result = await machineSpawnNewSession({
-                machineId: rpcMachineId,
-                directory: meta.path,
-                agent,
-                resumeSessionId: resumeAgentSessionId,
-                resumeSessionName: meta.name,
-                ...(codexResumeSelection ?? {}),
-            });
-            if (result.type !== "success") {
-                toast.error(result.type === "error" ? result.errorMessage : t("chat.resumeFailed"));
+            if (result.type === "spawn-error") {
+                toast.error(result.errorMessage || t("chat.resumeFailed"));
                 return;
-            }
-            // ждём появления сессии в сторе (нужен cipher для сообщений) — как NewSessionPage
-            for (let attempt = 0; attempt < 10 && !useProtocolStore.getState().sessions[result.sessionId]; attempt++) {
-                await refreshSessions().catch(() => undefined);
-                if (useProtocolStore.getState().sessions[result.sessionId]) break;
-                await new Promise((resolve) => setTimeout(resolve, 400));
             }
             navigate(`/session/${result.sessionId}`, { replace: true });
         } finally {

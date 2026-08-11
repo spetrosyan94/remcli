@@ -547,6 +547,7 @@ describe('ChatPage feed mapping', () => {
             directory: '/workspace/remcli',
             resumeSessionId: 'cursor-native-session-id',
             resumeSessionName: 'Cursor lifecycle review',
+            cursorModel: 'gpt-5.6-luna-xhigh',
         });
 
         expect(navigationState).toEqual({
@@ -555,6 +556,7 @@ describe('ChatPage feed mapping', () => {
                 directory: '/workspace/remcli',
                 resumeSessionId: 'cursor-native-session-id',
                 resumeSessionName: 'Cursor lifecycle review',
+                cursorModel: 'gpt-5.6-luna-xhigh',
             },
         });
         expect(JSON.stringify(navigationState)).not.toContain('permissionMode');

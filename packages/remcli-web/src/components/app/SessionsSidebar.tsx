@@ -7,9 +7,11 @@ import { Plus, Search, Square } from "lucide-react";
 import { NavLink, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { AgentIcon, ConnectionBanner, Logo, statusLabel, StatusDot } from "@/components/kit";
+import { HomeSessionTriageControls } from "@/components/app/HomeSessionTriage";
 import type { Status } from "@/components/kit";
 import { dedupeSessionsByNativeAgent, formatTimeLabel, machineName, sessionAgent, sessionPath, sessionStatus } from "@/components/app/sessionDisplay";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import type { HomeQuickResumeCandidate, HomeSessionFilter, MachineGroup } from "@/lib/homeSessionTriage";
 import { t } from "@/lib/i18n";
 import { canStopSession, type IStopMachineTarget } from "@/lib/sessionCapabilities";
 import {
@@ -47,15 +49,7 @@ function shortDirName(path: string): string {
 
 /* ---------- Группировка сессий по машинам ---------- */
 
-export interface MachineGroup {
-    key: string;
-    name: string;
-    isOnline: boolean;
-    lastSeenLabel: string | null;
-    /** id машины в сторе демона — адресат machine-RPC (stop-session). null — RPC недоступен. */
-    rpcMachineId: string | null;
-    sessions: Session[];
-}
+export type { MachineGroup } from "@/lib/homeSessionTriage";
 
 export function useMachineGroups(): MachineGroup[] {
     const machines = useMachines();
@@ -70,43 +64,36 @@ export function useMachineGroups(): MachineGroup[] {
             sessions: [],
         }));
         const byId = new Map(groups.map((group) => [group.key, group]));
-        // P2P: session.metadata.machineId — персистентный UUID из settings CLI, а машина
-        // в сторе демона живёт под эфемерным `machine-${pid}-…`, поэтому дополнительно
-        // матчим по host из метаданных, предпочитая онлайн-машину.
-        const byHost = new Map<string, MachineGroup>();
-        machines.forEach((machine, index) => {
-            const host = machine.metadata?.host;
-            if (!host) return;
-            const current = byHost.get(host);
-            if (!current || (machine.active && !current.isOnline)) {
-                byHost.set(host, groups[index]);
-            }
-        });
-        // Сессии без известной машины группируем по host из метаданных;
-        // RPC для них адресуем единственной онлайн-машине, если она одна.
-        const activeMachines = machines.filter((machine) => machine.active);
-        const fallbackRpcMachineId = activeMachines.length === 1 ? activeMachines[0].id : null;
+        // P2P Machine.id is the daemon's persistent machine identity. Host is a legacy fallback
+        // only for sessions without a machine ID and requires a unique machine match.
+        const groupForLegacyHost = (host: string | undefined): MachineGroup | undefined => {
+            if (!host) return undefined;
+            const matchingGroups = machines.flatMap((machine, index) => (
+                machine.metadata?.host === host ? [groups[index]] : []
+            ));
+            return matchingGroups.length === 1 ? matchingGroups[0] : undefined;
+        };
         const orphans = new Map<string, MachineGroup>();
         for (const session of sessions) {
             const machineId = session.metadata?.machineId;
             const host = session.metadata?.host;
-            const group = (machineId ? byId.get(machineId) : undefined) ?? (host ? byHost.get(host) : undefined);
+            const group = machineId ? byId.get(machineId) : groupForLegacyHost(host);
             if (group) {
                 group.sessions.push(session);
                 continue;
             }
-            const orphanHost = host ?? "unknown";
-            let orphan = orphans.get(orphanHost);
+            const orphanKey = machineId ? `machine:${machineId}` : `host:${host ?? "unknown"}`;
+            let orphan = orphans.get(orphanKey);
             if (!orphan) {
                 orphan = {
-                    key: `host:${orphanHost}`,
-                    name: orphanHost,
+                    key: orphanKey,
+                    name: host ?? "unknown",
                     isOnline: false,
                     lastSeenLabel: null,
-                    rpcMachineId: fallbackRpcMachineId,
+                    rpcMachineId: null,
                     sessions: [],
                 };
-                orphans.set(orphanHost, orphan);
+                orphans.set(orphanKey, orphan);
             }
             orphan.sessions.push(session);
             orphan.isOnline = orphan.isOnline || session.active;
@@ -305,12 +292,23 @@ function SidebarMachineSection({ group, controls, isFirst, activeSessionId }: {
 
 /** Постоянный сайдбар десктопа. Самодостаточен (данные, баннер, стоп-диалог);
  * activeSessionId подсвечивает открытую сессию (Chat), className — управление видимостью снаружи. */
-export function SessionsSidebar({ activeSessionId, className = "flex" }: {
+export interface HomeTriageState {
+    filter: HomeSessionFilter;
+    onFilterChange: (filter: HomeSessionFilter) => void;
+    quickResumeCandidate: HomeQuickResumeCandidate | null;
+    isResuming: boolean;
+    onQuickResume: () => void;
+}
+
+export function SessionsSidebar({ activeSessionId, className = "flex", groups: suppliedGroups, homeTriage }: {
     activeSessionId?: string;
     className?: string;
+    groups?: MachineGroup[];
+    homeTriage?: HomeTriageState;
 }) {
     const navigate = useNavigate();
-    const groups = useMachineGroups();
+    const ownGroups = useMachineGroups();
+    const groups = suppliedGroups ?? ownGroups;
     const connectionStatus = useConnectionStatus();
     const latencyMs = useLatencyMs();
     const banner = useConnectionBanner();
@@ -347,8 +345,22 @@ export function SessionsSidebar({ activeSessionId, className = "flex" }: {
                 <Search className="size-3" /> {t("home.search")}
                 <kbd className="ml-auto rounded border border-border px-[5px] py-px font-mono text-[9.5px] text-muted-foreground">⌘K</kbd>
             </button>
+            {homeTriage && (
+                <HomeSessionTriageControls
+                    filter={homeTriage.filter}
+                    onFilterChange={homeTriage.onFilterChange}
+                    quickResumeCandidate={homeTriage.quickResumeCandidate}
+                    isResuming={homeTriage.isResuming}
+                    onQuickResume={homeTriage.onQuickResume}
+                    compact
+                />
+            )}
             <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 py-1">
-                {groups.map((group, index) => (
+                {groups.length === 0 && homeTriage ? (
+                    <p role="status" className="px-2.5 py-3 font-mono text-[10px] leading-relaxed text-muted-foreground">
+                        {t("home.filter.empty")}
+                    </p>
+                ) : groups.map((group, index) => (
                     <SidebarMachineSection
                         key={group.key} group={group} controls={controls}
                         isFirst={index === 0} activeSessionId={activeSessionId}

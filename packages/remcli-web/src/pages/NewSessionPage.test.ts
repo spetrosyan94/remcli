@@ -370,12 +370,20 @@ describe('NewSessionPage navigation state and shared access-level label', () => 
             directory: '/workspace/remcli',
             resumeSessionId: 'cursor-native-session-id',
             resumeSessionName: 'Cursor lifecycle review',
+        } })).toEqual({});
+        expect(parseNewSessionNavigationState({ cursorResume: {
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            resumeSessionId: 'cursor-native-session-id',
+            resumeSessionName: 'Cursor lifecycle review',
+            cursorModel: 'gpt-5.6-luna-xhigh',
         } })).toEqual({
             cursorResume: {
                 machineId: 'machine-1',
                 directory: '/workspace/remcli',
                 resumeSessionId: 'cursor-native-session-id',
                 resumeSessionName: 'Cursor lifecycle review',
+                cursorModel: 'gpt-5.6-luna-xhigh',
             },
         });
     });
@@ -386,6 +394,7 @@ describe('NewSessionPage navigation state and shared access-level label', () => 
             directory: '/workspace/remcli',
             resumeSessionId: 'cursor-native-session-id',
             resumeSessionName: null,
+            cursorModel: 'auto',
         } }).cursorResume ?? null;
 
         expect(isCursorResumePresetCompatible(preset, 'machine-1', '/workspace/remcli')).toBe(true);
@@ -499,6 +508,7 @@ describe('NewSessionPage navigation state and shared access-level label', () => 
                 directory: '/workspace/remcli',
                 resumeSessionId: 'cursor-native-session-id',
                 resumeSessionName: 'Cursor lifecycle review',
+                cursorModel: 'auto',
             },
         };
         machineGetCursorCapabilitiesMock.mockResolvedValue({
@@ -997,6 +1007,7 @@ describe('NewSessionPage Cursor capability selection', () => {
                 directory: '/workspace/remcli',
                 resumeSessionId: 'cursor-native-session-id',
                 resumeSessionName: 'Cursor lifecycle review',
+                cursorModel: 'gpt-5.6-luna-xhigh',
             },
         };
         machineGetCursorCapabilitiesMock.mockResolvedValue(capabilities);
@@ -1023,7 +1034,7 @@ describe('NewSessionPage Cursor capability selection', () => {
             resumeSessionId: 'cursor-native-session-id',
             resumeSessionName: 'Cursor lifecycle review',
             cursorExecution: {
-                model: 'auto',
+                model: 'gpt-5.6-luna-xhigh',
                 catalogVersion: 'cursor-catalog-1',
             },
             cursorLaunchControls: {
@@ -1044,6 +1055,7 @@ describe('NewSessionPage Cursor capability selection', () => {
                 directory: '/workspace/remcli',
                 resumeSessionId: 'cursor-native-session-id',
                 resumeSessionName: 'Cursor lifecycle review',
+                cursorModel: 'gpt-5.6-luna-xhigh',
             },
         };
         machineGetCursorCapabilitiesMock.mockResolvedValue({
@@ -1065,6 +1077,34 @@ describe('NewSessionPage Cursor capability selection', () => {
 
         expect(machineGetCursorCapabilitiesMock).toHaveBeenCalledWith('machine-1', true);
         expect(startButton.props.disabled).toBe(true);
+        await startButton.props.onClick?.();
+        expect(machineSpawnNewSessionMock).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when a resumed Cursor model is not in the fresh catalog', async () => {
+        navigationState.current = {
+            cursorResume: {
+                machineId: 'machine-1',
+                directory: '/workspace/remcli',
+                resumeSessionId: 'cursor-native-session-id',
+                resumeSessionName: 'Cursor lifecycle review',
+                cursorModel: 'gpt-5.6-luna-xhigh',
+            },
+        };
+        machineGetCursorCapabilitiesMock.mockResolvedValue({
+            ...capabilities,
+            models: [{ id: 'auto', displayName: 'Auto', isDefault: true }],
+        } satisfies CursorCapabilitiesSnapshot);
+        componentHooks.enableEffects();
+
+        renderNewSessionPage();
+        await flushPendingEffects();
+        const page = renderNewSessionPage();
+        const startButton = findElement(page, (element) => element.type === 'button'
+            && elementText(element).includes('new.resumeTitle'));
+
+        expect(startButton.props.disabled).toBe(true);
+        expect(elementText(page)).toContain('chat.resumeConfigurationUnavailable');
         await startButton.props.onClick?.();
         expect(machineSpawnNewSessionMock).not.toHaveBeenCalled();
     });
