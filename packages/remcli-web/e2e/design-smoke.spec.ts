@@ -936,6 +936,33 @@ test("Zen keeps a linked session compact on mobile", async ({ page }, testInfo) 
     expect(pageIssues).toEqual([]);
 });
 
+test("Zen adds a task through an explicit touch control and keeps keyboard submit", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/zen?fixtures=1");
+
+    const input = page.getByRole("textbox", { name: "new task…", exact: true });
+    const submit = page.getByRole("button", { name: "Add task", exact: true });
+    await expect(submit).toBeDisabled();
+
+    await input.fill("Review the terminal handoff copy");
+    await expect(submit).toBeEnabled();
+    await submit.click();
+    await expect(page.getByText("Review the terminal handoff copy", { exact: true })).toBeVisible();
+    await expect(input).toHaveValue("");
+    await expect(submit).toBeDisabled();
+
+    await input.fill("Keep Enter as a shortcut");
+    await input.press("Enter");
+    await expect(page.getByText("Keep Enter as a shortcut", { exact: true })).toBeVisible();
+    await expect(input).toHaveValue("");
+
+    await assertNoHorizontalOverflow(page);
+    if (isMobileProject(testInfo)) await assertMobileTouchTargets(page);
+    expect(pageIssues).toEqual([]);
+});
+
 test("Zen confirms deletion, preserves the linked session, and restores focus", async ({ page }, testInfo) => {
     const pageIssues = collectPageIssues(page);
 

@@ -168,6 +168,7 @@ export const ca: Dictionary = {
     "zen.openCount": "obertes",
     "zen.workOnTask": "Treballa en la tasca",
     "zen.newTask": "tasca nova…",
+    "zen.addTask": "Afegeix una tasca",
     "zen.toggleTask": "commuta la tasca: {title}",
     "zen.syncFailed": "no s'han pogut sincronitzar les tasques",
     "zen.taskActions": "Accions de {title}",

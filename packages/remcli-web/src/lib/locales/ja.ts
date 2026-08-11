@@ -168,6 +168,7 @@ export const ja: Dictionary = {
     "zen.openCount": "未完了",
     "zen.workOnTask": "タスクに取り組む",
     "zen.newTask": "新しいタスク…",
+    "zen.addTask": "タスクを追加",
     "zen.toggleTask": "{title} のタスクを切り替え",
     "zen.syncFailed": "タスクを同期できませんでした",
     "zen.taskActions": "{title} の操作",

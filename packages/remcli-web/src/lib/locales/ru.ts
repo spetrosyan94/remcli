@@ -169,6 +169,7 @@ export const ru = {
     "zen.openCount": "открыто",
     "zen.workOnTask": "Работать над задачей",
     "zen.newTask": "новая задача…",
+    "zen.addTask": "Добавить задачу",
     "zen.toggleTask": "переключить задачу: {title}",
     "zen.syncFailed": "не удалось синхронизировать задачи",
     "zen.taskActions": "Действия: {title}",

@@ -168,6 +168,7 @@ export const pl: Dictionary = {
     "zen.openCount": "otwarte",
     "zen.workOnTask": "Pracuj nad zadaniem",
     "zen.newTask": "nowe zadanie…",
+    "zen.addTask": "Dodaj zadanie",
     "zen.toggleTask": "przełącz zadanie: {title}",
     "zen.syncFailed": "nie udało się zsynchronizować zadań",
     "zen.taskActions": "Działania dla {title}",

@@ -168,6 +168,7 @@ export const zhHant: Dictionary = {
     "zen.openCount": "未完成",
     "zen.workOnTask": "處理此任務",
     "zen.newTask": "新任務…",
+    "zen.addTask": "新增任務",
     "zen.toggleTask": "切換任務：{title}",
     "zen.syncFailed": "任務同步失敗",
     "zen.taskActions": "{title} 的操作",

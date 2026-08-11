@@ -111,6 +111,7 @@ export function ZenPage() {
     const [isLoading, setIsLoading] = useState(true);
     const [hasLoadError, setHasLoadError] = useState(false);
     const [newTitle, setNewTitle] = useState("");
+    const [isCreating, setIsCreating] = useState(false);
     const [deleteTarget, setDeleteTarget] = useState<ZenTask | null>(null);
     const [isDeleting, setIsDeleting] = useState(false);
     const triggerRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -161,12 +162,22 @@ export function ZenPage() {
     );
     const openCount = tasks.filter((task) => !task.isDone).length;
 
-    const submitNewTask = (event: React.FormEvent) => {
+    const submitNewTask = async (event: React.FormEvent) => {
         event.preventDefault();
         const title = newTitle.trim();
-        if (title === "") return;
-        applyMutation(addZenTask(title));
-        setNewTitle("");
+        if (title === "" || isCreating) return;
+
+        setIsCreating(true);
+        try {
+            const next = await addZenTask(title);
+            setTasks(next);
+            setHasLoadError(false);
+            setNewTitle("");
+        } catch {
+            toast.error(t("zen.syncFailed"));
+        } finally {
+            setIsCreating(false);
+        }
     };
 
     const openDeleteDialog = (task: ZenTask) => {
@@ -274,10 +285,10 @@ export function ZenPage() {
 
             <footer className="px-4 pb-3 pt-2.5">
                 <form
-                    onSubmit={submitNewTask}
-                    className="flex h-12 items-center gap-2.5 rounded-xl border border-border bg-card px-4 text-sm"
+                    aria-busy={isCreating}
+                    onSubmit={(event) => { void submitNewTask(event); }}
+                    className="flex h-12 items-center gap-2 rounded-xl border border-border bg-card pl-4 pr-0.5 text-sm transition-[border-color] duration-[var(--dur-micro)] ease-[var(--ease-out)] focus-within:border-ring motion-reduce:transition-none"
                 >
-                    <Plus className="size-3.5 shrink-0 text-accent" />
                     <input
                         ref={newTaskInputRef}
                         value={newTitle}
@@ -286,6 +297,16 @@ export function ZenPage() {
                         aria-label={t("zen.newTask")}
                         className="h-full min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
                     />
+                    <button
+                        type="submit"
+                        aria-label={t("zen.addTask")}
+                        aria-busy={isCreating}
+                        title={t("zen.addTask")}
+                        disabled={newTitle.trim() === "" || isCreating}
+                        className="flex size-11 shrink-0 items-center justify-center rounded-[9px] bg-accent text-accent-foreground transition-[background-color,color,transform,opacity] duration-[var(--dur-micro)] ease-[var(--ease-out)] hover:brightness-105 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45 motion-reduce:transition-none motion-reduce:active:scale-100"
+                    >
+                        {isCreating ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> : <Plus className="size-4" />}
+                    </button>
                 </form>
             </footer>
 
