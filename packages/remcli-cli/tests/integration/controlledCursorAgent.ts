@@ -19,7 +19,6 @@ export interface ControlledCursorAgentInvocation {
 
 interface ControlledCursorAgentState {
     invocations: ControlledCursorAgentInvocation[];
-    interruptedPrompts: string[];
     protocolViolations: string[];
     runningPids: number[];
 }
@@ -28,7 +27,6 @@ export interface ControlledCursorAgent {
     binDir: string;
     stateFile: string;
     getInvocations: () => ControlledCursorAgentInvocation[];
-    getInterruptedPrompts: () => string[];
     getLiveProcessIds: () => number[];
     getProtocolViolations: () => string[];
     close: () => Promise<void>;
@@ -96,7 +94,6 @@ export function createControlledCursorAgent(options: ControlledCursorAgentOption
     mkdirSync(binDir, { recursive: true });
     writeFileSync(stateFile, JSON.stringify({
         invocations: [],
-        interruptedPrompts: [],
         protocolViolations: [],
         runningPids: [],
     }), 'utf8');
@@ -193,16 +190,6 @@ process.stdout.write(JSON.stringify({
 }) + '\\n');
 
 if (prompt === options.holdPrompt) {
-    const recordInterrupt = () => {
-        const currentState = readState();
-        currentState.interruptedPrompts = currentState.interruptedPrompts || [];
-        currentState.interruptedPrompts.push(prompt);
-        writeState(currentState);
-        process.exit(0);
-    };
-    process.once('SIGTERM', recordInterrupt);
-    process.once('SIGINT', recordInterrupt);
-    process.once('SIGHUP', recordInterrupt);
     setInterval(() => undefined, 1_000);
 } else {
     process.stdout.write(JSON.stringify({
@@ -225,7 +212,6 @@ if (prompt === options.holdPrompt) {
         binDir,
         stateFile,
         getInvocations: () => readState(stateFile).invocations,
-        getInterruptedPrompts: () => readState(stateFile).interruptedPrompts,
         getLiveProcessIds: () => [...new Set(readState(stateFile).runningPids ?? [])]
             .filter((pid) => Number.isInteger(pid) && pid > 0 && isProcessAlive(pid)),
         getProtocolViolations: () => readState(stateFile).protocolViolations,

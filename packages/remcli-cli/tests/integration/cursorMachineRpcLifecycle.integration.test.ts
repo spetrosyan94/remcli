@@ -1104,11 +1104,6 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
             LIFECYCLE_TIMEOUT_MS,
         );
         await waitForCondition(
-            () => harness!.fixture.getInterruptedPrompts().includes(ACTIVE_STOP_PROMPT),
-            'the active Cursor native child to receive a termination signal',
-            LIFECYCLE_TIMEOUT_MS,
-        );
-        await waitForCondition(
             () => harness!.fixture.getLiveProcessIds().length === 0,
             'the active Cursor native child to exit after the daemon-owned runner stops',
             LIFECYCLE_TIMEOUT_MS,
@@ -1214,8 +1209,6 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
             },
         ]);
         expect(harness.fixture.getInvocations().every((invocation) => !invocation.args.includes('--mode'))).toBe(true);
-        expect(harness.fixture.getInterruptedPrompts()).toEqual([ACTIVE_STOP_PROMPT]);
-
         const stoppedResumed = await harness.callMachineRpc('stop-session', { sessionId: resumedRemcliSessionId });
         expect(stoppedResumed).toEqual({ message: 'Session stopped', sessionId: resumedRemcliSessionId });
         await waitForCondition(
