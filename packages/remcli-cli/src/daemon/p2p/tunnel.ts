@@ -20,7 +20,10 @@ const WHICH_CMD = IS_WINDOWS ? 'where' : 'which';
 export interface TunnelInfo {
     url: string;
     stop: () => void;
+    onUnexpectedStop: (listener: () => void) => () => void;
 }
+
+type TunnelStartupFailureReason = 'process-error' | 'exit-code' | 'no-edge-registration' | 'timeout';
 
 /**
  * Resolve the path to the cloudflared binary, skipping node_modules/.bin.
@@ -83,65 +86,129 @@ export async function startCloudflaredTunnel(localPort: number): Promise<TunnelI
     cfProcess.unref();
 
     let exited = false;
+    let isStopExpected = false;
+    let hasUnexpectedlyStopped = false;
+    let hasProcessError = false;
+    let hasReceivedTunnelUrl = false;
     let exitCode: number | null = null;
+    const unexpectedStopListeners = new Set<() => void>();
+    let settleStartup: ((url: string | null) => void) | null = null;
+
+    const notifyUnexpectedStop = (): void => {
+        if (isStopExpected || hasUnexpectedlyStopped) {
+            return;
+        }
+
+        hasUnexpectedlyStopped = true;
+        for (const listener of unexpectedStopListeners) {
+            listener();
+        }
+        unexpectedStopListeners.clear();
+    };
+
+    const settleFailedStartup = (): void => {
+        if (settleStartup) {
+            settleStartup(null);
+        }
+    };
+
     cfProcess.on('exit', (code) => {
         exited = true;
         exitCode = code;
         logger.debug(`[TUNNEL] cloudflared exited with code ${code}`);
+        notifyUnexpectedStop();
     });
-    cfProcess.on('error', (error) => {
+    cfProcess.on('error', () => {
         exited = true;
-        logger.debug(`[TUNNEL] cloudflared spawn error: ${error.message}`);
+        hasProcessError = true;
+        logger.debug('[TUNNEL] cloudflared process error');
+        notifyUnexpectedStop();
+        settleFailedStartup();
     });
 
-    // Parse stderr for the tunnel URL (cloudflared prints it there)
+    // Wait for both the public URL and cloudflared's edge-registration signal.
+    // A quick-tunnel URL can be emitted before the edge connection is usable.
     const tunnelUrl = await new Promise<string | null>((resolve) => {
         let resolved = false;
+        let discoveredUrl: string | null = null;
+        let hasRegisteredConnection = false;
+        let outputTail = '';
         const urlRegex = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
+        const registeredConnectionRegex = /\bregistered tunnel connection\b/i;
+
+        const settle = (url: string | null): void => {
+            if (resolved) {
+                return;
+            }
+
+            resolved = true;
+            clearTimeout(timeout);
+            settleStartup = null;
+            resolve(url);
+        };
+        settleStartup = (url) => settle(url);
 
         const timeout = setTimeout(() => {
-            if (!resolved) {
-                resolved = true;
-                resolve(null);
-            }
+            settle(null);
         }, 30_000);
 
         const handleData = (data: Buffer) => {
             if (resolved) return;
-            const text = data.toString();
-            logger.debug(`[TUNNEL] cloudflared output: ${text.trim()}`);
-            const match = text.match(urlRegex);
+            const output = outputTail + data.toString();
+            outputTail = output.slice(-128);
+
+            const match = output.match(urlRegex);
             if (match) {
-                resolved = true;
-                clearTimeout(timeout);
-                resolve(match[0]);
+                discoveredUrl = match[0];
+                hasReceivedTunnelUrl = true;
+            }
+            if (registeredConnectionRegex.test(output)) {
+                hasRegisteredConnection = true;
+            }
+            if (discoveredUrl && hasRegisteredConnection) {
+                settle(discoveredUrl);
             }
         };
 
         cfProcess.stdout?.on('data', handleData);
         cfProcess.stderr?.on('data', handleData);
 
-        cfProcess.on('exit', () => {
-            if (!resolved) {
-                resolved = true;
-                clearTimeout(timeout);
-                resolve(null);
-            }
+        // `exit` can precede buffered stdout/stderr data, so classify startup
+        // failure only after the child and its stdio streams have closed.
+        cfProcess.on('close', () => {
+            settle(null);
         });
     });
 
     if (!tunnelUrl || exited) {
-        logger.debug(`[TUNNEL] Failed to get tunnel URL (exited=${exited}, code=${exitCode})`);
+        const startupFailureReason: TunnelStartupFailureReason = hasProcessError
+            ? 'process-error'
+            : hasReceivedTunnelUrl
+                ? 'no-edge-registration'
+                : exitCode !== null
+                    ? 'exit-code'
+                    : 'timeout';
+
+        logger.debug(`[TUNNEL] Failed to start tunnel (reason=${startupFailureReason}, exited=${exited}, code=${exitCode})`);
         try { cfProcess.kill(); } catch { /* already dead */ }
-        if (exitCode !== null) {
-            console.log(`  cloudflared failed with exit code ${exitCode}`);
-        } else {
-            console.log('  cloudflared timed out — could not establish tunnel');
+        switch (startupFailureReason) {
+            case 'process-error':
+                console.log('  cloudflared failed to start');
+                break;
+            case 'exit-code':
+                console.log(`  cloudflared failed with exit code ${exitCode}`);
+                break;
+            case 'no-edge-registration':
+                console.log('  cloudflared did not connect to the Cloudflare edge; check your DNS or VPN and restart the tunnel.');
+                break;
+            case 'timeout':
+                console.log('  cloudflared timed out — could not establish tunnel');
+                break;
         }
         return null;
     }
 
-    logger.debug(`[TUNNEL] Tunnel established: ${tunnelUrl}`);
+    logger.debug('[TUNNEL] Tunnel established');
 
     // Replace data listeners with drain handlers — cloudflared outputs connection
     // metrics, reconnect info, etc. continuously. Without draining, the pipe buffer
@@ -149,17 +216,12 @@ export async function startCloudflaredTunnel(localPort: number): Promise<TunnelI
     cfProcess.stdout?.removeAllListeners('data');
     cfProcess.stderr?.removeAllListeners('data');
     cfProcess.stdout?.on('data', () => { /* drain */ });
-    cfProcess.stderr?.on('data', (data: Buffer) => {
-        // Log only errors/warnings, not routine metrics
-        const text = data.toString();
-        if (text.includes('ERR') || text.includes('WRN')) {
-            logger.debug(`[TUNNEL] ${text.trim()}`);
-        }
-    });
+    cfProcess.stderr?.on('data', () => { /* drain */ });
 
     const stop = () => {
         try {
             if (!exited) {
+                isStopExpected = true;
                 cfProcess.kill();
                 logger.debug('[TUNNEL] cloudflared process killed');
             }
@@ -168,5 +230,15 @@ export async function startCloudflaredTunnel(localPort: number): Promise<TunnelI
         }
     };
 
-    return { url: tunnelUrl, stop };
+    const onUnexpectedStop = (listener: () => void): (() => void) => {
+        if (hasUnexpectedlyStopped) {
+            listener();
+            return () => undefined;
+        }
+
+        unexpectedStopListeners.add(listener);
+        return () => unexpectedStopListeners.delete(listener);
+    };
+
+    return { url: tunnelUrl, stop, onUnexpectedStop };
 }

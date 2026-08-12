@@ -6,6 +6,7 @@ import {
     createDaemonReplacementStarter,
     createDaemonRestartIntent,
     createDaemonShutdownRequestChannel,
+    handleUnexpectedTunnelStop,
     performDaemonShutdown,
     runDaemonShutdownLifecycle,
     type DaemonShutdownDependencies,
@@ -16,6 +17,74 @@ afterEach(() => {
 });
 
 describe('daemon shutdown lifecycle', () => {
+    it('clears and persists LAN-only state only for the active failed tunnel', async () => {
+        const activeStop = vi.fn();
+        const staleStop = vi.fn();
+        let activeGeneration = 3;
+        let currentStop: (() => void) | null = activeStop;
+        const clearActiveTunnel = vi.fn(() => {
+            activeGeneration += 1;
+            currentStop = null;
+        });
+        const persistDaemonState = vi.fn(async () => undefined);
+        const reportUnexpectedStop = vi.fn();
+
+        handleUnexpectedTunnelStop({
+            generation: 2,
+            stop: staleStop,
+            canApplyFailureFallback: () => true,
+            getActiveGeneration: () => activeGeneration,
+            getActiveStop: () => currentStop,
+            clearActiveTunnel,
+            persistDaemonState,
+            reportUnexpectedStop,
+        });
+
+        expect(clearActiveTunnel).not.toHaveBeenCalled();
+        expect(persistDaemonState).not.toHaveBeenCalled();
+        expect(reportUnexpectedStop).not.toHaveBeenCalled();
+
+        handleUnexpectedTunnelStop({
+            generation: 3,
+            stop: activeStop,
+            canApplyFailureFallback: () => true,
+            getActiveGeneration: () => activeGeneration,
+            getActiveStop: () => currentStop,
+            clearActiveTunnel,
+            persistDaemonState,
+            reportUnexpectedStop,
+        });
+        await Promise.resolve();
+
+        expect(clearActiveTunnel).toHaveBeenCalledOnce();
+        expect(persistDaemonState).toHaveBeenCalledOnce();
+        expect(reportUnexpectedStop).toHaveBeenCalledOnce();
+        expect(activeGeneration).toBe(4);
+        expect(currentStop).toBeNull();
+    });
+
+    it('does not apply LAN fallback when cleanup has made a tunnel failure ineligible', () => {
+        const activeStop = vi.fn();
+        const clearActiveTunnel = vi.fn();
+        const persistDaemonState = vi.fn(async () => undefined);
+        const reportUnexpectedStop = vi.fn();
+
+        handleUnexpectedTunnelStop({
+            generation: 3,
+            stop: activeStop,
+            canApplyFailureFallback: () => false,
+            getActiveGeneration: () => 3,
+            getActiveStop: () => activeStop,
+            clearActiveTunnel,
+            persistDaemonState,
+            reportUnexpectedStop,
+        });
+
+        expect(clearActiveTunnel).not.toHaveBeenCalled();
+        expect(persistDaemonState).not.toHaveBeenCalled();
+        expect(reportUnexpectedStop).not.toHaveBeenCalled();
+    });
+
     it('lets an explicit stop cancel a queued auto-update restart', () => {
         const restartIntent = createDaemonRestartIntent();
 

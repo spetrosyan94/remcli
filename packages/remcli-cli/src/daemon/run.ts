@@ -146,6 +146,33 @@ export interface DaemonShutdownRequestChannel {
     waitForShutdownRequest: () => Promise<DaemonShutdownRequest>;
 }
 
+export interface TunnelUnexpectedStopDependencies {
+    generation: number;
+    stop: () => void;
+    canApplyFailureFallback: () => boolean;
+    getActiveGeneration: () => number;
+    getActiveStop: () => (() => void) | null;
+    clearActiveTunnel: () => void;
+    persistDaemonState: () => Promise<void>;
+    reportUnexpectedStop: () => void;
+}
+
+export function handleUnexpectedTunnelStop(dependencies: TunnelUnexpectedStopDependencies): void {
+    if (
+        !dependencies.canApplyFailureFallback()
+        || dependencies.generation !== dependencies.getActiveGeneration()
+        || dependencies.stop !== dependencies.getActiveStop()
+    ) {
+        return;
+    }
+
+    dependencies.clearActiveTunnel();
+    dependencies.reportUnexpectedStop();
+    void dependencies.persistDaemonState().catch(() => {
+        logger.warn('[DAEMON RUN] Failed to persist LAN-only state after tunnel stopped unexpectedly.');
+    });
+}
+
 export interface DaemonRestartIntent {
     recordShutdownRequest: (restartAfterShutdown: boolean) => void;
     shouldRestart: () => boolean;
@@ -554,6 +581,7 @@ export async function startDaemon(): Promise<void> {
     let machineId = '';
     let tunnelStop: (() => void) | null = null;
     let tunnelUrl: string | undefined;
+    let activeTunnelGeneration = 0;
 
     const pairingRekeyCoordinator = new PairingRekeyCoordinator({
       currentSecrets: () => ({
@@ -834,17 +862,53 @@ export async function startDaemon(): Promise<void> {
         console.log('  Starting cloudflared tunnel for remote access...');
         const tunnel = await startCloudflaredTunnel(p2pServer.port);
         if (tunnel) {
+            const persistTunnelState = persistDaemonState;
+            if (!persistTunnelState) {
+                throw new Error('Daemon state writer is unavailable.');
+            }
+            const tunnelGeneration = activeTunnelGeneration + 1;
+            activeTunnelGeneration = tunnelGeneration;
             tunnelUrl = tunnel.url;
             tunnelStop = tunnel.stop;
             fileState.tunnelUrl = tunnelUrl;
-            await persistDaemonState();
-            logger.debug(`[DAEMON RUN] Tunnel started: ${tunnelUrl}`);
+            await persistTunnelState();
+            logger.debug('[DAEMON RUN] Tunnel started');
 
-            // Show QR with tunnel URL (accessible from anywhere)
-            const tunnelConnectionInfo = buildP2PConnectionInfo(tunnelUrl.replace(/\/$/, ''), 0, pairing);
-            const tunnelQRUrl = buildP2PQRUrl(tunnelConnectionInfo, tunnelUrl);
-            await displayP2PQRCode(tunnelQRUrl);
-            displayP2PConnectionStatus(lanIP, p2pServer.port, tunnelUrl);
+            tunnel.onUnexpectedStop(() => {
+                handleUnexpectedTunnelStop({
+                    generation: tunnelGeneration,
+                    stop: tunnel.stop,
+                    canApplyFailureFallback: () => !isCleanupInProgress && runtimeStateWritesAllowed,
+                    getActiveGeneration: () => activeTunnelGeneration,
+                    getActiveStop: () => tunnelStop,
+                    clearActiveTunnel: () => {
+                        activeTunnelGeneration += 1;
+                        tunnelUrl = undefined;
+                        tunnelStop = null;
+                        if (fileState) {
+                            fileState.tunnelUrl = undefined;
+                        }
+                    },
+                    persistDaemonState: persistTunnelState,
+                    reportUnexpectedStop: () => {
+                        logger.warn('[DAEMON RUN] cloudflared tunnel stopped unexpectedly; continuing with LAN-only access.');
+                        console.log('  Warning: cloudflared tunnel stopped. Daemon remains available on LAN only.');
+                    },
+                });
+            });
+
+            if (activeTunnelGeneration === tunnelGeneration && tunnelStop === tunnel.stop && tunnelUrl) {
+                // Show QR with tunnel URL (accessible from anywhere)
+                const tunnelConnectionInfo = buildP2PConnectionInfo(tunnelUrl.replace(/\/$/, ''), 0, pairing);
+                const tunnelQRUrl = buildP2PQRUrl(tunnelConnectionInfo, tunnelUrl);
+                await displayP2PQRCode(tunnelQRUrl);
+                displayP2PConnectionStatus(lanIP, p2pServer.port, tunnelUrl);
+            } else {
+                const connectionInfo = buildP2PConnectionInfo(lanIP, p2pServer.port, pairing);
+                const qrUrl = buildP2PQRUrl(connectionInfo);
+                await displayP2PQRCode(qrUrl);
+                displayP2PConnectionStatus(lanIP, p2pServer.port);
+            }
         } else {
             console.log('  Failed to start tunnel, using LAN only');
             const connectionInfo = buildP2PConnectionInfo(lanIP, p2pServer.port, pairing);
