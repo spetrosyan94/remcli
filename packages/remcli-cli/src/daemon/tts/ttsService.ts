@@ -45,19 +45,25 @@ export function getConfiguredProviderName(): string {
 
 export async function initTtsProvider(): Promise<void> {
     const providerName = getConfiguredProviderName();
-    currentProviderName = providerName;
 
     if (providerName === 'off') {
-        currentProvider = null;
+        await stopTts();
         return;
     }
 
     if (providerName === 'edge') {
         currentProvider = new EdgeTtsProvider();
+        currentProviderName = providerName;
     } else if (providerName === 'qwen3') {
         const provider = new QwenTtsProvider();
+        try {
+            await provider.start();
+        } catch (error) {
+            await provider.stop();
+            throw error;
+        }
         currentProvider = provider;
-        await provider.start();
+        currentProviderName = providerName;
     }
 
     logger.debug(`[TTS] Provider initialized: ${providerName}`);
@@ -80,7 +86,7 @@ export async function stopTts(): Promise<void> {
 }
 
 export function getTtsStatus(): TtsStatus {
-    const providerName = getConfiguredProviderName();
+    const providerName = currentProviderName;
 
     if (providerName === 'off' || !currentProvider) {
         return { available: false, provider: providerName, voices: [] };
