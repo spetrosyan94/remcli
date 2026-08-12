@@ -53,3 +53,23 @@ test("permission response failure preserves the request and retries the original
     await expect(card).toHaveCount(0);
     await assertNoHorizontalOverflow(page);
 });
+
+test("permission retry keeps a mobile touch target and compact desktop height", async ({ page }) => {
+    await openFixtureChat(page, "error-once");
+
+    const card = normalPermissionCard(page);
+    await card.getByRole("button", { name: "Allow", exact: true }).click();
+    await expect(card.getByRole("alert")).toHaveText("could not send responseRetry");
+
+    const retry = card.getByRole("button", { name: "Retry", exact: true });
+    await expect(retry).toBeVisible();
+    const box = await retry.boundingBox();
+    const isMobileViewport = (page.viewportSize()?.width ?? 0) < 1024;
+
+    expect(box).not.toBeNull();
+    expect(box?.width).toBeGreaterThanOrEqual(44);
+    expect(box?.height).toBeGreaterThanOrEqual(isMobileViewport ? 44 : 32);
+    if (!isMobileViewport) {
+        expect(box?.height).toBe(32);
+    }
+});

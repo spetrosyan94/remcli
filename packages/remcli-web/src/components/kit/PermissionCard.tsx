@@ -17,7 +17,7 @@ function PermissionResponseFeedback({
     if (state === "sending") {
         return (
             <div role="status" aria-live="polite" data-permission-response="sending"
-                className="flex min-h-9 items-center gap-2 border-t border-status-permission/20 px-3 py-2 font-mono text-[11px] text-status-permission animate-in fade-in duration-[var(--dur-micro)] motion-reduce:animate-none">
+                className="flex min-h-9 items-center gap-2 border-t border-status-permission/20 px-3 py-2 font-mono text-[11px] text-status-permission animate-in fade-in duration-[var(--dur-micro)]">
                 <Loader2 className="size-3 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                 <span className="min-w-0 break-words">{t("permission.sending")}</span>
             </div>
@@ -27,11 +27,11 @@ function PermissionResponseFeedback({
     if (state === "error") {
         return (
             <div role="alert" aria-live="assertive" data-permission-response="error"
-                className="flex min-h-10 items-center gap-2 border-t border-status-error/25 px-3 py-2 font-mono text-[11px] text-status-error animate-in fade-in duration-[var(--dur-micro)] motion-reduce:animate-none">
+                className="flex min-h-10 items-center gap-2 border-t border-status-error/25 px-3 py-2 font-mono text-[11px] text-status-error animate-in fade-in duration-[var(--dur-micro)]">
                 <span className="min-w-0 flex-1 break-words">{t("permission.responseFailed")}</span>
                 {onRetry && (
                     <button type="button" onClick={onRetry}
-                        className="h-8 shrink-0 rounded-lg border border-status-error/45 px-2.5 font-mono text-[10.5px] font-semibold text-status-error transition-[background-color,border-color,color,transform] duration-[var(--dur-micro)] hover:bg-status-error/10 active:scale-[0.96]">
+                        className="inline-flex h-11 min-w-11 shrink-0 items-center justify-center rounded-lg border border-status-error/45 px-2.5 font-mono text-[10.5px] font-semibold text-status-error transition-[background-color,border-color,color,transform] duration-[var(--dur-micro)] hover:bg-status-error/10 active:scale-[0.96] lg:h-8 lg:min-w-0">
                         {t("permission.retry")}
                     </button>
                 )}
