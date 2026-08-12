@@ -153,7 +153,7 @@ export function updatePairingPort(pairing: PersistedPairing, port: number): Pers
 
 /**
  * Replace the pairing atomically while keeping the currently bound port.
- * The caller must rotate the in-memory P2P server only after this write
+ * The caller must commit the in-memory P2P server only after this write
  * succeeds, otherwise an old secret could become valid again after restart.
  */
 export function replacePairing(pairing: PersistedPairing): PersistedPairing {

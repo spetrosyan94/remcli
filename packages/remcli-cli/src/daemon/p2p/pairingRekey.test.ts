@@ -3,7 +3,20 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { decodeBase64 } from '@/api/encryption';
 import type { PairingSecrets } from './p2pAuth';
-import { PairingRekeyCoordinator } from './pairingRekey';
+import { PairingRekeyCoordinator, type PairingRekeyCommitGuard } from './pairingRekey';
+
+interface Deferred<T> {
+    promise: Promise<T>;
+    resolve: (value: T | PromiseLike<T>) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    const promise = new Promise<T>((resolvePromise) => {
+        resolve = resolvePromise;
+    });
+    return { promise, resolve };
+}
 
 function decryptDelivery(payload: string, recipientSecretKey: Uint8Array): unknown | null {
     const bundle = decodeBase64(payload);
@@ -136,6 +149,49 @@ describe('PairingRekeyCoordinator', () => {
         await expect(coordinator.approve(request.requestId, request.approvalCode)).resolves.toEqual({ type: 'expired' });
         expect(rotateAuthSecret).not.toHaveBeenCalled();
         expect(coordinator.getDelivery(request.ticket)).toEqual({ type: 'not-found' });
+    });
+
+    it('expires and removes the request when candidate readiness crosses the approval TTL', async () => {
+        let nowMs = 10_000;
+        const candidateReadiness = createDeferred<void>();
+        const rotationStarted = createDeferred<void>();
+        let canCommit: PairingRekeyCommitGuard | undefined;
+        const rotateAuthSecret = vi.fn(async (_authSecret: Uint8Array, guard: PairingRekeyCommitGuard) => {
+            canCommit = guard;
+            rotationStarted.resolve();
+            await candidateReadiness.promise;
+            return await guard() ? { type: 'committed' as const } : { type: 'expired' as const };
+        });
+        const currentSecrets: PairingSecrets = {
+            authSecret: new Uint8Array(32).fill(1),
+            contentSecret: new Uint8Array(32).fill(2),
+        };
+        const coordinator = new PairingRekeyCoordinator({
+            currentSecrets: () => currentSecrets,
+            createQrPayload: async () => ({
+                qrUrl: 'http://127.0.0.1:1234/terminal/connect#fixture',
+                qrDataUrl: 'data:image/png;base64,fixture',
+            }),
+            rotateAuthSecret,
+            now: () => nowMs,
+        });
+        const requester = nacl.box.keyPair();
+        const request = coordinator.requestRekey(Buffer.from(requester.publicKey).toString('base64'));
+        const approval = coordinator.approve(request.requestId, request.approvalCode);
+
+        await rotationStarted.promise;
+        if (!canCommit) {
+            throw new Error('Expected rekey rotation to receive the commit guard');
+        }
+        expect(await canCommit()).toBe(true);
+
+        nowMs = request.expiresAt;
+        candidateReadiness.resolve();
+
+        await expect(approval).resolves.toEqual({ type: 'expired' });
+        expect(rotateAuthSecret).toHaveBeenCalledOnce();
+        expect(coordinator.getDelivery(request.ticket)).toEqual({ type: 'not-found' });
+        expect(() => coordinator.requestRekey(Buffer.from(nacl.box.keyPair().publicKey).toString('base64'))).not.toThrow();
     });
 
     it('rejects malformed public keys before creating state', () => {

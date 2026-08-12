@@ -35,6 +35,12 @@ export type PairingRekeyApprovalResult =
     | { type: 'already-approved' }
     | { type: 'invalid-code' };
 
+export type PairingRekeyCommitGuard = () => boolean | Promise<boolean>;
+
+export type PairingRekeyRotationResult =
+    | { type: 'committed' }
+    | { type: 'expired' };
+
 export type PairingRekeyCancellationResult =
     | { type: 'cancelled' }
     | { type: 'not-found' }
@@ -62,7 +68,10 @@ interface PendingPairingRekey extends PairingRekeyRequest {
 export interface PairingRekeyCoordinatorConfig {
     currentSecrets: () => PairingSecrets;
     createQrPayload: (secrets: PairingSecrets) => Promise<PairingQrPayload>;
-    rotateAuthSecret: (authSecret: Uint8Array) => Promise<void>;
+    rotateAuthSecret: (
+        authSecret: Uint8Array,
+        canCommit: PairingRekeyCommitGuard,
+    ) => Promise<PairingRekeyRotationResult | void>;
     now?: () => number;
 }
 
@@ -160,7 +169,7 @@ export class PairingRekeyCoordinator {
             });
             // QR generation is async. Do not revoke an active bearer when the
             // one-shot request expired or was invalidated while it was running.
-            if (request.expiresAt <= this.now()) {
+            if (!this.isCurrentApproval(request)) {
                 this.removeRequest(request);
                 return { type: 'expired' };
             }
@@ -168,7 +177,14 @@ export class PairingRekeyCoordinator {
                 return { type: 'not-found' };
             }
             const delivery = sealPayload(qrPayload, request.recipientPublicKey, request.expiresAt);
-            await this.config.rotateAuthSecret(nextAuthSecret);
+            const rotation = await this.config.rotateAuthSecret(
+                nextAuthSecret,
+                () => this.isCurrentApproval(request),
+            );
+            if (rotation?.type === 'expired') {
+                this.removeRequest(request);
+                return { type: 'expired' };
+            }
             request.delivery = delivery;
             request.state = 'approved';
             return { type: 'approved', expiresAt: request.expiresAt };
@@ -236,6 +252,12 @@ export class PairingRekeyCoordinator {
             ticket: request.ticket,
             expiresAt: request.expiresAt,
         };
+    }
+
+    private isCurrentApproval(request: PendingPairingRekey): boolean {
+        return request.expiresAt > this.now()
+            && this.pendingById.get(request.requestId) === request
+            && request.state === 'approving';
     }
 
     private pruneExpired(): void {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import { io as ioClient, type Socket } from 'socket.io-client';
 
 import { decodeBase64, decrypt, encodeBase64, encrypt } from '@/api/encryption';
@@ -20,6 +21,9 @@ import {
     bootstrapMachineSocket,
     type MachineSocketHandle,
 } from '@/daemon/machineSocket';
+import {
+    createDirectoryProjectsStore,
+} from '@/daemon/recentDirectories';
 import { PairingRekeyCoordinator } from '@/daemon/p2p/pairingRekey';
 import { deriveBearerToken, generateSharedSecret } from '@/daemon/p2p/p2pAuth';
 import {
@@ -37,8 +41,6 @@ import type {
 
 const SOCKET_CONNECT_TIMEOUT_MS = 5_000;
 const RPC_ACK_TIMEOUT_MS = 5_000;
-const RPC_REGISTRATION_TIMEOUT_MS = 5_000;
-const RPC_REGISTRATION_RETRY_MS = 50;
 const TEST_MACHINE_ID = 'machine-rpc-codex-capabilities';
 
 interface RpcCallAck {
@@ -60,6 +62,7 @@ interface RpcHarness {
 let p2pServer: P2PServer | null = null;
 let machineSocketHandle: MachineSocketHandle | null = null;
 let appSocket: Socket | null = null;
+let directoryProjectFilePath: string | null = null;
 
 function createPairingRekeyCoordinator(sharedSecret: Uint8Array): PairingRekeyCoordinator {
     return new PairingRekeyCoordinator({
@@ -205,33 +208,13 @@ async function emitRpcCall(
     return response;
 }
 
-async function emitRpcCallWhenRegistered(
-    socket: Socket,
-    authSecret: Uint8Array,
-    method: string,
-    params: string,
-): Promise<RpcCallAck> {
-    const deadline = Date.now() + RPC_REGISTRATION_TIMEOUT_MS;
-    let lastResponse: RpcCallAck | null = null;
-
-    while (Date.now() < deadline) {
-        lastResponse = await emitRpcCall(socket, authSecret, method, params);
-        if (lastResponse.ok || !lastResponse.error?.startsWith('No handler registered')) {
-            return lastResponse;
-        }
-        await new Promise((resolve) => setTimeout(resolve, RPC_REGISTRATION_RETRY_MS));
-    }
-
-    return lastResponse ?? { ok: false, error: `No acknowledgement received for ${method}` };
-}
-
 async function callMachineRpc(
     harness: Pick<RpcHarness, 'appSocket' | 'sharedSecret'>,
     method: string,
     params: unknown,
 ): Promise<unknown> {
     const encryptedParams = encodeBase64(encrypt(harness.sharedSecret, 'legacy', params));
-    const response = await emitRpcCallWhenRegistered(
+    const response = await emitRpcCall(
         harness.appSocket,
         harness.sharedSecret,
         `${TEST_MACHINE_ID}:${method}`,
@@ -256,6 +239,12 @@ async function createRpcHarness(): Promise<RpcHarness> {
     const store = new P2PStore({ kvFilePath: null });
     const codexCapabilities = createCodexCapabilitiesService();
     const cursorCapabilities = createCursorCapabilitiesService();
+    const nextDirectoryProjectFilePath = `/tmp/remcli-directory-projects-${randomUUID()}.json`;
+    directoryProjectFilePath = nextDirectoryProjectFilePath;
+    const directoryProjects = createDirectoryProjectsStore({
+        machineId: TEST_MACHINE_ID,
+        filePath: nextDirectoryProjectFilePath,
+    });
     const validateSelectionSpy = vi.spyOn(codexCapabilities, 'validateSelection');
     const cursorValidateSelectionSpy = vi.spyOn(cursorCapabilities, 'validateSelection');
     const snapshot = await codexCapabilities.getCapabilities();
@@ -264,6 +253,35 @@ async function createRpcHarness(): Promise<RpcHarness> {
         type: 'success',
         sessionId: 'spawned-codex-session',
     }));
+
+    p2pServer = await startP2PServer({
+        port: 0,
+        host: '127.0.0.1',
+        authSecret: sharedSecret,
+        store,
+        daemonMachineId: TEST_MACHINE_ID,
+    });
+    if (!p2pServer.daemonMachineCredential) {
+        throw new Error('Expected daemon machine credential for the readiness-gated RPC harness');
+    }
+
+    machineSocketHandle = bootstrapMachineSocket({
+        p2pPort: p2pServer.port,
+        machineId: TEST_MACHINE_ID,
+        bearerToken,
+        daemonMachineCredential: p2pServer.daemonMachineCredential,
+        authSecret: sharedSecret,
+        contentSecret: sharedSecret,
+        pairingRekeyCoordinator: createPairingRekeyCoordinator(sharedSecret),
+        codexCapabilities,
+        cursorCapabilities,
+        directoryProjects,
+        spawnSession,
+        stopSession: () => ({ success: false }),
+        requestShutdown: () => undefined,
+    });
+
+    await machineSocketHandle.ready;
 
     store.getOrCreateMachine(
         TEST_MACHINE_ID,
@@ -278,27 +296,6 @@ async function createRpcHarness(): Promise<RpcHarness> {
         JSON.stringify({ status: 'running', pid: process.pid, startedAt: Date.now() }),
         null,
     );
-
-    p2pServer = await startP2PServer({
-        port: 0,
-        host: '127.0.0.1',
-        authSecret: sharedSecret,
-        store,
-    });
-
-    machineSocketHandle = bootstrapMachineSocket({
-        p2pPort: p2pServer.port,
-        machineId: TEST_MACHINE_ID,
-        bearerToken,
-        authSecret: sharedSecret,
-        contentSecret: sharedSecret,
-        pairingRekeyCoordinator: createPairingRekeyCoordinator(sharedSecret),
-        codexCapabilities,
-        cursorCapabilities,
-        spawnSession,
-        stopSession: () => ({ success: false }),
-        requestShutdown: () => undefined,
-    });
 
     appSocket = await createSocketConnection(p2pServer.port, bearerToken);
 
@@ -338,7 +335,7 @@ function createValidSpawnParams(
     return {
         type: 'spawn-in-directory',
         machineId: TEST_MACHINE_ID,
-        directory: '/workspace/remcli',
+        directory: process.cwd(),
         approvedNewDirectoryCreation: false,
         token: 'session-token',
         agent: 'codex',
@@ -409,9 +406,27 @@ afterEach(async () => {
 
     await p2pServer?.stop();
     p2pServer = null;
+
+    if (directoryProjectFilePath) {
+        rmSync(directoryProjectFilePath, { force: true });
+        directoryProjectFilePath = null;
+    }
 });
 
 describe('Codex machine RPC capability and spawn contract', { timeout: 15_000 }, () => {
+    it('serves each New Session action on its first call after readiness', async () => {
+        const harness = await createRpcHarness();
+
+        await expect(callMachineRpc(harness, 'get-codex-capabilities', {})).resolves.toEqual(harness.snapshot);
+        await expect(callMachineRpc(harness, 'get-cursor-capabilities', {})).resolves.toEqual(harness.cursorSnapshot);
+        await expect(callMachineRpc(harness, 'list-directory-projects', {})).resolves.toEqual({ projects: [] });
+        await expect(callMachineRpc(harness, 'list-directory', { path: process.cwd() })).resolves.toMatchObject({
+            path: process.cwd(),
+            entries: expect.any(Array),
+        });
+        await expectSpawned(harness, createValidSpawnParams(createValidExecution(harness.snapshot)));
+    });
+
     it('returns a typed ready capability snapshot through encrypted machine RPC', async () => {
         const harness = await createRpcHarness();
 
@@ -537,7 +552,7 @@ function createValidCursorSpawnParams(
     return {
         type: 'spawn-in-directory',
         machineId: TEST_MACHINE_ID,
-        directory: '/workspace/remcli',
+        directory: process.cwd(),
         approvedNewDirectoryCreation: false,
         token: 'session-token',
         agent: 'cursor',

@@ -26,8 +26,6 @@ import type { StopSessionResult } from '@/daemon/types';
 
 const SOCKET_CONNECT_TIMEOUT_MS = 5_000;
 const RPC_ACK_TIMEOUT_MS = 5_000;
-const RPC_REGISTRATION_TIMEOUT_MS = 5_000;
-const RPC_REGISTRATION_RETRY_MS = 50;
 const TEST_MACHINE_ID = 'machine-rpc-directory-smoke';
 
 interface P2PModules {
@@ -271,28 +269,6 @@ async function emitRpcCall(
     return response;
 }
 
-async function emitRpcCallWhenRegistered(
-    socket: ClientSocket,
-    authSecret: Uint8Array,
-    method: string,
-    params: string,
-): Promise<RpcCallAck> {
-    const deadline = Date.now() + RPC_REGISTRATION_TIMEOUT_MS;
-    let lastResponse: RpcCallAck | null = null;
-
-    while (Date.now() < deadline) {
-        lastResponse = await emitRpcCall(socket, authSecret, method, params);
-
-        if (lastResponse.ok || !lastResponse.error?.startsWith('No handler registered')) {
-            return lastResponse;
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, RPC_REGISTRATION_RETRY_MS));
-    }
-
-    return lastResponse ?? { ok: false, error: `No acknowledgement received for ${method}` };
-}
-
 beforeEach(() => {
     remcliHomeDir = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-home-'));
     browserRootDir = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-browser-'));
@@ -328,33 +304,22 @@ describe('machine RPC directory browser smoke', { timeout: 15_000 }, () => {
         const sharedSecret = modules.generateSharedSecret();
         const bearerToken = modules.deriveBearerToken(sharedSecret);
         const store = new modules.P2PStore({ kvFilePath: null });
-        const machine = store.getOrCreateMachine(
-            TEST_MACHINE_ID,
-            JSON.stringify({
-                host: 'test-host',
-                platform: process.platform,
-                remcliCliVersion: '0.0.0-test',
-                homeDir: browserRootDir,
-                remcliHomeDir,
-                remcliLibDir: remcliHomeDir,
-            }),
-            JSON.stringify({ status: 'running', pid: process.pid, startedAt: Date.now() }),
-            null,
-        );
-
-        expect(machine).not.toBeNull();
-
         p2pServer = await modules.startP2PServer({
             port: 0,
             host: '127.0.0.1',
             authSecret: sharedSecret,
             store,
+            daemonMachineId: TEST_MACHINE_ID,
         });
+        if (!p2pServer.daemonMachineCredential) {
+            throw new Error('Expected daemon machine credential');
+        }
 
         machineSocketHandle = modules.bootstrapMachineSocket({
             p2pPort: p2pServer.port,
             machineId: TEST_MACHINE_ID,
             bearerToken,
+            daemonMachineCredential: p2pServer.daemonMachineCredential,
             authSecret: sharedSecret,
             contentSecret: sharedSecret,
             pairingRekeyCoordinator: createPairingRekeyCoordinator(modules, sharedSecret),
@@ -368,26 +333,32 @@ describe('machine RPC directory browser smoke', { timeout: 15_000 }, () => {
             stopSession: () => ({ success: false }),
             requestShutdown: () => undefined,
         });
+        await machineSocketHandle.ready;
+
+        const machine = store.getOrCreateMachine(
+            TEST_MACHINE_ID,
+            JSON.stringify({
+                host: 'test-host',
+                platform: process.platform,
+                remcliCliVersion: '0.0.0-test',
+                homeDir: browserRootDir,
+                remcliHomeDir,
+                remcliLibDir: remcliHomeDir,
+            }),
+            JSON.stringify({ status: 'running', pid: process.pid, startedAt: Date.now() }),
+            null,
+        );
+        expect(machine).not.toBeNull();
 
         const machines = await fetchMachines(p2pServer.port, bearerToken);
         expect(machines.map(({ id }) => id)).toContain(TEST_MACHINE_ID);
 
-        const bearerOnlyMachineSocket = await createSocketConnection(p2pServer.port, bearerToken, {
-            clientType: 'machine-scoped',
-            machineId: 'captured-bearer-machine',
-        });
-        const registrationError = new Promise<{ type: string; error: string }>((resolve) => {
-            bearerOnlyMachineSocket.once('rpc-error', resolve);
-        });
-        bearerOnlyMachineSocket.emit('rpc-register', { method: 'captured-bearer-machine:forged' });
-        await expect(registrationError).resolves.toEqual({ type: 'register', error: 'Invalid request proof' });
         await expect(
-            bearerOnlyMachineSocket.timeout(RPC_ACK_TIMEOUT_MS).emitWithAck('rpc-call', {
-                method: `${TEST_MACHINE_ID}:list-directory`,
-                params: 'captured-ciphertext',
+            createSocketConnection(p2pServer.port, bearerToken, {
+                clientType: 'machine-scoped',
+                machineId: TEST_MACHINE_ID,
             }),
-        ).resolves.toEqual({ ok: false, error: 'Invalid request proof' });
-        bearerOnlyMachineSocket.close();
+        ).rejects.toThrow('Authentication failed');
 
         appSocket = await createSocketConnection(p2pServer.port, bearerToken);
 
@@ -395,7 +366,7 @@ describe('machine RPC directory browser smoke', { timeout: 15_000 }, () => {
         const encryptedParams = encodeBase64(encrypt(sharedSecret, 'legacy', requestParams));
         expect(encryptedParams).not.toBe(JSON.stringify(requestParams));
 
-        const rpcResponse = await emitRpcCallWhenRegistered(
+        const rpcResponse = await emitRpcCall(
             appSocket,
             sharedSecret,
             `${TEST_MACHINE_ID}:list-directory`,
@@ -503,12 +474,13 @@ describe('machine RPC stop acknowledgements', { timeout: 15_000 }, () => {
             stopSession,
             requestShutdown: () => undefined,
         });
+        await machineSocketHandle.ready;
 
         appSocket = await createSocketConnection(server.port, bearerToken);
         const encryptedParams = encodeBase64(encrypt(sharedSecret, 'legacy', { sessionId: session.id }));
 
         let hasRpcAcknowledged = false;
-        const rpcResponsePromise = emitRpcCallWhenRegistered(
+        const rpcResponsePromise = emitRpcCall(
             appSocket,
             sharedSecret,
             `${TEST_MACHINE_ID}:stop-session`,

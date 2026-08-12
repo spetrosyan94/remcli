@@ -5,7 +5,9 @@ import {
     createDaemonReplacementArgs,
     createDaemonReplacementStarter,
     createDaemonRestartIntent,
+    createDaemonStartupAbortController,
     createDaemonShutdownRequestChannel,
+    cleanupDaemonStartupFailure,
     handleUnexpectedTunnelStop,
     performDaemonShutdown,
     runDaemonShutdownLifecycle,
@@ -17,6 +19,66 @@ afterEach(() => {
 });
 
 describe('daemon shutdown lifecycle', () => {
+    it('aborts delayed startup readiness when daemon state ownership is lost', async () => {
+        const startupAbort = createDaemonStartupAbortController();
+        const delayedReadiness = new Promise<void>(() => undefined);
+        const waitForReadiness = startupAbort.race(delayedReadiness);
+
+        startupAbort.abort(new Error('Daemon state ownership changed.'));
+
+        await expect(waitForReadiness).rejects.toThrow('Daemon state ownership changed.');
+        expect(() => startupAbort.throwIfAborted()).toThrow('Daemon state ownership changed.');
+    });
+
+    it('releases every available startup resource after a later startup failure', async () => {
+        const machineSocketHandle = { close: vi.fn() };
+        const killAllSessions = vi.fn(async () => undefined);
+        const codexAppServerHost = {
+            endpoint: 'ws://127.0.0.1:45123',
+            processId: 45123,
+            stop: vi.fn(async () => undefined),
+        };
+        const tunnelStop = vi.fn();
+        const freeWhisper = vi.fn(async () => undefined);
+        const stopTts = vi.fn(async () => {
+            throw new Error('TTS cleanup failed');
+        });
+        const flushP2PStore = vi.fn();
+        const stopP2PServer = vi.fn(async () => undefined);
+        const stopControlServer = vi.fn(async () => undefined);
+        const persistFailedState = vi.fn(async () => undefined);
+        const stopCaffeinate = vi.fn(async () => undefined);
+        const releaseDaemonLock = vi.fn(async () => undefined);
+
+        await cleanupDaemonStartupFailure({
+            machineSocketHandle: machineSocketHandle as never,
+            killAllSessions,
+            codexAppServerHost,
+            tunnelStop,
+            freeWhisper,
+            stopTts,
+            flushP2PStore,
+            stopP2PServer,
+            stopControlServer,
+            persistFailedState,
+            stopCaffeinate,
+            releaseDaemonLock,
+        });
+
+        expect(machineSocketHandle.close).toHaveBeenCalledOnce();
+        expect(killAllSessions).toHaveBeenCalledOnce();
+        expect(codexAppServerHost.stop).toHaveBeenCalledOnce();
+        expect(tunnelStop).toHaveBeenCalledOnce();
+        expect(freeWhisper).toHaveBeenCalledOnce();
+        expect(stopTts).toHaveBeenCalledOnce();
+        expect(flushP2PStore).toHaveBeenCalledOnce();
+        expect(stopP2PServer).toHaveBeenCalledOnce();
+        expect(stopControlServer).toHaveBeenCalledOnce();
+        expect(persistFailedState).toHaveBeenCalledOnce();
+        expect(stopCaffeinate).toHaveBeenCalledOnce();
+        expect(releaseDaemonLock).toHaveBeenCalledOnce();
+    });
+
     it('clears and persists LAN-only state only for the active failed tunnel', async () => {
         const activeStop = vi.fn();
         const staleStop = vi.fn();

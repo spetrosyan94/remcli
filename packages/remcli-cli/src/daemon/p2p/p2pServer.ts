@@ -6,7 +6,7 @@
 
 import { existsSync } from 'fs';
 import { basename, extname, sep } from 'path';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import fastify from 'fastify';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
@@ -15,9 +15,12 @@ import { Server as SocketIOServer } from 'socket.io';
 import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
 import { P2PStore } from './p2pStore';
 import { P2PEventRouter, P2PClientConnection, ConnectionType } from './p2pEventRouter';
-import { registerSocketHandlers } from './p2pSocketHandlers';
+import {
+    createMachineRpcAvailabilityGate,
+    registerSocketHandlers,
+} from './p2pSocketHandlers';
 import { registerP2PRestRoutes } from './p2pRestRoutes';
-import { verifyBearerToken } from './p2pAuth';
+import { PAIRING_SECRET_SIZE, verifyBearerToken } from './p2pAuth';
 import {
     createP2PRequestProofVerifier,
     type P2PRequestProofVerifierOptions,
@@ -47,6 +50,11 @@ export interface P2PServer {
     host: string;
     store: P2PStore;
     router: P2PEventRouter;
+    daemonMachineCredential: string | undefined;
+    prepareAuthSecret: (authSecret: Uint8Array) => void;
+    commitPreparedAuthSecret: () => void;
+    rollbackPreparedAuthSecret: () => void;
+    disconnectDaemonMachineSockets: () => void;
     rotateAuthSecret: (authSecret: Uint8Array) => void;
     stop: () => Promise<void>;
 }
@@ -141,11 +149,19 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
     const { port, host, authSecret, store } = config;
     const runnerCredentialStore = config.runnerCredentialStore ?? new P2PRunnerCredentialStore();
     let currentAuthSecret = authSecret;
+    let preparedAuthSecret: Uint8Array | null = null;
+    // This capability exists only for the lifetime of this daemon process. It
+    // distinguishes its localhost self-machine socket from a pairing holder.
+    const daemonMachineCredential = config.daemonMachineId
+        ? randomBytes(32).toString('base64url')
+        : undefined;
     const retiredRunnerAuthSecrets: Uint8Array[] = [];
     const requestProofVerifier = createP2PRequestProofVerifier({
         ...config.requestProofVerifierOptions,
         getAuthSecret: () => currentAuthSecret,
+        getAdditionalAuthSecrets: () => preparedAuthSecret ? [preparedAuthSecret] : [],
     });
+    const machineRpcAvailabilityGate = createMachineRpcAvailabilityGate(config.daemonMachineId);
 
     const router = new P2PEventRouter();
 
@@ -252,21 +268,54 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
             && runnerCredentialStore.verify(sessionId, runnerCredential);
     }
 
+    function isDaemonMachineClaim(auth: unknown): boolean {
+        return (
+            config.daemonMachineId !== undefined
+            && getConnectionType(auth) === 'machine-scoped'
+            && readString(auth, 'machineId') === config.daemonMachineId
+        );
+    }
+
+    function isTrustedDaemonMachine(auth: unknown): boolean {
+        const credential = readString(auth, 'daemonMachineCredential');
+        if (
+            !isDaemonMachineClaim(auth)
+            ||
+            daemonMachineCredential === undefined
+            || credential === undefined
+        ) {
+            return false;
+        }
+
+        const credentialBytes = Buffer.from(credential, 'utf8');
+        const daemonMachineCredentialBytes = Buffer.from(daemonMachineCredential, 'utf8');
+        return credentialBytes.byteLength === daemonMachineCredentialBytes.byteLength
+            && timingSafeEqual(credentialBytes, daemonMachineCredentialBytes);
+    }
+
     // Socket.IO authentication middleware
     io.use((socket, next) => {
         const auth = socket.handshake.auth as unknown;
         const token = readString(auth, 'token');
+        const connectionType = getConnectionType(auth);
         const isCurrentAuth = token !== undefined && verifyBearerToken(token, currentAuthSecret);
+        const hasTrustedDaemonMachineCredential = isTrustedDaemonMachine(auth);
+        const isPreparedAuth = token !== undefined
+            && preparedAuthSecret !== null
+            && hasTrustedDaemonMachineCredential
+            && verifyBearerToken(token, preparedAuthSecret);
         const isRetiredRunner = token !== undefined
             && isAcknowledgedRunner(auth)
             && retiredRunnerAuthSecrets.some((secret) => verifyBearerToken(token, secret));
-        if (!isCurrentAuth && !isRetiredRunner) {
+        if (
+            (isDaemonMachineClaim(auth) && !hasTrustedDaemonMachineCredential)
+            || (!isCurrentAuth && !isPreparedAuth && !isRetiredRunner)
+        ) {
             logger.debug('[P2P SERVER] Socket.IO auth failed');
             next(new Error('Authentication failed'));
             return;
         }
 
-        const connectionType = getConnectionType(auth);
         if (connectionType === 'session-scoped' && isCurrentAuth) {
             const sessionId = readString(auth, 'sessionId');
             const runnerCredential = readString(auth, 'runnerCredential');
@@ -383,7 +432,15 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
         };
 
         router.addConnection(connection);
-        registerSocketHandlers(socket, connection, store, router, requestProofVerifier);
+        registerSocketHandlers(
+            socket,
+            connection,
+            store,
+            router,
+            requestProofVerifier,
+            machineRpcAvailabilityGate,
+            isTrustedDaemonMachine(auth),
+        );
 
         if (isAcknowledgedRunner && sessionId && runnerConnection) {
             const previousRunnerConnection = activeAcknowledgedRunnerConnections.get(sessionId);
@@ -512,6 +569,84 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
         }
     });
 
+    function assertAuthSecretLength(nextAuthSecret: Uint8Array): void {
+        if (nextAuthSecret.length !== PAIRING_SECRET_SIZE) {
+            throw new Error(`Unexpected P2P auth secret length: ${nextAuthSecret.length}`);
+        }
+    }
+
+    function activateAuthSecret(nextAuthSecret: Uint8Array): void {
+        retiredRunnerAuthSecrets.push(currentAuthSecret);
+        currentAuthSecret = nextAuthSecret;
+        requestProofVerifier.resetReplayState();
+
+        for (const socket of io.sockets.sockets.values()) {
+            const auth = socket.handshake.auth as unknown;
+            const token = readString(auth, 'token');
+            const isCurrentAuth = token !== undefined && verifyBearerToken(token, currentAuthSecret);
+            if (!isCurrentAuth && !isAcknowledgedRunner(auth)) {
+                socket.disconnect(true);
+            }
+        }
+        logger.debug('[P2P SERVER] Pairing auth secret rotated; stale user and machine sockets disconnected');
+    }
+
+    function prepareAuthSecret(nextAuthSecret: Uint8Array): void {
+        assertAuthSecretLength(nextAuthSecret);
+        if (!config.daemonMachineId) {
+            throw new Error('Cannot prepare a P2P auth secret without a daemon machine identity');
+        }
+        if (preparedAuthSecret !== null) {
+            throw new Error('A P2P auth secret is already prepared');
+        }
+        preparedAuthSecret = nextAuthSecret;
+    }
+
+    function commitPreparedAuthSecret(): void {
+        if (preparedAuthSecret === null) {
+            throw new Error('No P2P auth secret is prepared');
+        }
+        const nextAuthSecret = preparedAuthSecret;
+        preparedAuthSecret = null;
+        activateAuthSecret(nextAuthSecret);
+    }
+
+    function rollbackPreparedAuthSecret(): void {
+        if (preparedAuthSecret === null) {
+            return;
+        }
+        const abandonedAuthSecret = preparedAuthSecret;
+        preparedAuthSecret = null;
+
+        for (const socket of io.sockets.sockets.values()) {
+            const token = readString(socket.handshake.auth as unknown, 'token');
+            if (token !== undefined && verifyBearerToken(token, abandonedAuthSecret)) {
+                socket.disconnect(true);
+            }
+        }
+        logger.debug('[P2P SERVER] Prepared pairing auth secret rolled back');
+    }
+
+    function disconnectDaemonMachineSockets(): void {
+        if (!config.daemonMachineId) {
+            return;
+        }
+        for (const socket of io.sockets.sockets.values()) {
+            const auth = socket.handshake.auth as unknown;
+            if (isTrustedDaemonMachine(auth)) {
+                socket.disconnect(true);
+            }
+        }
+    }
+
+    function rotateAuthSecret(nextAuthSecret: Uint8Array): void {
+        assertAuthSecretLength(nextAuthSecret);
+        if (preparedAuthSecret !== null) {
+            throw new Error('Cannot rotate P2P auth secret while another secret is prepared');
+        }
+        activateAuthSecret(nextAuthSecret);
+    }
+
     // Start listening
     return new Promise((resolve, reject) => {
         app.listen({ port, host }, (err, address) => {
@@ -529,22 +664,12 @@ export async function startP2PServer(config: P2PServerConfig): Promise<P2PServer
                 host,
                 store,
                 router,
-                rotateAuthSecret: (nextAuthSecret: Uint8Array) => {
-                    if (nextAuthSecret.length !== 32) {
-                        throw new Error(`Unexpected P2P auth secret length: ${nextAuthSecret.length}`);
-                    }
-                    retiredRunnerAuthSecrets.push(currentAuthSecret);
-                    currentAuthSecret = nextAuthSecret;
-                    requestProofVerifier.resetReplayState();
-
-                    for (const socket of io.sockets.sockets.values()) {
-                        const auth = socket.handshake.auth as unknown;
-                        if (!isAcknowledgedRunner(auth)) {
-                            socket.disconnect(true);
-                        }
-                    }
-                    logger.debug('[P2P SERVER] Pairing auth secret rotated; stale user and machine sockets disconnected');
-                },
+                daemonMachineCredential,
+                prepareAuthSecret,
+                commitPreparedAuthSecret,
+                rollbackPreparedAuthSecret,
+                disconnectDaemonMachineSockets,
+                rotateAuthSecret,
                 stop: async () => {
                     logger.debug('[P2P SERVER] Stopping...');
                     unsubscribeRunnerLeaseActivation();

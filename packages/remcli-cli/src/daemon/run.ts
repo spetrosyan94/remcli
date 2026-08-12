@@ -36,6 +36,7 @@ import { P2PStore } from './p2p/p2pStore';
 import { startP2PServer, P2PServer } from './p2p/p2pServer';
 import { P2PRunnerCredentialStore } from './p2p/p2pRunnerCredentials';
 import { publishSessionActivity } from './p2p/p2pSessionLifecycle';
+import { publishMachineSnapshot } from './p2p/p2pMachinePublication';
 import { createStoppedSessionLifecycleHandler } from './sessionLifecycle';
 import { deriveBearerToken } from './p2p/p2pAuth';
 import { loadOrCreatePairing, replacePairing, updatePairingPort } from './p2p/p2pPairing';
@@ -52,6 +53,7 @@ import { startCodexAppServerHost, type CodexAppServerHostHandle } from '@/codex/
 import { CodexCapabilitiesService } from '@/codex/codexCapabilities';
 import { CursorCapabilitiesService } from '@/cursor/cursorCapabilities';
 import { PairingRekeyCoordinator } from './p2p/pairingRekey';
+import { commitPairingRekeyAfterMachineReadiness } from './p2p/pairingRekeyTransaction';
 import { redactDiagnosticData } from '@/utils/redaction';
 import { spawnRemcliCLI } from '@/utils/spawnRemcliCLI';
 import QRCode from 'qrcode';
@@ -108,6 +110,63 @@ export interface DaemonShutdownDependencies {
     stopCaffeinate: () => Promise<void>;
     releaseDaemonLock: () => Promise<void>;
     restartAfterRelease?: () => boolean | void;
+}
+
+/**
+ * Cleanup used only before the daemon reaches its steady-state lifecycle.
+ * Startup cannot leave a half-created control server, tunnel, P2P listener or
+ * lock behind merely because a later readiness step fails.
+ */
+export interface DaemonStartupFailureCleanupDependencies {
+    machineSocketHandle: ReturnType<typeof bootstrapMachineSocket> | null;
+    killAllSessions: () => Promise<void>;
+    codexAppServerHost: CodexAppServerHostHandle | null;
+    tunnelStop: (() => void) | null;
+    freeWhisper: () => Promise<void>;
+    stopTts: () => Promise<void>;
+    flushP2PStore: () => void;
+    stopP2PServer: () => Promise<void>;
+    stopControlServer: () => Promise<void>;
+    persistFailedState: () => Promise<void>;
+    stopCaffeinate: () => Promise<void>;
+    releaseDaemonLock: () => Promise<void>;
+}
+
+export interface DaemonStartupAbortController {
+    abort: (error: Error) => void;
+    race: <T>(operation: Promise<T>) => Promise<T>;
+    throwIfAborted: () => void;
+}
+
+/**
+ * A shutdown request during startup must interrupt the readiness wait instead
+ * of relying on the lifecycle's force-exit timer, which is not active yet.
+ */
+export function createDaemonStartupAbortController(): DaemonStartupAbortController {
+    let abortError: Error | null = null;
+    let rejectAbort: ((error: Error) => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+        rejectAbort = reject;
+    });
+    void aborted.catch(() => undefined);
+
+    return {
+        abort: (error) => {
+            if (abortError !== null) {
+                return;
+            }
+            abortError = error;
+            rejectAbort?.(error);
+        },
+        race: async <T>(operation: Promise<T>): Promise<T> => {
+            return await Promise.race([operation, aborted]);
+        },
+        throwIfAborted: () => {
+            if (abortError !== null) {
+                throw abortError;
+            }
+        },
+    };
 }
 
 type ExitProcess = (code: number) => void;
@@ -344,6 +403,40 @@ export async function performDaemonShutdown(
     return 'completed';
 }
 
+export async function cleanupDaemonStartupFailure(
+    dependencies: DaemonStartupFailureCleanupDependencies,
+): Promise<void> {
+    try {
+        dependencies.machineSocketHandle?.close();
+    } catch (error) {
+        logger.debug('[DAEMON RUN] Failed to close startup machine RPC socket:', error);
+    }
+
+    const cleanupSteps: Array<readonly [string, () => void | Promise<void>]> = [
+        ['startup sessions', dependencies.killAllSessions],
+        ['shared Codex app-server', async () => {
+            await dependencies.codexAppServerHost?.stop();
+        }],
+        ['startup tunnel', () => dependencies.tunnelStop?.()],
+        ['Whisper resources', dependencies.freeWhisper],
+        ['TTS provider', dependencies.stopTts],
+        ['P2P store', dependencies.flushP2PStore],
+        ['P2P server', dependencies.stopP2PServer],
+        ['control server', dependencies.stopControlServer],
+        ['failed daemon state', dependencies.persistFailedState],
+        ['caffeinate', dependencies.stopCaffeinate],
+        ['daemon lock', dependencies.releaseDaemonLock],
+    ];
+
+    for (const [name, cleanup] of cleanupSteps) {
+        try {
+            await cleanup();
+        } catch (error) {
+            logger.warn(`[DAEMON RUN] Failed to clean up ${name} after startup failure:`, redactDiagnosticData(error));
+        }
+    }
+}
+
 export async function runDaemonShutdownLifecycle(
     dependencies: DaemonShutdownLifecycleDependencies,
 ): Promise<void> {
@@ -360,6 +453,8 @@ export async function startDaemon(): Promise<void> {
   const daemonInstanceId = randomUUID();
   let fileState: DaemonLocallyPersistedState | null = null;
   let runtimeStateWritesAllowed = false;
+  let hasEnteredDaemonLifecycle = false;
+  const startupAbortController = createDaemonStartupAbortController();
   let daemonStateWriteQueue = Promise.resolve();
   let persistDaemonState: (() => Promise<void>) | null = null;
 
@@ -386,8 +481,17 @@ export async function startDaemon(): Promise<void> {
 
     restartIntent.recordShutdownRequest(restartAfterShutdown);
 
+    if (!hasEnteredDaemonLifecycle) {
+      startupAbortController.abort(new Error(errorMessage ?? `Daemon startup interrupted by ${source}.`));
+    }
+
     // A failed shared app-server stop keeps the daemon alive for an explicit retry.
-    if (!isCleanupInProgress && !isShutdownRetryPending && !startupFailureExitTimer) {
+    if (
+      hasEnteredDaemonLifecycle
+      && !isCleanupInProgress
+      && !isShutdownRetryPending
+      && !startupFailureExitTimer
+    ) {
       startupFailureExitTimer = setTimeout(async () => {
         logger.debug('[DAEMON RUN] Startup malfunctioned, forcing exit with code 1');
 
@@ -468,6 +572,24 @@ export async function startDaemon(): Promise<void> {
     process.exit(0);
   }
 
+  const startupResources: {
+    p2pStore: P2PStore | null;
+    p2pServer: P2PServer | null;
+    machineSocketHandle: ReturnType<typeof bootstrapMachineSocket> | null;
+    sessionManager: ReturnType<typeof createSessionManager> | null;
+    codexAppServerHost: CodexAppServerHostHandle | null;
+    tunnelStop: (() => void) | null;
+    stopControlServer: (() => Promise<void>) | null;
+  } = {
+    p2pStore: null,
+    p2pServer: null,
+    machineSocketHandle: null,
+    sessionManager: null,
+    codexAppServerHost: null,
+    tunnelStop: null,
+    stopControlServer: null,
+  };
+
   // At this point we should be safe to startup the daemon:
   // 1. Not have a stale daemon state
   // 2. Should not have another daemon process running
@@ -516,6 +638,7 @@ export async function startDaemon(): Promise<void> {
     logger.debug('[DAEMON RUN] P2P pairing loaded (persistent split secrets)');
 
     const p2pStore = new P2PStore();
+    startupResources.p2pStore = p2pStore;
     logger.debug('[DAEMON RUN] P2P store initialized (in-memory, persistent pairing secret)');
 
     const runnerCredentialStore = new P2PRunnerCredentialStore();
@@ -540,6 +663,7 @@ export async function startDaemon(): Promise<void> {
             }
         },
     });
+    startupResources.sessionManager = sessionManager;
 
     const persistCurrentDaemonState = async (): Promise<void> => {
       if (!fileState) {
@@ -605,39 +729,54 @@ export async function startDaemon(): Promise<void> {
           }),
         };
       },
-      rotateAuthSecret: async (nextAuthSecret) => {
-        if (!p2pServer) {
+      rotateAuthSecret: async (nextAuthSecret, canCommit) => {
+        const activeP2PServer = p2pServer;
+        const activeCodexCapabilities = codexCapabilities;
+        const activeCursorCapabilities = cursorCapabilities;
+        if (!activeP2PServer) {
           throw new Error('P2P server is not ready');
         }
-        const nextPairing = replacePairing({
-          ...pairing,
-          authSecret: nextAuthSecret,
-        });
-        p2pServer.rotateAuthSecret(nextPairing.authSecret);
-        pairing = nextPairing;
+        if (!machineId || !activeCodexCapabilities || !activeCursorCapabilities) {
+          throw new Error('Machine RPC dependencies are unavailable before pairing rekey.');
+        }
+        if (!activeP2PServer.daemonMachineCredential) {
+          throw new Error('Daemon machine credential is unavailable before pairing rekey.');
+        }
 
-        // The daemon's self-machine is intentionally reconnected with the new
-        // bearer; session runners retain their stable content secret and lease.
-        setTimeout(() => {
-          if (!p2pServer || !machineId || !codexCapabilities || !cursorCapabilities) return;
-          machineSocketHandle?.close();
-          machineSocketHandle = bootstrapMachineSocket({
-            p2pPort: p2pServer.port,
+        const transaction = await commitPairingRekeyAfterMachineReadiness({
+          currentPairing: pairing,
+          nextAuthSecret,
+          p2pServer: activeP2PServer,
+          machineSocketHandle,
+          createMachineSocket: (machinePairing) => bootstrapMachineSocket({
+            p2pPort: activeP2PServer.port,
             machineId,
-            bearerToken: deriveBearerToken(pairing.authSecret),
-            authSecret: pairing.authSecret,
-            contentSecret: pairing.contentSecret,
+            bearerToken: deriveBearerToken(machinePairing.authSecret),
+            daemonMachineCredential: activeP2PServer.daemonMachineCredential,
+            authSecret: machinePairing.authSecret,
+            contentSecret: machinePairing.contentSecret,
             pairingRekeyCoordinator,
-            codexCapabilities,
-            cursorCapabilities,
+            codexCapabilities: activeCodexCapabilities,
+            cursorCapabilities: activeCursorCapabilities,
             spawnSession: sessionManager.spawnSession,
             stopSession: sessionManager.stopSession,
             getSessionExecution: sessionManager.getSessionExecution,
             getSessionExecutionState: sessionManager.getSessionExecutionState,
             setSessionExecution: sessionManager.setSessionExecution,
             requestShutdown: () => requestShutdown('remcli-web'),
-          });
-        }, 0);
+          }),
+          persistPairing: replacePairing,
+          onRollbackMachineSocketReady: (restoredMachineSocketHandle) => {
+            machineSocketHandle = restoredMachineSocketHandle;
+          },
+          canCommit,
+        });
+        if (transaction.type === 'expired') {
+          return transaction;
+        }
+        pairing = transaction.pairing;
+        machineSocketHandle = transaction.machineSocketHandle;
+        return { type: 'committed' };
       },
     });
 
@@ -664,6 +803,7 @@ export async function startDaemon(): Promise<void> {
       openCodexRemoteTui: sessionManager.openCodexRemoteTui,
       approvePairingRekey: (requestId, approvalCode) => pairingRekeyCoordinator.approve(requestId, approvalCode),
     });
+    startupResources.stopControlServer = stopControlServer;
 
     // Write the first owner-bound lifecycle snapshot after the control server is ready.
     fileState = {
@@ -692,6 +832,7 @@ export async function startDaemon(): Promise<void> {
     let codexAppServerHost: CodexAppServerHostHandle | null = null;
     try {
         codexAppServerHost = await startCodexAppServerHost();
+        startupResources.codexAppServerHost = codexAppServerHost;
         fileState.codexAppServerEndpoint = codexAppServerHost.endpoint;
         fileState.codexAppServerPid = codexAppServerHost.processId;
         await persistDaemonState();
@@ -797,6 +938,8 @@ export async function startDaemon(): Promise<void> {
         });
     }
     p2pServer = startedP2PServer;
+    startupResources.p2pServer = p2pServer;
+    startupAbortController.throwIfAborted();
     logger.debug(`[DAEMON RUN] P2P server started on port ${p2pServer.port}`);
     publishStoppedSessionInactive = (sessionId: string) => {
         const result = publishSessionActivity(p2pStore, p2pServer.router, {
@@ -826,23 +969,18 @@ export async function startDaemon(): Promise<void> {
     await persistDaemonState();
     logger.debug('[DAEMON RUN] Daemon state updated with P2P info');
 
-    // Register the server-configured daemon machine in the P2P store.
-    p2pStore.getOrCreateMachine(
-        machineId,
-        JSON.stringify(initialMachineMetadata),
-        JSON.stringify({ status: 'running', pid: process.pid, httpPort: controlPort, startedAt: Date.now() }),
-        null
-    );
-    logger.debug(`[DAEMON RUN] Machine registered in P2P store: ${machineId}`);
-
     // ─── Self-connect as machine client for RPC handling ────────────
     if (!codexCapabilities || !cursorCapabilities) {
         throw new Error('Provider capability services were not initialized.');
+    }
+    if (!p2pServer.daemonMachineCredential) {
+        throw new Error('Daemon machine credential is unavailable.');
     }
     machineSocketHandle = bootstrapMachineSocket({
         p2pPort: p2pServer.port,
         machineId,
         bearerToken: deriveBearerToken(pairing.authSecret),
+        daemonMachineCredential: p2pServer.daemonMachineCredential,
         authSecret: pairing.authSecret,
         contentSecret: pairing.contentSecret,
         pairingRekeyCoordinator,
@@ -855,6 +993,23 @@ export async function startDaemon(): Promise<void> {
         setSessionExecution: sessionManager.setSessionExecution,
         requestShutdown: () => requestShutdown('remcli-web')
     });
+    startupResources.machineSocketHandle = machineSocketHandle;
+    await startupAbortController.race(machineSocketHandle.ready);
+    startupAbortController.throwIfAborted();
+
+    // Publish the machine only after every initial machine RPC handler is
+    // confirmed by the P2P server, so a newly discovered machine is callable.
+    const machine = p2pStore.getOrCreateMachine(
+        machineId,
+        JSON.stringify(initialMachineMetadata),
+        JSON.stringify({ status: 'running', pid: process.pid, httpPort: controlPort, startedAt: Date.now() }),
+        null
+    );
+    if (!machine) {
+        throw new Error('Daemon machine was deleted during startup.');
+    }
+    publishMachineSnapshot(p2pStore, p2pServer.router, machine);
+    logger.debug(`[DAEMON RUN] Machine registered in P2P store: ${machineId}`);
 
     // Optionally start cloudflared tunnel for remote access
     const useTunnel = process.argv.includes('--tunnel') || process.env.REMCLI_TUNNEL === 'true';
@@ -870,6 +1025,7 @@ export async function startDaemon(): Promise<void> {
             activeTunnelGeneration = tunnelGeneration;
             tunnelUrl = tunnel.url;
             tunnelStop = tunnel.stop;
+            startupResources.tunnelStop = tunnelStop;
             fileState.tunnelUrl = tunnelUrl;
             await persistTunnelState();
             logger.debug('[DAEMON RUN] Tunnel started');
@@ -935,6 +1091,7 @@ export async function startDaemon(): Promise<void> {
     fileState.state = 'running';
     fileState.stateReason = 'ready';
     await persistDaemonState();
+    startupAbortController.throwIfAborted();
 
     // Heartbeat loop: prunes stale sessions and asks this owner to persist only
     // after it has confirmed the same instance still owns the state snapshot.
@@ -1046,6 +1203,7 @@ export async function startDaemon(): Promise<void> {
 
     // A failed shared Codex app-server stop preserves ownership and waits for
     // the next control/signal request instead of falling through to fatal exit.
+    hasEnteredDaemonLifecycle = true;
     await runDaemonShutdownLifecycle({
       waitForShutdownRequest: shutdownRequestChannel.waitForShutdownRequest,
       cleanupAndShutdown: (shutdownRequest) => cleanupAndShutdown(
@@ -1055,15 +1213,43 @@ export async function startDaemon(): Promise<void> {
       ),
     });
   } catch (error) {
-    if (fileState && persistDaemonState) {
-      runtimeStateWritesAllowed = false;
+    runtimeStateWritesAllowed = false;
+    const persistFailedState = async (): Promise<void> => {
+      if (!fileState || !persistDaemonState) {
+        return;
+      }
       fileState.state = 'failed';
       fileState.stateReason = isCleanupInProgress ? 'cleanup-failed' : 'startup-failed';
-      try {
-        await persistDaemonState();
-      } catch (persistError) {
-        logger.warn('[DAEMON RUN] Failed to persist terminal daemon lifecycle state:', persistError);
+      await persistDaemonState();
+    };
+
+    if (!hasEnteredDaemonLifecycle) {
+      if (startupFailureExitTimer) {
+        clearTimeout(startupFailureExitTimer);
+        startupFailureExitTimer = null;
       }
+      await cleanupDaemonStartupFailure({
+        machineSocketHandle: startupResources.machineSocketHandle,
+        killAllSessions: async () => {
+          await startupResources.sessionManager?.killAllSessions();
+        },
+        codexAppServerHost: startupResources.codexAppServerHost,
+        tunnelStop: startupResources.tunnelStop,
+        freeWhisper,
+        stopTts,
+        flushP2PStore: () => startupResources.p2pStore?.flushKvToDisk(),
+        stopP2PServer: async () => {
+          await startupResources.p2pServer?.stop();
+        },
+        stopControlServer: async () => {
+          await startupResources.stopControlServer?.();
+        },
+        persistFailedState,
+        stopCaffeinate,
+        releaseDaemonLock: () => releaseDaemonLock(daemonLockHandle),
+      });
+    } else {
+      await persistFailedState();
     }
     logger.debug('[DAEMON RUN][FATAL] Failed somewhere unexpectedly - exiting with code 1:', redactDiagnosticData(error));
     process.exit(1);

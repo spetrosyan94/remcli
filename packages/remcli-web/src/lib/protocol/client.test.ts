@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Socket } from 'socket.io-client';
+import type { P2PCredentials } from '@/lib/protocol/connection';
 import type { NormalizedMessage } from '@/lib/protocol/messages';
 import type { ApiMachine, ApiMessage, ApiSession } from '@/lib/protocol/types';
 
@@ -24,6 +26,39 @@ interface IDeferred<T> {
     resolve: (value: T) => void;
 }
 
+interface IFakeSocket {
+    socket: Socket;
+    trigger: (event: string) => void;
+}
+
+function createFakeSocket(): IFakeSocket {
+    const listeners = new Map<string, () => void>();
+    const socket = {
+        connected: false,
+        recovered: false,
+        disconnect: vi.fn(),
+        emit: vi.fn(),
+        emitWithAck: vi.fn(),
+        on: vi.fn((event: string, listener: () => void) => {
+            listeners.set(event, listener);
+            return socket;
+        }),
+        onAny: vi.fn(),
+    } as unknown as Socket;
+
+    return {
+        socket,
+        trigger(event) {
+            if (event === 'connect') {
+                (socket as unknown as { connected: boolean }).connected = true;
+            } else if (event === 'disconnect') {
+                (socket as unknown as { connected: boolean }).connected = false;
+            }
+            listeners.get(event)?.();
+        },
+    };
+}
+
 interface IReconnectMockOptions {
     deleteMachine?: () => Promise<{ ok: boolean; status?: number }>;
     decryptRaw?: (value: string) => Promise<unknown | null>;
@@ -36,6 +71,11 @@ interface IReconnectMockOptions {
     ) => Promise<{ messages: ApiMessage[]; total: number; hasMore: boolean }>;
     fetchSessions: () => Promise<ApiSession[]>;
     measureHealthLatency?: () => Promise<number | null>;
+    realSocket?: IFakeSocket;
+    realSockets?: IFakeSocket[];
+    restoreCredentials?: () => P2PCredentials | null;
+    sendEncryptedMessage?: (options: unknown) => void;
+    waitForSocketConnection?: () => Promise<void>;
 }
 
 interface IReconnectMocks {
@@ -123,7 +163,7 @@ function installReconnectMocks(options: IReconnectMockOptions): IReconnectMocks 
         connectP2P: vi.fn(() => ({ endpoint: 'http://127.0.0.1:12345', token: 'test-token', authSecret: new Uint8Array(32), contentSecret: new Uint8Array(32) })),
         createP2PCredentials: vi.fn(() => ({ endpoint: 'http://127.0.0.1:12345', token: 'replacement-token', authSecret: new Uint8Array(32), contentSecret: new Uint8Array(32) })),
         disconnectP2P: vi.fn(),
-        restoreCredentials: vi.fn(() => null),
+        restoreCredentials: options.restoreCredentials ?? vi.fn(() => null),
         storeConnection: vi.fn(),
     }));
     vi.doMock('@/lib/protocol/encryption', () => ({
@@ -142,33 +182,42 @@ function installReconnectMocks(options: IReconnectMockOptions): IReconnectMocks 
         fetchSessions: options.fetchSessions,
         measureHealthLatency: options.measureHealthLatency ?? vi.fn(async () => null),
     }));
-    vi.doMock('@/lib/protocol/socket', () => ({
-        machineListAgentSessions: vi.fn(),
-        machineListDirectory: vi.fn(),
-        machineSpawnNewSession: vi.fn(),
-        machineStopSession: vi.fn(),
-        onSocketMessage: vi.fn((event: string, listener: (data: unknown) => unknown) => {
-            if (event === 'update') {
-                socketUpdateListener = listener;
-            }
-            if (event === 'ephemeral') {
-                socketEphemeralListener = listener;
-            }
-            return vi.fn();
-        }),
-        onSocketReconnected: vi.fn((listener: () => unknown) => {
-            socketReconnectListener = listener;
-            return vi.fn();
-        }),
-        onSocketStatusChange: vi.fn(() => vi.fn()),
-        sendEncryptedMessage: vi.fn(),
-        sessionAllow: vi.fn(),
-        sessionDeny: vi.fn(),
-        socketConnect: vi.fn(),
-        socketDisconnect: vi.fn(),
-        socketEmitWithAck: vi.fn(),
-        waitForSocketConnection: vi.fn().mockResolvedValue(undefined),
-    }));
+    if (options.realSocket || options.realSockets) {
+        vi.doUnmock('@/lib/protocol/socket');
+        const sockets = options.realSockets ?? [options.realSocket as IFakeSocket];
+        let socketIndex = 0;
+        vi.doMock('socket.io-client', () => ({
+            io: vi.fn(() => sockets[socketIndex++]?.socket),
+        }));
+    } else {
+        vi.doMock('@/lib/protocol/socket', () => ({
+            machineListAgentSessions: vi.fn(),
+            machineListDirectory: vi.fn(),
+            machineSpawnNewSession: vi.fn(),
+            machineStopSession: vi.fn(),
+            onSocketMessage: vi.fn((event: string, listener: (data: unknown) => unknown) => {
+                if (event === 'update') {
+                    socketUpdateListener = listener;
+                }
+                if (event === 'ephemeral') {
+                    socketEphemeralListener = listener;
+                }
+                return vi.fn();
+            }),
+            onSocketReconnected: vi.fn((listener: () => unknown) => {
+                socketReconnectListener = listener;
+                return vi.fn();
+            }),
+            onSocketStatusChange: vi.fn(() => vi.fn()),
+            sendEncryptedMessage: options.sendEncryptedMessage ?? vi.fn(),
+            sessionAllow: vi.fn(),
+            sessionDeny: vi.fn(),
+            socketConnect: vi.fn(),
+            socketDisconnect: vi.fn(),
+            socketEmitWithAck: vi.fn(),
+            waitForSocketConnection: options.waitForSocketConnection ?? vi.fn().mockResolvedValue(undefined),
+        }));
+    }
 
     return {
         async notifySocketReconnect() {
@@ -284,6 +333,30 @@ describe('protocol client message meta', () => {
             content: { type: 'text', text: 'Keep the local echo' },
             meta: { sentFrom: 'web', displayText: 'Visible local echo' },
         });
+
+        stopProtocolClient();
+    });
+
+    it('does not leave a local echo when message emission fails', async () => {
+        const session = createTestSession('session-send-failure');
+        const sendEncryptedMessage = vi.fn(() => {
+            throw new Error('message emission failed');
+        });
+        installReconnectMocks({
+            decryptRaw: async (value) => value === session.metadata
+                ? { path: '/workspace', host: 'host', flavor: 'codex' }
+                : null,
+            fetchSessions: async () => [session],
+            sendEncryptedMessage,
+        });
+
+        const { sendSessionMessage, startProtocolClient, stopProtocolClient } = await import('@/lib/protocol/client');
+        const { useProtocolStore } = await import('@/lib/protocol/store');
+        await startProtocolClient({ mode: 'p2p', host: '127.0.0.1', port: 12345, key: 'test-key', v: 1 });
+
+        await expect(sendSessionMessage(session.id, 'Do not echo this')).rejects.toThrow('message emission failed');
+        expect(sendEncryptedMessage).toHaveBeenCalledOnce();
+        expect(useProtocolStore.getState().sessionMessages[session.id]).toBeUndefined();
 
         stopProtocolClient();
     });
@@ -452,6 +525,122 @@ describe('protocol client reconnect lifecycle', () => {
         vi.resetModules();
     });
 
+    it('hydrates exactly once after a transient initial socket error recovers', async () => {
+        const fakeSocket = createFakeSocket();
+        const fetchMachines = vi.fn(async () => []);
+        const fetchSessions = vi.fn(async () => []);
+        const measureHealthLatency = vi.fn(async () => null);
+        installReconnectMocks({
+            fetchMachines,
+            fetchSessions,
+            measureHealthLatency,
+            realSocket: fakeSocket,
+        });
+        const { startProtocolClient, stopProtocolClient } = await import('@/lib/protocol/client');
+        const { useProtocolStore } = await import('@/lib/protocol/store');
+
+        const start = startProtocolClient({ mode: 'p2p', host: '127.0.0.1', port: 12345, key: 'test-key', v: 1 });
+        fakeSocket.trigger('connect_error');
+        fakeSocket.trigger('error');
+        await Promise.resolve();
+
+        expect(useProtocolStore.getState().isAuthenticated).toBe(false);
+        expect(fetchMachines).not.toHaveBeenCalled();
+        expect(fetchSessions).not.toHaveBeenCalled();
+
+        fakeSocket.trigger('connect');
+
+        await expect(start).resolves.toBeUndefined();
+        expect(useProtocolStore.getState().isAuthenticated).toBe(true);
+        expect(fetchMachines).toHaveBeenCalledOnce();
+        expect(fetchSessions).toHaveBeenCalledOnce();
+        expect(measureHealthLatency).toHaveBeenCalledOnce();
+
+        stopProtocolClient();
+    });
+
+    it('lets only the latest overlapping socket start authenticate the client', async () => {
+        const firstSocket = createFakeSocket();
+        const secondSocket = createFakeSocket();
+        const fetchMachines = vi.fn(async () => []);
+        const fetchSessions = vi.fn(async () => []);
+        installReconnectMocks({
+            fetchMachines,
+            fetchSessions,
+            realSockets: [firstSocket, secondSocket],
+        });
+        const { startProtocolClient, stopProtocolClient } = await import('@/lib/protocol/client');
+        const { useProtocolStore } = await import('@/lib/protocol/store');
+
+        const firstStart = startProtocolClient({ mode: 'p2p', host: '127.0.0.1', port: 12345, key: 'first-key', v: 1 });
+        const secondStart = startProtocolClient({ mode: 'p2p', host: '127.0.0.1', port: 12345, key: 'second-key', v: 1 });
+
+        await expect(firstStart).rejects.toThrow('Socket connection changed during wait');
+        firstSocket.trigger('connect');
+        expect(useProtocolStore.getState().isAuthenticated).toBe(false);
+
+        secondSocket.trigger('connect');
+        await expect(secondStart).resolves.toBeUndefined();
+        expect(useProtocolStore.getState().isAuthenticated).toBe(true);
+
+        stopProtocolClient();
+    });
+
+    it('waits for authentication before exposing fresh or restored client data', async () => {
+        const freshHandshake = createDeferred<void>();
+        const restoredHandshake = createDeferred<void>();
+        const waitForSocketConnection = vi.fn()
+            .mockImplementationOnce(() => freshHandshake.promise)
+            .mockImplementationOnce(() => restoredHandshake.promise);
+        const fetchMachines = vi.fn(async () => []);
+        const fetchSessions = vi.fn(async () => []);
+        const measureHealthLatency = vi.fn(async () => null);
+        const restoredCredentials: P2PCredentials = {
+            endpoint: 'http://127.0.0.1:12345',
+            token: 'restored-token',
+            authSecret: new Uint8Array(32),
+            contentSecret: new Uint8Array(32),
+        };
+        installReconnectMocks({
+            fetchMachines,
+            fetchSessions,
+            measureHealthLatency,
+            restoreCredentials: () => restoredCredentials,
+            waitForSocketConnection,
+        });
+        const { restoreProtocolClient, startProtocolClient, stopProtocolClient } = await import('@/lib/protocol/client');
+        const { useProtocolStore } = await import('@/lib/protocol/store');
+
+        const freshStart = startProtocolClient({ mode: 'p2p', host: '127.0.0.1', port: 12345, key: 'test-key', v: 1 });
+        await vi.waitFor(() => expect(waitForSocketConnection).toHaveBeenCalledOnce());
+        expect(useProtocolStore.getState().isAuthenticated).toBe(false);
+        expect(fetchMachines).not.toHaveBeenCalled();
+        expect(fetchSessions).not.toHaveBeenCalled();
+        expect(measureHealthLatency).not.toHaveBeenCalled();
+
+        freshHandshake.resolve(undefined);
+        await freshStart;
+        expect(useProtocolStore.getState().isAuthenticated).toBe(true);
+
+        stopProtocolClient();
+
+        const restoredStart = restoreProtocolClient();
+        await vi.waitFor(() => expect(waitForSocketConnection).toHaveBeenCalledTimes(2));
+        expect(useProtocolStore.getState().isAuthenticated).toBe(false);
+        expect(fetchMachines).toHaveBeenCalledOnce();
+        expect(fetchSessions).toHaveBeenCalledOnce();
+        expect(measureHealthLatency).toHaveBeenCalledOnce();
+
+        restoredHandshake.resolve(undefined);
+        await expect(restoredStart).resolves.toBe(true);
+        expect(useProtocolStore.getState().isAuthenticated).toBe(true);
+        expect(fetchMachines).toHaveBeenCalledTimes(2);
+        expect(fetchSessions).toHaveBeenCalledTimes(2);
+        expect(measureHealthLatency).toHaveBeenCalledTimes(2);
+
+        stopProtocolClient();
+    });
+
     it('persists a decrypted replacement pairing before the new Socket.IO handshake', async () => {
         installReconnectMocks({ fetchSessions: async () => [] });
         const { replaceProtocolClient, stopProtocolClient } = await import('@/lib/protocol/client');
@@ -469,12 +658,48 @@ describe('protocol client reconnect lifecycle', () => {
         stopProtocolClient();
     });
 
-    it('keeps the decrypted replacement as recovery pairing when the handshake initially fails', async () => {
+    it('cleans up after the initial handshake timeout while keeping the decrypted replacement pairing', async () => {
         installReconnectMocks({ fetchSessions: async () => [] });
         const { replaceProtocolClient } = await import('@/lib/protocol/client');
         const connection = await import('@/lib/protocol/connection');
         const socket = await import('@/lib/protocol/socket');
-        vi.mocked(socket.waitForSocketConnection).mockRejectedValueOnce(new Error('Authentication failed'));
+        vi.mocked(socket.waitForSocketConnection).mockRejectedValueOnce(new Error('Timed out waiting for Socket.IO authentication'));
+
+        const replacementStart = replaceProtocolClient({
+            mode: 'p2p',
+            host: '127.0.0.1',
+            port: 12345,
+            key: 'replacement-key',
+            v: 1,
+        });
+        vi.mocked(socket.socketDisconnect).mockClear();
+
+        await expect(replacementStart).rejects.toThrow('Timed out waiting for Socket.IO authentication');
+
+        expect(connection.storeConnection).toHaveBeenCalledWith({
+            host: '127.0.0.1',
+            port: 12345,
+            key: 'replacement-key',
+        });
+        expect(socket.socketDisconnect).toHaveBeenCalledOnce();
+    });
+
+    it('clears auth on a failed preserve-store rekey while retaining existing data', async () => {
+        const handshake = vi.fn()
+            .mockResolvedValueOnce(undefined)
+            .mockRejectedValueOnce(new Error('replacement handshake failed'));
+        const session = createTestSession('preserved-session');
+        installReconnectMocks({
+            fetchSessions: async () => [session],
+            waitForSocketConnection: handshake,
+        });
+        const { replaceProtocolClient, startProtocolClient } = await import('@/lib/protocol/client');
+        const { useProtocolStore } = await import('@/lib/protocol/store');
+
+        await startProtocolClient({ mode: 'p2p', host: '127.0.0.1', port: 12345, key: 'current-key', v: 1 });
+        useProtocolStore.getState().applyMessages(session.id, [createTestMessage('preserved-message')]);
+        const preservedSession = useProtocolStore.getState().sessions[session.id];
+        expect(useProtocolStore.getState().isAuthenticated).toBe(true);
 
         await expect(replaceProtocolClient({
             mode: 'p2p',
@@ -482,14 +707,15 @@ describe('protocol client reconnect lifecycle', () => {
             port: 12345,
             key: 'replacement-key',
             v: 1,
-        })).rejects.toThrow('Authentication failed');
+        })).rejects.toThrow('replacement handshake failed');
 
-        expect(connection.storeConnection).toHaveBeenCalledWith({
-            host: '127.0.0.1',
-            port: 12345,
-            key: 'replacement-key',
-        });
-        expect(socket.socketDisconnect).toHaveBeenCalledTimes(1);
+        const state = useProtocolStore.getState();
+        expect(state.isAuthenticated).toBe(false);
+        expect(state.connectionStatus).toBe('disconnected');
+        expect(state.sessions[session.id]).toEqual(preservedSession);
+        expect(state.sessionMessages[session.id]?.messages).toEqual([
+            createTestMessage('preserved-message'),
+        ]);
     });
 
     it('notifies ChatPage only after session refresh completes', async () => {

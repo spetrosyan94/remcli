@@ -116,6 +116,13 @@ export class RpcHandlerManager {
     }
 
     /**
+     * Return the fully scoped methods that must be registered on a new socket.
+     */
+    getHandlerMethods(): string[] {
+        return Array.from(this.handlers.keys());
+    }
+
+    /**
      * Check if a handler is registered
      * @param method - The method name (without prefix)
      */

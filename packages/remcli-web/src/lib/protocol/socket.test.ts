@@ -6,11 +6,27 @@ import { createRequestProof } from '@/lib/protocol/requestProof';
 interface FakeSocket {
     socket: Socket;
     trigger(event: string): void;
+    triggerMessage(event: string, data: unknown): void;
+}
+
+interface IDeferred<T> {
+    promise: Promise<T>;
+    resolve(value: T): void;
+}
+
+function createDeferred<T>(): IDeferred<T> {
+    let resolvePromise!: (value: T) => void;
+    const promise = new Promise<T>((resolve) => {
+        resolvePromise = resolve;
+    });
+    return { promise, resolve: resolvePromise };
 }
 
 function createFakeSocket(): FakeSocket {
     const listeners = new Map<string, () => void>();
+    let anyListener: ((event: string, data: unknown) => void) | undefined;
     const socket = {
+        connected: false,
         recovered: false,
         disconnect: vi.fn(),
         emit: vi.fn(),
@@ -19,13 +35,24 @@ function createFakeSocket(): FakeSocket {
             listeners.set(event, listener);
             return socket;
         }),
-        onAny: vi.fn(),
+        onAny: vi.fn((listener: (event: string, data: unknown) => void) => {
+            anyListener = listener;
+            return socket;
+        }),
     } as unknown as Socket;
 
     return {
         socket,
         trigger(event) {
+            if (event === 'connect') {
+                (socket as unknown as { connected: boolean }).connected = true;
+            } else if (event === 'disconnect') {
+                (socket as unknown as { connected: boolean }).connected = false;
+            }
             listeners.get(event)?.();
+        },
+        triggerMessage(event, data) {
+            anyListener?.(event, data);
         }
     };
 }
@@ -47,6 +74,7 @@ describe('socket reconnect lifecycle', () => {
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token', authSecret },
             { getSessionCipher: () => null, getMachineCipher: () => null }
         );
+        fakeSocket.trigger('connect');
 
         sendEncryptedMessage({
             sessionId: 'session-1',
@@ -98,6 +126,7 @@ describe('socket reconnect lifecycle', () => {
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token', authSecret },
             { getSessionCipher: () => null, getMachineCipher: () => cipher },
         );
+        fakeSocket.trigger('connect');
 
         await expect(machineListAgentSessions('machine-1', 'codex')).resolves.toEqual([]);
 
@@ -131,6 +160,7 @@ describe('socket reconnect lifecycle', () => {
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token', authSecret },
             { getSessionCipher: () => null, getMachineCipher: () => null },
         );
+        fakeSocket.trigger('connect');
 
         const payload = { machineId: 'machine-1', metadata: 'encrypted', expectedVersion: 2 };
         await expect(socketEmitWithAck('machine-update-metadata', payload)).resolves.toEqual({ result: 'success' });
@@ -144,6 +174,50 @@ describe('socket reconnect lifecycle', () => {
             expiresAt: proof.expiresAt,
             payload: emitted,
         }));
+
+        socketDisconnect();
+    });
+
+    it('rejects unauthenticated RPC and acknowledged mutations before encrypting or proving them', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-list' });
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const cipher = {
+            encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
+            decryptRaw: vi.fn().mockResolvedValue({ sessions: [] }),
+        } as unknown as Cipher;
+
+        const { machineListAgentSessions, socketConnect, socketDisconnect, socketEmitWithAck } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token', authSecret: new Uint8Array(32).fill(6) },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+
+        await expect(machineListAgentSessions('machine-1', 'codex')).rejects.toThrow('Socket is not authenticated');
+        await expect(socketEmitWithAck('machine-update-metadata', {
+            machineId: 'machine-1',
+            metadata: 'encrypted',
+            expectedVersion: 2,
+        })).rejects.toThrow('Socket is not authenticated');
+
+        expect((cipher.encryptRaw as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+        expect(emitWithAck).not.toHaveBeenCalled();
+
+        fakeSocket.trigger('connect');
+
+        await expect(machineListAgentSessions('machine-1', 'codex')).resolves.toEqual([]);
+        await expect(socketEmitWithAck('machine-update-metadata', {
+            machineId: 'machine-1',
+            metadata: 'encrypted',
+            expectedVersion: 2,
+        })).resolves.toEqual({ ok: true, result: 'encrypted-list' });
+        expect(cipher.encryptRaw).toHaveBeenCalledOnce();
+        expect(emitWithAck).toHaveBeenCalledTimes(2);
+        expect(emitWithAck.mock.calls.every(([, payload]) => (
+            typeof payload === 'object' && payload !== null && 'proof' in payload
+        ))).toBe(true);
 
         socketDisconnect();
     });
@@ -181,6 +255,215 @@ describe('socket reconnect lifecycle', () => {
         socketDisconnect();
     });
 
+    it('binds waits and events to the current socket generation', async () => {
+        const firstSocket = createFakeSocket();
+        const secondSocket = createFakeSocket();
+        const io = vi.fn()
+            .mockReturnValueOnce(firstSocket.socket)
+            .mockReturnValueOnce(secondSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+
+        const { getSocketStatus, onSocketMessage, socketConnect, socketDisconnect, waitForSocketConnection } = await import('@/lib/protocol/socket');
+        const onUpdate = vi.fn();
+        onSocketMessage('update', onUpdate);
+
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'first-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => null },
+        );
+        const firstWait = waitForSocketConnection();
+
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'second-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => null },
+        );
+        const secondWait = waitForSocketConnection();
+
+        await expect(firstWait).rejects.toThrow('Socket connection changed during wait');
+        firstSocket.trigger('connect');
+        firstSocket.triggerMessage('update', { source: 'stale' });
+        expect(getSocketStatus()).toBe('connecting');
+        expect(onUpdate).not.toHaveBeenCalled();
+
+        secondSocket.trigger('connect');
+        secondSocket.triggerMessage('update', { source: 'current' });
+        await expect(secondWait).resolves.toBeUndefined();
+        expect(getSocketStatus()).toBe('connected');
+        expect(onUpdate).toHaveBeenCalledWith({ source: 'current' });
+
+        socketDisconnect();
+    });
+
+    it('keeps the initial handshake pending across transient connection errors', async () => {
+        const fakeSocket = createFakeSocket();
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+
+        const { getSocketStatus, socketConnect, socketDisconnect, waitForSocketConnection } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => null }
+        );
+
+        const handshake = waitForSocketConnection(100);
+        let didSettle = false;
+        void handshake.then(
+            () => { didSettle = true; },
+            () => { didSettle = true; },
+        );
+
+        fakeSocket.trigger('connect_error');
+        fakeSocket.trigger('error');
+        await Promise.resolve();
+
+        expect(didSettle).toBe(false);
+        expect(getSocketStatus()).toBe('connecting');
+
+        fakeSocket.trigger('connect');
+
+        await expect(handshake).resolves.toBeUndefined();
+        expect(getSocketStatus()).toBe('connected');
+
+        socketDisconnect();
+    });
+
+    it('rejects the initial handshake only when its timeout expires', async () => {
+        vi.useFakeTimers();
+        try {
+            const fakeSocket = createFakeSocket();
+            const io = vi.fn(() => fakeSocket.socket);
+            vi.doMock('socket.io-client', () => ({ io }));
+
+            const { getSocketStatus, socketConnect, socketDisconnect, waitForSocketConnection } = await import('@/lib/protocol/socket');
+            socketConnect(
+                { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+                { getSessionCipher: () => null, getMachineCipher: () => null }
+            );
+
+            const handshake = waitForSocketConnection(1_000);
+            fakeSocket.trigger('connect_error');
+            fakeSocket.trigger('error');
+            await Promise.resolve();
+
+            const rejection = expect(handshake).rejects.toThrow('Timed out waiting for Socket.IO authentication');
+            await vi.advanceTimersByTimeAsync(1_000);
+            await rejection;
+            expect(getSocketStatus()).toBe('connecting');
+
+            socketDisconnect();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('keeps terminal error and lost statuses after the first authenticated connection', async () => {
+        const fakeSocket = createFakeSocket();
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+
+        const { getSocketStatus, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => null },
+        );
+        fakeSocket.trigger('connect');
+
+        fakeSocket.trigger('connect_error');
+        expect(getSocketStatus()).toBe('error');
+
+        fakeSocket.trigger('disconnect');
+        expect(getSocketStatus()).toBe('disconnected');
+
+        socketDisconnect();
+    });
+
+    it('rejects an encrypted RPC without emitting when the authenticated socket disconnects during encryption', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn();
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const encryption = createDeferred<string>();
+        const cipher = {
+            encryptRaw: vi.fn(() => encryption.promise),
+            decryptRaw: vi.fn(),
+        } as unknown as Cipher;
+
+        const { machineListAgentSessions, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+        fakeSocket.trigger('connect');
+
+        const request = machineListAgentSessions('machine-1', 'codex');
+        expect(cipher.encryptRaw).toHaveBeenCalledOnce();
+
+        fakeSocket.trigger('disconnect');
+        fakeSocket.trigger('connect');
+        encryption.resolve('encrypted-params');
+
+        await expect(request).rejects.toThrow('Socket connection changed during request');
+        expect(emitWithAck).not.toHaveBeenCalled();
+
+        socketDisconnect();
+    });
+
+    it('does not buffer an encrypted RPC when the socket disconnects before emission', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn();
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const encryption = createDeferred<string>();
+        const cipher = {
+            encryptRaw: vi.fn(() => encryption.promise),
+            decryptRaw: vi.fn(),
+        } as unknown as Cipher;
+
+        const { machineListAgentSessions, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+        fakeSocket.trigger('connect');
+
+        const request = machineListAgentSessions('machine-1', 'codex');
+        (fakeSocket.socket as unknown as { connected: boolean }).connected = false;
+        encryption.resolve('encrypted-params');
+
+        await expect(request).rejects.toThrow('Socket is not authenticated');
+        expect(emitWithAck).not.toHaveBeenCalled();
+
+        socketDisconnect();
+    });
+
+    it('does not emit a fire-and-forget mutation after a synchronous connection change', async () => {
+        const fakeSocket = createFakeSocket();
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const authSecret = new Uint8Array(32).fill(7);
+
+        const { socketConnect, socketDisconnect, socketSend } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token', authSecret },
+            { getSessionCipher: () => null, getMachineCipher: () => null },
+        );
+        fakeSocket.trigger('connect');
+
+        const payload = {
+            toJSON: () => {
+                fakeSocket.trigger('disconnect');
+                return { value: 'mutation' };
+            },
+        };
+
+        expect(() => socketSend('message', payload)).toThrow('Socket is not authenticated');
+        expect(fakeSocket.socket.emit).not.toHaveBeenCalled();
+
+        socketDisconnect();
+    });
+
     it('returns an empty resume list only from a validated successful RPC response', async () => {
         const fakeSocket = createFakeSocket();
         const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-list' });
@@ -197,6 +480,7 @@ describe('socket reconnect lifecycle', () => {
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
             { getSessionCipher: () => null, getMachineCipher: () => cipher },
         );
+        fakeSocket.trigger('connect');
 
         await expect(machineListAgentSessions('machine-1', 'codex')).resolves.toEqual([]);
 
@@ -219,6 +503,7 @@ describe('socket reconnect lifecycle', () => {
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
             { getSessionCipher: () => null, getMachineCipher: () => cipher },
         );
+        fakeSocket.trigger('connect');
 
         await expect(machineListAgentSessions('machine-1', 'codex')).rejects.toThrow('history unavailable');
 
@@ -248,6 +533,7 @@ describe('socket reconnect lifecycle', () => {
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
             { getSessionCipher: () => null, getMachineCipher: () => cipher },
         );
+        fakeSocket.trigger('connect');
 
         await expect(machineGetCursorCapabilities('machine-1')).resolves.toEqual({
             agent: 'cursor',
@@ -284,6 +570,7 @@ describe('socket reconnect lifecycle', () => {
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
             { getSessionCipher: () => null, getMachineCipher: () => cipher },
         );
+        fakeSocket.trigger('connect');
 
         await expect(machineGetCursorCapabilities('machine-1')).rejects.toThrow('Cursor capability RPC returned invalid response');
 
@@ -315,6 +602,7 @@ describe('socket reconnect lifecycle', () => {
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
             { getSessionCipher: () => null, getMachineCipher: () => cipher },
         );
+        fakeSocket.trigger('connect');
 
         await expect(machineListDirectoryProjects('machine-1')).resolves.toEqual([{
             canonicalPath: '/Users/dev/projects/remcli',
@@ -356,6 +644,7 @@ describe('socket reconnect lifecycle', () => {
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
             { getSessionCipher: () => null, getMachineCipher: () => cipher },
         );
+        fakeSocket.trigger('connect');
 
         await expect(machineSetDirectoryProjectPin('machine-1', '/Users/dev/projects/remcli', true))
             .resolves.toEqual([expect.objectContaining({ isPinned: true })]);
@@ -384,6 +673,7 @@ describe('socket reconnect lifecycle', () => {
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
             { getSessionCipher: () => null, getMachineCipher: () => cipher },
         );
+        fakeSocket.trigger('connect');
 
         await expect(machineListDirectoryProjects('machine-1')).rejects.toMatchObject({
             name: 'DirectoryProjectsRpcError',
@@ -414,6 +704,7 @@ describe('socket reconnect lifecycle', () => {
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
             { getSessionCipher: () => null, getMachineCipher: () => cipher },
         );
+        fakeSocket.trigger('connect');
 
         await expect(machineSpawnNewSession({
             machineId: 'machine-1',
@@ -451,6 +742,7 @@ describe('socket reconnect lifecycle', () => {
             { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
             { getSessionCipher: () => null, getMachineCipher: () => cipher },
         );
+        fakeSocket.trigger('connect');
 
         await expect(machineSpawnNewSession({
             machineId: 'machine-1',

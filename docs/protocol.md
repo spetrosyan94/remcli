@@ -58,6 +58,20 @@ https://<subdomain>.trycloudflare.com/terminal/connect#<base64(JSON)>   (tunnel)
 
 Pairing хранится в `~/.remcli/p2p-pairing.json` с правами `0600`: `{ v: 2, authSecret, contentSecret, port, createdAt }`. Старый файл `{ secret, ... }` мигрируется как одинаковые auth/content secrets. Материал pairing не пишется в `daemon.state.json`, heartbeat, machine metadata или диагностические логи.
 
+Перед публикацией machine, QR или tunnel daemon сначала поднимает собственный
+`machine-scoped` Socket.IO client и ожидает подтверждённую регистрацию всех
+стартовых machine RPC handlers. Поэтому первый экран New Session не обращается
+к ещё неготовому dispatcher. Веб-клиент, со своей стороны, ждёт
+аутентифицированный Socket.IO handshake до initial RPC. Пока self-machine
+переподключается, machine RPC возвращает временную недоступность вместо ложного
+`No handler registered`.
+
+Собственный localhost machine client дополнительно предъявляет
+`daemonMachineCredential`: это случайная capability, действующая только до
+завершения процесса daemon. Она не является полем pairing, не попадает в QR,
+логи или browser state и нужна только для отличия self-machine от клиента,
+который знает pairing bearer.
+
 ### Show QR и rekey
 
 `Show QR` запрашивает QR через зашифрованный machine RPC и отображает его только в React state текущего браузера. Он не попадает в URL, `history.state`, toast или P2P event.
@@ -68,7 +82,27 @@ Pairing хранится в `~/.remcli/p2p-pairing.json` с правами `0600
 remcli daemon rekey approve <request-id> <code>
 ```
 
-Команда обращается только к loopback control server. При подтверждении daemon записывает новый `authSecret`, отключает user/machine sockets со старым bearer и оставляет `contentSecret` прежним. Актуальный QR запечатывается `tweetnacl.box` для инициировавшего браузера; endpoint ticket отдаёт только sealed payload с `Cache-Control: no-store`. Закрытие pending dialog посылает cancel с request ID и approval code; coordinator повторно сверяет TTL/state перед самой ротацией. После расшифровки replacement browser сохраняет его как recovery credential до Socket.IO handshake: старый bearer уже отозван, а Socket.IO продолжает reconnect. ACK-capable session runner может продолжить или переподключиться только с валидным daemon-issued `runnerCredential`. Если сохранённый порт занят при запуске, daemon выбирает новый случайный порт и новый QR всё равно требуется. Quick-tunnel cloudflared меняет URL после каждого старта, поэтому tunnel QR пересканируется после рестарта. Public QR публикуется только после подтверждения соединения cloudflared с edge. Если регистрация не состоялась или соединение позднее потеряно, daemon очищает public endpoint и остаётся доступен только по LAN; после исправления сети нужен новый запуск `start:tunnel` и новый QR.
+Команда обращается только к loopback control server. При подтверждении daemon
+сначала готовит replacement bearer только для своего localhost machine socket,
+ждёт его RPC readiness и повторно проверяет TTL/state перед persistence и перед
+commit. Только затем он записывает новый `authSecret`, отключает user/machine
+sockets со старым bearer и оставляет `contentSecret` прежним. Временная
+способность self-machine живёт только в памяти daemon, не входит в QR/pairing
+file и не попадает в логи. При любой ошибке или expiry transaction восстанавливает
+прежний pairing и machine RPC. Актуальный QR запечатывается `tweetnacl.box` для
+инициировавшего браузера; endpoint ticket отдаёт только sealed payload с
+`Cache-Control: no-store`. Закрытие pending dialog посылает cancel с request ID
+и approval code; coordinator повторно сверяет TTL/state перед самой ротацией.
+После расшифровки replacement browser сохраняет его как recovery credential до
+Socket.IO handshake: старый bearer уже отозван, а Socket.IO продолжает reconnect.
+ACK-capable session runner может продолжить или переподключиться только с
+валидным daemon-issued `runnerCredential`. Если сохранённый порт занят при
+запуске, daemon выбирает новый случайный порт и новый QR всё равно требуется.
+Quick-tunnel cloudflared меняет URL после каждого старта, поэтому tunnel QR
+пересканируется после рестарта. Public QR публикуется только после подтверждения
+соединения cloudflared с edge. Если регистрация не состоялась или соединение
+позднее потеряно, daemon очищает public endpoint и остаётся доступен только по
+LAN; после исправления сети нужен новый запуск `start:tunnel` и новый QR.
 
 `Rekey` ротирует только `authSecret`: старые bearer и request proof сразу
 отзываются, а `contentSecret` остаётся у активных runners ради непрерывности.
@@ -88,6 +122,9 @@ auth: {
   machineId?: "<machine id>"
 }
 ```
+
+Внутренний self-machine daemon добавляет `daemonMachineCredential`; внешние
+клиенты никогда не должны отправлять или хранить это поле.
 
 Правила, проверяемые на сервере:
 - `token` обязателен.

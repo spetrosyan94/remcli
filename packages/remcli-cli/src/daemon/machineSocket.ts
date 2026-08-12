@@ -56,6 +56,7 @@ export interface MachineSocketDeps {
     p2pPort: number;
     machineId: string;
     bearerToken: string;
+    daemonMachineCredential?: string;
     authSecret: Uint8Array;
     contentSecret: Uint8Array;
     pairingRekeyCoordinator: PairingRekeyCoordinator;
@@ -105,6 +106,7 @@ const setDirectoryProjectPinParamsSchema = z.object({
 }).strict();
 
 const DIRECTORY_PROJECT_BRANCH_TIMEOUT_MS = 500;
+const MACHINE_RPC_READY_TIMEOUT_MS = 15_000;
 
 function getDirectoryProjectBranch(directory: string): Promise<string | null> {
     return new Promise((resolve) => {
@@ -155,16 +157,26 @@ function requireExecutionSnapshot(result: SessionExecutionLookupResult): Session
 
 export interface MachineSocketHandle {
     socket: ClientSocket;
+    ready: Promise<void>;
     close: () => void;
 }
 
-function signMachineRpcRegistration(
+function signMachineRpcMutation(
     authSecret: Uint8Array,
     operation: string,
     payload: Record<string, unknown>,
 ): Record<string, unknown> {
-    if (operation !== 'rpc-register' || typeof payload.method !== 'string') {
-        throw new Error('Machine socket can sign only RPC registrations');
+    let proofPayload: { method: string } | { methods: string[] };
+    if (operation === 'rpc-register' && typeof payload.method === 'string') {
+        proofPayload = { method: payload.method };
+    } else if (
+        operation === 'machine-rpc-ready'
+        && Array.isArray(payload.methods)
+        && payload.methods.every((method) => typeof method === 'string')
+    ) {
+        proofPayload = { methods: payload.methods };
+    } else {
+        throw new Error('Machine socket can sign only RPC registrations and readiness confirmations');
     }
 
     const id = randomUUID();
@@ -175,7 +187,7 @@ function signMachineRpcRegistration(
         operation,
         requestId: id,
         expiresAt,
-        payload: { method: payload.method },
+        payload: proofPayload,
     });
     if (!mac) {
         throw new Error('Could not create machine RPC request proof');
@@ -190,6 +202,7 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         p2pPort,
         machineId,
         bearerToken,
+        daemonMachineCredential,
         authSecret,
         contentSecret,
         pairingRekeyCoordinator,
@@ -210,7 +223,8 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         auth: {
             token: bearerToken,
             clientType: 'machine-scoped',
-            machineId
+            machineId,
+            ...(daemonMachineCredential ? { daemonMachineCredential } : {}),
         },
         path: '/v1/updates',
         reconnection: true,
@@ -223,7 +237,7 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         encryptionKey: contentSecret,
         encryptionVariant: 'legacy',
         logger: (msg, data) => logger.debug(msg, data),
-        signOutboundMutation: (operation, payload) => signMachineRpcRegistration(authSecret, operation, payload),
+        signOutboundMutation: (operation, payload) => signMachineRpcMutation(authSecret, operation, payload),
     });
 
     // Register common handlers (bash, readFile, listDirectory, etc.)
@@ -428,9 +442,71 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         return pairingRekeyCoordinator.cancel(params.requestId, params.approvalCode);
     });
 
+    const initialRpcMethods = new Set(machineRpcManager.getHandlerMethods());
+    let pendingInitialRpcMethods = new Set(initialRpcMethods);
+    let hasAnnouncedMachineRpcReadiness = false;
+    let hasSettledReady = false;
+    let resolveReady: (() => void) | undefined;
+    let rejectReady: ((error: Error) => void) | undefined;
+
+    const ready = new Promise<void>((resolve, reject) => {
+        resolveReady = resolve;
+        rejectReady = reject;
+    });
+    void ready.catch(() => undefined);
+
+    const readyTimeout = setTimeout(() => {
+        rejectMachineSocketReady(new Error('Machine RPC handlers did not register before the startup timeout.'));
+    }, MACHINE_RPC_READY_TIMEOUT_MS);
+
+    function resolveMachineSocketReady(): void {
+        if (hasSettledReady) {
+            return;
+        }
+        hasSettledReady = true;
+        clearTimeout(readyTimeout);
+        resolveReady?.();
+    }
+
+    function rejectMachineSocketReady(error: Error): void {
+        if (hasSettledReady) {
+            return;
+        }
+        hasSettledReady = true;
+        clearTimeout(readyTimeout);
+        rejectReady?.(error);
+    }
+
     machineSocket.on('connect', () => {
         logger.debug('[DAEMON RUN] Machine RPC socket connected to own P2P server');
+        pendingInitialRpcMethods = new Set(initialRpcMethods);
+        hasAnnouncedMachineRpcReadiness = false;
         machineRpcManager.onSocketConnect(machineSocket);
+    });
+
+    machineSocket.on('rpc-registered', (data: { method?: unknown }) => {
+        if (typeof data.method !== 'string' || !pendingInitialRpcMethods.delete(data.method)) {
+            return;
+        }
+        if (pendingInitialRpcMethods.size === 0 && !hasAnnouncedMachineRpcReadiness) {
+            hasAnnouncedMachineRpcReadiness = true;
+            machineSocket.emit('machine-rpc-ready', signMachineRpcMutation(authSecret, 'machine-rpc-ready', {
+                methods: Array.from(initialRpcMethods),
+            }));
+        }
+    });
+
+    machineSocket.on('machine-rpc-ready', () => {
+        logger.debug('[DAEMON RUN] Machine RPC handlers are ready on own P2P server');
+        resolveMachineSocketReady();
+    });
+
+    machineSocket.on('rpc-error', (data: { type?: unknown; error?: unknown }) => {
+        if (hasSettledReady || (data.type !== 'register' && data.type !== 'machine-rpc-ready')) {
+            return;
+        }
+        const message = typeof data.error === 'string' ? data.error : 'Unknown machine RPC readiness error';
+        rejectMachineSocketReady(new Error(`Machine RPC handler registration failed: ${message}`));
     });
 
     machineSocket.on('rpc-request', async (data: { method: string; params: string }, callback: (response: string) => void) => {
@@ -441,6 +517,10 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
     machineSocket.on('disconnect', () => {
         logger.debug('[DAEMON RUN] Machine RPC socket disconnected');
         machineRpcManager.onSocketDisconnect();
+        hasAnnouncedMachineRpcReadiness = false;
+        if (!hasSettledReady) {
+            pendingInitialRpcMethods = new Set(initialRpcMethods);
+        }
     });
 
     machineSocket.on('connect_error', (error: Error) => {
@@ -451,7 +531,9 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
 
     return {
         socket: machineSocket,
+        ready,
         close: () => {
+            rejectMachineSocketReady(new Error('Machine RPC socket closed before initial handlers were ready.'));
             machineSocket.close();
         }
     };

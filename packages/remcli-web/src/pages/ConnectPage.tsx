@@ -114,11 +114,13 @@ export function ConnectPage() {
     const [manualError, setManualError] = React.useState<string | null>(null);
     const [scannerNotice, setScannerNotice] = React.useState<string | null>(null);
     const videoRef = React.useRef<HTMLVideoElement | null>(null);
+    const connectionAttemptRef = React.useRef(0);
 
     const target = payload ? payloadTarget(payload) : "";
     const timeoutMessage = splitTimeoutMessage(t("connect.error.timeout", { address: TIMEOUT_ADDRESS_PLACEHOLDER }));
 
     const beginConnect = React.useCallback((next: P2PQRPayload) => {
+        connectionAttemptRef.current += 1;
         setPayload(next);
         setState("connecting");
     }, []);
@@ -135,30 +137,39 @@ export function ConnectPage() {
     // Подключение: стартуем протокол-клиент при входе в состояние connecting.
     React.useEffect(() => {
         if (state !== "connecting" || !payload) return;
+        const attempt = connectionAttemptRef.current;
+        let isActive = true;
         startProtocolClient(payload).catch(() => {
+            if (!isActive || connectionAttemptRef.current !== attempt) return;
             logoutProtocolClient();
             setState("error");
         });
+        return () => {
+            isActive = false;
+        };
     }, [state, payload]);
 
     // Live-статус сокета: connected → Home; error/таймаут → состояние error.
     React.useEffect(() => {
         if (state !== "connecting") return undefined;
+        const attempt = connectionAttemptRef.current;
+        const isCurrentAttempt = () => connectionAttemptRef.current === attempt;
         if (connectionStatus === "connected") {
             navigate("/", { replace: true });
             return undefined;
         }
-        if (connectionStatus === "error") {
+        if (connectionStatus === "error" && isCurrentAttempt()) {
             logoutProtocolClient();
             setState("error");
             return undefined;
         }
         const timeoutId = window.setTimeout(() => {
+            if (!isCurrentAttempt()) return;
             logoutProtocolClient();
             setState("error");
         }, CONNECT_TIMEOUT_MS);
         return () => window.clearTimeout(timeoutId);
-    }, [state, connectionStatus, navigate]);
+    }, [state, connectionStatus, navigate, payload]);
 
     // Камера-скан: getUserMedia + BarcodeDetector, опрос кадров по таймеру.
     React.useEffect(() => {

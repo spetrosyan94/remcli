@@ -12,6 +12,7 @@ import { writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { P2PStore } from './p2pStore';
 import { P2PEventRouter } from './p2pEventRouter';
+import { publishMachineSnapshot } from './p2pMachinePublication';
 import { verifyBearerToken } from './p2pAuth';
 import { P2PRequestProofVerifier, REQUEST_PROOF_VERSION } from './p2pRequestProof';
 import { logger } from '@/ui/logger';
@@ -674,27 +675,7 @@ export function registerP2PRestRoutes(
             return { error: 'Machine was deleted' };
         }
 
-        // Broadcast new/update machine event
-        const update = {
-            id: randomUUID(),
-            seq: store.allocateUserSeq(),
-            body: {
-                t: 'new-machine',
-                machineId: machine.id,
-                seq: machine.seq,
-                metadata: machine.metadata,
-                metadataVersion: machine.metadataVersion,
-                daemonState: machine.daemonState,
-                daemonStateVersion: machine.daemonStateVersion,
-                dataEncryptionKey: machine.dataEncryptionKey,
-                active: machine.active,
-                activeAt: machine.activeAt,
-                createdAt: machine.createdAt,
-                updatedAt: machine.updatedAt
-            },
-            createdAt: Date.now()
-        };
-        router.emitUpdate(update, { type: 'user-scoped-only' });
+        publishMachineSnapshot(store, router, machine);
 
         return { machine: machineToResponse(machine) };
     });

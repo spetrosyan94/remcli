@@ -42,6 +42,8 @@ const reconnectedListeners = new Set<() => void>();
 const statusListeners = new Set<(status: ConnectionStatus) => void>();
 let currentStatus: ConnectionStatus = 'disconnected';
 let hasCompletedInitialConnection = false;
+let socketGeneration = 0;
+let connectionEpoch = 0;
 const INITIAL_CONNECTION_TIMEOUT_MS = 10_000;
 
 function updateStatus(status: ConnectionStatus): void {
@@ -55,13 +57,14 @@ function updateStatus(status: ConnectionStatus): void {
 
 export function socketConnect(newConfig: SocketConfig, cipherResolver: CipherResolver): void {
     socketDisconnect();
+    const generation = ++socketGeneration;
     ciphers = cipherResolver;
     authSecret = newConfig.authSecret;
     hasCompletedInitialConnection = false;
 
     updateStatus('connecting');
 
-    socket = io(newConfig.endpoint, {
+    const nextSocket = io(newConfig.endpoint, {
         path: '/v1/updates',
         auth: {
             token: newConfig.token,
@@ -73,8 +76,12 @@ export function socketConnect(newConfig: SocketConfig, cipherResolver: CipherRes
         reconnectionDelayMax: 5000,
         reconnectionAttempts: Infinity
     });
+    socket = nextSocket;
+    const isCurrentSocket = (): boolean => socket === nextSocket && socketGeneration === generation;
 
-    socket.on('connect', () => {
+    nextSocket.on('connect', () => {
+        if (!isCurrentSocket()) return;
+        connectionEpoch += 1;
         const isReconnect = hasCompletedInitialConnection;
         hasCompletedInitialConnection = true;
         updateStatus('connected');
@@ -82,16 +89,24 @@ export function socketConnect(newConfig: SocketConfig, cipherResolver: CipherRes
             reconnectedListeners.forEach((listener) => listener());
         }
     });
-    socket.on('disconnect', () => {
-        updateStatus('disconnected');
+    nextSocket.on('disconnect', () => {
+        if (!isCurrentSocket()) return;
+        connectionEpoch += 1;
+        updateStatus(hasCompletedInitialConnection ? 'disconnected' : 'connecting');
     });
-    socket.on('connect_error', () => {
+    const handleSocketError = () => {
+        if (!isCurrentSocket()) return;
+        if (!hasCompletedInitialConnection) {
+            updateStatus('connecting');
+            return;
+        }
+        connectionEpoch += 1;
         updateStatus('error');
-    });
-    socket.on('error', () => {
-        updateStatus('error');
-    });
-    socket.onAny((event: string, data: unknown) => {
+    };
+    nextSocket.on('connect_error', handleSocketError);
+    nextSocket.on('error', handleSocketError);
+    nextSocket.onAny((event: string, data: unknown) => {
+        if (!isCurrentSocket()) return;
         const handler = messageHandlers.get(event);
         if (handler) {
             handler(data);
@@ -100,11 +115,15 @@ export function socketConnect(newConfig: SocketConfig, cipherResolver: CipherRes
 }
 
 export function socketDisconnect(): void {
-    if (socket) {
-        socket.disconnect();
-        socket = null;
+    const previousSocket = socket;
+    socket = null;
+    connectionEpoch += 1;
+    if (previousSocket) {
+        previousSocket.disconnect();
     }
+    ciphers = null;
     authSecret = undefined;
+    hasCompletedInitialConnection = false;
     updateStatus('disconnected');
 }
 
@@ -114,10 +133,13 @@ export function getSocketStatus(): ConnectionStatus {
 
 /** Resolve only after the current Socket.IO handshake is authenticated. */
 export function waitForSocketConnection(timeoutMs = INITIAL_CONNECTION_TIMEOUT_MS): Promise<void> {
-    if (!socket) {
+    const waitSocket = socket;
+    const waitGeneration = socketGeneration;
+    if (!waitSocket) {
         return Promise.reject(new Error('Socket is not connected'));
     }
-    if (currentStatus === 'connected') {
+    const isCurrentWait = (): boolean => socket === waitSocket && socketGeneration === waitGeneration;
+    if (isCurrentWait() && currentStatus === 'connected' && waitSocket.connected) {
         return Promise.resolve();
     }
 
@@ -140,10 +162,10 @@ export function waitForSocketConnection(timeoutMs = INITIAL_CONNECTION_TIMEOUT_M
         };
 
         unsubscribe = onSocketStatusChange((status) => {
-            if (status === 'connected') {
+            if (!isCurrentWait()) {
+                finish(new Error('Socket connection changed during wait'));
+            } else if (status === 'connected' && waitSocket.connected) {
                 finish();
-            } else if (status === 'error') {
-                finish(new Error('Socket.IO authentication failed'));
             }
         });
         if (didSettle) unsubscribe();
@@ -171,18 +193,55 @@ export function onSocketMessage(event: string, handler: MessageHandler): () => v
 
 // ─── Emit ────────────────────────────────────────────────────────
 
-export function socketSend(event: string, data: unknown): void {
+interface IAuthenticatedSocketSnapshot {
+    socket: Socket;
+    generation: number;
+    epoch: number;
+    authSecret: Uint8Array | undefined;
+}
+
+function requireAuthenticatedSocket(): Socket {
     if (!socket) {
         throw new Error('Socket not connected');
     }
-    socket.emit(event, attachRequestProof(authSecret, 'socket', event, data));
+    if (currentStatus !== 'connected' || !socket.connected) {
+        throw new Error('Socket is not authenticated');
+    }
+    return socket;
+}
+
+function captureAuthenticatedSocket(): IAuthenticatedSocketSnapshot {
+    return {
+        socket: requireAuthenticatedSocket(),
+        generation: socketGeneration,
+        epoch: connectionEpoch,
+        authSecret,
+    };
+}
+
+function requireCurrentAuthenticatedSocket(snapshot: IAuthenticatedSocketSnapshot): Socket {
+    const currentSocket = requireAuthenticatedSocket();
+    if (
+        currentSocket !== snapshot.socket
+        || socketGeneration !== snapshot.generation
+        || connectionEpoch !== snapshot.epoch
+        || authSecret !== snapshot.authSecret
+    ) {
+        throw new Error('Socket connection changed during request');
+    }
+    return currentSocket;
+}
+
+export function socketSend(event: string, data: unknown): void {
+    const snapshot = captureAuthenticatedSocket();
+    const payload = attachRequestProof(snapshot.authSecret, 'socket', event, data);
+    requireCurrentAuthenticatedSocket(snapshot).emit(event, payload);
 }
 
 export async function socketEmitWithAck<T>(event: string, data: unknown): Promise<T> {
-    if (!socket) {
-        throw new Error('Socket not connected');
-    }
-    return await socket.emitWithAck(event, attachRequestProof(authSecret, 'socket', event, data)) as T;
+    const snapshot = captureAuthenticatedSocket();
+    const payload = attachRequestProof(snapshot.authSecret, 'socket', event, data);
+    return await requireCurrentAuthenticatedSocket(snapshot).emitWithAck(event, payload) as T;
 }
 
 // ─── Encrypted RPC ───────────────────────────────────────────────
@@ -194,13 +253,13 @@ interface RpcAck {
 }
 
 async function encryptedRpc<R>(cipher: Cipher, entityId: string, method: string, params: unknown): Promise<R> {
-    if (!socket) {
-        throw new Error('Socket not connected');
-    }
-    const result = await socket.emitWithAck('rpc-call', attachRequestProof(authSecret, 'socket', 'rpc-call', {
+    const snapshot = captureAuthenticatedSocket();
+    const encryptedParams = await cipher.encryptRaw(params);
+    const payload = attachRequestProof(snapshot.authSecret, 'socket', 'rpc-call', {
         method: `${entityId}:${method}`,
-        params: await cipher.encryptRaw(params)
-    })) as RpcAck;
+        params: encryptedParams
+    });
+    const result = await requireCurrentAuthenticatedSocket(snapshot).emitWithAck('rpc-call', payload) as RpcAck;
 
     if (result.ok) {
         return await cipher.decryptRaw(result.result ?? '') as R;

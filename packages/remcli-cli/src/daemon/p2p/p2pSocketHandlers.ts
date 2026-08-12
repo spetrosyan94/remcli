@@ -20,6 +20,48 @@ interface RPCListener {
 }
 
 const rpcListeners = new Map<string, RPCListener>();
+export const MACHINE_RPC_UNAVAILABLE_ERROR = 'Machine RPC is temporarily unavailable while the daemon reconnects.';
+
+export interface MachineRpcAvailabilityGate {
+    isUnavailable: (method: string) => boolean;
+    requiresTrustedSocket: (method: string) => boolean;
+    markReady: (socket: Socket, expectedMethods: readonly string[], isTrustedDaemonMachine: boolean) => boolean;
+    clear: (socket: Socket) => void;
+}
+
+export function createMachineRpcAvailabilityGate(daemonMachineId: string | undefined): MachineRpcAvailabilityGate | undefined {
+    if (!daemonMachineId) {
+        return undefined;
+    }
+
+    let readySocket: Socket | null = null;
+    const methodPrefix = `${daemonMachineId}:`;
+
+    return {
+        isUnavailable: (method) => method.startsWith(methodPrefix) && readySocket === null,
+        requiresTrustedSocket: (method) => method.startsWith(methodPrefix),
+        markReady: (socket, expectedMethods, isTrustedDaemonMachine) => {
+            if (
+                !isTrustedDaemonMachine
+                || expectedMethods.length === 0
+                || new Set(expectedMethods).size !== expectedMethods.length
+                || expectedMethods.some((method) => (
+                    !method.startsWith(methodPrefix)
+                    || rpcListeners.get(method)?.socket !== socket
+                ))
+            ) {
+                return false;
+            }
+            readySocket = socket;
+            return true;
+        },
+        clear: (socket) => {
+            if (readySocket === socket) {
+                readySocket = null;
+            }
+        },
+    };
+}
 
 // ─── Helper: Build Update Payload ────────────────────────────────
 
@@ -74,6 +116,8 @@ export function registerSocketHandlers(
     store: P2PStore,
     router: P2PEventRouter,
     requestProofVerifier: P2PRequestProofVerifier,
+    machineRpcAvailabilityGate?: MachineRpcAvailabilityGate,
+    isTrustedDaemonMachine = false,
 ): void {
     // ─── Session: message ────────────────────────────────────────
     socket.on('message', (data: { sid: string; message: string; localId?: string }) => {
@@ -281,6 +325,11 @@ export function registerSocketHandlers(
             return;
         }
         const { method } = data;
+        if (machineRpcAvailabilityGate?.requiresTrustedSocket(method) && !isTrustedDaemonMachine) {
+            logger.debug('[P2P SOCKET] Ignoring untrusted daemon machine RPC registration');
+            socket.emit('rpc-error', { type: 'register', error: 'Method is not available' });
+            return;
+        }
         if (!canAccessRpcMethod(connection, method)) {
             logger.debug('[P2P SOCKET] Ignoring out-of-scope RPC registration');
             socket.emit('rpc-error', { type: 'register', error: 'Method is not available' });
@@ -304,6 +353,11 @@ export function registerSocketHandlers(
             return;
         }
         const { method } = data;
+        if (machineRpcAvailabilityGate?.requiresTrustedSocket(method) && !isTrustedDaemonMachine) {
+            logger.debug('[P2P SOCKET] Ignoring untrusted daemon machine RPC unregistration');
+            socket.emit('rpc-error', { type: 'unregister', error: 'Method is not available' });
+            return;
+        }
         if (!canAccessRpcMethod(connection, method)) {
             logger.debug('[P2P SOCKET] Ignoring out-of-scope RPC unregistration');
             socket.emit('rpc-error', { type: 'unregister', error: 'Method is not available' });
@@ -319,6 +373,28 @@ export function registerSocketHandlers(
 
         rpcListeners.delete(method);
         socket.emit('rpc-unregistered', { method });
+    });
+
+    socket.on('machine-rpc-ready', (data: { methods?: unknown }) => {
+        if (!verifyBearerAuthenticatedMutation(connection, requestProofVerifier, 'machine-rpc-ready', data)) {
+            socket.emit('rpc-error', { type: 'machine-rpc-ready', error: 'Invalid request proof' });
+            return;
+        }
+        if (!machineRpcAvailabilityGate) {
+            socket.emit('machine-rpc-ready');
+            return;
+        }
+        const expectedMethods = data.methods;
+        if (
+            !Array.isArray(expectedMethods)
+            || !expectedMethods.every((method): method is string => typeof method === 'string')
+            || !machineRpcAvailabilityGate.markReady(socket, expectedMethods, isTrustedDaemonMachine)
+        ) {
+            socket.emit('rpc-error', { type: 'machine-rpc-ready', error: 'Machine RPC readiness is not available' });
+            return;
+        }
+
+        socket.emit('machine-rpc-ready');
     });
 
     // ─── RPC: call ───────────────────────────────────────────────
@@ -337,6 +413,11 @@ export function registerSocketHandlers(
             return;
         }
         logger.debug(`[P2P SOCKET] rpc-call: ${method}`);
+
+        if (machineRpcAvailabilityGate?.isUnavailable(method)) {
+            callback({ ok: false, error: MACHINE_RPC_UNAVAILABLE_ERROR });
+            return;
+        }
 
         const listener = rpcListeners.get(method);
         if (!listener) {
@@ -386,6 +467,7 @@ export function registerSocketHandlers(
     // ─── Cleanup on disconnect ───────────────────────────────────
     socket.on('disconnect', () => {
         logger.debug(`[P2P SOCKET] Client disconnected: ${connection.connectionType}`);
+        machineRpcAvailabilityGate?.clear(socket);
 
         // Remove all RPC listeners registered by this socket
         for (const [method, listener] of rpcListeners.entries()) {

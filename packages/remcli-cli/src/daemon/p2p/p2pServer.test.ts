@@ -13,7 +13,9 @@ import {
     type JsonValue,
 } from './p2pRequestProof';
 import { P2PRunnerCredentialStore, SESSION_MESSAGE_ACK_VERSION } from './p2pRunnerCredentials';
+import { publishMachineSnapshot } from './p2pMachinePublication';
 import { P2PStore } from './p2pStore';
+import { MACHINE_RPC_UNAVAILABLE_ERROR } from './p2pSocketHandlers';
 import { getWebStaticCacheControl, isWebStaticAssetRequest, startP2PServer } from './p2pServer';
 
 const SOCKET_TIMEOUT_MS = 5_000;
@@ -208,6 +210,274 @@ describe('pairing auth rotation', { timeout: 15_000 }, () => {
             runnerSocket.close();
             staleUserReconnect.close();
             resumedRunner.close();
+            await server.stop();
+        }
+    });
+
+    it('keeps the current bearer active when a prepared self-machine replacement is rolled back', async () => {
+        const oldAuthSecret = generateSharedSecret();
+        const nextAuthSecret = generateSharedSecret();
+        const oldBearer = deriveBearerToken(oldAuthSecret);
+        const nextBearer = deriveBearerToken(nextAuthSecret);
+        const server = await startP2PServer({
+            port: 0,
+            host: '127.0.0.1',
+            authSecret: oldAuthSecret,
+            store: new P2PStore({ kvFilePath: null }),
+            daemonMachineId: 'daemon-machine',
+        });
+        if (!server.daemonMachineCredential) {
+            throw new Error('Expected daemon machine credential');
+        }
+        const oldUserSocket = createSocket(server.port, oldBearer, { clientType: 'user-scoped' });
+        const untrustedCandidateMachineSocket = createSocket(server.port, nextBearer, {
+            clientType: 'machine-scoped',
+            machineId: 'daemon-machine',
+        });
+        const malformedCredentialCandidateMachineSocket = createSocket(server.port, nextBearer, {
+            clientType: 'machine-scoped',
+            machineId: 'daemon-machine',
+            // The length matches in UTF-16 code units but not UTF-8 bytes.
+            daemonMachineCredential: 'é'.repeat(server.daemonMachineCredential.length),
+        });
+        const candidateMachineSocket = createSocket(server.port, nextBearer, {
+            clientType: 'machine-scoped',
+            machineId: 'daemon-machine',
+            daemonMachineCredential: server.daemonMachineCredential,
+        });
+        const preparedUserSocket = createSocket(server.port, nextBearer, { clientType: 'user-scoped' });
+        const preparedSessionSocket = createSocket(server.port, nextBearer, {
+            clientType: 'session-scoped',
+            sessionId: 'prepared-session',
+        });
+        const foreignPreparedMachineSocket = createSocket(server.port, nextBearer, {
+            clientType: 'machine-scoped',
+            machineId: 'foreign-machine',
+        });
+
+        try {
+            await connectSocket(oldUserSocket);
+            server.prepareAuthSecret(nextAuthSecret);
+            await expect(connectSocket(preparedUserSocket)).rejects.toThrow('Authentication failed');
+            await expect(connectSocket(preparedSessionSocket)).rejects.toThrow('Authentication failed');
+            await expect(connectSocket(foreignPreparedMachineSocket)).rejects.toThrow('Authentication failed');
+            await expect(connectSocket(untrustedCandidateMachineSocket)).rejects.toThrow('Authentication failed');
+            await expect(connectSocket(malformedCredentialCandidateMachineSocket)).rejects.toThrow('Authentication failed');
+            await connectSocket(candidateMachineSocket);
+
+            await expect(fetch(`http://127.0.0.1:${server.port}/v1/account/profile`, {
+                headers: { Authorization: `Bearer ${oldBearer}` },
+            })).resolves.toMatchObject({ status: 200 });
+            await expect(fetch(`http://127.0.0.1:${server.port}/v1/account/profile`, {
+                headers: { Authorization: `Bearer ${nextBearer}` },
+            })).resolves.toMatchObject({ status: 401 });
+
+            const candidateDisconnected = waitForDisconnect(candidateMachineSocket);
+            server.rollbackPreparedAuthSecret();
+            await candidateDisconnected;
+
+            expect(oldUserSocket.connected).toBe(true);
+            await expect(fetch(`http://127.0.0.1:${server.port}/v1/account/profile`, {
+                headers: { Authorization: `Bearer ${oldBearer}` },
+            })).resolves.toMatchObject({ status: 200 });
+            await expect(connectSocket(createSocket(server.port, nextBearer, { clientType: 'user-scoped' })))
+                .rejects.toThrow('Authentication failed');
+        } finally {
+            oldUserSocket.close();
+            untrustedCandidateMachineSocket.close();
+            malformedCredentialCandidateMachineSocket.close();
+            candidateMachineSocket.close();
+            preparedUserSocket.close();
+            preparedSessionSocket.close();
+            foreignPreparedMachineSocket.close();
+            await server.stop();
+        }
+    });
+
+    it('retains old request-proof replay entries while a replacement bearer is prepared or rolled back', async () => {
+        const oldAuthSecret = generateSharedSecret();
+        const nextAuthSecret = generateSharedSecret();
+        const oldBearer = deriveBearerToken(oldAuthSecret);
+        const nextBearer = deriveBearerToken(nextAuthSecret);
+        const server = await startP2PServer({
+            port: 0,
+            host: '127.0.0.1',
+            authSecret: oldAuthSecret,
+            store: new P2PStore({ kvFilePath: null }),
+            daemonMachineId: 'daemon-machine',
+        });
+        if (!server.daemonMachineCredential) {
+            throw new Error('Expected daemon machine credential');
+        }
+        const oldUserSocket = createSocket(server.port, oldBearer, { clientType: 'user-scoped' });
+        const candidateMachineSocket = createSocket(server.port, nextBearer, {
+            clientType: 'machine-scoped',
+            machineId: 'daemon-machine',
+            daemonMachineCredential: server.daemonMachineCredential,
+        });
+        const replayedCall = withRequestProof(oldAuthSecret, 'rpc-call', { method: 'missing-machine:control' });
+
+        try {
+            await connectSocket(oldUserSocket);
+            await expect(oldUserSocket.timeout(SOCKET_TIMEOUT_MS).emitWithAck('rpc-call', replayedCall))
+                .resolves.toEqual({ ok: false, error: 'No handler registered for method: missing-machine:control' });
+            await expect(oldUserSocket.timeout(SOCKET_TIMEOUT_MS).emitWithAck('rpc-call', replayedCall))
+                .resolves.toEqual({ ok: false, error: 'Invalid request proof' });
+
+            server.prepareAuthSecret(nextAuthSecret);
+            await connectSocket(candidateMachineSocket);
+            await expect(oldUserSocket.timeout(SOCKET_TIMEOUT_MS).emitWithAck('rpc-call', replayedCall))
+                .resolves.toEqual({ ok: false, error: 'Invalid request proof' });
+
+            const candidateDisconnected = waitForDisconnect(candidateMachineSocket);
+            server.rollbackPreparedAuthSecret();
+            await candidateDisconnected;
+            await expect(oldUserSocket.timeout(SOCKET_TIMEOUT_MS).emitWithAck('rpc-call', replayedCall))
+                .resolves.toEqual({ ok: false, error: 'Invalid request proof' });
+        } finally {
+            oldUserSocket.close();
+            candidateMachineSocket.close();
+            await server.stop();
+        }
+    });
+});
+
+describe('daemon machine RPC readiness', { timeout: 15_000 }, () => {
+    it('delivers a late machine publication to a user connected during daemon startup', async () => {
+        const authSecret = generateSharedSecret();
+        const bearerToken = deriveBearerToken(authSecret);
+        const store = new P2PStore({ kvFilePath: null });
+        const server = await startP2PServer({
+            port: 0,
+            host: '127.0.0.1',
+            authSecret,
+            store,
+            daemonMachineId: 'daemon-machine',
+        });
+        const userSocket = createSocket(server.port, bearerToken, { clientType: 'user-scoped' });
+
+        try {
+            await connectSocket(userSocket);
+            const machine = store.getOrCreateMachine(
+                'daemon-machine',
+                JSON.stringify({ host: 'test-host' }),
+                JSON.stringify({ status: 'running' }),
+                null,
+            );
+            if (!machine) {
+                throw new Error('Expected daemon machine to be created.');
+            }
+
+            const published = waitForSocketEvent<{
+                body: { t: string; machineId: string; metadata: string };
+            }>(userSocket, 'update');
+            publishMachineSnapshot(store, server.router, machine);
+
+            await expect(published).resolves.toMatchObject({
+                body: {
+                    t: 'new-machine',
+                    machineId: 'daemon-machine',
+                    metadata: JSON.stringify({ host: 'test-host' }),
+                },
+            });
+        } finally {
+            userSocket.close();
+            await server.stop();
+        }
+    });
+
+    it('rejects calls consistently while a self-machine reconnects until every handler is ready again', async () => {
+        const authSecret = generateSharedSecret();
+        const bearerToken = deriveBearerToken(authSecret);
+        const machineId = 'daemon-machine';
+        const method = `${machineId}:list-directory`;
+        const additionalMethod = `${machineId}:list-sessions`;
+        const server = await startP2PServer({
+            port: 0,
+            host: '127.0.0.1',
+            authSecret,
+            store: new P2PStore({ kvFilePath: null }),
+            daemonMachineId: machineId,
+        });
+        if (!server.daemonMachineCredential) {
+            throw new Error('Expected daemon machine credential');
+        }
+        const userSocket = createSocket(server.port, bearerToken, { clientType: 'user-scoped' });
+        const spoofedMachineSocket = createSocket(server.port, bearerToken, {
+            clientType: 'machine-scoped',
+            machineId,
+        });
+        const firstMachineSocket = createSocket(server.port, bearerToken, {
+            clientType: 'machine-scoped',
+            machineId,
+            daemonMachineCredential: server.daemonMachineCredential,
+        });
+        const secondMachineSocket = createSocket(server.port, bearerToken, {
+            clientType: 'machine-scoped',
+            machineId,
+            daemonMachineCredential: server.daemonMachineCredential,
+        });
+        const callMachineRpc = async () => await userSocket.timeout(SOCKET_TIMEOUT_MS).emitWithAck(
+            'rpc-call',
+            withRequestProof(authSecret, 'rpc-call', { method }),
+        );
+        const registerMachineRpc = async (machineSocket: ClientSocket, rpcMethod = method) => {
+            const registered = waitForSocketEvent<{ method: string }>(machineSocket, 'rpc-registered');
+            machineSocket.emit('rpc-register', withRequestProof(authSecret, 'rpc-register', { method: rpcMethod }));
+            await expect(registered).resolves.toEqual({ method: rpcMethod });
+        };
+        const markMachineRpcReady = async (machineSocket: ClientSocket, expectedMethods = [method]) => {
+            const ready = waitForSocketEvent<void>(machineSocket, 'machine-rpc-ready');
+            machineSocket.emit('machine-rpc-ready', withRequestProof(authSecret, 'machine-rpc-ready', { methods: expectedMethods }));
+            await ready;
+        };
+
+        try {
+            firstMachineSocket.on('rpc-request', (_data, callback: (response: string) => void) => callback('first-response'));
+            secondMachineSocket.on('rpc-request', (_data, callback: (response: string) => void) => callback('second-response'));
+            await connectSocket(userSocket);
+            await expect(connectSocket(spoofedMachineSocket)).rejects.toThrow('Authentication failed');
+            const untrustedRegistration = waitForSocketEvent<{ type: string; error: string }>(userSocket, 'rpc-error');
+            userSocket.emit('rpc-register', withRequestProof(authSecret, 'rpc-register', { method }));
+            await expect(untrustedRegistration).resolves.toEqual({ type: 'register', error: 'Method is not available' });
+            const untrustedReadiness = waitForSocketEvent<{ type: string; error: string }>(userSocket, 'rpc-error');
+            userSocket.emit('machine-rpc-ready', withRequestProof(authSecret, 'machine-rpc-ready', { methods: [method] }));
+            await expect(untrustedReadiness).resolves.toEqual({
+                type: 'machine-rpc-ready',
+                error: 'Machine RPC readiness is not available',
+            });
+            await connectSocket(firstMachineSocket);
+            await expect(callMachineRpc()).resolves.toEqual({ ok: false, error: MACHINE_RPC_UNAVAILABLE_ERROR });
+
+            await registerMachineRpc(firstMachineSocket);
+            await expect(callMachineRpc()).resolves.toEqual({ ok: false, error: MACHINE_RPC_UNAVAILABLE_ERROR });
+            const prematureReadiness = waitForSocketEvent<{ type: string; error: string }>(firstMachineSocket, 'rpc-error');
+            firstMachineSocket.emit('machine-rpc-ready', withRequestProof(authSecret, 'machine-rpc-ready', {
+                methods: [method, additionalMethod],
+            }));
+            await expect(prematureReadiness).resolves.toEqual({
+                type: 'machine-rpc-ready',
+                error: 'Machine RPC readiness is not available',
+            });
+            await registerMachineRpc(firstMachineSocket, additionalMethod);
+            await markMachineRpcReady(firstMachineSocket, [method, additionalMethod]);
+            await expect(callMachineRpc()).resolves.toEqual({ ok: true, result: 'first-response' });
+
+            const firstMachineDisconnected = waitForDisconnect(firstMachineSocket);
+            server.disconnectDaemonMachineSockets();
+            await firstMachineDisconnected;
+            await expect(callMachineRpc()).resolves.toEqual({ ok: false, error: MACHINE_RPC_UNAVAILABLE_ERROR });
+
+            await connectSocket(secondMachineSocket);
+            await expect(callMachineRpc()).resolves.toEqual({ ok: false, error: MACHINE_RPC_UNAVAILABLE_ERROR });
+            await registerMachineRpc(secondMachineSocket);
+            await expect(callMachineRpc()).resolves.toEqual({ ok: false, error: MACHINE_RPC_UNAVAILABLE_ERROR });
+            await markMachineRpcReady(secondMachineSocket);
+            await expect(callMachineRpc()).resolves.toEqual({ ok: true, result: 'second-response' });
+        } finally {
+            userSocket.close();
+            firstMachineSocket.close();
+            secondMachineSocket.close();
             await server.stop();
         }
     });

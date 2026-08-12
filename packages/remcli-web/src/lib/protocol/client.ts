@@ -771,6 +771,7 @@ async function decryptApiMessage(
 // ─── Sync ────────────────────────────────────────────────────────
 
 async function refreshSessionsForContext(ctx: ClientContext): Promise<void> {
+    if (!isCurrentClientContext(ctx)) return;
     const epoch = beginSessionsRefresh(ctx);
     const apiSessions = await fetchSessions(restConfigOf(ctx));
     if (!canCommitSessionsSnapshot(ctx, epoch)) return;
@@ -801,6 +802,7 @@ export async function refreshSessions(): Promise<void> {
 }
 
 async function refreshMachinesForContext(ctx: ClientContext): Promise<void> {
+    if (!isCurrentClientContext(ctx)) return;
     const epoch = beginMachinesRefresh(ctx);
     const apiMachines = await fetchMachines(restConfigOf(ctx));
     if (!canCommitMachinesSnapshot(ctx, epoch)) return;
@@ -880,8 +882,8 @@ export async function loadSessionMessages(
 }
 
 /**
- * Send a user text message into a session: encrypts the RawRecord, echoes it
- * locally (seq=null until the server copy arrives) and emits `message`.
+ * Send a user text message into a session: encrypts the RawRecord, emits
+ * `message`, then echoes it locally (seq=null until the server copy arrives).
  */
 export async function sendSessionMessage(
     sessionId: string,
@@ -931,18 +933,19 @@ export async function sendSessionMessage(
     const encryptedRecord = await cipher.encryptRaw(record);
     if (!isCurrentClientContext(ctx)) return;
 
-    // Local echo — replaced when the server broadcasts the stored copy
     const createdAt = Date.now();
     const store = getCurrentProtocolStore(ctx);
     if (!store?.sessions[sessionId]) {
         throw new Error(`Unknown session: ${sessionId}`);
     }
+
+    sendEncryptedMessage({ sessionId, encryptedRecord, localId, permissionMode });
+
+    // Local echo — replaced when the server broadcasts the stored copy
     const normalized = normalizeRawMessage(localId, localId, null, createdAt, record, sessionFlavor);
     if (normalized) {
         store.applyMessages(sessionId, [normalized]);
     }
-
-    sendEncryptedMessage({ sessionId, encryptedRecord, localId, permissionMode });
 }
 
 // ─── Permission responses (fixture-aware) ────────────────────────
@@ -1313,7 +1316,6 @@ async function refreshAfterReconnect(ctx: ClientContext): Promise<void> {
 async function startWithCredentials(
     credentials: P2PCredentials,
     preserveStore = false,
-    shouldRequireSocketAuthentication = false,
 ): Promise<void> {
     stopProtocolClient({ preserveStore });
 
@@ -1355,14 +1357,21 @@ async function startWithCredentials(
         }
     );
 
-    if (shouldRequireSocketAuthentication) {
+    try {
         await waitForSocketConnection();
+    } catch (error) {
+        if (isCurrentClientContext(ctx)) {
+            stopProtocolClient({ preserveStore });
+        }
+        throw error;
     }
 
+    if (!isCurrentClientContext(ctx)) return;
     useProtocolStore.getState().setAuthenticated(true);
 
     // Латентность соединения: GET /health раз в ~30s — пилюля HomePage («p2p · 12ms»)
     const measureLatency = async () => {
+        if (!isCurrentClientContext(ctx)) return;
         const latencyMs = await measureHealthLatency(credentials.endpoint);
         getCurrentProtocolStore(ctx)?.setLatency(latencyMs);
     };
@@ -1371,6 +1380,7 @@ async function startWithCredentials(
     ctx.unsubscribers.push(() => window.clearInterval(latencyTimer));
 
     // Initial data load (socket handlers keep it fresh afterwards)
+    if (!isCurrentClientContext(ctx)) return;
     await Promise.all([
         refreshSessionsForContext(ctx).catch(() => undefined),
         refreshMachinesForContext(ctx).catch(() => undefined)
@@ -1394,7 +1404,7 @@ export async function replaceProtocolClient(payload: P2PQRPayload): Promise<void
     if (isFixturesActive) return;
     const credentials = createP2PCredentials(payload);
     storeConnection({ host: payload.host, port: payload.port, key: payload.key });
-    await startWithCredentials(credentials, true, true);
+    await startWithCredentials(credentials, true);
 }
 
 /** Restore a persisted connection (page load). Returns false when none stored. */
@@ -1411,6 +1421,9 @@ export async function restoreProtocolClient(): Promise<boolean> {
 /** Disconnect the socket and drop in-memory state (keeps stored credentials). */
 export function stopProtocolClient(options: { preserveStore?: boolean } = {}): void {
     if (isFixturesActive) return; // фикстуры в сторе живут до выключения режима
+    const store = useProtocolStore.getState();
+    store.setAuthenticated(false);
+    store.setConnectionStatus('disconnected');
     lifecycleGeneration += 1;
     if (context) {
         for (const unsubscribe of context.unsubscribers) {

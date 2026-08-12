@@ -46,6 +46,7 @@ export interface P2PRequestProofVerifier {
 
 export interface P2PRequestProofVerifierOptions {
     getAuthSecret: () => Uint8Array;
+    getAdditionalAuthSecrets?: () => readonly Uint8Array[];
     replayCapacity?: number;
     maxProofLifetimeMs?: number;
     now?: () => number;
@@ -189,15 +190,23 @@ export function createP2PRequestProofVerifier(
                 return false;
             }
 
-            const expectedMac = calculateRequestProofMac(options.getAuthSecret(), {
+            const input: P2PRequestProofInput = {
                 v: REQUEST_PROOF_VERSION,
                 transport,
                 operation,
                 requestId: parsedProof.id,
                 expiresAt: parsedProof.expiresAt,
                 payload: payload as JsonValue,
+            };
+            const authSecrets = [
+                options.getAuthSecret(),
+                ...(options.getAdditionalAuthSecrets?.() ?? []),
+            ];
+            const hasValidMac = authSecrets.some((authSecret) => {
+                const expectedMac = calculateRequestProofMac(authSecret, input);
+                return expectedMac !== null && hasMatchingMac(expectedMac, parsedProof.mac);
             });
-            if (!expectedMac || !hasMatchingMac(expectedMac, parsedProof.mac)) {
+            if (!hasValidMac) {
                 return false;
             }
 

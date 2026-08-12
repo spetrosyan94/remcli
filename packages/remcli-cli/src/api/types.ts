@@ -131,6 +131,7 @@ export interface ServerToClientEvents {
   'rpc-request': (data: { method: string, params: string }, callback: (response: string) => void) => void
   'rpc-registered': (data: { method: string }) => void
   'rpc-unregistered': (data: { method: string }) => void
+  'machine-rpc-ready': () => void
   'rpc-error': (data: { type: string, error: string }) => void
   ephemeral: (data: { type: 'activity', id: string, active: boolean, activeAt: number, thinking: boolean }) => void
   auth: (data: { success: boolean, user: string }) => void
