@@ -351,7 +351,7 @@ export function SettingsPage() {
                     {machines.map((machine) => (
                         <div key={machine.id} className="flex min-h-12 items-center gap-2.5 px-3.5 py-2.5">
                             <StatusDot status={machine.active ? "running" : "offline"} className="size-[7px]" />
-                            <span className={`flex-1 font-mono text-[12.5px] ${machine.active ? "" : "text-muted-foreground"}`}>{machineName(machine)}</span>
+                            <span className={`min-w-0 truncate flex-1 font-mono text-[12.5px] ${machine.active ? "" : "text-muted-foreground"}`}>{machineName(machine)}</span>
                             <span className="font-mono text-[10px] text-muted-foreground">
                                 {machine.active ? t("home.machine.online") : t("status.offline")}
                             </span>
@@ -415,7 +415,7 @@ export function SettingsPage() {
                         value={renameValue}
                         onChange={(event) => setRenameValue(event.target.value)}
                         placeholder={t("settings.machine.renamePlaceholder")}
-                        className="font-mono text-sm"
+                        className="h-11 font-mono text-sm lg:h-8"
                         onKeyDown={(event) => { if (event.key === "Enter") void submitRename(); }}
                         autoFocus
                     />

@@ -10,7 +10,7 @@
         "typecheck": "tsc -b --noEmit",
         "test": "vitest run",
         "check:i18n": "node scripts/check-translations.mjs",
-        "test:e2e": "playwright test e2e/design-smoke.spec.ts e2e/route-error-boundary.spec.ts e2e/chat-lineage.spec.ts e2e/permission-feedback.spec.ts e2e/home-triage.spec.ts",
+    "test:e2e": "playwright test e2e/design-smoke.spec.ts e2e/route-error-boundary.spec.ts e2e/chat-lineage.spec.ts e2e/permission-feedback.spec.ts e2e/home-triage.spec.ts e2e/drawer.spec.ts e2e/reduced-motion.spec.ts e2e/settings.spec.ts",
         "test:visual": "playwright test --config=playwright.visual.config.ts e2e/design-visual.spec.ts",
         "test:visual:update": "playwright test --config=playwright.visual.config.ts e2e/design-visual.spec.ts --update-snapshots=all",
         "test:design-contract": "playwright test --config=playwright.visual.config.ts e2e/design-contract.spec.ts"
