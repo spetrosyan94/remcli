@@ -48,7 +48,7 @@ import type {
 } from '@/lib/protocol/socket';
 import { DirectoryProjectsRpcError } from '@/lib/protocol/socket';
 import { useProtocolStore } from '@/lib/protocol/store';
-import type { AgentKind, AgentSessionInfo, Machine, Session, SessionMetadata } from '@/lib/protocol/types';
+import type { AgentKind, AgentSessionInfo, ConciergeStatus, Machine, Session, SessionMetadata } from '@/lib/protocol/types';
 
 export { FIXTURE_CHAT_SESSION_ID };
 
@@ -331,6 +331,27 @@ const FIXTURE_CODEX_LIFECYCLE_CHAT_SESSION: Session = {
 function fixtureQueryParameter(name: string): string | null {
     if (typeof window === 'undefined') return null;
     return new URLSearchParams(window.location.search).get(name);
+}
+
+function fixtureConciergeStatus(): ConciergeStatus {
+    const scenario = fixtureQueryParameter('conciergeStatus');
+    if (scenario === 'disabled') {
+        return {
+            enabled: false,
+            available: false,
+            model: null,
+        };
+    }
+
+    if (scenario === 'unavailable') {
+        return {
+            enabled: true,
+            available: false,
+            model: null,
+        };
+    }
+
+    return FIXTURE_CONCIERGE_STATUS;
 }
 
 function fixtureMachines(): Machine[] {
@@ -667,7 +688,7 @@ async function handleFixtureRequest(path: string, init?: RequestInit): Promise<R
         return jsonResponse({ available: true, model: 'base', modelDownloaded: true });
     }
     if (path === '/v1/concierge/status') {
-        return jsonResponse(FIXTURE_CONCIERGE_STATUS);
+        return jsonResponse(fixtureConciergeStatus());
     }
     if (path === '/v1/concierge/chat') {
         if (method !== 'POST') {

@@ -7,6 +7,7 @@ import { ArrowLeft, Loader2, Send } from "lucide-react";
 import { Link, useNavigate } from "react-router";
 import { Caret, UserMessage } from "@/components/kit";
 import { stripConciergeSpeakerPrefix } from "@/components/app/conciergeText";
+import { EmptyState } from "@/components/kit/EmptyState";
 import { copyText } from "@/lib/clipboard";
 import { fixtureConciergeFeed, isFixtureRestEndpoint } from "@/lib/fixtures";
 import { getCurrentLanguage, t } from "@/lib/i18n";
@@ -14,12 +15,12 @@ import {
     conciergeChat,
     fetchConciergeStatus,
     getRestConfig,
-    getStoredConnection,
     useConnectionStatus,
-    useIsAuthenticated,
     useMachines,
     type ConciergeChatMessage,
     type ConciergeStatus,
+    type ConnectionStatus,
+    type RestConfig,
 } from "@/lib/protocol";
 
 interface ConciergeActionEntry {
@@ -37,6 +38,86 @@ interface ConciergeFeedEntry {
 interface StoredConciergeFeed {
     version: 1;
     feed: ConciergeFeedEntry[];
+}
+
+export interface IConciergeLifecycleState {
+    canFetchStatus: boolean;
+    showChecking: boolean;
+    showNotConnected: boolean;
+    isAvailable: boolean;
+}
+
+export type TConciergeStatusPhase = "idle" | "checking" | "settled";
+
+export interface IConciergeStatusState {
+    scopeVersion: number;
+    phase: TConciergeStatusPhase;
+    status: ConciergeStatus | null;
+}
+
+interface IConciergeStatusScope {
+    connectionStatus: ConnectionStatus;
+    config: RestConfig | null;
+}
+
+export function settleConciergeStatus(
+    current: IConciergeStatusState,
+    scopeVersion: number,
+    status: ConciergeStatus | null,
+): IConciergeStatusState {
+    if (current.scopeVersion !== scopeVersion) return current;
+    return { ...current, phase: "settled", status };
+}
+
+export function getConciergeLifecycleState(input: {
+    connectionStatus: ConnectionStatus;
+    hasConfig: boolean;
+    statusPhase: TConciergeStatusPhase;
+    hasAvailableStatus: boolean;
+}): IConciergeLifecycleState {
+    const canFetchStatus = input.hasConfig && input.connectionStatus === "connected";
+    const showChecking = input.connectionStatus === "connecting"
+        || (canFetchStatus && input.statusPhase !== "settled");
+
+    return {
+        canFetchStatus,
+        showChecking,
+        showNotConnected: !showChecking && !canFetchStatus,
+        isAvailable: canFetchStatus && input.statusPhase === "settled" && input.hasAvailableStatus,
+    };
+}
+
+export function ConciergeStatusNotice({ lifecycleState }: { lifecycleState: IConciergeLifecycleState }): React.ReactElement | null {
+    if (lifecycleState.showNotConnected) {
+        return (
+            <div role="status" aria-live="polite" aria-atomic="true">
+                <div className="flex flex-col items-center gap-2.5 rounded-xl border border-dashed border-border bg-card/50 px-4 py-6">
+                    <span className="font-mono text-[11.5px] text-muted-foreground">{t("concierge.notConnected")}</span>
+                    <Link to="/connect" className="h-11 rounded-[9px] border border-border px-3.5 text-[13px] font-medium leading-[44px] text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96]">
+                        {t("concierge.connect")}
+                    </Link>
+                </div>
+            </div>
+        );
+    }
+
+    if (lifecycleState.showChecking) {
+        return (
+            <div role="status" aria-live="polite" aria-atomic="true">
+                <EmptyState title={t("concierge.title")} hint={t("concierge.checking")} />
+            </div>
+        );
+    }
+
+    if (lifecycleState.canFetchStatus && !lifecycleState.isAvailable) {
+        return (
+            <div role="status" aria-live="polite" aria-atomic="true">
+                <EmptyState title={t("concierge.unavailable")} hint={t("concierge.unavailableHint")} />
+            </div>
+        );
+    }
+
+    return null;
 }
 
 const CONCIERGE_FEED_STORAGE_PREFIX = "remcli-web:concierge-feed:v1";
@@ -163,11 +244,7 @@ function ActionLine({ action }: { action: { tool: string; result: unknown } }) {
 export function ConciergeChat() {
     const navigate = useNavigate();
     const connectionStatus = useConnectionStatus();
-    const isAuthenticated = useIsAuthenticated();
-    const hasStoredConnection = getStoredConnection() !== null;
     const machines = useMachines();
-    const [status, setStatus] = React.useState<ConciergeStatus | null>(null);
-    const [isCheckingStatus, setIsCheckingStatus] = React.useState(true);
     const [feed, setFeed] = React.useState<ConciergeFeedEntry[]>([]);
     const [draft, setDraft] = React.useState("");
     const [isSending, setIsSending] = React.useState(false);
@@ -177,9 +254,29 @@ export function ConciergeChat() {
     const endpoint = rawConfig?.endpoint ?? null;
     const token = rawConfig?.token ?? null;
     const config = React.useMemo(
-        () => (endpoint && token ? { endpoint, token } : null),
+        (): RestConfig | null => (endpoint && token ? { endpoint, token } : null),
         [endpoint, token]
     );
+    const canFetchStatus = config !== null && connectionStatus === "connected";
+    const statusScopeRef = React.useRef<IConciergeStatusScope | null>(null);
+    const statusScopeVersionRef = React.useRef(0);
+    if (
+        statusScopeRef.current === null
+        || statusScopeRef.current.connectionStatus !== connectionStatus
+        || statusScopeRef.current.config !== config
+    ) {
+        statusScopeRef.current = { connectionStatus, config };
+        statusScopeVersionRef.current += 1;
+    }
+    const statusScopeVersion = statusScopeVersionRef.current;
+    const [conciergeStatusState, setConciergeStatusState] = React.useState<IConciergeStatusState>(() => ({
+        scopeVersion: statusScopeVersion,
+        phase: canFetchStatus ? "checking" : "idle",
+        status: null,
+    }));
+    const hasCurrentStatusState = conciergeStatusState.scopeVersion === statusScopeVersion;
+    const statusPhase = hasCurrentStatusState ? conciergeStatusState.phase : canFetchStatus ? "checking" : "idle";
+    const status = hasCurrentStatusState ? conciergeStatusState.status : null;
     const pairedMachineId = machines[0]?.id ?? null;
     const storageKey = endpoint ? conciergeStorageKey(endpoint, pairedMachineId) : null;
     const fallbackStorageKey = endpoint ? conciergeStorageKey(endpoint, null) : null;
@@ -209,28 +306,31 @@ export function ConciergeChat() {
     }, [feed, loadedStorageKey, storageKey]);
 
     React.useEffect(() => {
-        if (!config) {
-            setStatus(null);
-            setIsCheckingStatus(hasStoredConnection || isAuthenticated || connectionStatus === "connecting");
+        const initialPhase: TConciergeStatusPhase = canFetchStatus ? "checking" : "idle";
+        setConciergeStatusState((current) => current.scopeVersion === statusScopeVersion
+            && current.phase === initialPhase
+            && current.status === null
+            ? current
+            : { scopeVersion: statusScopeVersion, phase: initialPhase, status: null });
+
+        if (!config || !canFetchStatus) {
             return;
         }
 
         let isCancelled = false;
-        setIsCheckingStatus(true);
         fetchConciergeStatus(config)
             .then((next) => {
-                if (!isCancelled) setStatus(next);
+                if (isCancelled || statusScopeVersionRef.current !== statusScopeVersion) return;
+                setConciergeStatusState((current) => settleConciergeStatus(current, statusScopeVersion, next));
             })
             .catch(() => {
-                if (!isCancelled) setStatus(null);
-            })
-            .finally(() => {
-                if (!isCancelled) setIsCheckingStatus(false);
+                if (isCancelled || statusScopeVersionRef.current !== statusScopeVersion) return;
+                setConciergeStatusState((current) => settleConciergeStatus(current, statusScopeVersion, null));
             });
         return () => {
             isCancelled = true;
         };
-    }, [config, connectionStatus, endpoint, hasStoredConnection, isAuthenticated, token]);
+    }, [canFetchStatus, config, statusScopeVersion]);
 
     // автоскролл к концу ленты
     React.useEffect(() => {
@@ -238,7 +338,13 @@ export function ConciergeChat() {
         if (node) node.scrollTop = node.scrollHeight;
     }, [feed.length, isSending]);
 
-    const isAvailable = status !== null && status.enabled && status.available;
+    const lifecycleState = getConciergeLifecycleState({
+        connectionStatus,
+        hasConfig: config !== null,
+        statusPhase,
+        hasAvailableStatus: status !== null && status.enabled && status.available,
+    });
+    const isAvailable = lifecycleState.isAvailable;
 
     const send = async () => {
         const text = draft.trim();
@@ -281,7 +387,13 @@ export function ConciergeChat() {
                 <div className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate font-mono text-[13.5px] font-semibold">{t("concierge.title")}</span>
                     <span className="truncate font-mono text-[10px] text-muted-foreground">
-                        {isCheckingStatus ? t("concierge.checking") : isAvailable ? status.model ?? "llm" : t("concierge.unavailable")}
+                        {lifecycleState.showNotConnected
+                            ? t("concierge.notConnected")
+                            : lifecycleState.showChecking
+                                ? t("concierge.checking")
+                                : isAvailable
+                                    ? status?.model ?? "llm"
+                                    : t("concierge.unavailable")}
                     </span>
                 </div>
             </header>
@@ -289,25 +401,12 @@ export function ConciergeChat() {
             {/* лента */}
             <main ref={feedRef} className="flex-1 overflow-y-auto px-3.5 py-3.5 [scroll-behavior:smooth]">
                 <div className="mx-auto flex w-full max-w-[720px] flex-col gap-3">
-                    {!config && !isCheckingStatus && (
-                        <div className="flex flex-col items-center gap-2.5 rounded-xl border border-dashed border-border bg-card/50 px-4 py-6">
-                            <span className="font-mono text-[11.5px] text-muted-foreground">{t("concierge.notConnected")}</span>
-                            <Link to="/connect" className="h-11 rounded-[9px] border border-border px-3.5 text-[13px] font-medium leading-[44px] text-muted-foreground transition-[background-color,border-color,color,transform] active:scale-[0.96]">
-                                {t("concierge.connect")}
-                            </Link>
-                        </div>
-                    )}
-                    {config && !isCheckingStatus && !isAvailable && (
-                        <div className="flex flex-col items-center gap-1.5 rounded-xl border border-dashed border-border bg-card/50 px-4 py-6 text-center">
-                            <span className="font-mono text-[11.5px] text-muted-foreground">{t("concierge.unavailable")}</span>
-                            <span className="font-mono text-[10px] text-muted-foreground">{t("concierge.unavailableHint")}</span>
-                        </div>
-                    )}
+                    <ConciergeStatusNotice lifecycleState={lifecycleState} />
                     {isAvailable && feed.length === 0 && (
                         <span className="self-center py-6 font-mono text-[11px] text-muted-foreground">{t("concierge.empty.hint")}</span>
                     )}
 
-                    {feed.map((entry) =>
+                    {isAvailable && feed.map((entry) =>
                         entry.role === "user" ? (
                             <UserMessage key={entry.id}>{entry.content}</UserMessage>
                         ) : (
@@ -327,7 +426,7 @@ export function ConciergeChat() {
                         ),
                     )}
 
-                    {isSending && (
+                    {isAvailable && isSending && (
                         <div className="flex items-center gap-2 font-mono text-[11.5px] text-muted-foreground">
                             <Loader2 className="size-3 animate-spin" /> {t("concierge.thinking")} <Caret thinking />
                         </div>

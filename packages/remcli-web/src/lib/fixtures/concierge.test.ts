@@ -63,6 +63,28 @@ describe('concierge fixtures', () => {
             .resolves.toEqual(FIXTURE_CONCIERGE_STATUS);
     });
 
+    it('returns a disabled Jarvis status through the fixture REST path', async () => {
+        const previousLocation = globalThis.location;
+        try {
+            Object.defineProperty(globalThis, 'location', {
+                value: { search: '?fixtures=1&conciergeStatus=disabled' },
+                configurable: true
+            });
+
+            await expect(fetchConciergeStatus(fixtureRestConfig()))
+                .resolves.toEqual({
+                    enabled: false,
+                    available: false,
+                    model: null,
+                });
+        } finally {
+            Object.defineProperty(globalThis, 'location', {
+                value: previousLocation,
+                configurable: true
+            });
+        }
+    });
+
     it('returns a deterministic assistant response through the fixture chat path', async () => {
         const response = await conciergeChat(fixtureRestConfig(), [
             { role: 'user', content: 'Что запущено?' }

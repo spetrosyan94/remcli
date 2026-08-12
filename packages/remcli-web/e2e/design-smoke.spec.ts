@@ -515,6 +515,23 @@ test("new session keeps its primary action fully visible", async ({ page }) => {
     expect(pageIssues).toEqual([]);
 });
 
+test("disabled Jarvis renders the shared unavailable state instead of a blank chat", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/concierge?fixtures=1&conciergeStatus=disabled");
+
+    const statusNotice = page.getByRole("status");
+    await expect(statusNotice.getByText("concierge unavailable", { exact: true })).toBeVisible();
+    await expect(statusNotice.getByText("enable conciergeEnabled in ~/.remcli/setup.json and start LM Studio", { exact: true })).toBeVisible();
+    await expect(statusNotice.locator("svg[viewBox='0 0 32 32']")).toBeVisible();
+    await expect(page.getByText("Fixture daemon is available", { exact: false })).toHaveCount(0);
+
+    await assertNoHorizontalOverflow(page);
+    if (isMobileProject(testInfo)) await assertMobileTouchTargets(page);
+    expect(pageIssues).toEqual([]);
+});
+
 test("new session groups pinned projects and keeps their controls overflow-safe", async ({ page }, testInfo) => {
     const pageIssues = collectPageIssues(page);
 
