@@ -3,10 +3,17 @@ import { Drawer as DrawerPrimitive } from "vaul"
 
 import { cn } from "@/lib/utils"
 
+const DrawerModalContext = React.createContext(true)
+
 function Drawer({
+  modal = true,
   ...props
 }: React.ComponentProps<typeof DrawerPrimitive.Root>) {
-  return <DrawerPrimitive.Root data-slot="drawer" {...props} />
+  return (
+    <DrawerModalContext.Provider value={modal}>
+      <DrawerPrimitive.Root data-slot="drawer" modal={modal} {...props} />
+    </DrawerModalContext.Provider>
+  )
 }
 
 function DrawerTrigger({
@@ -46,13 +53,17 @@ function DrawerOverlay({
 function DrawerContent({
   className,
   children,
+  "aria-modal": ariaModal,
   ...props
 }: React.ComponentProps<typeof DrawerPrimitive.Content>) {
+  const isModal = React.useContext(DrawerModalContext)
+
   return (
     <DrawerPortal data-slot="drawer-portal">
       <DrawerOverlay />
       <DrawerPrimitive.Content
         data-slot="drawer-content"
+        aria-modal={ariaModal ?? (isModal ? true : undefined)}
         className={cn(
           "group/drawer-content fixed z-50 flex h-auto flex-col bg-background ease-[var(--ease-sheet)] data-[state=closed]:animate-out data-[state=closed]:duration-[260ms] data-[state=open]:animate-in data-[state=open]:duration-[var(--dur-sheet)]",
           "data-[vaul-drawer-direction=top]:inset-x-0 data-[vaul-drawer-direction=top]:top-0 data-[vaul-drawer-direction=top]:mb-24 data-[vaul-drawer-direction=top]:max-h-[80vh] data-[vaul-drawer-direction=top]:rounded-b-lg data-[vaul-drawer-direction=top]:border-b data-[vaul-drawer-direction=top]:data-[state=closed]:slide-out-to-top data-[vaul-drawer-direction=top]:data-[state=open]:slide-in-from-top",

@@ -2058,7 +2058,7 @@ export function ChatPage() {
                     {pendingPermissions.map((permission) => {
                         const responseState = permissionResponseStates[permission.id];
                         return (
-                            <div key={permission.id} className="animate-in fade-in slide-in-from-bottom-2.5 zoom-in-[.98] duration-[var(--dur-enter)] ease-[var(--ease-out)]">
+                            <div data-permission-entry key={permission.id} className="animate-in fade-in slide-in-from-bottom-2.5 zoom-in-[.98] duration-[var(--dur-enter)] ease-[var(--ease-out)]">
                                 <PermissionCard
                                     tool={permission.tool}
                                     time={permission.createdAt ? formatTime(permission.createdAt) : undefined}
@@ -2239,7 +2239,7 @@ export function ChatPage() {
                                         <label
                                             key={model.id}
                                             title={model.displayName}
-                                            className="flex min-h-11 w-full cursor-pointer items-center gap-3 border-t border-border px-[18px] py-2.5 text-left transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.98] has-[:focus-visible]:bg-muted/50"
+                                            className="flex min-h-11 w-full cursor-pointer items-center gap-3 border-t border-border px-[18px] py-2.5 text-left transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.98] motion-reduce:active:scale-100 has-[:focus-visible]:bg-muted/50"
                                         >
                                             <input
                                                 type="radio"
@@ -2272,7 +2272,7 @@ export function ChatPage() {
                                                 return (
                                                     <label
                                                         key={effort}
-                                                        className="flex min-h-11 w-full cursor-pointer items-center gap-3 border-t border-border px-[18px] py-2.5 text-left transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.98] has-[:focus-visible]:bg-muted/50"
+                                                        className="flex min-h-11 w-full cursor-pointer items-center gap-3 border-t border-border px-[18px] py-2.5 text-left transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.98] motion-reduce:active:scale-100 has-[:focus-visible]:bg-muted/50"
                                                     >
                                                         <input
                                                             type="radio"

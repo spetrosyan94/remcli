@@ -165,6 +165,18 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
+    [data-permission-entry] {
+        animation: remcli-reduced-fade-in var(--dur-micro) var(--ease-out) both !important;
+        transform: none !important;
+    }
+
+    [data-permission-response="sending"],
+    [data-permission-response="error"] {
+        animation: remcli-reduced-fade-in var(--dur-micro) var(--ease-out) both !important;
+        transform: none !important;
+        transition-property: opacity !important;
+    }
+
     [data-command-palette-content][data-state="closed"] {
         animation: remcli-reduced-fade-out var(--dur-micro) var(--ease-out) both !important;
     }
