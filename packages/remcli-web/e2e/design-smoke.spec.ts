@@ -401,8 +401,15 @@ test("pairing rekey closes its approval dialog before it presents the replacemen
     });
 
     await page.getByRole("button", { name: "Rotate pairing key", exact: true }).click();
+    const approvalDialog = page.getByRole("dialog", { name: "Rotate pairing key", exact: true });
     const qrDialog = page.getByRole("dialog", { name: "Show connection QR", exact: true });
+
+    await expect(approvalDialog).toBeVisible();
+    await expect(approvalDialog).toContainText("remcli daemon rekey approve fixture-pairing-request-0001 F1A2B3C4");
+    await expect(qrDialog).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(1);
     await expect(qrDialog).toBeVisible();
+    await expect(approvalDialog).toHaveCount(0);
     await expect(page.getByRole("dialog")).toHaveCount(1);
 
     const maximumDialogCount = await page.evaluate(() => {

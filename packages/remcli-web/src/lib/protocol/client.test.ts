@@ -421,6 +421,29 @@ describe('protocol client message meta', () => {
 
         await expect(machineCancelPairingRekey('fx-machine-online', pending)).resolves.toEqual({ type: 'cancelled' });
     });
+
+    it('keeps each fixture pairing rekey pending for one poll before delivering its replacement QR', async () => {
+        vi.resetModules();
+        installFixtureGlobals();
+
+        const { machineRequestPairingRekey, pollPairingRekey } = await import('@/lib/protocol/client');
+        const firstRequest = await machineRequestPairingRekey('fx-machine-online');
+
+        await expect(pollPairingRekey(firstRequest)).resolves.toEqual({
+            type: 'pending',
+            expiresAt: firstRequest.expiresAt,
+        });
+        await expect(pollPairingRekey(firstRequest)).resolves.toMatchObject({
+            type: 'ready',
+            pairing: { qrDataUrl: expect.stringContaining('data:image/svg+xml') },
+        });
+
+        const nextRequest = await machineRequestPairingRekey('fx-machine-online');
+        await expect(pollPairingRekey(nextRequest)).resolves.toEqual({
+            type: 'pending',
+            expiresAt: nextRequest.expiresAt,
+        });
+    });
 });
 
 describe('protocol client reconnect lifecycle', () => {

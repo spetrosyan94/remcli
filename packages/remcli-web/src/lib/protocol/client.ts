@@ -156,6 +156,7 @@ interface MachineActivityPatch {
 
 const MAX_PENDING_ACTIVITY_PATCHES = 512;
 const FIXTURE_PAIRING_QR_DATA_URL = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320"%3E%3Crect width="320" height="320" fill="%23fafafa"/%3E%3Cpath fill="%2309090b" d="M24 24h88v88H24zm16 16v56h56V40zm16 16h24v24H56zM208 24h88v88h-88zm16 16v56h56V40zm16 16h24v24h-24zM24 208h88v88H24zm16 16v56h56v-56zm16 16h24v24H56zM144 144h32v32h-32zm48 0h32v32h-32zm-48 48h32v32h-32zm48 0h80v32h-80z"/%3E%3C/svg%3E';
+const fixturePairingRekeyPolls = new Map<string, number>();
 
 let context: ClientContext | null = null;
 let lifecycleGeneration = 0;
@@ -545,7 +546,7 @@ export async function machineShowPairingQr(machineId: string): Promise<PairingQr
 export async function machineRequestPairingRekey(machineId: string): Promise<PendingPairingRekey> {
     const keyPair = nacl.box.keyPair();
     if (isFixturesActive) {
-        return {
+        const pending: PendingPairingRekey = {
             requestId: 'fixture-pairing-request-0001',
             approvalCode: 'F1A2B3C4',
             ticket: 'fixture-pairing-ticket-0001',
@@ -554,6 +555,8 @@ export async function machineRequestPairingRekey(machineId: string): Promise<Pen
             endpoint: 'http://127.0.0.1:5178',
             fixture: true,
         };
+        fixturePairingRekeyPolls.set(pending.ticket, 0);
+        return pending;
     }
     const request: PairingRekeyRequest = await socketMachineRequestPairingRekey(
         machineId,
@@ -572,6 +575,7 @@ export async function machineCancelPairingRekey(
     pending: PendingPairingRekey,
 ): Promise<PairingRekeyCancellationResult> {
     if (pending.fixture) {
+        fixturePairingRekeyPolls.delete(pending.ticket);
         return { type: 'cancelled' };
     }
     return await socketMachineCancelPairingRekey(machineId, pending.requestId, pending.approvalCode);
@@ -580,6 +584,11 @@ export async function machineCancelPairingRekey(
 /** Poll the opaque rekey ticket; the endpoint never returns an unsealed QR. */
 export async function pollPairingRekey(pending: PendingPairingRekey): Promise<PairingRekeyPollResult> {
     if (pending.fixture) {
+        const pollCount = fixturePairingRekeyPolls.get(pending.ticket) ?? 0;
+        fixturePairingRekeyPolls.set(pending.ticket, pollCount + 1);
+        if (pollCount === 0) {
+            return { type: 'pending', expiresAt: pending.expiresAt };
+        }
         return {
             type: 'ready',
             pairing: { qrDataUrl: FIXTURE_PAIRING_QR_DATA_URL, payload: fixturePairingPayload() },
