@@ -18,6 +18,7 @@ vi.mock('./doctor', () => ({
 import {
     checkIfDaemonRunningAndCleanupStaleState,
     getLiveLegacyDaemonMigrationBlocker,
+    getDaemonOwnershipStatus,
     isVerifiedDaemonLive,
     listDaemonSessions,
     stopDaemon,
@@ -53,15 +54,19 @@ describe('daemon control lifecycle safety', () => {
         readDaemonState.mockResolvedValue(createDaemonState({
             state: 'stopped',
             stateReason: 'clean-shutdown',
+            pid: 999_999,
         }));
         const fetchSpy = vi.fn();
         vi.stubGlobal('fetch', fetchSpy);
-        const killSpy = vi.spyOn(process, 'kill');
+        const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+            throw Object.assign(new Error('process not found'), { code: 'ESRCH' });
+        });
+        findAllRemcliProcesses.mockResolvedValue([]);
 
-        await stopDaemon();
+        await expect(stopDaemon()).resolves.toBe(true);
 
         expect(fetchSpy).not.toHaveBeenCalled();
-        expect(killSpy).not.toHaveBeenCalled();
+        expect(killSpy).toHaveBeenCalledWith(999_999, 0);
     });
 
     it('refuses a PID-only force kill when the loopback daemon identity differs', async () => {
@@ -73,7 +78,7 @@ describe('daemon control lifecycle safety', () => {
         vi.stubGlobal('fetch', fetchSpy);
         const killSpy = vi.spyOn(process, 'kill');
 
-        await stopDaemon();
+        await expect(stopDaemon()).resolves.toBe(false);
 
         expect(killSpy).toHaveBeenCalledWith(state.pid, 0);
         expect(killSpy).not.toHaveBeenCalledWith(state.pid, 'SIGKILL');
@@ -117,18 +122,253 @@ describe('daemon control lifecycle safety', () => {
             if (signal === 0) {
                 livenessChecks += 1;
                 if (livenessChecks > 1) {
-                    throw new Error('daemon exited');
+                    throw Object.assign(new Error('daemon exited'), { code: 'ESRCH' });
                 }
             }
             return true;
         });
+        findAllRemcliProcesses.mockResolvedValue([]);
 
-        await stopDaemon();
+        await expect(stopDaemon()).resolves.toBe(true);
 
         expect(fetchSpy.mock.calls.map(([url]) => url)).toEqual([
             `http://127.0.0.1:${state.httpPort}/identity`,
             `http://127.0.0.1:${state.httpPort}/stop`,
         ]);
+        expect(fetchSpy).toHaveBeenNthCalledWith(
+            2,
+            `http://127.0.0.1:${state.httpPort}/stop`,
+            expect.objectContaining({
+                body: JSON.stringify({ instanceId: state.instanceId }),
+            }),
+        );
+    });
+
+    it('refuses to report a missing state as stopped while an unverified daemon process exists', async () => {
+        readDaemonState.mockResolvedValue(null);
+        findAllRemcliProcesses.mockResolvedValue([{
+            pid: 50_123,
+            type: 'daemon',
+            command: 'remcli daemon start-sync',
+        }]);
+        const fetchSpy = vi.fn();
+        vi.stubGlobal('fetch', fetchSpy);
+
+        await expect(stopDaemon()).resolves.toBe(false);
+        await expect(getDaemonOwnershipStatus()).resolves.toBe('unresolved');
+        expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('reports failure when the verified daemon refuses the stop request', async () => {
+        const state = createDaemonState();
+        readDaemonState.mockResolvedValue(state);
+        const fetchSpy = vi.fn(async (input: string) => {
+            if (input.endsWith('/identity')) {
+                return new Response(JSON.stringify({ instanceId: state.instanceId }), { status: 200 });
+            }
+            return new Response(JSON.stringify({ error: 'busy' }), { status: 503 });
+        });
+        vi.stubGlobal('fetch', fetchSpy);
+        const killSpy = vi.spyOn(process, 'kill');
+
+        await expect(stopDaemon()).resolves.toBe(false);
+
+        expect(fetchSpy.mock.calls.map(([url]) => url)).toEqual([
+            `http://127.0.0.1:${state.httpPort}/identity`,
+            `http://127.0.0.1:${state.httpPort}/stop`,
+        ]);
+        expect(killSpy).not.toHaveBeenCalledWith(state.pid, 'SIGKILL');
+    });
+
+    it('rejects a replaced daemon instance after a verified stop request', async () => {
+        const state = createDaemonState();
+        readDaemonState.mockResolvedValue(state);
+        let identityCalls = 0;
+        const fetchSpy = vi.fn(async (input: string) => {
+            if (input.endsWith('/stop')) {
+                return new Response(JSON.stringify({}), { status: 200 });
+            }
+
+            identityCalls += 1;
+            return new Response(JSON.stringify({
+                instanceId: identityCalls === 1 ? state.instanceId : 'new-daemon-instance',
+            }), { status: 200 });
+        });
+        vi.stubGlobal('fetch', fetchSpy);
+        vi.spyOn(process, 'kill').mockReturnValue(true);
+
+        await expect(stopDaemon()).resolves.toBe(false);
+
+        expect(fetchSpy.mock.calls.map(([url]) => url)).toEqual([
+            `http://127.0.0.1:${state.httpPort}/identity`,
+            `http://127.0.0.1:${state.httpPort}/stop`,
+            `http://127.0.0.1:${state.httpPort}/identity`,
+        ]);
+    });
+
+    it('classifies only ESRCH as an absent daemon process', async () => {
+        const state = createDaemonState({ state: 'stopped', stateReason: 'clean-shutdown' });
+        readDaemonState.mockResolvedValue(state);
+        vi.spyOn(process, 'kill').mockImplementation(() => {
+            throw Object.assign(new Error('process not found'), { code: 'ESRCH' });
+        });
+        findAllRemcliProcesses.mockResolvedValue([]);
+
+        await expect(getDaemonOwnershipStatus()).resolves.toBe('absent');
+        await expect(stopDaemon()).resolves.toBe(true);
+    });
+
+    it('fails closed when process probing returns EPERM', async () => {
+        const state = createDaemonState({ state: 'stopped', stateReason: 'clean-shutdown' });
+        readDaemonState.mockResolvedValue(state);
+        vi.spyOn(process, 'kill').mockImplementation(() => {
+            throw Object.assign(new Error('permission denied'), { code: 'EPERM' });
+        });
+
+        await expect(getDaemonOwnershipStatus()).resolves.toBe('unresolved');
+        await expect(stopDaemon()).resolves.toBe(false);
+        expect(findAllRemcliProcesses).not.toHaveBeenCalled();
+    });
+
+    it('fails closed for a stale state when another Remcli daemon is discovered', async () => {
+        const state = createDaemonState({ state: 'stopped', stateReason: 'clean-shutdown' });
+        readDaemonState.mockResolvedValue(state);
+        vi.spyOn(process, 'kill').mockImplementation(() => {
+            throw Object.assign(new Error('process not found'), { code: 'ESRCH' });
+        });
+        findAllRemcliProcesses.mockResolvedValue([{
+            pid: 50_123,
+            type: 'daemon',
+            command: 'remcli daemon start-sync',
+        }]);
+
+        await expect(getDaemonOwnershipStatus()).resolves.toBe('unresolved');
+        await expect(stopDaemon()).resolves.toBe(false);
+    });
+
+    it('fails closed when Remcli process discovery is unavailable', async () => {
+        const state = createDaemonState({ state: 'stopped', stateReason: 'clean-shutdown' });
+        readDaemonState.mockResolvedValue(state);
+        vi.spyOn(process, 'kill').mockImplementation(() => {
+            throw Object.assign(new Error('process not found'), { code: 'ESRCH' });
+        });
+        findAllRemcliProcesses.mockRejectedValue(new Error('ps-list unavailable'));
+
+        await expect(getDaemonOwnershipStatus()).resolves.toBe('unresolved');
+        await expect(stopDaemon()).resolves.toBe(false);
+    });
+
+    it('does not treat a live daemon with an unreachable control endpoint as stopped', async () => {
+        vi.useFakeTimers();
+        const state = createDaemonState();
+        readDaemonState.mockResolvedValue(state);
+        let identityCalls = 0;
+        vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+            if (input.endsWith('/stop')) {
+                return new Response(JSON.stringify({}), { status: 200 });
+            }
+
+            identityCalls += 1;
+            if (identityCalls === 1) {
+                return new Response(JSON.stringify({ instanceId: state.instanceId }), { status: 200 });
+            }
+            throw new Error('control endpoint closed before process exit');
+        }));
+        vi.spyOn(process, 'kill').mockReturnValue(true);
+
+        try {
+            const stopped = stopDaemon();
+            await vi.advanceTimersByTimeAsync(15_000);
+
+            await expect(stopped).resolves.toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('confirms a verified stop after the control endpoint closes before process exit', async () => {
+        vi.useFakeTimers();
+        const state = createDaemonState();
+        readDaemonState.mockResolvedValue(state);
+        let identityCalls = 0;
+        vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+            if (input.endsWith('/stop')) {
+                return new Response(JSON.stringify({}), { status: 200 });
+            }
+
+            identityCalls += 1;
+            if (identityCalls === 1) {
+                return new Response(JSON.stringify({ instanceId: state.instanceId }), { status: 200 });
+            }
+            throw new Error('control endpoint closed during graceful shutdown');
+        }));
+        let livenessChecks = 0;
+        vi.spyOn(process, 'kill').mockImplementation((_, signal) => {
+            if (signal === 0) {
+                livenessChecks += 1;
+                if (livenessChecks >= 4) {
+                    throw Object.assign(new Error('daemon exited'), { code: 'ESRCH' });
+                }
+            }
+            return true;
+        });
+        findAllRemcliProcesses.mockResolvedValue([]);
+
+        try {
+            const stopped = stopDaemon();
+            await vi.advanceTimersByTimeAsync(300);
+
+            await expect(stopped).resolves.toBe(true);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('does not treat a removed state file as a stopped daemon while the captured instance is alive', async () => {
+        vi.useFakeTimers();
+        const state = createDaemonState();
+        readDaemonState.mockResolvedValueOnce(state).mockResolvedValue(null);
+        vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+            if (input.endsWith('/identity')) {
+                return new Response(JSON.stringify({ instanceId: state.instanceId }), { status: 200 });
+            }
+            return new Response(JSON.stringify({}), { status: 200 });
+        }));
+        vi.spyOn(process, 'kill').mockReturnValue(true);
+
+        try {
+            const stopped = stopDaemon();
+            await vi.advanceTimersByTimeAsync(15_000);
+
+            await expect(stopped).resolves.toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('does not treat a persisted stopped state as a stopped captured instance while it is alive', async () => {
+        vi.useFakeTimers();
+        const state = createDaemonState();
+        readDaemonState.mockResolvedValueOnce(state).mockResolvedValue(createDaemonState({
+            state: 'stopped',
+            stateReason: 'clean-shutdown',
+        }));
+        vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+            if (input.endsWith('/identity')) {
+                return new Response(JSON.stringify({ instanceId: state.instanceId }), { status: 200 });
+            }
+            return new Response(JSON.stringify({}), { status: 200 });
+        }));
+        vi.spyOn(process, 'kill').mockReturnValue(true);
+
+        try {
+            const stopped = stopDaemon();
+            await vi.advanceTimersByTimeAsync(15_000);
+
+            await expect(stopped).resolves.toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('keeps readiness and liveness separate during shutdown', async () => {

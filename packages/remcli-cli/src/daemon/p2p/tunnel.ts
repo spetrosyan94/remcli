@@ -25,6 +25,8 @@ export interface TunnelInfo {
 
 type TunnelStartupFailureReason = 'process-error' | 'exit-code' | 'no-edge-registration' | 'timeout';
 
+const TUNNEL_EDGE_IP_VERSION = '4';
+
 /**
  * Resolve the path to the cloudflared binary, skipping node_modules/.bin.
  */
@@ -65,7 +67,9 @@ export function isCloudflaredAvailable(): boolean {
  * After capturing the tunnel URL, stdout/stderr listeners are replaced with
  * drain handlers to prevent pipe buffer overflow from blocking cloudflared.
  */
-export async function startCloudflaredTunnel(localPort: number): Promise<TunnelInfo | null> {
+export async function startCloudflaredTunnel(
+    localPort: number,
+): Promise<TunnelInfo | null> {
     const bin = resolveCloudflaredBinary();
     if (!bin) {
         console.log('  cloudflared is not installed.');
@@ -78,7 +82,14 @@ export async function startCloudflaredTunnel(localPort: number): Promise<TunnelI
 
     const cfProcess: ChildProcess = spawn(
         bin,
-        ['tunnel', '--no-autoupdate', '--url', `http://localhost:${localPort}`],
+        [
+            'tunnel',
+            '--no-autoupdate',
+            '--edge-ip-version',
+            TUNNEL_EDGE_IP_VERSION,
+            '--url',
+            `http://localhost:${localPort}`,
+        ],
         { stdio: ['ignore', 'pipe', 'pipe'] }
     );
 
@@ -205,6 +216,11 @@ export async function startCloudflaredTunnel(localPort: number): Promise<TunnelI
                 console.log('  cloudflared timed out — could not establish tunnel');
                 break;
         }
+        return null;
+    }
+
+    if (exited) {
+        try { cfProcess.kill(); } catch { /* already dead */ }
         return null;
     }
 

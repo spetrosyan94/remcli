@@ -50,8 +50,8 @@ export async function findAllRemcliProcesses(): Promise<Array<{ pid: number, com
     }
 
     return allProcesses;
-  } catch (error) {
-    return [];
+  } catch {
+    throw new Error('Failed to discover Remcli processes');
   }
 }
 

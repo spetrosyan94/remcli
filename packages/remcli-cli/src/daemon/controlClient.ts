@@ -65,6 +65,9 @@ const MISSING_SESSION_RUNNER_CREDENTIAL_ERROR = 'Missing session runner credenti
 const MISSING_DAEMON_RUNNER_CAPABILITY_ERROR = 'Missing daemon runner capability';
 const READY_DAEMON_STATES = ['running'] as const;
 const STOPPABLE_DAEMON_STATES = ['starting', 'running', 'stopping'] as const;
+type DaemonInstanceProbe = 'matching' | 'absent' | 'replaced' | 'unreachable';
+type UnverifiedDaemonDiscoveryStatus = 'absent' | 'present' | 'unresolved';
+export type DaemonOwnershipStatus = 'absent' | 'matching' | 'unresolved';
 export const LEGACY_DAEMON_MIGRATION_MESSAGE = [
   'An older Remcli daemon is still running and cannot be verified safely by this release.',
   'Stop it from its original terminal (Ctrl+C) or with the previous Remcli release, then retry.',
@@ -80,14 +83,20 @@ function hasDaemonLifecycleState(
 async function hasMatchingDaemonIdentity(
   state: DaemonLocallyPersistedState,
 ): Promise<boolean> {
+  return await probeDaemonInstance(state) === 'matching';
+}
+
+async function probeDaemonInstance(
+  state: DaemonLocallyPersistedState,
+): Promise<DaemonInstanceProbe> {
   if (!state.httpPort) {
-    return false;
+    return 'unreachable';
   }
 
   try {
     process.kill(state.pid, 0);
-  } catch {
-    return false;
+  } catch (error) {
+    return isProcessMissingError(error) ? 'absent' : 'unreachable';
   }
 
   try {
@@ -96,24 +105,72 @@ async function hasMatchingDaemonIdentity(
       signal: AbortSignal.timeout(timeout),
     });
     if (!response.ok) {
-      return false;
+      return 'unreachable';
     }
 
     const body = await response.json() as { instanceId?: unknown };
-    return body.instanceId === state.instanceId;
+    return body.instanceId === state.instanceId ? 'matching' : 'replaced';
   } catch {
-    return false;
+    return 'unreachable';
   }
+}
+
+function isProcessMissingError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && error.code === 'ESRCH';
+}
+
+async function getUnverifiedDaemonDiscoveryStatus(): Promise<UnverifiedDaemonDiscoveryStatus> {
+  try {
+    const remcliProcesses = await findAllRemcliProcesses();
+    return remcliProcesses.some((candidate) =>
+      candidate.pid !== process.pid
+      && (candidate.type === 'daemon' || candidate.type === 'dev-daemon'),
+    ) ? 'present' : 'absent';
+  } catch {
+    return 'unresolved';
+  }
+}
+
+/**
+ * Classifies whether starting a replacement daemon is safe. A live process that
+ * cannot be bound to the persisted instance identity must fail closed.
+ */
+export async function getDaemonOwnershipStatus(): Promise<DaemonOwnershipStatus> {
+  const state = await readDaemonState();
+  if (!state) {
+    return await getUnverifiedDaemonDiscoveryStatus() === 'absent' ? 'absent' : 'unresolved';
+  }
+
+  const probe = await probeDaemonInstance(state);
+  if (probe === 'matching') {
+    return 'matching';
+  }
+
+  if (probe !== 'absent') {
+    return 'unresolved';
+  }
+
+  return await getUnverifiedDaemonDiscoveryStatus() === 'absent' ? 'absent' : 'unresolved';
 }
 
 async function daemonPost<T = unknown>(
   path: string,
   body?: unknown,
   allowedStates: readonly DaemonLifecycleState[] = READY_DAEMON_STATES,
+  expectedInstanceId?: string,
 ): Promise<DaemonResponse<T>> {
   const state = await readDaemonState();
   if (!state?.httpPort || !hasDaemonLifecycleState(state, allowedStates)) {
     const errorMessage = 'No running daemon is available for control';
+    logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
+    return { ok: false, error: errorMessage };
+  }
+
+  if (expectedInstanceId && state.instanceId !== expectedInstanceId) {
+    const errorMessage = 'Daemon instance changed before control request';
     logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
     return { ok: false, error: errorMessage };
   }
@@ -317,8 +374,19 @@ export async function spawnDaemonSession(directory: string, sessionId?: string):
   return result.ok ? result.data : { error: result.error };
 }
 
-export async function stopDaemonHttp(): Promise<DaemonResponse<unknown>> {
-  return await daemonPost('/stop', undefined, STOPPABLE_DAEMON_STATES);
+export async function stopDaemonHttp(expectedInstanceId?: string): Promise<DaemonResponse<unknown>> {
+  const state = await readDaemonState();
+  const instanceId = expectedInstanceId ?? state?.instanceId;
+  if (!instanceId) {
+    return { ok: false, error: 'No daemon instance is available for stop' };
+  }
+
+  return await daemonPost(
+    '/stop',
+    { instanceId },
+    STOPPABLE_DAEMON_STATES,
+    instanceId,
+  );
 }
 
 export async function approveDaemonPairingRekey(
@@ -399,20 +467,29 @@ export async function getLiveLegacyDaemonMigrationBlocker(): Promise<LegacyDaemo
   return matchedDaemon ? legacyState : null;
 }
 
-export async function waitForVerifiedDaemonToStop(timeoutMs = 15_000): Promise<boolean> {
+async function waitForDaemonInstanceToStop(
+  state: DaemonLocallyPersistedState,
+  timeoutMs = 15_000,
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const state = await readDaemonState();
-    if (!state || !hasDaemonLifecycleState(state, STOPPABLE_DAEMON_STATES)) {
+    const probe = await probeDaemonInstance(state);
+    if (probe === 'replaced') {
+      return false;
+    }
+    if (probe === 'absent' && await getUnverifiedDaemonDiscoveryStatus() === 'absent') {
       return true;
     }
-    if (!await hasMatchingDaemonIdentity(state)) {
-      return true;
-    }
+
+    // The verified /stop request closes the control server before the process
+    // exits. An unreachable identity endpoint is therefore only conclusive at
+    // the deadline; PID reuse and replacement still remain fail-closed.
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
-  return false;
+  const probe = await probeDaemonInstance(state);
+  return probe === 'absent'
+    && await getUnverifiedDaemonDiscoveryStatus() === 'absent';
 }
 
 /**
@@ -466,47 +543,49 @@ export async function isDaemonRunningCurrentlyInstalledRemcliVersion(): Promise<
   }
 }
 
-export async function stopDaemon() {
+/**
+ * Request a verified graceful stop and confirm that the exact daemon instance
+ * is gone before a caller starts a replacement.
+ */
+export async function stopDaemon(): Promise<boolean> {
   try {
     const state = await readDaemonState();
     if (!state) {
+      if (await getUnverifiedDaemonDiscoveryStatus() !== 'absent') {
+        logger.debug('Daemon state is missing while an unverified daemon process is still live');
+        return false;
+      }
       logger.debug('No daemon state found');
-      return;
+      return true;
     }
 
     if (!hasDaemonLifecycleState(state, STOPPABLE_DAEMON_STATES)) {
-      logger.debug(`Daemon is already ${state.state}; no stop request will be sent`);
-      return;
+      const probe = await probeDaemonInstance(state);
+      if (probe === 'absent' && await getUnverifiedDaemonDiscoveryStatus() === 'absent') {
+        logger.debug(`Daemon is already ${state.state}; no stop request will be sent`);
+        return true;
+      }
+      logger.debug(`Daemon is ${state.state} but its recorded process is still unresolved`);
+      return false;
     }
 
     logger.debug(`Stopping daemon with PID ${state.pid}`);
 
-    const result = await stopDaemonHttp();
+    const result = await stopDaemonHttp(state.instanceId);
     if (!result.ok) {
       logger.debug(`Daemon stop was not sent because ownership could not be verified: ${result.error}`);
-      return;
+      return false;
     }
 
-    try {
-      await waitForProcessDeath(state.pid, 2000);
-      logger.debug('Daemon stopped gracefully via HTTP');
-    } catch (error) {
-      logger.debug('Daemon did not exit after verified graceful stop request; refusing PID-only force kill', error);
+    if (!await waitForDaemonInstanceToStop(state)) {
+      logger.debug('Daemon did not exit after verified graceful stop request; refusing PID-only force kill');
+      return false;
     }
+
+    logger.debug('Daemon stopped gracefully via HTTP');
+    return true;
   } catch (error) {
     logger.debug('Error stopping daemon', error);
+    return false;
   }
-}
-
-async function waitForProcessDeath(pid: number, timeout: number): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    try {
-      process.kill(pid, 0);
-      await new Promise(resolve => setTimeout(resolve, 100));
-    } catch {
-      return; // Process is dead
-    }
-  }
-  throw new Error('Process did not die within timeout');
 }

@@ -8,8 +8,8 @@
   "scripts": {
     "setup": "npm install && npm run build && node packages/remcli-cli/bin/remcli.mjs setup",
     "build": "npm -w remcli-web run build && npm -w remcli run build",
-    "start": "npm run build && node packages/remcli-cli/bin/remcli.mjs daemon stop; node packages/remcli-cli/bin/remcli.mjs daemon start-sync",
-    "start:tunnel": "npm run build && node packages/remcli-cli/bin/remcli.mjs daemon stop; node packages/remcli-cli/bin/remcli.mjs daemon start-sync --tunnel",
+    "start": "npm run build && node packages/remcli-cli/bin/remcli.mjs daemon stop && node packages/remcli-cli/bin/remcli.mjs daemon start-sync",
+    "start:tunnel": "npm run build && node packages/remcli-cli/bin/remcli.mjs daemon stop && node packages/remcli-cli/bin/remcli.mjs daemon start-sync --tunnel",
     "stop": "node packages/remcli-cli/bin/remcli.mjs daemon stop",
     "status": "node packages/remcli-cli/bin/remcli.mjs daemon status",
     "autostart:install": "node packages/remcli-cli/bin/remcli.mjs daemon autostart install",

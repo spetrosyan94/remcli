@@ -17,12 +17,11 @@ import { z } from 'zod'
 import { startDaemon } from './daemon/run'
 import {
     checkIfDaemonRunningAndCleanupStaleState,
+    getDaemonOwnershipStatus,
     getLiveLegacyDaemonMigrationBlocker,
     isDaemonRunningCurrentlyInstalledRemcliVersion,
-    isVerifiedDaemonLive,
     LEGACY_DAEMON_MIGRATION_MESSAGE,
     stopDaemon,
-    waitForVerifiedDaemonToStop,
 } from './daemon/controlClient'
 import { getLatestDaemonLog } from './ui/logger'
 import { killRunawayRemcliProcesses } from './daemon/doctor'
@@ -516,7 +515,11 @@ async function ensureDaemonRunning(): Promise<void> {
       process.exit(0)
     } else if (daemonSubcommand === 'stop') {
       await ensureNoLiveLegacyDaemon();
-      await stopDaemon()
+      const stopped = await stopDaemon()
+      if (!stopped) {
+        console.error('Daemon could not be stopped safely. Resolve the running daemon before starting a replacement.')
+        process.exit(1)
+      }
       process.exit(0)
     } else if (daemonSubcommand === 'qr') {
       await ensureNoLiveLegacyDaemon();
@@ -584,10 +587,15 @@ async function ensureDaemonRunning(): Promise<void> {
       const { clearPairing } = await import('./daemon/p2p/p2pPairing');
 
       await ensureNoLiveLegacyDaemon();
-      const wasRunning = await isVerifiedDaemonLive();
+      const daemonOwnershipStatus = await getDaemonOwnershipStatus();
+      if (daemonOwnershipStatus === 'unresolved') {
+        console.error('Daemon ownership could not be verified; pairing key was left unchanged.');
+        process.exit(1);
+      }
+
+      const wasRunning = daemonOwnershipStatus === 'matching';
       if (wasRunning) {
-        await stopDaemon();
-        if (!await waitForVerifiedDaemonToStop()) {
+        if (!await stopDaemon()) {
           console.error('Daemon is still running; refusing to replace the active pairing key.');
           process.exit(1);
         }

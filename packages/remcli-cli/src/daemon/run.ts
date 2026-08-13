@@ -19,12 +19,11 @@ import {
 import { randomUUID } from 'node:crypto';
 
 import {
+  getDaemonOwnershipStatus,
   getLiveLegacyDaemonMigrationBlocker,
   isDaemonRunningCurrentlyInstalledRemcliVersion,
-  isVerifiedDaemonLive,
   LEGACY_DAEMON_MIGRATION_MESSAGE,
   stopDaemon,
-  waitForVerifiedDaemonToStop,
 } from './controlClient';
 import { findAllRemcliProcesses } from './doctor';
 import { startDaemonControlServer } from './controlServer';
@@ -547,14 +546,20 @@ export async function startDaemon(): Promise<void> {
     process.exit(1);
   }
 
+  const daemonOwnershipStatus = await getDaemonOwnershipStatus();
+  if (daemonOwnershipStatus === 'unresolved') {
+    logger.warn('[DAEMON RUN] Refusing to replace an unresolved daemon instance.');
+    console.error('An existing Remcli daemon could not be verified safely. Stop it from its original terminal, then retry.');
+    process.exit(1);
+  }
+
   // Check if already running
   // Check if running daemon version matches current CLI version
   const runningDaemonVersionMatches = await isDaemonRunningCurrentlyInstalledRemcliVersion();
   if (!runningDaemonVersionMatches) {
     logger.debug('[DAEMON RUN] Daemon version mismatch detected, restarting daemon with current CLI version');
-    if (await isVerifiedDaemonLive()) {
-      await stopDaemon();
-      if (!await waitForVerifiedDaemonToStop()) {
+    if (daemonOwnershipStatus === 'matching') {
+      if (!await stopDaemon()) {
         console.error('Daemon did not stop in time; refusing to acquire its lock.');
         process.exit(1);
       }
@@ -1027,8 +1032,6 @@ export async function startDaemon(): Promise<void> {
             tunnelStop = tunnel.stop;
             startupResources.tunnelStop = tunnelStop;
             fileState.tunnelUrl = tunnelUrl;
-            await persistTunnelState();
-            logger.debug('[DAEMON RUN] Tunnel started');
 
             tunnel.onUnexpectedStop(() => {
                 handleUnexpectedTunnelStop({
@@ -1041,6 +1044,9 @@ export async function startDaemon(): Promise<void> {
                         activeTunnelGeneration += 1;
                         tunnelUrl = undefined;
                         tunnelStop = null;
+                        if (startupResources.tunnelStop === tunnel.stop) {
+                            startupResources.tunnelStop = null;
+                        }
                         if (fileState) {
                             fileState.tunnelUrl = undefined;
                         }
@@ -1054,11 +1060,31 @@ export async function startDaemon(): Promise<void> {
             });
 
             if (activeTunnelGeneration === tunnelGeneration && tunnelStop === tunnel.stop && tunnelUrl) {
-                // Show QR with tunnel URL (accessible from anywhere)
-                const tunnelConnectionInfo = buildP2PConnectionInfo(tunnelUrl.replace(/\/$/, ''), 0, pairing);
-                const tunnelQRUrl = buildP2PQRUrl(tunnelConnectionInfo, tunnelUrl);
-                await displayP2PQRCode(tunnelQRUrl);
-                displayP2PConnectionStatus(lanIP, p2pServer.port, tunnelUrl);
+                await persistTunnelState();
+                logger.debug('[DAEMON RUN] Tunnel started');
+
+                // The callback can clear the tunnel while the state write is in flight.
+                // Re-read the active runtime state before exposing a QR URL.
+                if (activeTunnelGeneration !== tunnelGeneration || tunnelStop !== tunnel.stop || !tunnelUrl) {
+                    const connectionInfo = buildP2PConnectionInfo(lanIP, p2pServer.port, pairing);
+                    const qrUrl = buildP2PQRUrl(connectionInfo);
+                    await displayP2PQRCode(qrUrl);
+                    displayP2PConnectionStatus(lanIP, p2pServer.port);
+                } else {
+                    const activeTunnelUrl = tunnelUrl;
+                    const tunnelConnectionInfo = buildP2PConnectionInfo(activeTunnelUrl.replace(/\/$/, ''), 0, pairing);
+                    const tunnelQRUrl = buildP2PQRUrl(tunnelConnectionInfo, activeTunnelUrl);
+                    await displayP2PQRCode(tunnelQRUrl);
+
+                    if (activeTunnelGeneration !== tunnelGeneration || tunnelStop !== tunnel.stop || tunnelUrl !== activeTunnelUrl) {
+                        const connectionInfo = buildP2PConnectionInfo(lanIP, p2pServer.port, pairing);
+                        const qrUrl = buildP2PQRUrl(connectionInfo);
+                        await displayP2PQRCode(qrUrl);
+                        displayP2PConnectionStatus(lanIP, p2pServer.port);
+                    } else {
+                        displayP2PConnectionStatus(lanIP, p2pServer.port, activeTunnelUrl);
+                    }
+                }
             } else {
                 const connectionInfo = buildP2PConnectionInfo(lanIP, p2pServer.port, pairing);
                 const qrUrl = buildP2PQRUrl(connectionInfo);

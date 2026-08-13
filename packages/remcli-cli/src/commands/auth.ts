@@ -65,13 +65,11 @@ async function handleAuthLogin(args: string[]): Promise<void> {
     console.log(chalk.gray('  • Re-authenticate and register machine\n'));
 
     // Stop daemon if running
-    try {
-      logger.debug('Stopping daemon for force auth...');
-      await stopDaemon();
-      console.log(chalk.gray('✓ Stopped daemon'));
-    } catch (error) {
-      logger.debug('Daemon was not running or failed to stop:', error);
+    logger.debug('Stopping daemon for force auth...');
+    if (!await stopDaemon()) {
+      throw new Error('Daemon could not be stopped safely; existing credentials remain unchanged.');
     }
+    console.log(chalk.gray('✓ Stopped daemon'));
 
     // Clear credentials
     await clearCredentials();
@@ -142,11 +140,11 @@ async function handleAuthLogout(): Promise<void> {
 
   if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
     try {
-      // Stop daemon if running
-      try {
-        await stopDaemon();
-        console.log(chalk.gray('Stopped daemon'));
-      } catch { }
+      // Stop daemon before removing its local credentials and pairing data.
+      if (!await stopDaemon()) {
+        throw new Error('Daemon could not be stopped safely; Remcli data was left unchanged.');
+      }
+      console.log(chalk.gray('Stopped daemon'));
 
       // Remove entire remcli directory (as current logout does)
       if (existsSync(remcliDir)) {

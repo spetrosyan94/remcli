@@ -124,6 +124,14 @@ const daemonRunnerLifecycleResultSchema = z.object({
   accepted: z.boolean(),
 });
 
+const daemonStopRequestSchema = z.object({
+  instanceId: z.string().uuid(),
+}).strict();
+
+const daemonStopResponseSchema = z.object({
+  status: z.string(),
+});
+
 const sessionExecutionSelectionSchema = z.discriminatedUnion('provider', [
   z.object({
     provider: z.literal('codex'),
@@ -780,13 +788,18 @@ export function startDaemonControlServer({
     // Stop daemon
     typed.post('/stop', {
       schema: {
+        body: daemonStopRequestSchema,
         response: {
-          200: z.object({
-            status: z.string()
-          })
+          200: daemonStopResponseSchema,
+          409: daemonStopResponseSchema,
         }
       }
-    }, async () => {
+    }, async (request, reply) => {
+      if (request.body.instanceId !== instanceId) {
+        reply.code(409);
+        return { status: 'instance-mismatch' };
+      }
+
       logger.debug('[CONTROL SERVER] Stop daemon request received');
       onExplicitStopRequested();
 

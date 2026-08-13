@@ -41,6 +41,8 @@ const sessionMetadata: Metadata = {
     flavor: 'codex',
 };
 
+const TEST_DAEMON_INSTANCE_ID = '827e4fd3-2aaa-43ee-a75d-3461c8435b38';
+
 interface ControlServerTestOptions {
     instanceId?: string;
     onExplicitStopRequested?: () => void;
@@ -95,7 +97,7 @@ function createDeferred<T>(): Deferred<T> {
 
 async function startControlServerForTest(options: ControlServerTestOptions = {}) {
     return startDaemonControlServer({
-        instanceId: options.instanceId,
+        instanceId: options.instanceId ?? TEST_DAEMON_INSTANCE_ID,
         getChildren: () => [],
         consumeSessionExecution: options.consumeSessionExecution ?? (() => ({ type: 'unavailable' })),
         stopSession: options.stopSession ?? (() => ({ success: false })),
@@ -209,11 +211,31 @@ describe('startDaemonControlServer', () => {
         const controlServer = await startControlServerForTest({ onExplicitStopRequested });
         stopServer = controlServer.stop;
 
-        const response = await fetch(`http://127.0.0.1:${controlServer.port}/stop`, { method: 'POST' });
+        const response = await fetch(`http://127.0.0.1:${controlServer.port}/stop`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ instanceId: TEST_DAEMON_INSTANCE_ID }),
+        });
 
         expect(response.status).toBe(200);
         await expect(response.json()).resolves.toEqual({ status: 'stopping' });
         expect(onExplicitStopRequested).toHaveBeenCalledOnce();
+    });
+
+    it('rejects a stop request for another daemon instance', async () => {
+        const onExplicitStopRequested = vi.fn();
+        const controlServer = await startControlServerForTest({ onExplicitStopRequested });
+        stopServer = controlServer.stop;
+
+        const response = await fetch(`http://127.0.0.1:${controlServer.port}/stop`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ instanceId: '4b0623a1-a93b-49b8-b4fc-92b8f1c2a9e7' }),
+        });
+
+        expect(response.status).toBe(409);
+        await expect(response.json()).resolves.toEqual({ status: 'instance-mismatch' });
+        expect(onExplicitStopRequested).not.toHaveBeenCalled();
     });
 
     it('waits for an asynchronous stop before replying from /stop-session', async () => {

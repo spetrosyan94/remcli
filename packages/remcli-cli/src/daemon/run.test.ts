@@ -125,6 +125,33 @@ describe('daemon shutdown lifecycle', () => {
         expect(currentStop).toBeNull();
     });
 
+    it('does not retain a tunnel URL when it exits before publication', async () => {
+        const activeStop = vi.fn();
+        let activeGeneration = 3;
+        let currentStop: (() => void) | null = activeStop;
+        let tunnelUrl: string | undefined = 'https://not-logged.trycloudflare.com';
+        const persistDaemonState = vi.fn(async () => undefined);
+
+        handleUnexpectedTunnelStop({
+            generation: 3,
+            stop: activeStop,
+            canApplyFailureFallback: () => true,
+            getActiveGeneration: () => activeGeneration,
+            getActiveStop: () => currentStop,
+            clearActiveTunnel: () => {
+                activeGeneration += 1;
+                currentStop = null;
+                tunnelUrl = undefined;
+            },
+            persistDaemonState,
+            reportUnexpectedStop: vi.fn(),
+        });
+        await Promise.resolve();
+
+        expect(tunnelUrl).toBeUndefined();
+        expect(persistDaemonState).toHaveBeenCalledOnce();
+    });
+
     it('does not apply LAN fallback when cleanup has made a tunnel failure ineligible', () => {
         const activeStop = vi.fn();
         const clearActiveTunnel = vi.fn();

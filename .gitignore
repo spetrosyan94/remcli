@@ -51,6 +51,7 @@ packages/remcli-cli/web-dist/
 packages/remcli-web/playwright-report/
 packages/remcli-web/test-results/
 /packages/remcli-cli/test-results/
+/packages/remcli-cli/.remcli-cli-passthrough-artifact-*/
 
 # Local test output
 /packages/remcli-cli/coverage/

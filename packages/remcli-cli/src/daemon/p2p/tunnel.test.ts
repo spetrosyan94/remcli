@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { logger } from '@/ui/logger';
 
@@ -42,6 +42,39 @@ describe('cloudflared tunnel lifecycle', () => {
     beforeEach(() => {
         mockExecSync.mockReturnValue('/usr/local/bin/cloudflared\n');
         mockSpawn.mockReset();
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+            status: 'ok',
+            mode: 'p2p',
+        }), { status: 200 })));
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('pins the quick tunnel connector to IPv4 for networks that blackhole QUIC over IPv6', async () => {
+        const process = createFakeCloudflaredProcess();
+        mockSpawn.mockReturnValue(process);
+
+        const tunnelPromise = startCloudflaredTunnel(43123);
+        process.stderr.write('INF tunnel available at https://example.trycloudflare.com');
+        process.stderr.write('INF Registered tunnel connection connIndex=0');
+
+        await expect(tunnelPromise).resolves.toMatchObject({
+            url: 'https://example.trycloudflare.com',
+        });
+        expect(mockSpawn).toHaveBeenCalledWith(
+            '/usr/local/bin/cloudflared',
+            [
+                'tunnel',
+                '--no-autoupdate',
+                '--edge-ip-version',
+                '4',
+                '--url',
+                'http://localhost:43123',
+            ],
+            { stdio: ['ignore', 'pipe', 'pipe'] },
+        );
     });
 
     it('waits for an edge-registration message after receiving the public URL', async () => {
