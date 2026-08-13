@@ -1,12 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function openHomeTriage(page: Page): Promise<void> {
+async function openHomeTriage(page: Page, path = "/?fixtures=1&homeTriage=full"): Promise<void> {
     await page.addInitScript(() => {
         window.localStorage.setItem("remcli-fixtures", "1");
         window.localStorage.setItem("remcli-locale", "en");
         window.localStorage.setItem("remcli-theme", "dark");
     });
-    await page.goto("/?fixtures=1&homeTriage=full", { waitUntil: "domcontentloaded" });
+    await page.goto(path, { waitUntil: "domcontentloaded" });
     await expect(page.locator('[data-slot="skeleton"]:visible')).toHaveCount(0);
 }
 
@@ -27,6 +27,14 @@ test("Home triage keeps mobile and desktop filters, keyboard selection, and quic
     page.on("pageerror", (error) => issues.push(error.message));
 
     await openHomeTriage(page);
+
+    const jarvisCard = page.locator('[data-home-system-card="jarvis"]:visible');
+    await expect(jarvisCard).toHaveCount(1);
+    await expect(jarvisCard).toHaveAttribute("aria-label", "concierge");
+    await expect(jarvisCard).toHaveAttribute("data-home-system-card-state", "available");
+    await expect(jarvisCard.locator("svg")).toHaveCount(2);
+    const jarvisBox = await jarvisCard.boundingBox();
+    expect(jarvisBox?.height ?? 0).toBeGreaterThanOrEqual(44);
 
     const active = page.getByRole("button", { name: "Active", exact: true });
     const attention = page.getByRole("button", { name: "Attention", exact: true });
@@ -56,4 +64,37 @@ test("Home triage keeps mobile and desktop filters, keyboard selection, and quic
     await expect(page.getByRole("banner")).toContainText(/codex/);
     await expectNoHorizontalOverflow(page);
     expect(issues).toEqual([]);
+});
+
+test("Home keeps Jarvis visible as an explicit unavailable system state and opens concierge", async ({ page }) => {
+    for (const scenario of ["disabled", "unavailable"] as const) {
+        await openHomeTriage(page, `/?fixtures=1&conciergeStatus=${scenario}`);
+
+        const jarvisCard = page.locator('[data-home-system-card="jarvis"]:visible');
+        await expect(jarvisCard).toHaveCount(1);
+        await expect(jarvisCard).toHaveAttribute("data-home-system-card-state", "unavailable");
+        await expect(jarvisCard).toContainText("concierge unavailable");
+
+        await jarvisCard.click();
+        await expect(page).toHaveURL(/\/concierge$/);
+    }
+});
+
+test("Home Jarvis state does not retain available after connection loss", async ({ page }) => {
+    await openHomeTriage(page);
+
+    const jarvisCard = page.locator('[data-home-system-card="jarvis"]:visible');
+    await expect(jarvisCard).toHaveAttribute("data-home-system-card-state", "available");
+
+    await page.evaluate(async () => {
+        const { useProtocolStore } = await import("/src/lib/protocol/store.ts");
+        useProtocolStore.getState().setConnectionStatus("connecting");
+    });
+    await expect(jarvisCard).toHaveAttribute("data-home-system-card-state", "checking");
+
+    await page.evaluate(async () => {
+        const { useProtocolStore } = await import("/src/lib/protocol/store.ts");
+        useProtocolStore.getState().setConnectionStatus("disconnected");
+    });
+    await expect(jarvisCard).toHaveAttribute("data-home-system-card-state", "unavailable");
 });

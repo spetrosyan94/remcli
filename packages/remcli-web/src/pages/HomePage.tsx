@@ -11,6 +11,7 @@ import { ConnectionBanner, EmptyState, Logo, SessionCard, StatusDot } from "@/co
 import { HomeSessionTriageControls } from "@/components/app/HomeSessionTriage";
 import {
     connectionPillLabel,
+    ConciergeStateIndicator,
     openCommandPalette,
     SessionsSidebar,
     StopOverlayButton,
@@ -21,6 +22,7 @@ import {
     type HomeTriageState,
     type StopControls,
     type StopTarget,
+    type TConciergeHomeState,
 } from "@/components/app/SessionsSidebar";
 import {
     formatTimeLabel,
@@ -53,37 +55,66 @@ function sessionsCountLabel(count: number): string {
 
 /* ---------- Консьерж: карточка в пустом состоянии (GET /v1/concierge/status) ---------- */
 
-function useConciergeAvailable(): boolean {
+function useConciergeState(): TConciergeHomeState {
     const status = useConnectionStatus();
-    const [isAvailable, setIsAvailable] = React.useState(false);
+    const [conciergeState, setConciergeState] = React.useState<TConciergeHomeState>("checking");
     React.useEffect(() => {
-        if (status !== "connected") return undefined;
+        if (status !== "connected") {
+            setConciergeState(status === "connecting" ? "checking" : "unavailable");
+            return undefined;
+        }
         const config = getRestConfig();
-        if (!config) return undefined;
+        if (!config) {
+            setConciergeState("unavailable");
+            return undefined;
+        }
         let isCancelled = false;
+        setConciergeState("checking");
         fetchConciergeStatus(config)
-            .then((concierge) => { if (!isCancelled) setIsAvailable(concierge.enabled && concierge.available); })
-            .catch(() => { if (!isCancelled) setIsAvailable(false); });
+            .then((concierge) => {
+                if (!isCancelled) setConciergeState(concierge.enabled && concierge.available ? "available" : "unavailable");
+            })
+            .catch(() => { if (!isCancelled) setConciergeState("unavailable"); });
         return () => { isCancelled = true; };
     }, [status]);
-    return isAvailable;
+    if (status === "connecting") return "checking";
+    if (status !== "connected") return "unavailable";
+    return conciergeState;
 }
 
-function ConciergeCard() {
+function ConciergeCard({ state }: { state: TConciergeHomeState }) {
     const navigate = useNavigate();
+    const hint = state === "checking"
+        ? t("concierge.checking")
+        : state === "available"
+            ? t("concierge.empty.hint")
+            : t("concierge.unavailable");
+    const tone = state === "checking"
+        ? "border-status-thinking/35 bg-gradient-to-r from-status-thinking/[0.08] via-card to-card shadow-[0_6px_20px_hsl(var(--status-thinking)/0.08)]"
+        : state === "unavailable"
+            ? "border-status-error/35 bg-gradient-to-r from-status-error/[0.08] via-card to-card shadow-[0_6px_20px_hsl(var(--status-error)/0.08)]"
+            : "border-accent/35 bg-gradient-to-r from-accent/[0.1] via-card to-card shadow-[0_6px_20px_hsl(var(--accent)/0.08)]";
     return (
         <button
+            type="button"
+            data-home-system-card="jarvis"
+            data-home-system-card-state={state}
+            aria-label={t("concierge.title")}
+            aria-busy={state === "checking"}
             onClick={() => navigate("/concierge")}
-            className="flex w-full items-center gap-3 rounded-xl border border-border bg-card px-3.5 py-3 text-left"
+            className={`group flex min-h-[60px] w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition-[background-color,border-color,box-shadow,transform] hover:border-accent/50 hover:shadow-[0_8px_24px_hsl(var(--accent)/0.12)] active:scale-[0.96] motion-reduce:active:scale-100 motion-reduce:transition-none ${tone}`}
         >
-            <span className="flex size-[34px] shrink-0 items-center justify-center rounded-[10px] bg-accent/10">
-                <Sparkles className="size-4 text-accent" />
+            <span className="flex size-[34px] shrink-0 items-center justify-center rounded-[10px] bg-foreground/10 ring-1 ring-inset ring-foreground/10">
+                <Sparkles className="size-4 text-foreground" />
             </span>
             <span className="flex min-w-0 flex-1 flex-col">
                 <span className="font-mono text-[12.5px] font-semibold">{t("concierge.title")}</span>
-                <span className="truncate text-[11px] text-muted-foreground">{t("concierge.empty.hint")}</span>
+                <span className="truncate text-[11px] text-muted-foreground">{hint}</span>
             </span>
-            <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="flex shrink-0 items-center gap-1.5">
+                <ConciergeStateIndicator state={state} />
+                <ChevronRight className="size-3.5 transition-transform group-hover:translate-x-0.5 motion-reduce:group-hover:translate-x-0" />
+            </span>
         </button>
     );
 }
@@ -106,7 +137,7 @@ export function HomePage() {
     const machines = useMachines();
     const connectionStatus = useConnectionStatus();
     const navigate = useNavigate();
-    const isConciergeAvailable = useConciergeAvailable();
+    const conciergeState = useConciergeState();
     const [filter, setFilter] = React.useState<HomeSessionFilter>("active");
     const [isResuming, setIsResuming] = React.useState(false);
     const resumeGateRef = React.useRef(false);
@@ -184,9 +215,9 @@ export function HomePage() {
                 allSessionCount={sessions.length}
                 controls={controls}
                 triage={triage}
-                isConciergeAvailable={isConciergeAvailable}
+                conciergeState={conciergeState}
             />
-            <DesktopHome groups={groups} triage={triage} />
+            <DesktopHome groups={groups} triage={triage} conciergeState={conciergeState} />
             <StopSessionDialog target={stopTarget} onClose={() => setStopTarget(null)} />
         </>
     );
@@ -194,12 +225,12 @@ export function HomePage() {
 
 /* ---------- Мобайл <1024 (design/screens/home.tsx) ---------- */
 
-function MobileHome({ groups, allSessionCount, controls, triage, isConciergeAvailable }: {
+function MobileHome({ groups, allSessionCount, controls, triage, conciergeState }: {
     groups: MachineGroup[];
     allSessionCount: number;
     controls: StopControls;
     triage: HomeTriageState;
-    isConciergeAvailable: boolean;
+    conciergeState: TConciergeHomeState;
 }) {
     const navigate = useNavigate();
     const connectionStatus = useConnectionStatus();
@@ -235,6 +266,7 @@ function MobileHome({ groups, allSessionCount, controls, triage, isConciergeAvai
             {/* список машин и сессий */}
             <main className="flex flex-1 flex-col gap-2 overflow-y-auto px-4">
                 {banner && <ConnectionBanner state={banner} />}
+                <ConciergeCard state={conciergeState} />
                 {showSkeleton ? (
                     <div className="flex flex-col gap-2 pt-1.5">
                         <Skeleton className="h-4 w-40 bg-muted" />
@@ -256,11 +288,6 @@ function MobileHome({ groups, allSessionCount, controls, triage, isConciergeAvai
                                 </button>
                             }
                         />
-                        {isConciergeAvailable && (
-                            <div className="mx-auto w-full max-w-xs">
-                                <ConciergeCard />
-                            </div>
-                        )}
                     </div>
                 ) : (
                     <>
@@ -338,10 +365,14 @@ function MachineSection({ group, controls, isFirst }: { group: MachineGroup; con
 
 /* ---------- Десктоп ≥1024 (design/pages/desktop.html, 3a): сайдбар 288px + правая зона ---------- */
 
-function DesktopHome({ groups, triage }: { groups: MachineGroup[]; triage: HomeTriageState }) {
+function DesktopHome({ groups, triage, conciergeState }: {
+    groups: MachineGroup[];
+    triage: HomeTriageState;
+    conciergeState: TConciergeHomeState;
+}) {
     return (
         <div className="hidden min-h-0 flex-1 lg:grid lg:grid-cols-[288px_1fr]">
-            <SessionsSidebar groups={groups} homeTriage={triage} />
+            <SessionsSidebar groups={groups} homeTriage={triage} conciergeState={conciergeState} />
             <section className="flex min-h-0 flex-col items-center justify-center px-6">
                 <div className="w-full max-w-sm">
                     <EmptyState title={t("home.desktop.pick.title")} hint={t("home.desktop.pick.hint")} />

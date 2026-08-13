@@ -3,7 +3,7 @@
 // Извлечён из HomePage для переиспользования (Home + Chat); общие хелперы (группировка машин,
 // баннер соединения, стоп-диалог) экспортируются для мобильной раскладки HomePage.
 import * as React from "react";
-import { Plus, Search, Square } from "lucide-react";
+import { ChevronRight, Plus, Search, Sparkles, Square } from "lucide-react";
 import { NavLink, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { AgentIcon, ConnectionBanner, Logo, statusLabel, StatusDot } from "@/components/kit";
@@ -40,6 +40,37 @@ function sortPermissionFirst(list: Session[]): Session[] {
 export function connectionPillLabel(isConnected: boolean, latencyMs: number | null): string {
     if (!isConnected) return t("status.offline");
     return latencyMs !== null ? `${t("home.connection.p2p")} · ${latencyMs}ms` : t("home.connection.p2p");
+}
+
+export type TConciergeHomeState = "checking" | "available" | "unavailable";
+
+function conciergeStateHint(state: TConciergeHomeState): string {
+    if (state === "checking") return t("concierge.checking");
+    if (state === "available") return t("concierge.empty.hint");
+    return t("concierge.unavailable");
+}
+
+function conciergeCardTone(state: TConciergeHomeState): string {
+    if (state === "checking") {
+        return "border-status-thinking/35 bg-gradient-to-r from-status-thinking/[0.08] via-card to-card shadow-[0_5px_16px_hsl(var(--status-thinking)/0.06)]";
+    }
+    if (state === "unavailable") {
+        return "border-status-error/35 bg-gradient-to-r from-status-error/[0.08] via-card to-card shadow-[0_5px_16px_hsl(var(--status-error)/0.06)]";
+    }
+    return "border-accent/35 bg-gradient-to-r from-accent/[0.1] via-card to-card shadow-[0_5px_16px_hsl(var(--accent)/0.07)]";
+}
+
+export function ConciergeStateIndicator({ state }: { state: TConciergeHomeState }) {
+    const dotTone = state === "checking"
+        ? "bg-status-thinking animate-pulse"
+        : state === "available"
+            ? "bg-accent"
+            : "bg-status-error";
+    return (
+        <span aria-hidden="true" data-concierge-state-indicator={state} className="flex size-1.5 shrink-0 rounded-full motion-reduce:animate-none">
+            <span className={`size-full rounded-full ${dotTone} motion-reduce:animate-none`} />
+        </span>
+    );
 }
 
 /** ~/dev/remcli → remcli (компактные строки сайдбара, desktop.html) */
@@ -290,6 +321,33 @@ function SidebarMachineSection({ group, controls, isFirst, activeSessionId }: {
     );
 }
 
+function SidebarConciergeCard({ state }: { state: TConciergeHomeState }) {
+    const navigate = useNavigate();
+    return (
+        <button
+            type="button"
+            data-home-system-card="jarvis"
+            data-home-system-card-state={state}
+            aria-label={t("concierge.title")}
+            aria-busy={state === "checking"}
+            onClick={() => navigate("/concierge")}
+            className={`group flex min-h-[54px] w-full items-center gap-2.5 rounded-[10px] border px-2.5 py-2 text-left transition-[background-color,border-color,box-shadow,transform] hover:shadow-[0_7px_20px_hsl(var(--accent)/0.11)] active:scale-[0.96] motion-reduce:active:scale-100 motion-reduce:transition-none ${conciergeCardTone(state)}`}
+        >
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-[7px] bg-foreground/10 ring-1 ring-inset ring-foreground/10">
+                <Sparkles className="size-3.5 text-foreground" />
+            </span>
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="truncate font-mono text-[10.5px] font-semibold">{t("concierge.title")}</span>
+                <span className="truncate text-[9.5px] text-muted-foreground">{conciergeStateHint(state)}</span>
+            </span>
+            <span className="flex shrink-0 items-center gap-1.5">
+                <ConciergeStateIndicator state={state} />
+                <ChevronRight className="size-3 transition-transform group-hover:translate-x-0.5 motion-reduce:group-hover:translate-x-0" />
+            </span>
+        </button>
+    );
+}
+
 /** Постоянный сайдбар десктопа. Самодостаточен (данные, баннер, стоп-диалог);
  * activeSessionId подсвечивает открытую сессию (Chat), className — управление видимостью снаружи. */
 export interface HomeTriageState {
@@ -300,11 +358,12 @@ export interface HomeTriageState {
     onQuickResume: () => void;
 }
 
-export function SessionsSidebar({ activeSessionId, className = "flex", groups: suppliedGroups, homeTriage }: {
+export function SessionsSidebar({ activeSessionId, className = "flex", groups: suppliedGroups, homeTriage, conciergeState }: {
     activeSessionId?: string;
     className?: string;
     groups?: MachineGroup[];
     homeTriage?: HomeTriageState;
+    conciergeState?: TConciergeHomeState;
 }) {
     const navigate = useNavigate();
     const ownGroups = useMachineGroups();
@@ -337,6 +396,9 @@ export function SessionsSidebar({ activeSessionId, className = "flex", groups: s
                     <ConnectionBanner state={banner} />
                 </div>
             )}
+            <div className="px-2 pt-1">
+                {conciergeState && <SidebarConciergeCard state={conciergeState} />}
+            </div>
             <button
                 aria-label={t("home.searchAria")}
                 onClick={openCommandPalette}

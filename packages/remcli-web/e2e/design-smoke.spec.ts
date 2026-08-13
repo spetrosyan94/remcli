@@ -642,9 +642,8 @@ test("chat stages Codex model and reasoning for the next message", async ({ page
 
     const drawer = page.locator("#chat-next-message-drawer");
     await expect(drawer.getByRole("heading", { name: "Next message" })).toBeVisible();
-    const terra = drawer.getByRole("radio", { name: "GPT-5.6-Terra", exact: true });
-    await terra.click();
-    await drawer.getByRole("radio", { name: "high", exact: true }).click();
+    await drawer.locator("label").filter({ hasText: /^GPT-5\.6-Terra$/ }).click();
+    await drawer.locator("label").filter({ hasText: /^high$/ }).click();
     await drawer.getByRole("button", { name: "Apply to next message", exact: true }).click();
 
     await expect(executionTrigger).toContainText("GPT-5.6-Terra");
@@ -661,8 +660,8 @@ test("chat stages Codex model and reasoning for the next message", async ({ page
     await expect(executionTrigger).toBeFocused();
 
     await executionTrigger.click();
-    await drawer.getByRole("radio", { name: "GPT-5.6-Luna", exact: true }).click();
-    await drawer.getByRole("radio", { name: "medium", exact: true }).click();
+    await drawer.locator("label").filter({ hasText: /^GPT-5\.6-Luna$/ }).click();
+    await drawer.locator("label").filter({ hasText: /^medium$/ }).click();
     await drawer.getByRole("button", { name: "Apply to next message", exact: true }).click();
     await input.fill("Continue again without a stale revision");
     await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -1244,24 +1243,93 @@ test("directory keeps its content region stable and reduces motion to the design
     const nextHeight = await directoryRegion.evaluate((element) => element.getBoundingClientRect().height);
     expect(Math.abs(nextHeight - initialHeight)).toBeLessThanOrEqual(1);
 
+    await page.evaluate(() => {
+        interface CloseMotion {
+            animationName: string;
+            animationDuration: string;
+            transitionProperty: string;
+            transitionDuration: string;
+            transform?: string;
+        }
+
+        const state: {
+            drawer?: CloseMotion;
+            overlay?: CloseMotion;
+            observer: MutationObserver;
+        } = {
+            observer: new MutationObserver(() => capture()),
+        };
+        const capture = () => {
+            const drawer = document.querySelector<HTMLElement>('[data-slot="drawer-content"][data-state="closed"]');
+            const overlay = document.querySelector<HTMLElement>('[data-slot="drawer-overlay"][data-state="closed"]');
+            if (drawer && !state.drawer) {
+                const style = window.getComputedStyle(drawer);
+                state.drawer = {
+                    animationName: style.animationName,
+                    animationDuration: style.animationDuration,
+                    transitionProperty: style.transitionProperty,
+                    transitionDuration: style.transitionDuration,
+                    transform: style.transform,
+                };
+            }
+            if (overlay && !state.overlay) {
+                const style = window.getComputedStyle(overlay);
+                state.overlay = {
+                    animationName: style.animationName,
+                    animationDuration: style.animationDuration,
+                    transitionProperty: style.transitionProperty,
+                    transitionDuration: style.transitionDuration,
+                };
+            }
+        };
+        state.observer.observe(document.body, {
+            attributes: true,
+            attributeFilter: ["data-state"],
+            childList: true,
+            subtree: true,
+        });
+        capture();
+        (window as Window & { __remcliCloseMotion?: typeof state }).__remcliCloseMotion = state;
+    });
     await page.keyboard.press("Escape");
-    const closingDrawer = page.locator('[data-slot="drawer-content"][data-state="closed"]');
-    const closingOverlay = page.locator('[data-slot="drawer-overlay"][data-state="closed"]');
-    await expect(closingDrawer).toHaveCount(1);
-    await expect(closingOverlay).toHaveCount(1);
-    const closingMotion = await closingDrawer.evaluate((element) => {
-        const drawerStyle = window.getComputedStyle(element);
-        const overlayStyle = window.getComputedStyle(document.querySelector<HTMLElement>('[data-slot="drawer-overlay"][data-state="closed"]')!);
+    await expect.poll(() => page.evaluate(() => {
+        const state = (window as Window & {
+            __remcliCloseMotion?: { drawer?: unknown; overlay?: unknown };
+        }).__remcliCloseMotion;
+        return Boolean(state?.drawer && state.overlay);
+    })).toBe(true);
+    const closingMotion = await page.evaluate(() => {
+        const host = window as Window & {
+            __remcliCloseMotion?: {
+                drawer?: {
+                    animationName: string;
+                    animationDuration: string;
+                    transitionProperty: string;
+                    transitionDuration: string;
+                    transform?: string;
+                };
+                overlay?: {
+                    animationName: string;
+                    animationDuration: string;
+                    transitionProperty: string;
+                    transitionDuration: string;
+                };
+                observer: MutationObserver;
+            };
+        };
+        const state = host.__remcliCloseMotion!;
+        state.observer.disconnect();
+        delete host.__remcliCloseMotion;
         return {
-            drawerAnimationName: drawerStyle.animationName,
-            drawerAnimationDuration: drawerStyle.animationDuration,
-            drawerTransitionProperty: drawerStyle.transitionProperty,
-            drawerTransitionDuration: drawerStyle.transitionDuration,
-            drawerTransform: drawerStyle.transform,
-            overlayAnimationName: overlayStyle.animationName,
-            overlayAnimationDuration: overlayStyle.animationDuration,
-            overlayTransitionProperty: overlayStyle.transitionProperty,
-            overlayTransitionDuration: overlayStyle.transitionDuration,
+            drawerAnimationName: state.drawer!.animationName,
+            drawerAnimationDuration: state.drawer!.animationDuration,
+            drawerTransitionProperty: state.drawer!.transitionProperty,
+            drawerTransitionDuration: state.drawer!.transitionDuration,
+            drawerTransform: state.drawer!.transform,
+            overlayAnimationName: state.overlay!.animationName,
+            overlayAnimationDuration: state.overlay!.animationDuration,
+            overlayTransitionProperty: state.overlay!.transitionProperty,
+            overlayTransitionDuration: state.overlay!.transitionDuration,
         };
     });
     expect(closingMotion).toEqual({
@@ -1275,7 +1343,7 @@ test("directory keeps its content region stable and reduces motion to the design
         overlayTransitionProperty: "opacity",
         overlayTransitionDuration: "0.12s",
     });
-    await expect(closingDrawer).toHaveCount(0);
+    await expect(page.locator('[data-slot="drawer-content"]')).toHaveCount(0);
     await expect(directoryTrigger).toBeFocused();
 
     await assertNoHorizontalOverflow(page);
