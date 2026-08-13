@@ -324,6 +324,47 @@ describe('daemon control lifecycle safety', () => {
         }
     });
 
+    it('confirms a verified stop when only start command wrappers remain visible', async () => {
+        const state = createDaemonState();
+        readDaemonState.mockResolvedValue(state);
+        let identityCalls = 0;
+        vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+            if (input.endsWith('/stop')) {
+                return new Response(JSON.stringify({}), { status: 200 });
+            }
+
+            identityCalls += 1;
+            if (identityCalls === 1) {
+                return new Response(JSON.stringify({ instanceId: state.instanceId }), { status: 200 });
+            }
+            throw new Error('control endpoint closed during graceful shutdown');
+        }));
+        let livenessChecks = 0;
+        vi.spyOn(process, 'kill').mockImplementation((_, signal) => {
+            if (signal === 0) {
+                livenessChecks += 1;
+                if (livenessChecks >= 3) {
+                    throw Object.assign(new Error('daemon exited'), { code: 'ESRCH' });
+                }
+            }
+            return true;
+        });
+        findAllRemcliProcesses.mockResolvedValue([
+            {
+                pid: 51_001,
+                type: 'user-session',
+                command: 'sh -c "npm run start:tunnel"',
+            },
+            {
+                pid: 51_002,
+                type: 'user-session',
+                command: 'node packages/remcli-cli/bin/remcli.mjs daemon start-sync --tunnel',
+            },
+        ]);
+
+        await expect(stopDaemon()).resolves.toBe(true);
+    });
+
     it('does not treat a removed state file as a stopped daemon while the captured instance is alive', async () => {
         vi.useFakeTimers();
         const state = createDaemonState();

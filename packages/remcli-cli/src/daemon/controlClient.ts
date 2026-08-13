@@ -127,7 +127,9 @@ async function getUnverifiedDaemonDiscoveryStatus(): Promise<UnverifiedDaemonDis
     const remcliProcesses = await findAllRemcliProcesses();
     return remcliProcesses.some((candidate) =>
       candidate.pid !== process.pid
-      && (candidate.type === 'daemon' || candidate.type === 'dev-daemon'),
+      && (candidate.type === 'daemon'
+        || candidate.type === 'dev-daemon'
+        || candidate.type === 'unverified-daemon'),
     ) ? 'present' : 'absent';
   } catch {
     return 'unresolved';
@@ -460,7 +462,9 @@ export async function getLiveLegacyDaemonMigrationBlocker(): Promise<LegacyDaemo
   const remcliProcesses = await findAllRemcliProcesses();
   const matchedDaemon = remcliProcesses.find((process) =>
     process.pid === legacyState.pid
-    && (process.type === 'daemon' || process.type === 'dev-daemon')
+    && (process.type === 'daemon'
+      || process.type === 'dev-daemon'
+      || process.type === 'unverified-daemon')
     && /\bdaemon\s+start-sync(?:\s|$)/.test(process.command),
   );
 

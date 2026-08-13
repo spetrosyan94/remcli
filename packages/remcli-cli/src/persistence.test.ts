@@ -4,14 +4,16 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 interface PersistenceModule {
     DAEMON_STATE_SCHEMA_VERSION: typeof import('./persistence').DAEMON_STATE_SCHEMA_VERSION;
+    acquireDaemonLock: typeof import('./persistence').acquireDaemonLock;
     readDaemonState: typeof import('./persistence').readDaemonState;
     readLegacyDaemonStateDiagnostic: typeof import('./persistence').readLegacyDaemonStateDiagnostic;
+    releaseDaemonLock: typeof import('./persistence').releaseDaemonLock;
     writeDaemonState: typeof import('./persistence').writeDaemonState;
     clearDaemonState: typeof import('./persistence').clearDaemonState;
 }
@@ -30,6 +32,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    vi.restoreAllMocks();
     if (originalHomeDir === undefined) {
         delete process.env.REMCLI_HOME_DIR;
     } else {
@@ -175,5 +178,37 @@ describe('daemon state persistence', () => {
             httpPort: 50097,
             startedWithCliVersion: '0.0.0',
         });
+    });
+});
+
+describe('daemon lock persistence', () => {
+    it('should remove an ESRCH lock and acquire it', async () => {
+        const persistence = await importPersistenceModule();
+        const lockPath = join(homeDir, 'daemon.state.json.lock');
+        const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+            throw Object.assign(new Error('process not found'), { code: 'ESRCH' });
+        });
+        writeFileSync(lockPath, '424242', { mode: 0o600 });
+
+        const lockHandle = await persistence.acquireDaemonLock(2, 0);
+
+        expect(lockHandle).not.toBeNull();
+        expect(killSpy).toHaveBeenCalledWith(424242, 0);
+        expect(readFileSync(lockPath, 'utf-8')).toBe(String(process.pid));
+        await persistence.releaseDaemonLock(lockHandle!);
+    });
+
+    it('should preserve an EPERM lock and return null after bounded attempts', async () => {
+        const persistence = await importPersistenceModule();
+        const lockPath = join(homeDir, 'daemon.state.json.lock');
+        const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+            throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+        });
+        writeFileSync(lockPath, '424242', { mode: 0o600 });
+
+        await expect(persistence.acquireDaemonLock(2, 0)).resolves.toBeNull();
+
+        expect(killSpy).toHaveBeenCalledTimes(2);
+        expect(existsSync(lockPath)).toBe(true);
     });
 });

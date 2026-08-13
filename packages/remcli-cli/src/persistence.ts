@@ -664,6 +664,16 @@ export async function clearDaemonState(): Promise<void> {
   }
 }
 
+interface ErrorWithCode {
+  code?: unknown;
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && (error as ErrorWithCode).code === code;
+}
+
 /**
  * Acquire an exclusive lock file for the daemon.
  * The lock file proves the daemon is running and prevents multiple instances.
@@ -683,18 +693,20 @@ export async function acquireDaemonLock(
       // Write PID to lock file for debugging
       await fileHandle.writeFile(String(process.pid));
       return fileHandle;
-    } catch (error: any) {
-      if (error.code === 'EEXIST') {
+    } catch (error: unknown) {
+      if (hasErrorCode(error, 'EEXIST')) {
         // Lock file exists, check if process is still running
         try {
           const lockPid = readFileSync(configuration.daemonLockFile, 'utf-8').trim();
           if (lockPid && !isNaN(Number(lockPid))) {
             try {
               process.kill(Number(lockPid), 0); // Check if process exists
-            } catch {
-              // Process doesn't exist, remove stale lock
-              unlinkSync(configuration.daemonLockFile);
-              continue; // Retry acquisition
+            } catch (processError: unknown) {
+              if (hasErrorCode(processError, 'ESRCH')) {
+                // Process doesn't exist, remove stale lock
+                unlinkSync(configuration.daemonLockFile);
+                continue; // Retry acquisition
+              }
             }
           }
         } catch {
