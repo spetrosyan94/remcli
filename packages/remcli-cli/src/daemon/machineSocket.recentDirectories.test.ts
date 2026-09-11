@@ -93,16 +93,23 @@ function createReadyCodexCapabilities(): CodexCapabilitiesService {
 
 function createCursorCapabilities(): CursorCapabilitiesService {
     return new CursorCapabilitiesService({
-        readModelList: async () => ({ executable: 'agent', version: 'test', output: '' }),
+        readCatalog: async () => ({
+            executable: 'agent',
+            version: 'test',
+            models: { availableModels: [], currentModelId: '' },
+        }),
     });
 }
 
 function createReadyCursorCapabilities(): CursorCapabilitiesService {
     return new CursorCapabilitiesService({
-        readModelList: async () => ({
+        readCatalog: async () => ({
             executable: 'agent',
             version: 'test-cursor',
-            output: 'Available models\ncursor-model - Cursor Model (default)\nTip: select a model',
+            models: {
+                availableModels: [{ modelId: 'cursor-model', name: 'Cursor Model' }],
+                currentModelId: 'cursor-model',
+            },
         }),
     });
 }

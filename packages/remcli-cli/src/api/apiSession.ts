@@ -20,7 +20,14 @@ import { calculateCost } from '@/utils/pricing';
  */
 export type ACPMessageData =
     // Core message types
-    | { type: 'message'; message: string; isError?: boolean }
+    | {
+        type: 'message';
+        message: string;
+        isError?: boolean;
+        messageId?: string;
+        streamState?: 'delta' | 'final';
+        historical?: boolean;
+    }
     | { type: 'reasoning'; message: string }
     | { type: 'thinking'; text: string }
     // Tool interactions
@@ -577,7 +584,7 @@ export class ApiSessionClient extends EventEmitter {
             message: encrypted
         });
 
-        if (body.type === 'message') {
+        if (body.type === 'message' && body.historical !== true && body.streamState !== 'delta') {
             if (body.isError === true) {
                 this.recordExecutionError();
             } else if (body.isError === false && body.message.trim().length > 0) {

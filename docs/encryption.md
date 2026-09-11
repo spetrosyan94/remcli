@@ -425,11 +425,11 @@ web-клиент также удаляет из неё meta поля чужог�
 ```
 
 `mode` описывает только подтверждённые permission modes Claude Code, Codex и
-Gemini. Cursor не сериализует свои native launch controls в это поле. Для
-Cursor старт сессии передаёт отдельные typed данные: execution mode
-`agent | plan | ask`, независимые `force` и `autoReview`, sandbox override и
-MCP approval. В Agent mode flag `--mode` не передаётся; локальные Cursor
-allow/deny rules остаются внутри Cursor CLI и не копируются в Remcli metadata.
+Gemini. Cursor получает отдельный строго типизированный ACP session mode
+`agent | plan | ask`; остальные root CLI flags не сериализуются и не могут
+быть внедрены через P2P metadata. Exact Cursor model и short-lived catalog
+version валидируются daemon-ом отдельно. Runtime `session/request_permission`
+разрешает выбрать только option, который прислал сам Cursor ACP.
 
 ### Метаданные машины (зашифрованы)
 ```json

@@ -404,7 +404,7 @@ flowchart LR
 
 Внешний machine-RPC проходит `providerSpawnRequest.ts` до capability discovery:
 общие lifecycle fields отделены от provider-native schemas. Поэтому Codex
-получает только app-server selection, Cursor - только headless stream controls,
+получает только app-server selection, Cursor - только ACP model/mode selection,
 а daemon-issued runner identity никогда не приходит от web-клиента.
 
 Для уже активных daemon-owned Codex/Cursor wrappers отдельные strict RPC
@@ -413,7 +413,8 @@ session ID. Snapshot имеет CAS revision и `current/pending`; запись 
 fresh provider validation, а runner применяет pending через защищённый local
 control endpoint перед следующим phone prompt. Это общий продуктовый contract,
 но исполнение остаётся provider-native: Codex начинает новый app-server turn,
-Cursor запускает следующий headless `--resume` с тем же native ID.
+Cursor применяет ACP session operation и отправляет следующий `session/prompt`
+в ту же native session.
 
 Запуск сессий демоном использует `registerCommonHandlers` для предоставления контролируемой RPC-поверхности (shell-команды, файловые операции, помощники поиска/diff).
 
@@ -424,7 +425,7 @@ Cursor запускает следующий headless `--resume` с тем же 
 | Агент | Resume | Механизм |
 |-------|--------|----------|
 | Claude Code | Реализован путь, acceptance pending | `--resume <id>`; история исходной сессии реплеится в P2P-хранилище (`src/claude/utils/replaySessionHistory.ts`). Отдельные provider-specific daemon-boundary, real CLI и Browser fixture gates ещё не приняты. |
-| Cursor | Lifecycle D/I/L/UI-F принят | `agent --resume <id>` сохраняет подтверждённый native Cursor ID и workspace между headless turns. Account-visible model валидируется daemon-ом; смена модели в чате применяется только к следующему prompt через тот же native ID, без reset сессии. `Agent` / `Plan` / `Ask` и launch controls остаются session-level. Delivery подтверждается после matching `system/init`, bind и согласованного metadata; transient metadata failure в том же runner повторяет только reconciliation, без второго native prompt. Active resume и cleanup защищены daemon runner credential и immutable tmux ownership. Детали: [Cursor CLI](agent-architecture/cursor-cli-architecture.md). |
+| Cursor | Lifecycle D/I/L/UI-F принят | Один daemon-owned `agent acp` process держит native Cursor session. `session/new` создаёт её, строгий `session/load` возобновляет тот же ID, а `session/prompt` продолжает контекст. Exact model catalog и `Agent` / `Plan` / `Ask` берутся из ACP; permission requests и typed tool updates передаются в Remcli. Active resume и cleanup защищены runner credential, native bind и immutable writer ownership. Детали: [Cursor CLI](agent-architecture/cursor-cli-architecture.md). |
 | Gemini | Реализован путь, acceptance pending | ACP `session/load`, если агент декларирует capability `loadSession`; иначе откат к новой сессии (`src/agent/acp/AcpBackend.ts`). Отдельные ACP daemon-boundary, real provider и Browser fixture gates ещё не приняты. |
 | Codex | Поддерживается | Официальный app-server хранит один native thread для phone и remote TUI. Attach-only resume не создаёт фиктивный prompt. Account-visible model/reasoning валидируются daemon-ом; смена в открытом чате применяется к следующему `turn/start`, а активный старый turn не получает новый prompt через `turn/steer`. Shared transport имеет typed private fallback; MCP не используется как chat/resume transport. Детали: [Codex / ChatGPT](agent-architecture/codex-chatgpt-architecture.md). |
 
@@ -445,7 +446,7 @@ Cursor запускает следующий headless `--resume` с тем же 
   до ответа, поэтому picker не предлагает незаметный resume другой папки.
 
 Примечания по агентам:
-- **Cursor**: бинарник CLI определяется как `agent` (fallback: `cursor-agent` для старых сборок); текущий production turn использует документированный `--print --output-format stream-json --trust`. Daemon нормализует account-visible `agent models` в short-lived catalog, включая точные `(current)`/`(default)` status markers, а New Session отправляет exact `cursorExecution { model, catalogVersion }`; raw CLI output, static web catalog и stale selection не проходят. Обычный Agent не получает несуществующий `--mode agent`; `plan`/`ask` маппятся в нативный `--mode`, а `force`/`auto-review` - в отдельные флаги. До создания daemon-owned P2P session runner подтверждает одноразовую daemon capability через `/cursor-runner-preflight`; ручной `--started-by daemon` не считается provenance и terminal не читает injected daemon model env. После `system/init` wrapper проходит credential-protected атомарную привязку native ID через `/cursor-session-bound`. При корректном `Ctrl+C` credential-protected `runner-stopping` блокирует новый resume до archive/flush/close, а `runner-stopped` освобождает только immutable owned pane; неполный proof остаётся tracked для retry. Bind создаёт in-memory lineage `{native ID -> previous Remcli P2P session, workspace}` только для daemon-owned wrapper; same-daemon resume получает provisional parent relation в initial metadata, которую matching `system/init` + bind подтверждает, а pre-init failure/abort/stop/mode change удаляет до fresh turn/archive. Неудачный bounded metadata rollback завершает wrapper fail-closed. Web использует связь только для уже существующей P2P-ленты Remcli: native Cursor history/DB не читается, external Cursor sessions и restart daemon relation не создают. Официальный `agent acp` теперь доступен как structured custom-client transport, но пока не подключён к Remcli и не подменяет принятый runner без отдельной protocol/real acceptance. Детали: [agent-architecture/cursor-cli-architecture.md](agent-architecture/cursor-cli-architecture.md).
+- **Cursor**: бинарник определяется как `agent` (fallback: `cursor-agent`), а remote session использует официальный постоянный `agent acp`. Daemon получает exact model IDs из `SessionModelState`, связывает catalog с executable/version fingerprint и отклоняет stale selection. Один wrapper владеет одним ACP process, одной native session и одним writer lease; `session/load` не откатывается к новой сессии при ошибке. `Agent` / `Plan` / `Ask` применяются как ACP modes, model change - как ACP session operation перед следующим prompt. `session/update`, `session/request_permission` и `session/cancel` имеют типизированный bridge в P2P; unsupported structured questions/plan approval завершаются fail-closed с видимым сообщением. Детали: [agent-architecture/cursor-cli-architecture.md](agent-architecture/cursor-cli-architecture.md).
 - **Gemini**: режим ACP использует `--acp` на новых сборках с откатом к `--experimental-acp` (проверяется однократно через `gemini --help`). С 2026-06-18 Google отключил доступ Gemini CLI для OAuth-пользователей (аккаунт Google) — CLI выводит понятную ошибку с предложением аутентификации по API-ключу вместо общего сбоя.
 
 ### Состояние машины

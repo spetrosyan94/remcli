@@ -16,7 +16,7 @@ import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { Credentials, readSettings } from '@/persistence';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
-import { MessageQueue2, type MessageQueueBatch } from '@/utils/MessageQueue2';
+import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { CodexDisplay } from '@/ui/ink/CodexDisplay';
@@ -56,12 +56,13 @@ import {
 
 import { createAutoTitleSetter } from '@/utils/autoSessionTitle';
 import {
-    CursorTurnError,
-    isCursorTurnAbortError,
-    runCursorTurn,
-    type CursorTurnOutcome,
-} from './cursorQuery';
-import { type CursorMode, type CursorStreamEvent } from './types';
+    CursorAcpClient,
+    type CursorAcpSession,
+    type CursorMode as CursorAcpMode,
+    type SessionUpdate as CursorAcpUpdate,
+} from './cursorAcpClient';
+import { CursorPermissionHandler } from './cursorPermissionHandler';
+import type { CursorMode } from './types';
 
 const LIFECYCLE_METADATA_UPDATE_OPTIONS = {
     maxAttempts: 2,
@@ -71,14 +72,27 @@ const LIFECYCLE_METADATA_UPDATE_OPTIONS = {
 const MAX_PROVISIONAL_PARENT_ROLLBACK_UPDATES = 2;
 const DAEMON_EXECUTION_SELECTION_REQUIRED_ERROR = 'Cursor daemon runner requires a validated execution and control selection.';
 
+class CursorLifecycleError extends Error {
+    public constructor(
+        public readonly kind: 'native' | 'resume-mismatch' | 'metadata',
+        message: string,
+    ) {
+        super(message);
+        this.name = 'CursorLifecycleError';
+    }
+}
+
+interface ActiveCursorAcpTurn {
+    messageId: string;
+    response: string;
+    toolCalls: Map<string, { name: string; status?: string }>;
+    acceptDelivery: () => void;
+}
+
 interface CursorNativeMetadataReconciliation {
     nativeSessionId: string;
     model?: string;
     resumedFromRemcliSessionId?: string;
-}
-
-interface PendingPostNativeMetadataReconciliation extends CursorNativeMetadataReconciliation {
-    deliveryId: string;
 }
 
 function redactCursorErrorForSession(error: unknown, fallback: string): string {
@@ -249,6 +263,8 @@ export async function runCursor(opts: {
     let session: ApiSessionClient;
     let bindSessionHandlers: ((target: ApiSessionClient) => void) | null = null;
     let scheduleParentRelationRollbackForSession: ((target: ApiSessionClient) => Promise<void>) | null = null;
+    let cursorPermissionHandler: CursorPermissionHandler | null = null;
+    let canBindSessionHandlers = !opts.resumeSessionId;
 
     const { session: initialSession, reconnectionHandle } = setupOfflineReconnection({
         api,
@@ -265,7 +281,8 @@ export async function runCursor(opts: {
             : undefined,
         onSessionSwap: (newSession) => {
             session = newSession;
-            bindSessionHandlers?.(newSession);
+            cursorPermissionHandler?.updateSession(newSession);
+            if (canBindSessionHandlers) bindSessionHandlers?.(newSession);
             // A reconnect may have begun before the local metadata template was
             // sanitized. Queue a bounded cleanup for that replacement session.
             void scheduleParentRelationRollbackForSession?.(newSession).catch((error) => {
@@ -274,10 +291,8 @@ export async function runCursor(opts: {
         },
     });
     session = initialSession;
+    cursorPermissionHandler = new CursorPermissionHandler(session);
 
-    const getNativeResetHash = (mode: CursorMode): string => hashObject({
-        launchControls: mode.launchControls,
-    });
     const messageQueue = new MessageQueue2<CursorMode>((mode) => hashObject({
         launchControls: mode.launchControls,
         model: mode.model,
@@ -289,11 +304,6 @@ export async function runCursor(opts: {
     const currentLaunchControls = opts.launchControls ?? DEFAULT_CURSOR_LAUNCH_CONTROLS;
     let currentModel = opts.execution?.model;
     let doesExecutionMetadataNeedReconciliation = false;
-    let pendingPostNativeMetadataReconciliation: PendingPostNativeMetadataReconciliation | null = null;
-    const getPendingPostNativeMetadataReconciliation = (): PendingPostNativeMetadataReconciliation | null => (
-        pendingPostNativeMetadataReconciliation
-    );
-
     const publishExecutionError = (target: ApiSessionClient, error: unknown, fallback: string): string => {
         const errorMessage = redactCursorErrorForSession(error, fallback);
         target.sendAgentMessage('cursor', { type: 'message', message: errorMessage, isError: true });
@@ -331,25 +341,6 @@ export async function runCursor(opts: {
 
         if (Object.prototype.hasOwnProperty.call(messageMeta ?? {}, 'model')) {
             logger.warn('[Cursor] Ignoring unvalidated per-message model override.');
-        }
-
-        const pendingMetadataReconciliation = getPendingPostNativeMetadataReconciliation();
-        if (message.deliveryId && pendingMetadataReconciliation?.deliveryId === message.deliveryId) {
-            const reconciliation = pendingMetadataReconciliation;
-            try {
-                await reconcileCursorNativeMetadata(target, reconciliation);
-                if (pendingPostNativeMetadataReconciliation === reconciliation) {
-                    pendingPostNativeMetadataReconciliation = null;
-                }
-                return;
-            } catch (error) {
-                const failure = publishExecutionError(
-                    target,
-                    error,
-                    'Cursor native session metadata update failed.',
-                );
-                throw new RetryableUserMessageDeliveryError(new Error(failure));
-            }
         }
 
         if (trustedStartedBy === 'daemon') {
@@ -423,7 +414,16 @@ export async function runCursor(opts: {
 
     let abortController = new AbortController();
     let shouldExit = false;
-    let activeTurn: Promise<CursorTurnOutcome> | null = null;
+    let activeTurn: Promise<{ stopReason: string }> | null = null;
+    let activeAcpTurn: ActiveCursorAcpTurn | null = null;
+    let cursorAcpClient: CursorAcpClient | null = null;
+    let cursorAcpSession: CursorAcpSession | null = null;
+    let cursorWriterLease: CursorNativeWriterLease | undefined;
+    let doesNativeMetadataNeedReconciliation = false;
+    let didReportNativeTerminalSession = false;
+    let isCollectingCursorHistory = false;
+    let cursorHistoryRole: 'user' | 'assistant' | null = null;
+    const cursorHistoryEntries: Array<{ role: 'user' | 'assistant'; text: string }> = [];
     // The daemon-verified parent is visible immediately. Cursor still has to
     // confirm the requested native resume before its native ID is promoted.
     let cursorSessionId: string | null = null;
@@ -487,7 +487,7 @@ export async function runCursor(opts: {
         }
 
         if (nativeSessionId !== requestedResumeSessionId) {
-            throw new CursorTurnError(
+            throw new CursorLifecycleError(
                 'resume-mismatch',
                 'Cursor resumed a different native session. The existing session was not changed.',
             );
@@ -527,7 +527,7 @@ export async function runCursor(opts: {
             ...(writerLeaseId ? { writerLeaseId } : {}),
         });
         if (!bindingResult.ok) {
-            throw new CursorTurnError(
+            throw new CursorLifecycleError(
                 'native',
                 `Cursor native session binding failed: ${bindingResult.error}`,
             );
@@ -538,39 +538,39 @@ export async function runCursor(opts: {
             case 'already-bound':
                 return bindingResult.data.writerLease;
             case 'reuse-active-wrapper':
-                throw new CursorTurnError(
+                throw new CursorLifecycleError(
                     'native',
                     `Cursor native session is already owned by active wrapper ${bindingResult.data.wrapper.remcliSessionId}.`,
                 );
             case 'wrapper-not-tracked':
-                throw new CursorTurnError(
+                throw new CursorLifecycleError(
                     'native',
                     'Cursor native session binding was rejected because this daemon wrapper is no longer tracked.',
                 );
             case 'native-session-mismatch':
-                throw new CursorTurnError(
+                throw new CursorLifecycleError(
                     'native',
                     'Cursor native session binding was rejected because the selected resume no longer matches this wrapper.',
                 );
             case 'agent-mismatch':
-                throw new CursorTurnError(
+                throw new CursorLifecycleError(
                     'native',
                     `Cursor native session binding was rejected because this wrapper belongs to ${bindingResult.data.trackedAgent}.`,
                 );
             case 'writer-busy':
-                throw new CursorTurnError(
+                throw new CursorLifecycleError(
                     'native',
                     `Cursor native session is already controlled by an active ${bindingResult.data.owner} writer.`,
                 );
             case 'writer-lease-mismatch':
-                throw new CursorTurnError(
+                throw new CursorLifecycleError(
                     'native',
                     'Cursor native writer capability no longer matches this turn.',
                 );
         }
     };
 
-    const acquireHeadlessTurnWriterLease = async (
+    const acquireCursorWriterLease = async (
         nativeSessionId: string,
     ): Promise<CursorNativeWriterLease> => {
         const leaseResult = await acquireDaemonCursorHeadlessWriterLease({
@@ -579,7 +579,7 @@ export async function runCursor(opts: {
             remcliSessionId: session.sessionId,
         });
         if (!leaseResult.ok) {
-            throw new CursorTurnError(
+            throw new CursorLifecycleError(
                 'native',
                 `Cursor native writer lease failed: ${leaseResult.error}`,
             );
@@ -589,29 +589,29 @@ export async function runCursor(opts: {
             case 'acquired':
                 return leaseResult.data.writerLease;
             case 'writer-busy':
-                throw new CursorTurnError(
+                throw new CursorLifecycleError(
                     'native',
                     `Cursor native session is already controlled by an active ${leaseResult.data.owner} writer.`,
                 );
             case 'wrapper-not-tracked':
-                throw new CursorTurnError(
+                throw new CursorLifecycleError(
                     'native',
                     'Cursor native writer lease was rejected because this daemon wrapper is no longer tracked.',
                 );
             case 'agent-mismatch':
-                throw new CursorTurnError(
+                throw new CursorLifecycleError(
                     'native',
                     `Cursor native writer lease was rejected because this wrapper belongs to ${leaseResult.data.trackedAgent}.`,
                 );
             case 'native-session-mismatch':
-                throw new CursorTurnError(
+                throw new CursorLifecycleError(
                     'native',
                     'Cursor native writer lease was rejected because the selected resume no longer matches this wrapper.',
                 );
         }
     };
 
-    const releaseHeadlessTurnWriterLease = async (writerLease: CursorNativeWriterLease): Promise<boolean> => {
+    const releaseCursorWriterLease = async (writerLease: CursorNativeWriterLease): Promise<boolean> => {
         const releaseResult = await releaseDaemonCursorNativeWriterLease({
             agent: 'cursor',
             leaseId: writerLease.leaseId,
@@ -621,11 +621,237 @@ export async function runCursor(opts: {
         return releaseResult.ok && releaseResult.data.released;
     };
 
+    const appendCursorHistoryText = (role: 'user' | 'assistant', text: string): void => {
+        if (!text) return;
+        const last = cursorHistoryEntries.at(-1);
+        if (cursorHistoryRole === role && last?.role === role) {
+            last.text += text;
+        } else {
+            cursorHistoryEntries.push({ role, text });
+        }
+        cursorHistoryRole = role;
+    };
+
+    const flushCursorHistory = (): void => {
+        for (const entry of cursorHistoryEntries) {
+            const text = entry.text.trim();
+            if (!text) continue;
+            if (entry.role === 'user') {
+                session.sendUserTextMessage(text, { sentFrom: 'cursor' });
+            } else {
+                session.sendAgentMessage('cursor', {
+                    type: 'message',
+                    message: text,
+                    isError: false,
+                    historical: true,
+                });
+            }
+        }
+        cursorHistoryEntries.length = 0;
+        cursorHistoryRole = null;
+    };
+
+    const handleCursorAcpUpdate = (update: CursorAcpUpdate): void => {
+        const turn = activeAcpTurn;
+        if (!turn) {
+            if (!isCollectingCursorHistory) return;
+            if (update.sessionUpdate === 'user_message_chunk' && update.content.type === 'text') {
+                appendCursorHistoryText('user', update.content.text);
+            } else if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
+                appendCursorHistoryText('assistant', update.content.text);
+            } else {
+                cursorHistoryRole = null;
+            }
+            return;
+        }
+        turn.acceptDelivery();
+
+        switch (update.sessionUpdate) {
+            case 'agent_message_chunk':
+                if (update.content.type !== 'text' || !update.content.text) return;
+                turn.response += update.content.text;
+                if (isStreamingAssistant) {
+                    messageBuffer.updateLastMessage(update.content.text, 'assistant');
+                } else {
+                    messageBuffer.addMessage(update.content.text, 'assistant');
+                    isStreamingAssistant = true;
+                }
+                session.sendAgentMessage('cursor', {
+                    type: 'message',
+                    message: update.content.text,
+                    isError: false,
+                    messageId: turn.messageId,
+                    streamState: 'delta',
+                });
+                return;
+            case 'agent_thought_chunk':
+                return;
+            case 'tool_call': {
+                isStreamingAssistant = false;
+                const name = update.title || update.kind || 'Cursor tool';
+                turn.toolCalls.set(update.toolCallId, { name, status: update.status });
+                messageBuffer.addMessage(name, 'tool');
+                session.sendAgentMessage('cursor', {
+                    type: 'tool-call',
+                    callId: update.toolCallId,
+                    name,
+                    input: {
+                        ...(update.kind ? { kind: update.kind } : {}),
+                        ...(update.locations?.length ? { locations: update.locations } : {}),
+                    },
+                    id: randomUUID(),
+                });
+                return;
+            }
+            case 'tool_call_update': {
+                isStreamingAssistant = false;
+                const previous = turn.toolCalls.get(update.toolCallId);
+                const name = update.title || previous?.name || update.kind || 'Cursor tool';
+                const status = update.status ?? previous?.status;
+                turn.toolCalls.set(update.toolCallId, { name, ...(status ? { status } : {}) });
+                if (status === 'completed' || status === 'failed') {
+                    session.sendAgentMessage('cursor', {
+                        type: 'tool-result',
+                        callId: update.toolCallId,
+                        output: { name, status },
+                        id: randomUUID(),
+                        ...(status === 'failed' ? { isError: true } : {}),
+                    });
+                }
+                return;
+            }
+            case 'plan':
+                isStreamingAssistant = false;
+                messageBuffer.addMessage('Cursor plan updated', 'status');
+                return;
+            case 'user_message_chunk':
+            case 'available_commands_update':
+            case 'current_mode_update':
+                return;
+        }
+    };
+
+    const createCursorAcpClient = (mode: CursorAcpMode, model?: string): CursorAcpClient => new CursorAcpClient({
+        cwd: process.cwd(),
+        mode,
+        ...(model ? { model } : {}),
+        resumeSessionId: requestedResumeSessionId,
+        ...(opts.runner ? { command: opts.runner.executable } : {}),
+        onSessionUpdate: (notification) => {
+            if (cursorSessionId && notification.sessionId !== cursorSessionId) return;
+            handleCursorAcpUpdate(notification.update);
+        },
+        onPermission: (request) => cursorPermissionHandler!.handleRequest(request),
+        onExtensionWarning: (method) => {
+            const message = method === 'cursor/ask_question'
+                ? 'Cursor requested structured input, but this Remcli version cannot answer that form yet. The question was skipped.'
+                : 'Cursor requested plan approval, but this Remcli version cannot answer that form yet. The plan was rejected.';
+            messageBuffer.addMessage(message, 'status');
+            session.sendAgentMessage('cursor', { type: 'message', message, isError: true });
+        },
+    });
+
+    const ensureCursorAcpSession = async (
+        mode: CursorAcpMode,
+        model?: string,
+    ): Promise<CursorAcpSession> => {
+        if (cursorAcpClient && cursorAcpSession) {
+            if (model && cursorAcpSession.models?.currentModelId !== model) {
+                await cursorAcpClient.setModel(model);
+                cursorAcpSession.models ??= {
+                    availableModels: [{ modelId: model, name: model }],
+                    currentModelId: model,
+                };
+                cursorAcpSession.models.currentModelId = model;
+            }
+            if (cursorAcpSession.modes.currentModeId !== mode) {
+                await cursorAcpClient.setMode(mode);
+                cursorAcpSession.modes.currentModeId = mode;
+            }
+            return cursorAcpSession;
+        }
+
+        let candidateLease: CursorNativeWriterLease | undefined;
+        const candidate = createCursorAcpClient(mode, model);
+        const attemptedResume = Boolean(requestedResumeSessionId);
+        isCollectingCursorHistory = attemptedResume && !resumedFromRemcliSessionId;
+        cursorHistoryEntries.length = 0;
+        cursorHistoryRole = null;
+        try {
+            if (trustedStartedBy === 'daemon' && requestedResumeSessionId) {
+                candidateLease = await acquireCursorWriterLease(requestedResumeSessionId);
+            }
+            const nativeSession = await candidate.start();
+            const boundLease = await bindNativeCursorSession(
+                nativeSession.sessionId,
+                candidateLease?.leaseId,
+            );
+            if (candidateLease && boundLease && candidateLease.leaseId !== boundLease.leaseId) {
+                throw new CursorLifecycleError(
+                    'native',
+                    'Cursor native writer capability changed while ACP was starting.',
+                );
+            }
+            candidateLease = boundLease ?? candidateLease;
+            if (trustedStartedBy === 'daemon' && !candidateLease) {
+                throw new CursorLifecycleError('native', 'Cursor native writer lease was not established.');
+            }
+            confirmInitialParentRelation(nativeSession.sessionId);
+
+            cursorAcpClient = candidate;
+            cursorAcpSession = nativeSession;
+            cursorWriterLease = candidateLease;
+            cursorSessionId = nativeSession.sessionId;
+            requestedResumeSessionId = undefined;
+            doesNativeMetadataNeedReconciliation = true;
+            flushCursorHistory();
+            return nativeSession;
+        } catch (error) {
+            if (attemptedResume) shouldExit = true;
+            await candidate.dispose().catch(() => undefined);
+            if (candidateLease) {
+                await releaseCursorWriterLease(candidateLease).catch(() => false);
+            }
+            await abandonUnverifiedResume();
+            throw error;
+        } finally {
+            isCollectingCursorHistory = false;
+        }
+    };
+
+    const reconcileInitializedCursorSession = async (nativeSession: CursorAcpSession): Promise<void> => {
+        if (!doesNativeMetadataNeedReconciliation) return;
+        const nativeMetadataReconciliation: CursorNativeMetadataReconciliation = {
+            nativeSessionId: nativeSession.sessionId,
+            model: nativeSession.models?.currentModelId,
+            ...(shouldPublishParentRelation() && resumedFromRemcliSessionId
+                ? { resumedFromRemcliSessionId }
+                : {}),
+        };
+        await reconcileCursorNativeMetadata(session, nativeMetadataReconciliation);
+        doesNativeMetadataNeedReconciliation = false;
+    };
+
+    const reportNativeTerminalSession = async (nativeSession: CursorAcpSession): Promise<void> => {
+        if (trustedStartedBy === 'daemon' || didReportNativeTerminalSession) return;
+        didReportNativeTerminalSession = true;
+        await reportTerminalSessionStarted({
+            agentName: 'Cursor',
+            sessionId: session.sessionId,
+            metadata: {
+                ...baseMetadata,
+                agentSessionId: nativeSession.sessionId,
+                cursorSessionId: nativeSession.sessionId,
+            },
+        });
+    };
+
     async function handleAbort(): Promise<void> {
         logger.debug('[Cursor] Abort requested');
         const parentRelationRollback = abandonUnverifiedResume();
         try {
             abortController.abort();
+            cursorPermissionHandler?.reset();
         } catch (error) {
             logger.debug('[Cursor] Error during abort:', error);
         } finally {
@@ -673,6 +899,24 @@ export async function runCursor(opts: {
             }
             if (activeTurn) {
                 await activeTurn.catch(() => undefined);
+            }
+
+            const activeAcpClient = cursorAcpClient;
+            cursorAcpClient = null;
+            cursorAcpSession = null;
+            activeAcpTurn = null;
+            if (activeAcpClient) {
+                await activeAcpClient.dispose().catch((error) => {
+                    logger.debug('[Cursor] Error while stopping ACP transport:', redactDiagnosticData(error));
+                });
+            }
+            if (cursorWriterLease) {
+                const writerLease = cursorWriterLease;
+                cursorWriterLease = undefined;
+                const released = await releaseCursorWriterLease(writerLease).catch(() => false);
+                if (!released) {
+                    logger.debug('[Cursor] Daemon could not confirm Cursor ACP writer lease release.');
+                }
             }
 
             const targetSession = session;
@@ -748,7 +992,7 @@ export async function runCursor(opts: {
         target.rpcHandlerManager.registerHandler('abort', handleAbort);
         registerKillSessionHandler(target.rpcHandlerManager, handleKillSession);
     };
-    bindSessionHandlers(session);
+    if (canBindSessionHandlers) bindSessionHandlers(session);
 
     const terminationSignals = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
     const handleTerminationSignal = () => {
@@ -794,46 +1038,56 @@ export async function runCursor(opts: {
     }
 
     try {
-        let currentNativeResetHash: string | null = null;
-        let pending: MessageQueueBatch<CursorMode> | null = null;
         const autoSetTitle = createAutoTitleSetter(() => session);
 
-        while (!shouldExit) {
-            let message: MessageQueueBatch<CursorMode> | null = pending;
-            pending = null;
+        if (requestedResumeSessionId) {
+            try {
+                const nativeSession = await ensureCursorAcpSession(
+                    currentLaunchControls.executionMode as CursorAcpMode,
+                    currentModel,
+                );
+                currentModel = nativeSession.models?.currentModelId ?? currentModel;
+                await reconcileInitializedCursorSession(nativeSession);
+                await reportNativeTerminalSession(nativeSession);
+                canBindSessionHandlers = true;
+                bindSessionHandlers(session);
+                sendReady();
+            } catch (error) {
+                shouldExit = true;
+                publishExecutionError(
+                    session,
+                    error instanceof CursorLifecycleError
+                        ? error
+                        : 'Cursor session could not be resumed. Check Cursor CLI authentication and retry.',
+                    'Cursor session could not be resumed.',
+                );
+            }
+        }
 
+        while (!shouldExit) {
+            const waitSignal = abortController.signal;
+            const message = await messageQueue.waitForMessagesAndGetAsString(waitSignal);
             if (!message) {
-                const waitSignal = abortController.signal;
-                const batch = await messageQueue.waitForMessagesAndGetAsString(waitSignal);
-                if (!batch) {
-                    if (waitSignal.aborted && !shouldExit) {
-                        try {
-                            // An abort RPC starts its lineage cleanup before
-                            // signalling this wait. Do not accept a fresh
-                            // prompt until that metadata update is settled.
-                            await awaitQueuedParentRelationRollback();
-                        } catch (error) {
-                            logger.debug('[Cursor] Parent lineage rollback failed while idle:', redactDiagnosticData(error));
-                            shouldExit = true;
-                            break;
-                        }
-                        if (shouldExit) {
-                            break;
-                        }
-                        logger.debug('[cursor] Wait aborted while idle, resetting abort controller and continuing');
-                        abortController = new AbortController();
-                        continue;
+                if (waitSignal.aborted && !shouldExit) {
+                    try {
+                        // An abort RPC starts its lineage cleanup before
+                        // signalling this wait. Do not accept a fresh prompt
+                        // until that metadata update is settled.
+                        await awaitQueuedParentRelationRollback();
+                    } catch (error) {
+                        logger.debug('[Cursor] Parent lineage rollback failed while idle:', redactDiagnosticData(error));
+                        shouldExit = true;
+                        break;
                     }
-                    break;
+                    if (shouldExit) break;
+                    logger.debug('[cursor] Wait aborted while idle, resetting abort controller and continuing');
+                    abortController = new AbortController();
+                    continue;
                 }
-                message = batch;
+                break;
             }
 
-            if (!message) break;
-
             let didSettleDelivery = false;
-            let didAcceptNativeDelivery = false;
-            let postNativeMetadataFailure: string | null = null;
             const acknowledgeQueuedDelivery = (): void => {
                 if (!message.mode.deliveryId || didSettleDelivery) return;
                 didSettleDelivery = true;
@@ -852,54 +1106,37 @@ export async function runCursor(opts: {
                 acknowledgeQueuedDelivery();
             };
 
-            // Native launch controls are the only reset boundary. A model change
-            // resumes the same Cursor chat with a different --model value.
-            const nativeResetHash = getNativeResetHash(message.mode);
-            if (currentNativeResetHash && nativeResetHash !== currentNativeResetHash) {
-                logger.debug('[Cursor] Mode changed – resetting session');
-                messageBuffer.addMessage('═'.repeat(40), 'status');
-                messageBuffer.addMessage('Starting new Cursor session (mode changed)...', 'status');
-                try {
-                    await abandonUnverifiedResume();
-                } catch (error) {
-                    logger.debug('[Cursor] Could not safely reset the native Cursor resume:', redactDiagnosticData(error));
-                    session.sendAgentMessage('cursor', {
-                        type: 'message',
-                        message: 'Cursor session stopped because the previous resume history could not be cleared safely.',
-                        isError: true,
-                    });
-                    shouldExit = true;
-                    break;
-                }
-                cursorSessionId = null;
-            }
-
-            currentNativeResetHash = nativeResetHash;
             messageBuffer.addMessage(message.message, 'user');
 
-            let headlessWriterLease: CursorNativeWriterLease | undefined;
             try {
-                // Build prompt (no CHANGE_TITLE_INSTRUCTION — Cursor doesn't have access to remcli MCP server)
                 const prompt = message.message;
-
                 const { launchControls } = message.mode;
-                const cursorMode = launchControls.executionMode;
+                const cursorMode = launchControls.executionMode as CursorAcpMode;
+                const requestedModel = message.mode.model ?? currentModel;
 
-                // Show active mode in terminal
                 const modeLabel = cursorMode === 'plan'
                     ? 'Plan'
                     : cursorMode === 'ask'
                         ? 'Ask'
                         : 'Agent';
                 messageBuffer.addMessage(`Mode: ${modeLabel}`, 'system');
-                logger.debug(`[Cursor] Spawning with executionMode=${cursorMode} force=${launchControls.force} autoReview=${launchControls.autoReview} sandbox=${launchControls.sandbox} approveMcps=${launchControls.approveMcps}`);
+                logger.debug(`[Cursor] Starting ACP turn mode=${cursorMode} hasModel=true`);
 
-                const nativeSessionIdForLease = cursorSessionId ?? requestedResumeSessionId;
-                if (trustedStartedBy === 'daemon' && nativeSessionIdForLease) {
-                    headlessWriterLease = await acquireHeadlessTurnWriterLease(nativeSessionIdForLease);
+                const nativeSession = await ensureCursorAcpSession(cursorMode, requestedModel);
+                const selectedModel = nativeSession.models?.currentModelId ?? requestedModel;
+                currentModel = selectedModel;
+                try {
+                    await reconcileInitializedCursorSession(nativeSession);
+                } catch (error) {
+                    const failure = publishExecutionError(
+                        session,
+                        error,
+                        'Cursor native session metadata update failed.',
+                    );
+                    throw new RetryableUserMessageDeliveryError(new Error(failure));
                 }
+                await reportNativeTerminalSession(nativeSession);
 
-                // Send task_started
                 session.sendAgentMessage('cursor', {
                     type: 'task_started',
                     id: randomUUID(),
@@ -907,176 +1144,58 @@ export async function runCursor(opts: {
                 thinking = true;
                 session.keepAlive(thinking, 'remote');
 
-                // Cursor has one canonical terminal result. Streaming events feed
-                // the terminal UI, while the result text is sent to the phone once.
                 isStreamingAssistant = false;
-                const runningTurn = runCursorTurn({
-                    prompt,
-                    cwd: process.cwd(),
-                    model: message.mode.model,
-                    resumeSessionId: cursorSessionId ?? requestedResumeSessionId,
-                    abort: abortController.signal,
-                    launchControls,
-                    trustWorkspace: true,
-                    ...(opts.runner ? { executable: opts.runner.executable } : {}),
-                }, async (event) => {
-                    // Debug: log every event type for diagnosis
-                    logger.debug(`[Cursor] Event: type=${event.type} subtype=${event.subtype ?? '-'} hasContent=${!!event.message?.content} hasTextDelta=${!!event.text_delta} hasText=${!!event.text}`);
-
-                    if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
-                        const boundWriterLease = await bindNativeCursorSession(
-                            event.session_id,
-                            headlessWriterLease?.leaseId,
-                        );
-                        if (
-                            headlessWriterLease
-                            && boundWriterLease
-                            && headlessWriterLease.leaseId !== boundWriterLease.leaseId
-                        ) {
-                            throw new CursorTurnError(
-                                'native',
-                                'Cursor native writer capability changed while this turn was starting.',
-                            );
-                        }
-                        headlessWriterLease = boundWriterLease ?? headlessWriterLease;
-                        confirmInitialParentRelation(event.session_id);
-                    }
-
-                    handleCursorEvent(event, messageBuffer);
-
-                    // Commit the native ID only after Cursor has confirmed it and,
-                    // for daemon runners, the daemon has claimed its ownership.
-                    if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
-                        cursorSessionId = event.session_id;
-                        requestedResumeSessionId = undefined;
-                        logger.debug(`[Cursor] Session ID: ${cursorSessionId}`);
-                        didAcceptNativeDelivery = Boolean(message.mode.deliveryId);
-                        const targetSession = session;
-                        const effectiveModel = message.mode.model ?? currentModel;
-                        const updatedMetadata = {
-                            ...baseMetadata,
-                            agentSessionId: cursorSessionId,
-                            cursorSessionId: cursorSessionId,
-                            ...(shouldPublishParentRelation() ? { resumedFromRemcliSessionId } : {}),
-                        };
-                        const nativeMetadataReconciliation: CursorNativeMetadataReconciliation = {
-                            nativeSessionId: cursorSessionId,
-                            ...(effectiveModel ? { model: effectiveModel } : {}),
-                            ...(shouldPublishParentRelation() && resumedFromRemcliSessionId
-                                ? { resumedFromRemcliSessionId }
-                                : {}),
-                        };
-                        try {
-                            await reconcileCursorNativeMetadata(targetSession, nativeMetadataReconciliation);
-                            acknowledgeQueuedDelivery();
-                        } catch (error) {
-                            if (!message.mode.deliveryId) {
-                                throw error;
-                            }
-                            postNativeMetadataFailure = redactCursorErrorForSession(
-                                error,
-                                'Cursor native session metadata update failed.',
-                            );
-                            pendingPostNativeMetadataReconciliation = {
-                                ...nativeMetadataReconciliation,
-                                deliveryId: message.mode.deliveryId,
-                            };
-                        }
-                        if (trustedStartedBy !== 'daemon') {
-                            await reportTerminalSessionStarted({
-                                agentName: 'Cursor',
-                                sessionId: targetSession.sessionId,
-                                metadata: updatedMetadata,
-                            });
-                        }
-                    }
-                });
+                activeAcpTurn = {
+                    messageId: randomUUID(),
+                    response: '',
+                    toolCalls: new Map(),
+                    acceptDelivery: () => {
+                        acknowledgeQueuedDelivery();
+                    },
+                };
+                const runningTurn = cursorAcpClient!.prompt(prompt, abortController.signal);
                 activeTurn = runningTurn;
                 const turn = await runningTurn;
+                const completedAcpTurn = activeAcpTurn;
+                activeAcpTurn = null;
                 if (activeTurn === runningTurn) {
                     activeTurn = null;
                 }
-                const pendingMetadataReconciliation = getPendingPostNativeMetadataReconciliation();
-                if (
-                    message.mode.deliveryId
-                    && didAcceptNativeDelivery
-                    && pendingMetadataReconciliation?.deliveryId === message.mode.deliveryId
-                ) {
-                    const reconciliation = pendingMetadataReconciliation;
-                    try {
-                        await reconcileCursorNativeMetadata(session, reconciliation);
-                        if (pendingPostNativeMetadataReconciliation === reconciliation) {
-                            pendingPostNativeMetadataReconciliation = null;
-                        }
-                        postNativeMetadataFailure = null;
-                        acknowledgeQueuedDelivery();
-                    } catch (error) {
-                        postNativeMetadataFailure = publishExecutionError(
-                            session,
-                            error,
-                            postNativeMetadataFailure ?? 'Cursor native session metadata update failed.',
-                        );
-                    }
+                acknowledgeQueuedDelivery();
+
+                if (turn.stopReason === 'cancelled') {
+                    messageBuffer.addMessage('Aborted by user', 'status');
+                    session.sendAgentMessage('cursor', { type: 'turn_aborted', id: randomUUID() });
+                    continue;
                 }
-                if (message.mode.deliveryId && !didSettleDelivery && !didAcceptNativeDelivery) {
-                    throw new CursorTurnError(
-                        'native',
-                        'Cursor did not initialize the native session before accepting the P2P prompt.',
-                    );
-                }
-                if (turn.response.trim()) {
+
+                const responseText = completedAcpTurn?.response.trim() ?? '';
+                if (responseText) {
                     session.sendAgentMessage('cursor', {
                         type: 'message',
-                        message: turn.response,
+                        message: responseText,
                         isError: false,
+                        messageId: completedAcpTurn!.messageId,
+                        streamState: 'final',
                     });
                 }
 
-                // Task complete
                 session.sendAgentMessage('cursor', {
                     type: 'task_complete',
                     id: randomUUID(),
                 });
 
-                // Auto-set session title from first user message
-                // (Cursor can't call change_title MCP tool like Claude/Gemini/Codex)
                 autoSetTitle(message.message);
 
-                if (postNativeMetadataFailure) {
-                    rejectQueuedDelivery(new RetryableUserMessageDeliveryError(
-                        new Error(postNativeMetadataFailure),
-                    ));
-                    logger.warn('[Cursor] Native turn completed; waiting for metadata reconciliation before acknowledging its P2P delivery.');
-                }
-
             } catch (error) {
-                const pendingMetadataReconciliation = getPendingPostNativeMetadataReconciliation();
-                const hasPendingPostNativeMetadata = Boolean(
-                    message.mode.deliveryId
-                    && didAcceptNativeDelivery
-                    && pendingMetadataReconciliation?.deliveryId === message.mode.deliveryId
-                );
-                if (hasPendingPostNativeMetadata) {
-                    const failure = publishExecutionError(
-                        session,
-                        postNativeMetadataFailure ?? error,
-                        'Cursor native session metadata update failed.',
-                    );
-                    rejectQueuedDelivery(new RetryableUserMessageDeliveryError(new Error(failure)));
+                activeAcpTurn = null;
+                if (error instanceof RetryableUserMessageDeliveryError) {
+                    rejectQueuedDelivery(error);
                 } else {
                     cancelQueuedDelivery();
                 }
                 logger.debug('[cursor] Error in cursor session:', redactDiagnosticData(error));
-                const isAbortError = isCursorTurnAbortError(error);
-                if (!hasPendingPostNativeMetadata) {
-                    try {
-                        await abandonUnverifiedResume();
-                    } catch (rollbackError) {
-                        logger.debug('[Cursor] Could not safely roll back parent lineage after turn failure:', redactDiagnosticData(rollbackError));
-                        shouldExit = true;
-                    }
-                }
-
+                const isAbortError = abortController.signal.aborted;
                 if (isAbortError) {
                     messageBuffer.addMessage('Aborted by user', 'status');
                     session.sendAgentMessage('cursor', {
@@ -1084,9 +1203,11 @@ export async function runCursor(opts: {
                         id: randomUUID(),
                     });
                 } else {
-                    const errorMsg = error instanceof Error
+                    const errorMsg = error instanceof RetryableUserMessageDeliveryError
                         ? error.message
-                        : 'Cursor CLI could not complete this turn. Check the local Cursor terminal and retry.';
+                        : error instanceof CursorLifecycleError
+                            ? error.message
+                            : 'Cursor ACP could not complete this turn. Check Cursor CLI authentication and retry.';
                     messageBuffer.addMessage(`Error: ${errorMsg}`, 'status');
 
                     session.sendAgentMessage('cursor', {
@@ -1096,21 +1217,8 @@ export async function runCursor(opts: {
                     });
                 }
             } finally {
-                if (headlessWriterLease) {
-                    const didReleaseWriterLease = await releaseHeadlessTurnWriterLease(headlessWriterLease);
-                    if (!didReleaseWriterLease) {
-                        logger.debug('[Cursor] Daemon could not confirm the headless native writer lease release; stopping this runner fail-closed.');
-                        shouldExit = true;
-                        abortController.abort();
-                        messageBuffer.addMessage('Cursor session stopped because native session ownership could not be released safely.', 'status');
-                        session.sendAgentMessage('cursor', {
-                            type: 'message',
-                            message: 'Cursor session stopped because Remcli could not safely release native session ownership. Resume it to continue.',
-                            isError: true,
-                        });
-                    }
-                }
                 activeTurn = null;
+                activeAcpTurn = null;
                 thinking = false;
                 session.keepAlive(thinking, 'remote');
                 if (!shouldExit) {
@@ -1146,114 +1254,7 @@ export async function runCursor(opts: {
 
 
 /**
- * Tracks whether the last event added to messageBuffer was an assistant text_delta.
- * When a non-assistant event interrupts the stream, we reset this so the next
- * text_delta creates a new message instead of appending to a stale one.
+ * Tracks whether the active ACP turn is appending assistant text to the latest
+ * terminal message.
  */
 let isStreamingAssistant = false;
-
-/**
- * Extract a short human-readable label from a Cursor tool_call object.
- * Cursor format: { readToolCall: { args: { path: "..." } } }
- * Returns e.g. "read_file src/index.ts" or "edit_file package.json"
- */
-function formatToolLabel(toolCall: Record<string, unknown>): { name: string; summary: string } {
-    const entries = Object.entries(toolCall);
-    if (entries.length === 0) return { name: 'unknown', summary: '' };
-
-    const [rawName, rawData] = entries[0];
-    const data = rawData as Record<string, unknown> | undefined;
-    const args = (data?.args ?? data ?? {}) as Record<string, unknown>;
-
-    // Simplify common tool names: readToolCall → read, editToolCall → edit, etc.
-    const name = rawName.replace(/ToolCall$/i, '').replace(/Tool$/i, '');
-
-    // Pick the most useful arg for a short summary (path, file_path, command, query)
-    const hint = args.path ?? args.file_path ?? args.filePath ?? args.command ?? args.query ?? '';
-    const summary = typeof hint === 'string' ? hint.slice(0, 80) : '';
-
-    return { name, summary };
-}
-
-/**
- * Process a single Cursor NDJSON event and update terminal display.
- * Tool calls are NOT forwarded to mobile — only the final assistant message is sent.
- */
-function handleCursorEvent(
-    event: CursorStreamEvent,
-    messageBuffer: MessageBuffer,
-): void {
-    switch (event.type) {
-        case 'system':
-            isStreamingAssistant = false;
-            if (event.subtype === 'init') {
-                logger.debug(`[Cursor] Init: model=${event.model}, session=${event.session_id}`);
-                if (event.model) {
-                    messageBuffer.addMessage(`Model: ${event.model}`, 'system');
-                }
-            }
-            break;
-
-        case 'assistant':
-            // Full message content — start a new assistant block
-            if (event.message?.content) {
-                for (const part of event.message.content) {
-                    if (part.type === 'text') {
-                        messageBuffer.addMessage(part.text, 'assistant');
-                        isStreamingAssistant = true;
-                    }
-                }
-            }
-            // Streaming delta — append to current block only if we're mid-stream
-            if (event.text_delta) {
-                if (isStreamingAssistant) {
-                    messageBuffer.updateLastMessage(event.text_delta, 'assistant');
-                } else {
-                    messageBuffer.addMessage(event.text_delta, 'assistant');
-                    isStreamingAssistant = true;
-                }
-            }
-            // Standalone text (no delta, no content array)
-            if (event.text && !event.text_delta && !event.message?.content) {
-                messageBuffer.addMessage(event.text, 'assistant');
-                isStreamingAssistant = true;
-            }
-            break;
-
-        case 'thinking':
-            // Skip thinking/reasoning in UI — user doesn't want to see model reasoning
-            logger.debug(`[Cursor] Thinking event (suppressed from UI)`);
-            break;
-
-        case 'tool_call':
-            isStreamingAssistant = false;
-            if (event.subtype === 'started' && event.tool_call) {
-                const { name, summary } = formatToolLabel(event.tool_call);
-                // Terminal: short one-liner
-                messageBuffer.addMessage(`${name}${summary ? ' ' + summary : ''}`, 'tool');
-            } else if (event.subtype === 'completed' && event.tool_call) {
-                const toolData = Object.values(event.tool_call)[0] as Record<string, unknown> | undefined;
-                const toolName = Object.keys(event.tool_call)[0] ?? 'unknown';
-                const hasResult = Boolean(toolData && Object.hasOwn(toolData, 'result'));
-                logger.debug(`[Cursor] Tool completed: name=${toolName} hasResult=${hasResult}`);
-            }
-            // No tool-call/tool-result sent to mobile — Cursor's tool details are too verbose
-            // and not useful on a phone screen. The final assistant message is enough.
-            break;
-
-        case 'result':
-            isStreamingAssistant = false;
-            if (event.subtype === 'success') {
-                if (event.duration_ms) {
-                    const seconds = (event.duration_ms / 1000).toFixed(1);
-                    messageBuffer.addMessage(`Completed in ${seconds}s`, 'status');
-                }
-            }
-            break;
-
-        default:
-            isStreamingAssistant = false;
-            logger.debug(`[cursor] Unhandled event type: ${event.type}`);
-            break;
-    }
-}

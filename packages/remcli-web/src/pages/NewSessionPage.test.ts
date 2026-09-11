@@ -146,10 +146,6 @@ vi.mock('@/lib/protocol', () => ({
     machineSpawnNewSession: machineSpawnNewSessionMock,
     DEFAULT_CURSOR_LAUNCH_CONTROLS: {
         executionMode: 'agent',
-        force: false,
-        autoReview: false,
-        sandbox: 'local-configuration',
-        approveMcps: false,
     },
     refreshSessions: vi.fn(),
     sendSessionMessage: vi.fn(),
@@ -870,10 +866,6 @@ describe('NewSessionPage Cursor capability selection', () => {
         const cursorExecution = getDefaultCursorExecution(capabilities);
         const cursorLaunchControls = {
             executionMode: 'agent' as const,
-            force: true,
-            autoReview: true,
-            sandbox: 'disabled' as const,
-            approveMcps: true,
         };
 
         expect(buildNewSessionSpawnOptions({
@@ -928,16 +920,12 @@ describe('NewSessionPage Cursor capability selection', () => {
             },
             cursorLaunchControls: {
                 executionMode: 'agent',
-                force: false,
-                autoReview: false,
-                sandbox: 'local-configuration',
-                approveMcps: false,
             },
         });
         expect(machineSpawnNewSessionMock.mock.calls[0]?.[0]).not.toHaveProperty('permissionMode');
     });
 
-    it('forwards user-selected Cursor modes and launch controls through the spawn transport', async () => {
+    it('forwards the user-selected Cursor ACP mode through the spawn transport', async () => {
         machineGetCursorCapabilitiesMock.mockResolvedValue(capabilities);
         componentHooks.enableEffects();
 
@@ -958,28 +946,6 @@ describe('NewSessionPage Cursor capability selection', () => {
         planMode.props.onClick?.();
 
         page = renderNewSessionPage();
-        const launchTrigger = findElement(page, (element) => element.type === 'button'
-            && elementText(element).includes('new.cursorAdvanced'));
-        launchTrigger.props.onClick?.();
-        page = renderNewSessionPage();
-
-        const forceSwitch = findElement(page, (element) => element.props.role === 'switch'
-            && elementText(element).includes('new.cursorForce'));
-        forceSwitch.props.onClick?.();
-        page = renderNewSessionPage();
-        const autoReviewSwitch = findElement(page, (element) => element.props.role === 'switch'
-            && elementText(element).includes('new.cursorAutoReview'));
-        autoReviewSwitch.props.onClick?.();
-        page = renderNewSessionPage();
-        const disabledSandbox = findElement(page, (element) => element.props.label === 'new.cursorSandboxDisabled');
-        expect(disabledSandbox.props.showSelectionIndicator).toBe(true);
-        disabledSandbox.props.onClick?.();
-        page = renderNewSessionPage();
-        const approveMcpsSwitch = findElement(page, (element) => element.props.role === 'switch'
-            && elementText(element).includes('new.cursorApproveMcps'));
-        approveMcpsSwitch.props.onClick?.();
-        page = renderNewSessionPage();
-
         const startButton = findElement(page, (element) => element.type === 'button'
             && elementText(element) === 'start:cursor');
         await startButton.props.onClick?.();
@@ -996,10 +962,6 @@ describe('NewSessionPage Cursor capability selection', () => {
             },
             cursorLaunchControls: {
                 executionMode: 'plan',
-                force: true,
-                autoReview: true,
-                sandbox: 'disabled',
-                approveMcps: true,
             },
         });
         expect(machineSpawnNewSessionMock.mock.calls[0]?.[0]).not.toHaveProperty('permissionMode');
@@ -1044,10 +1006,6 @@ describe('NewSessionPage Cursor capability selection', () => {
             },
             cursorLaunchControls: {
                 executionMode: 'agent',
-                force: false,
-                autoReview: false,
-                sandbox: 'local-configuration',
-                approveMcps: false,
             },
         });
         expect(machineSpawnNewSessionMock.mock.calls[0]?.[0]).not.toHaveProperty('permissionMode');
@@ -1124,10 +1082,6 @@ describe('NewSessionPage Cursor capability selection', () => {
             cursorExecution: null,
             cursorLaunchControls: {
                 executionMode: 'agent',
-                force: false,
-                autoReview: false,
-                sandbox: 'local-configuration',
-                approveMcps: false,
             },
         })).toThrow('Cursor requires a capability-validated execution selection.');
     });

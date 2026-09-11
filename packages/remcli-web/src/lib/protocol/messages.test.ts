@@ -297,6 +297,32 @@ describe('normalizeRawMessage', () => {
         });
     });
 
+    it('preserves the logical message id and state for streamed ACP text', () => {
+        const result = normalizeRawMessage('wire-chunk-1', null, 12, 6200, {
+            role: 'agent',
+            content: {
+                type: 'acp',
+                provider: 'cursor',
+                data: {
+                    type: 'message',
+                    message: 'partial text',
+                    messageId: 'cursor-turn-1',
+                    streamState: 'delta',
+                },
+            },
+        });
+
+        expect(result).toMatchObject({
+            role: 'agent',
+            content: [{
+                type: 'text',
+                text: 'partial text',
+                uuid: 'cursor-turn-1',
+                streamState: 'delta',
+            }],
+        });
+    });
+
     it('skips meta and compact-summary messages', () => {
         const meta = normalizeRawMessage('m7', null, 11, 7000, {
             role: 'agent',

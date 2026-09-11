@@ -611,6 +611,7 @@ function diffEntryOf(id: string, name: string, input: unknown): DiffFeedEntry | 
 export function buildFeed(messages: NormalizedMessage[], agent: AgentId): FeedItem[] {
     const feed: FeedItem[] = [];
     const toolById = new Map<string, ToolFeedEntry>();
+    const streamedTextGroups = new Map<string, AgentFeedGroup>();
     let group: AgentFeedGroup | null = null;
 
     const openGroup = (message: NormalizedMessage, suffix: string, tone: AgentFeedGroup["tone"] = "normal"): AgentFeedGroup => {
@@ -646,6 +647,24 @@ export function buildFeed(messages: NormalizedMessage[], agent: AgentId): FeedIt
         for (const [index, block] of message.content.entries()) {
             if (block.type === "text") {
                 if (!block.text.trim()) continue;
+                if (block.streamState) {
+                    let streamGroup = streamedTextGroups.get(block.uuid);
+                    if (!streamGroup) {
+                        streamGroup = group && group.texts.length === 0
+                            ? group
+                            : openGroup(message, String(index));
+                        streamedTextGroups.set(block.uuid, streamGroup);
+                    }
+                    if (block.streamState === "final") {
+                        streamGroup.texts = [block.text];
+                    } else if (streamGroup.texts.length === 0) {
+                        streamGroup.texts.push(block.text);
+                    } else {
+                        streamGroup.texts[streamGroup.texts.length - 1] += block.text;
+                    }
+                    group = streamGroup;
+                    continue;
+                }
                 group = openGroup(message, String(index));
                 group.texts.push(block.text);
             } else if (block.type === "tool-call") {

@@ -80,7 +80,6 @@ function getTmuxUnavailableMessage(platform: NodeJS.Platform = process.platform)
 const RUNNER_CONTROL_TOKEN_BYTES = 32;
 const CURSOR_NATIVE_WRITER_LEASE_BYTES = 32;
 const GRACEFUL_DAEMON_RUNNER_SHUTDOWN_TIMEOUT_MS = 10_000;
-const CURSOR_LEGACY_PERMISSION_ENV_KEY = 'REMCLI_CURSOR_PERMISSION_MODE';
 const CURSOR_DAEMON_BOOTSTRAP_FAILURE_ERROR = 'Cursor daemon runner bootstrap failed before creating a Remcli session.';
 const UNSUPPORTED_DAEMON_SPAWN_AGENT_ERROR = 'Daemon session spawn requires a supported agent.';
 const CODEX_DAEMON_SELECTION_REQUIRED_ERROR = 'Codex requires a daemon-validated model, reasoning, and sandbox selection.';
@@ -98,12 +97,7 @@ const CODEX_SANDBOXES = new Set<CodexSandbox>([
 const CURSOR_DAEMON_SELECTION_ENV_KEYS = [
     'REMCLI_CURSOR_MODEL',
     'REMCLI_CURSOR_CATALOG_VERSION',
-    'REMCLI_CURSOR_PERMISSION_MODE',
     'REMCLI_CURSOR_EXECUTION_MODE',
-    'REMCLI_CURSOR_FORCE',
-    'REMCLI_CURSOR_AUTO_REVIEW',
-    'REMCLI_CURSOR_SANDBOX',
-    'REMCLI_CURSOR_APPROVE_MCPS',
     'REMCLI_CURSOR_EXECUTABLE',
     'REMCLI_CURSOR_CLI_FINGERPRINT',
 ] as const;
@@ -2893,9 +2887,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             const cliPath = runnerEntrypointPath ?? join(projectPath(), 'dist', 'index.mjs');
             const resumeArg = options.resumeSessionId ? ` --resume ${shellQuote(options.resumeSessionId)}` : '';
             const fullCommand = `node --no-warnings --no-deprecation ${shellQuote(cliPath)} ${shellQuote(agent)} --remcli-starting-mode remote --started-by daemon${resumeArg}`;
-            const childCommand = agent === 'cursor'
-                ? `/usr/bin/env -u ${CURSOR_LEGACY_PERMISSION_ENV_KEY} ${fullCommand}`
-                : fullCommand;
+            const childCommand = fullCommand;
 
             // Spawn in tmux with environment variables
             const tmuxEnv: Record<string, string> = {};
@@ -2945,10 +2937,6 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 tmuxEnv.REMCLI_CURSOR_MODEL = options.cursorExecution.model;
                 tmuxEnv.REMCLI_CURSOR_CATALOG_VERSION = options.cursorExecution.catalogVersion;
                 tmuxEnv.REMCLI_CURSOR_EXECUTION_MODE = options.cursorLaunchControls.executionMode;
-                tmuxEnv.REMCLI_CURSOR_FORCE = String(options.cursorLaunchControls.force);
-                tmuxEnv.REMCLI_CURSOR_AUTO_REVIEW = String(options.cursorLaunchControls.autoReview);
-                tmuxEnv.REMCLI_CURSOR_SANDBOX = options.cursorLaunchControls.sandbox;
-                tmuxEnv.REMCLI_CURSOR_APPROVE_MCPS = String(options.cursorLaunchControls.approveMcps);
                 tmuxEnv.REMCLI_CURSOR_EXECUTABLE = options.cursorRunner.executable;
                 tmuxEnv.REMCLI_CURSOR_CLI_FINGERPRINT = options.cursorRunner.cliFingerprint;
             }

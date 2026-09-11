@@ -22,7 +22,9 @@ import {
 
 const shouldRunRealCursor = process.env.REMCLI_REAL_CURSOR === '1';
 const realCursorDescribe = shouldRunRealCursor ? describe : describe.skip;
-const REAL_CURSOR_TEST_MODEL = process.env.REMCLI_REAL_CURSOR_MODEL ?? 'gpt-5.6-luna-xhigh';
+// This must be a literal ACP modelId. CLI aliases such as `*-xhigh` are not
+// accepted by Cursor's ACP `session/set_model` method.
+const REAL_CURSOR_MODEL_ID = process.env.REMCLI_REAL_CURSOR_MODEL;
 
 const SOCKET_TIMEOUT_MS = 8_000;
 const RPC_REGISTRATION_TIMEOUT_MS = 8_000;
@@ -37,10 +39,6 @@ const RUNNER_DELIVERY_PROBE_WINDOW_MS = 250;
 const TEST_SESSION_MESSAGE_ACK_VERSION = 1;
 const REAL_CURSOR_LAUNCH_CONTROLS: CursorLaunchControls = {
     executionMode: 'agent',
-    force: false,
-    autoReview: false,
-    sandbox: 'local-configuration',
-    approveMcps: false,
 };
 
 interface RpcCallAck {
@@ -472,9 +470,13 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
         if (cursorSnapshot.status !== 'ready' || !cursorSnapshot.catalogVersion) {
             throw new Error('Real Cursor model discovery did not provide a ready account-visible catalog.');
         }
-        const selectedModel = cursorSnapshot.models.find((model) => model.id === REAL_CURSOR_TEST_MODEL);
+        const selectedModel = REAL_CURSOR_MODEL_ID
+            ? cursorSnapshot.models.find((model) => model.id === REAL_CURSOR_MODEL_ID)
+            : cursorSnapshot.models.find((model) => model.isDefault);
         if (!selectedModel) {
-            throw new Error(`Real Cursor model ${REAL_CURSOR_TEST_MODEL} is not account-visible.`);
+            throw new Error(REAL_CURSOR_MODEL_ID
+                ? `Real Cursor ACP model ${REAL_CURSOR_MODEL_ID} is not account-visible.`
+                : 'Real Cursor ACP catalog did not provide a default model.');
         }
         const cursorExecution = { model: selectedModel.id, catalogVersion: cursorSnapshot.catalogVersion };
         const machineSocket = bootstrapMachineSocket({

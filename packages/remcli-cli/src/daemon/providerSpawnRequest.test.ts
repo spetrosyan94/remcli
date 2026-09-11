@@ -65,10 +65,6 @@ describe('parseProviderSpawnRequest', () => {
             cursorExecution: { model: 'cursor-model', catalogVersion: 'catalog-v1' },
             cursorLaunchControls: {
                 executionMode: 'agent',
-                force: false,
-                autoReview: false,
-                sandbox: 'local-configuration',
-                approveMcps: false,
             },
             cursorRunner: { executable: 'agent', cliFingerprint: '0123456789abcdef' },
         },
@@ -95,14 +91,10 @@ describe('parseProviderSpawnRequest', () => {
     it('rejects a nested Cursor accessor without invoking it', () => {
         let didReadAccessor = false;
         const cursorLaunchControls = {
-            executionMode: 'agent',
-            get force(): boolean {
+            get executionMode(): string {
                 didReadAccessor = true;
-                return false;
+                return 'agent';
             },
-            autoReview: false,
-            sandbox: 'local-configuration',
-            approveMcps: false,
         };
 
         expect(() => parseProviderSpawnRequest({

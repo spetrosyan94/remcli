@@ -220,6 +220,19 @@ describe('ApiSessionClient execution outcome', () => {
             type: 'message',
             message: 'Error output without an explicit signal.',
         });
+        client.sendAgentMessage('cursor', {
+            type: 'message',
+            message: 'Streaming fragment',
+            isError: false,
+            messageId: 'cursor-turn-1',
+            streamState: 'delta',
+        });
+        client.sendAgentMessage('cursor', {
+            type: 'message',
+            message: 'Historical output',
+            isError: false,
+            historical: true,
+        });
 
         await flushQueuedMetadataWork();
         expect(mockSocket.emitWithAck).not.toHaveBeenCalled();

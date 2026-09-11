@@ -277,10 +277,6 @@ const CONTROLLED_CURSOR_SELECTION = {
     },
     cursorLaunchControls: {
         executionMode: 'agent',
-        force: false,
-        autoReview: false,
-        sandbox: 'local-configuration',
-        approveMcps: false,
     },
     cursorRunner: {
         executable: 'agent',
@@ -627,10 +623,6 @@ describe('createSessionManager resume deduplication', () => {
             },
             cursorLaunchControls: {
                 executionMode: 'ask',
-                force: true,
-                autoReview: true,
-                sandbox: 'enabled',
-                approveMcps: true,
             },
             cursorRunner: {
                 executable: 'agent',
@@ -644,10 +636,6 @@ describe('createSessionManager resume deduplication', () => {
             REMCLI_CURSOR_MODEL: 'cursor-grok-4.5-high',
             REMCLI_CURSOR_CATALOG_VERSION: 'cursor-catalog-1',
             REMCLI_CURSOR_EXECUTION_MODE: 'ask',
-            REMCLI_CURSOR_FORCE: 'true',
-            REMCLI_CURSOR_AUTO_REVIEW: 'true',
-            REMCLI_CURSOR_SANDBOX: 'enabled',
-            REMCLI_CURSOR_APPROVE_MCPS: 'true',
             REMCLI_CURSOR_EXECUTABLE: 'agent',
             REMCLI_CURSOR_CLI_FINGERPRINT: '0123456789abcdef',
         });
@@ -659,46 +647,6 @@ describe('createSessionManager resume deduplication', () => {
         await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-capability' });
     });
 
-    it('does not inherit the legacy Cursor permission environment into a daemon spawn', async () => {
-        const previousLegacyPermissionMode = process.env.REMCLI_CURSOR_PERMISSION_MODE;
-        process.env.REMCLI_CURSOR_PERMISSION_MODE = 'legacy-permission-alias';
-
-        try {
-            tmuxMocks.spawnInTmux.mockResolvedValueOnce({
-                success: true,
-                sessionId: 'tmux-cursor-legacy-env',
-                windowId: '@622',
-                paneId: '%622',
-                pid: process.pid,
-            });
-            const manager = createSessionManager();
-            const spawning = manager.spawnSession({
-                directory: process.cwd(),
-                agent: 'cursor',
-                ...CONTROLLED_CURSOR_SELECTION,
-            });
-
-            await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
-            const environment = tmuxMocks.spawnInTmux.mock.calls[0]?.[2] as Record<string, string>;
-            expect(environment).not.toHaveProperty('REMCLI_CURSOR_PERMISSION_MODE');
-            const command = tmuxMocks.spawnInTmux.mock.calls[0]?.[0]?.[0] as string;
-            expect(command).toMatch(/^\/usr\/bin\/env -u REMCLI_CURSOR_PERMISSION_MODE /);
-            expect(command).not.toContain('legacy-permission-alias');
-
-            manager.onRemcliSessionWebhook('remcli-cursor-legacy-env', createSessionMetadata(process.pid, {
-                startedBy: 'daemon',
-                flavor: 'cursor',
-            }), getDaemonRunnerToken());
-            await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-cursor-legacy-env' });
-        } finally {
-            if (previousLegacyPermissionMode === undefined) {
-                delete process.env.REMCLI_CURSOR_PERMISSION_MODE;
-            } else {
-                process.env.REMCLI_CURSOR_PERMISSION_MODE = previousLegacyPermissionMode;
-            }
-        }
-    });
-
     const invalidCursorSpawnCases: Array<[
         string,
         () => Partial<Pick<SpawnSessionOptions, 'cursorExecution' | 'cursorLaunchControls' | 'cursorRunner'>>,
@@ -707,11 +655,11 @@ describe('createSessionManager resume deduplication', () => {
             const { cursorLaunchControls: _cursorLaunchControls, ...selection } = CONTROLLED_CURSOR_SELECTION;
             return selection;
         }],
-        ['invalid Cursor sandbox', () => ({
+        ['invalid Cursor ACP mode', () => ({
             ...CONTROLLED_CURSOR_SELECTION,
             cursorLaunchControls: {
                 ...CONTROLLED_CURSOR_SELECTION.cursorLaunchControls,
-                sandbox: 'unsupported-sandbox',
+                executionMode: 'unsupported-mode',
             } as unknown as SpawnSessionOptions['cursorLaunchControls'],
         })],
         ['malformed Cursor runner fingerprint', () => ({
@@ -4858,10 +4806,6 @@ describe('createSessionManager resume deduplication', () => {
             const nativeSessionId = 'cursor-native-interactive-tui';
             const cursorLaunchControls = {
                 executionMode: 'plan' as const,
-                force: true,
-                autoReview: true,
-                sandbox: 'enabled' as const,
-                approveMcps: true,
             };
             tmuxMocks.spawnInTmux
                 .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-runner:main', windowId: '@801', paneId: '%801', pid: runnerPid })
@@ -4919,7 +4863,7 @@ describe('createSessionManager resume deduplication', () => {
             });
             expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2);
             expect(tmuxMocks.spawnInTmux.mock.calls[1]?.[0]).toEqual([
-                "'agent' --resume 'cursor-native-interactive-tui' --model 'controlled-cursor-interactive-model' --mode plan --force --auto-review --sandbox enabled --approve-mcps",
+                "'agent' --resume 'cursor-native-interactive-tui' --model 'controlled-cursor-interactive-model' --mode plan",
             ]);
             expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledTimes(1);
             expect(manager.getChildren()[0]?.managedCursorInteractiveTui).toMatchObject({

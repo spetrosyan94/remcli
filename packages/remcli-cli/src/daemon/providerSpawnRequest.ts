@@ -12,7 +12,6 @@ import type { CodexExecutionConfig } from '@/codex/codexCapabilities';
 import type { CodexSandbox } from '@/codex/types';
 import {
     isCursorExecutionMode,
-    isCursorSandboxMode,
     type CursorLaunchControls,
 } from '@/cursor/cursorLaunchControls';
 import type { CursorExecutionConfig } from '@/cursor/cursorCapabilities';
@@ -36,13 +35,7 @@ const CURSOR_REQUEST_KEYS = new Set([...COMMON_REQUEST_KEYS, 'cursorExecution', 
 const GENERIC_REQUEST_KEYS = new Set([...COMMON_REQUEST_KEYS, 'permissionMode']);
 const CODEX_EXECUTION_KEYS = new Set(['model', 'catalogVersion', 'reasoningEffort']);
 const CURSOR_EXECUTION_KEYS = new Set(['model', 'catalogVersion']);
-const CURSOR_LAUNCH_CONTROL_KEYS = new Set([
-    'executionMode',
-    'force',
-    'autoReview',
-    'sandbox',
-    'approveMcps',
-]);
+const CURSOR_LAUNCH_CONTROL_KEYS = new Set(['executionMode']);
 const ENVIRONMENT_VARIABLE_KEYS = new Set([
     'ANTHROPIC_BASE_URL',
     'ANTHROPIC_AUTH_TOKEN',
@@ -259,24 +252,10 @@ function parseCursorLaunchControls(value: unknown): CursorLaunchControls | null 
         return null;
     }
     const executionMode = readOwnDataProperty(value, 'executionMode');
-    const force = readOwnDataProperty(value, 'force');
-    const autoReview = readOwnDataProperty(value, 'autoReview');
-    const sandbox = readOwnDataProperty(value, 'sandbox');
-    const approveMcps = readOwnDataProperty(value, 'approveMcps');
-    if (!isCursorExecutionMode(executionMode)
-        || typeof force !== 'boolean'
-        || typeof autoReview !== 'boolean'
-        || !isCursorSandboxMode(sandbox)
-        || typeof approveMcps !== 'boolean') {
+    if (!isCursorExecutionMode(executionMode)) {
         return null;
     }
-    return {
-        executionMode,
-        force,
-        autoReview,
-        sandbox,
-        approveMcps,
-    };
+    return { executionMode };
 }
 
 function readEnvironmentVariables(value: object): SpawnEnvironmentVariables | undefined | null {

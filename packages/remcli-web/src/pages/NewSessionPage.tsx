@@ -5,7 +5,7 @@
 // Модели/режимы — daemon-normalized provider capabilities; static options
 // остаются только у ещё не capability-driven providers.
 import * as React from "react";
-import { ArrowUp, Check, ChevronDown, Folder, FolderOpen, Loader2, Pin, PinOff, RotateCcw, SlidersHorizontal, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, Folder, FolderOpen, Loader2, Pin, PinOff, RotateCcw, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
 import { AgentIcon, StatusDot, type AgentId } from "@/components/kit";
@@ -50,7 +50,7 @@ import {
 import { isProviderAvailable } from "@/lib/providerAvailability";
 import { linkZenTaskSession } from "@/lib/zenTasks";
 
-type SheetKind = "machine" | "model" | "permission" | "reasoning" | "cursor-launch" | "resume" | "directory";
+type SheetKind = "machine" | "model" | "permission" | "reasoning" | "resume" | "directory";
 
 interface SheetState {
     kind: SheetKind;
@@ -279,21 +279,6 @@ export function getReasoningControlState(input: {
     return "ready";
 }
 
-function getCursorLaunchControlsSummary(controls: CursorLaunchControls): string | null {
-    const changedControls = [
-        controls.force ? t("new.cursorForce") : null,
-        controls.autoReview ? t("new.cursorAutoReview") : null,
-        controls.sandbox !== "local-configuration"
-            ? `${t("new.cursorSandbox")} ${cursorSandboxLabel(controls.sandbox)}`
-            : null,
-        controls.approveMcps ? "MCP" : null,
-    ].filter((value): value is string => value !== null);
-
-    return changedControls.length > 0
-        ? t("new.cursorAdvancedSummary", { controls: changedControls.join(" · ") })
-        : null;
-}
-
 function cursorExecutionModeLabel(mode: CursorLaunchControls["executionMode"]): string {
     switch (mode) {
         case "plan":
@@ -303,12 +288,6 @@ function cursorExecutionModeLabel(mode: CursorLaunchControls["executionMode"]): 
         default:
             return t("new.cursorModeAgent");
     }
-}
-
-function cursorSandboxLabel(sandbox: CursorLaunchControls["sandbox"]): string {
-    if (sandbox === "local-configuration") return t("new.cursorHostControlled");
-    if (sandbox === "enabled") return t("new.cursorSandboxEnabled");
-    return t("new.cursorSandboxDisabled");
 }
 
 export function buildNewSessionSpawnOptions(input: {
@@ -846,9 +825,6 @@ export function NewSessionPage() {
     const activeModeLabel = agent === "cursor"
         ? cursorExecutionModeLabel(cursorLaunchControls.executionMode)
         : getAgentPermissionLabel(agent, mode);
-    const cursorLaunchControlsSummary = agent === "cursor"
-        ? getCursorLaunchControlsSummary(cursorLaunchControls)
-        : null;
     const selectedCodexModel = findCodexModel(codexCapabilities, codexModelId);
     const selectedCursorModel = findCursorModel(cursorCapabilities, cursorModelId);
     const activeModelLabel = agent === "codex"
@@ -1511,22 +1487,6 @@ export function NewSessionPage() {
                             )}
                         </section>
                     </div>
-                    {agent === "cursor" && (
-                        <button
-                            type="button"
-                            onClick={(event) => openSheet("cursor-launch", event?.currentTarget ?? null)}
-                            aria-haspopup="dialog"
-                            aria-expanded={sheetKind === "cursor-launch"}
-                            aria-controls="new-session-sheet"
-                            aria-label={`${t("new.cursorAdvanced")}${cursorLaunchControlsSummary ? ` · ${cursorLaunchControlsSummary}` : ""}`}
-                            className={`inline-flex min-h-11 max-w-full self-start items-center gap-1.5 rounded-[10px] border px-2.5 font-mono text-[11px] transition-[border-color,background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] ${cursorLaunchControlsSummary ? "border-accent/40 bg-accent/[0.06] text-foreground" : "border-border bg-card text-muted-foreground"}`}
-                        >
-                            <SlidersHorizontal className="size-3 shrink-0" aria-hidden="true" />
-                            <span className="min-w-0 truncate">
-                                {t("new.cursorAdvanced")}{cursorLaunchControlsSummary ? ` · ${cursorLaunchControlsSummary}` : ""}
-                            </span>
-                        </button>
-                    )}
                 </section>
 
                 {/* директория — daemon-owned проекты + browser/picker через RPC list-directory */}
@@ -1714,75 +1674,6 @@ export function NewSessionPage() {
                                 <SheetRow key={permission} isActive={permission === mode} label={getAgentPermissionLabel(agent, permission)} showSelectionIndicator
                                     onClick={() => { setMode(permission); setSheet(null); }} />
                             ))}
-                        </>
-                    )}
-                    {sheetKind === "cursor-launch" && (
-                        <>
-                            <div id="cursor-launch-sheet">
-                                <SheetHeader title={t("new.cursorAdvanced")} tag="cursor" />
-                                <button
-                                    type="button"
-                                    role="switch"
-                                    aria-checked={cursorLaunchControls.force}
-                                    onClick={() => setCursorLaunchControls((current) => ({ ...current, force: !current.force }))}
-                                    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]"
-                                >
-                                    <span className="min-w-0 flex-1">
-                                        <span className="block font-mono text-[12.5px] text-foreground">{t("new.cursorForce")}</span>
-                                        <span className="mt-0.5 block font-mono text-[9.5px] leading-[1.35] text-muted-foreground">--force</span>
-                                    </span>
-                                    <span aria-hidden="true" className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-[var(--dur-micro)] ease-[var(--ease-out)] ${cursorLaunchControls.force ? "bg-accent" : "bg-muted-foreground/30"}`}>
-                                        <span className={`absolute top-1 size-4 rounded-full bg-card shadow-sm transition-transform duration-[var(--dur-micro)] ease-[var(--ease-out)] ${cursorLaunchControls.force ? "translate-x-6" : "translate-x-1"}`} />
-                                    </span>
-                                </button>
-                                <button
-                                    type="button"
-                                    role="switch"
-                                    aria-checked={cursorLaunchControls.autoReview}
-                                    onClick={() => setCursorLaunchControls((current) => ({ ...current, autoReview: !current.autoReview }))}
-                                    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]"
-                                >
-                                    <span className="min-w-0 flex-1">
-                                        <span className="block font-mono text-[12.5px] text-foreground">{t("new.cursorAutoReview")}</span>
-                                        <span className="mt-0.5 block font-mono text-[9.5px] leading-[1.35] text-muted-foreground">--auto-review</span>
-                                    </span>
-                                    <span aria-hidden="true" className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-[var(--dur-micro)] ease-[var(--ease-out)] ${cursorLaunchControls.autoReview ? "bg-accent" : "bg-muted-foreground/30"}`}>
-                                        <span className={`absolute top-1 size-4 rounded-full bg-card shadow-sm transition-transform duration-[var(--dur-micro)] ease-[var(--ease-out)] ${cursorLaunchControls.autoReview ? "translate-x-6" : "translate-x-1"}`} />
-                                    </span>
-                                </button>
-                                <div className="border-t border-border px-[18px] pb-2 pt-3">
-                                    <span className="font-mono text-[10px] font-semibold text-muted-foreground">{t("new.cursorSandbox")}</span>
-                                </div>
-                                {(["local-configuration", "enabled", "disabled"] as const).map((sandbox) => (
-                                    <SheetRow
-                                        key={sandbox}
-                                        isActive={sandbox === cursorLaunchControls.sandbox}
-                                        label={cursorSandboxLabel(sandbox)}
-                                        showSelectionIndicator
-                                        onClick={() => setCursorLaunchControls((current) => ({ ...current, sandbox }))}
-                                    />
-                                ))}
-                                <button
-                                    type="button"
-                                    role="switch"
-                                    aria-checked={cursorLaunchControls.approveMcps}
-                                    onClick={() => setCursorLaunchControls((current) => ({ ...current, approveMcps: !current.approveMcps }))}
-                                    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-[18px] py-3 text-left transition-[background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]"
-                                >
-                                    <span className="min-w-0 flex-1">
-                                        <span className="block font-mono text-[12.5px] text-foreground">{t("new.cursorApproveMcps")}</span>
-                                        <span className="mt-0.5 block font-mono text-[9.5px] leading-[1.35] text-muted-foreground">--approve-mcps</span>
-                                    </span>
-                                    <span aria-hidden="true" className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-[var(--dur-micro)] ease-[var(--ease-out)] ${cursorLaunchControls.approveMcps ? "bg-accent" : "bg-muted-foreground/30"}`}>
-                                        <span className={`absolute top-1 size-4 rounded-full bg-card shadow-sm transition-transform duration-[var(--dur-micro)] ease-[var(--ease-out)] ${cursorLaunchControls.approveMcps ? "translate-x-6" : "translate-x-1"}`} />
-                                    </span>
-                                </button>
-                                <div className="border-t border-border px-[18px] py-3 font-mono text-[9.5px] leading-[1.45] text-muted-foreground">
-                                    <span className="block">{t("new.cursorTrustFact")}</span>
-                                    <span className="mt-1 block">{t("new.cursorHostControlledFact")}</span>
-                                    <span className="mt-1 block">{t("new.cursorLocalRulesFact")}</span>
-                                </div>
-                            </div>
                         </>
                     )}
                     {sheetKind === "reasoning" && selectedCodexModel && selectedCodexModel.supportedReasoningEfforts.length > 0 && codexCapabilities?.catalogVersion && (

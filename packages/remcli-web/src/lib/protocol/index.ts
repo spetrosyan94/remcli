@@ -100,7 +100,6 @@ export {
     type CursorExecutionMode,
     type CursorLaunchControls,
     type CursorModelCapability,
-    type CursorSandboxMode,
     type CodexSessionExecutionSelection,
     type DirectoryEntry,
     type DirectoryHome,

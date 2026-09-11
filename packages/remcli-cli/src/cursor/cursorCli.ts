@@ -1,29 +1,19 @@
 /**
  * Cursor native CLI boundary.
  *
- * Keeps executable discovery and argument construction out of the runner so
- * every Cursor turn uses the same explicit, testable native contract.
+ * Keeps executable discovery and the optional interactive TUI command outside
+ * the ACP runner.
  */
 
 import { spawnSync } from 'node:child_process';
 
 import {
-    DEFAULT_CURSOR_LAUNCH_CONTROLS,
     isCursorLaunchControls,
     type CursorLaunchControls,
 } from './cursorLaunchControls';
 
 export const CURSOR_EXECUTABLE_CANDIDATES = ['agent', 'cursor-agent'] as const;
 export type CursorExecutable = typeof CURSOR_EXECUTABLE_CANDIDATES[number];
-
-export interface CursorTurnArgumentsOptions {
-    prompt: string;
-    model?: string;
-    resumeSessionId?: string;
-    launchControls?: CursorLaunchControls;
-    /** Remcli's immutable non-interactive workspace-trust policy. */
-    trustWorkspace?: boolean;
-}
 
 export interface CursorInteractiveTuiCommandOptions {
     executable: CursorExecutable;
@@ -49,32 +39,6 @@ export function resolveCursorExecutable(probe: CursorExecutableProbe = canRunCur
         if (probe(executable)) return executable;
     }
     return null;
-}
-
-/** Build the exact native arguments used for one non-interactive Cursor turn. */
-export function buildCursorTurnArguments(options: CursorTurnArgumentsOptions): string[] {
-    const launchControls = options.launchControls ?? DEFAULT_CURSOR_LAUNCH_CONTROLS;
-    if (!isCursorLaunchControls(launchControls)) {
-        throw new Error('Cursor launch controls are invalid.');
-    }
-
-    const args = ['--print', '--output-format', 'stream-json'];
-
-    if (options.trustWorkspace) args.push('--trust');
-    if (options.model) args.push('--model', options.model);
-    if (options.resumeSessionId) args.push('--resume', options.resumeSessionId);
-    if (launchControls.executionMode === 'plan' || launchControls.executionMode === 'ask') {
-        args.push('--mode', launchControls.executionMode);
-    }
-    if (launchControls.force) args.push('--force');
-    if (launchControls.autoReview) args.push('--auto-review');
-    if (launchControls.sandbox === 'enabled' || launchControls.sandbox === 'disabled') {
-        args.push('--sandbox', launchControls.sandbox);
-    }
-    if (launchControls.approveMcps) args.push('--approve-mcps');
-
-    args.push(options.prompt);
-    return args;
 }
 
 /** Build the shell command for a daemon-owned interactive Cursor TUI pane. */
@@ -105,13 +69,6 @@ export function buildCursorInteractiveTuiCommand(
     if (options.launchControls.executionMode === 'plan' || options.launchControls.executionMode === 'ask') {
         args.push('--mode', options.launchControls.executionMode);
     }
-    if (options.launchControls.force) args.push('--force');
-    if (options.launchControls.autoReview) args.push('--auto-review');
-    if (options.launchControls.sandbox === 'enabled' || options.launchControls.sandbox === 'disabled') {
-        args.push('--sandbox', options.launchControls.sandbox);
-    }
-    if (options.launchControls.approveMcps) args.push('--approve-mcps');
-
     return args.join(' ');
 }
 

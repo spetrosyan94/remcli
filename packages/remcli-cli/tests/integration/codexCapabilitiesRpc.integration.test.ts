@@ -118,17 +118,16 @@ function createCodexCapabilitiesService(): CodexCapabilitiesService {
 
 function createCursorCapabilitiesService(): CursorCapabilitiesService {
     return new CursorCapabilitiesService({
-        readModelList: async () => ({
+        readCatalog: async () => ({
             executable: 'agent',
             version: 'controlled-cursor-agent 1.0.0',
-            output: [
-                'Available models',
-                '',
-                'auto - Auto (default)',
-                'controlled-cursor-model - Controlled Cursor Model',
-                '',
-                'Tip: use --model <id> to switch.',
-            ].join('\n'),
+            models: {
+                currentModelId: 'cursor-acp-auto',
+                availableModels: [
+                    { modelId: 'cursor-acp-auto', name: 'Auto' },
+                    { modelId: 'cursor-acp-controlled', name: 'Controlled Cursor Model' },
+                ],
+            },
         }),
         now: () => 1_000,
     });
@@ -542,7 +541,11 @@ function createValidCursorExecution(snapshot: CursorCapabilitiesSnapshot): Curso
     if (!snapshot.catalogVersion) {
         throw new Error('Expected the deterministic Cursor capability snapshot to have a catalog version');
     }
-    return { model: 'auto', catalogVersion: snapshot.catalogVersion };
+    const defaultModel = snapshot.models.find((model) => model.isDefault);
+    if (!defaultModel) {
+        throw new Error('Expected the deterministic Cursor capability snapshot to have a default model');
+    }
+    return { model: defaultModel.id, catalogVersion: snapshot.catalogVersion };
 }
 
 function createValidCursorSpawnParams(

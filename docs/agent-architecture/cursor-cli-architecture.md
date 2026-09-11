@@ -2,381 +2,195 @@
 
 ## Источники
 
-- Official docs: https://cursor.com/docs/cli/headless,
-  https://cursor.com/docs/cli/overview, https://cursor.com/docs/cli/acp,
-  https://cursor.com/docs/cli/changelog и https://cursor.com/docs/models
-- Local CLI: `agent --help`, `agent acp --help`, `agent persist --help`,
-  `agent models`, `agent 2026.09.10-fd3934a`
-- Context7: anonymous quota исчерпана; не заменять official docs устаревшими заметками.
+- Cursor ACP: https://cursor.com/docs/cli/acp
+- Cursor CLI: https://cursor.com/docs/cli/overview
+- Cursor models: https://cursor.com/docs/models
+- Agent Client Protocol: https://agentclientprotocol.com/protocol/v1/overview
+- Локальная приёмка: `agent --help`, `agent acp --help`,
+  `agent 2026.09.10-fd3934a`
 - Проверено: 2026-09-12.
 
 ## Назначение
 
-Remcli удалённо запускает и возобновляет Cursor Agent CLI в выбранной рабочей
-директории. Телефон отправляет prompt в daemon; daemon-owned wrapper исполняет
-один headless Cursor turn и возвращает канонический terminal result в P2P-чат.
-Это не MCP transport и не эмуляция Cursor IDE.
-
-Cursor также публикует официальный `agent acp` для custom clients по
-stdio/JSON-RPC. Production adapter Remcli пока остаётся на документированном
-headless `stream-json`: переход на ACP требует отдельной приёмки identity,
-permissions, Cursor extension methods и reconnect, а не простой замены argv.
-
-## Владение runtime
+Remcli управляет Cursor через официальный `agent acp`. Это постоянный
+provider-specific transport по stdin/stdout, JSON-RPC 2.0 и NDJSON. Для одного
+daemon-owned wrapper создаются один ACP-процесс и одна native Cursor session.
+Старый per-turn путь `agent --print --output-format stream-json` удалён.
 
 ```text
-Web/PWA -> P2P daemon -> daemon-owned tmux wrapper -> agent --print -> Cursor
-                              ^                         |
-                              +------- stream-json ------+
+Web/PWA -> encrypted P2P -> local daemon -> CursorAcpClient -> agent acp -> Cursor
 ```
 
-- Daemon создаёт wrapper в принадлежащем ему tmux pane.
-- Wrapper (`runCursor.ts`) владеет очередью remote prompts и дочерним
-  `agent --print --output-format stream-json` процессом каждого turn.
-- Нативный Cursor CLI не получает API key через argv: daemon передаёт
-  `CURSOR_API_KEY` только в environment, если пользователь выбрал token auth.
-- Cursor может самостоятельно discover `.cursor/mcp.json`; Remcli MCP не
-  является chat/resume fallback.
+Remcli не эмулирует Cursor IDE и не использует MCP как chat transport. MCP
+servers могут быть переданы Cursor внутри `session/new` или `session/load`, но
+сам обмен Remcli с Cursor идёт по ACP.
 
-## Команда turn
+## Lifecycle
 
-```text
-agent --print --output-format stream-json --trust \
-  [--model <model>] [--resume <native-session-id>] \
-  [--mode plan|ask] [--force] [--auto-review] \
-  [--sandbox enabled|disabled] [--approve-mcps] <prompt>
-```
+Порядок запуска соответствует ACP v1:
 
-- `agent` - текущий бинарник; `cursor-agent` используется только как fallback
-  для старой установки.
-- Обычный режим Agent не передаёт `--mode agent`: такого значения у текущего
-  Cursor CLI нет.
-- `--trust` убирает интерактивный workspace prompt, который иначе блокировал бы
-  headless runner. Рабочую директорию пользователь выбирает до spawn.
-- Успех принимается только после `system/init` с native ID, terminal
-  `result.success` без `is_error` и exit code `0`.
-- Модель выбирается daemon-validated при spawn/resume и может быть поставлена
-  для следующего phone prompt через session-scoped execution contract.
-  `Agent` / `Plan` / `Ask` и остальные launch controls остаются зафиксированы
-  для wrapper. Телефонный prompt несёт текст и безопасную метку источника;
-  injected model, permission или launch controls в нём не переопределяют Cursor
-  turn и отклоняются на provider ingress boundary.
-- В телефонный чат сначала передаётся непустой terminal `result`. Если текущий
-  Cursor CLI подтвердил успех без этого поля, Remcli использует только text
-  chunks из `assistant` events после `system/init` того же native session;
-  reasoning/tool events, pre-init и foreign-session payloads игнорируются.
-  `message.content` обрабатывается как incremental stream, а одинаковый
-  `content`/`text_delta` внутри одного события не дублируется.
+1. Remcli запускает `agent acp` в выбранной рабочей директории.
+2. `initialize` согласует protocol version и capabilities.
+3. Если Cursor публикует `cursor_login`, Remcli вызывает `authenticate` и
+   использует уже существующую авторизацию локального Cursor CLI.
+4. Новая сессия создаётся через `session/new`; resume выполняется только через
+   `session/load` с исходным native session ID.
+5. Выбранные модель и режим применяются через session methods до prompt.
+   Если `session/load` не повторяет optional capability state, daemon-runner
+   использует только уже проверенные model/mode, а setter остаётся финальной
+   provider-side проверкой. Прямой CLI-resume без явно выбранной модели
+   сохраняет модель native-сессии и не блокируется из-за отсутствующего
+   optional `SessionModelState`.
+6. Каждый телефонный prompt отправляется через `session/prompt` в ту же native
+   session. Одновременно выполняется только один prompt.
+7. `session/update` транслирует текст и безопасные сведения о tool calls в
+   Remcli chat.
+8. Stop/abort сначала вызывает `session/cancel`, затем ограниченно завершает
+   принадлежащую Remcli process group.
 
-## Идентичность и resume
+Ошибка `session/load` не создаёт новую сессию. Это защищает пользователя от
+тихой потери контекста при неудачном resume: wrapper завершается и не принимает
+следующий prompt как новую сессию.
+
+## Идентичность и ownership
 
 | Идентификатор | Владелец | Назначение |
 |---|---|---|
-| Remcli session ID | P2P daemon | карточка/чат Remcli и runner credential |
-| Native Cursor session ID | Cursor CLI | `agent --resume <id>` и context history |
+| Remcli session ID | P2P daemon | карточка, зашифрованный чат и runner credential |
+| Native Cursor session ID | Cursor ACP | Cursor context и `session/load` |
 
-1. При create Remcli ID существует раньше native Cursor ID.
-2. После `system/init` daemon-owned wrapper сначала вызывает защищённый
-   loopback `POST /cursor-session-bound`. Endpoint требует runner credential и
-   атомарно закрепляет `{nativeSessionId -> daemon wrapper}`.
-3. Только успешный ответ `bound` или `already-bound` разрешает записать native
-   ID в P2P metadata. `reuse-active-wrapper`, отсутствующий wrapper или
-   несовпадение агента прерывают turn до `task_complete`, поэтому второй tmux
-   pane не может начать работу с тем же native ID.
-4. После такого bind `SessionManager` хранит только в памяти daemon
-   `{native Cursor ID -> parent Remcli session ID, directory}`. Когда active
-   wrapper уже освобождён, тот же daemon создаёт новый wrapper с отдельной
-   runner capability.
-5. До создания любой P2P metadata daemon-owned Cursor runner вызывает loopback
-   `POST /cursor-runner-preflight` с capability, PID, агентом и native resume
-   ID. Daemon проверяет точный tmux wrapper, capability, `cursor` и ожидаемый
-   resume ID. Ручной `--started-by daemon` без этой capability не создаёт P2P
-   session и не публикует daemon provenance.
-6. Для same-daemon/same-workspace resume preflight возвращает parent Remcli ID,
-   и runner кладёт `resumedFromRemcliSessionId` в initial metadata, поэтому Web
-   сразу показывает существующую зашифрованную P2P-ленту родителя перед child
-   сообщениями. Эта связь provisional до matching `system/init` и успешного
-   native bind; mismatch, binding failure, CLI error, abort, stop или смена mode
-   до подтверждения удаляют её до archive. Перед idle reset `AbortController`
-   wrapper ждёт bounded metadata rollback; его отказ fail-closed завершает wrapper,
-   а archive повторно удаляет relation. После подтверждения связь сохраняется.
-   Дубликаты сообщений подавляются. Нативное Cursor-хранилище, внешние
-   Cursor-сессии и связь после restart daemon не читаются и не копируются.
-7. Cursor history и resume ограничены MD5 raw absolute path выбранной
-   директории (`~/.cursor/chats/<workspace-hash>`). Resume из другой директории
-   отклоняется до spawn.
-8. До подтверждения `system/init` pending resume дедуплицируется по запрошенному
-   native ID, но этот ID не считается подтверждённым и не публикуется в metadata.
-9. Кнопка Resume из Cursor Chat не запускает native CLI напрямую. Она передаёт
-   закрытый navigation preset в New Session; тот заново читает capability catalog
-   выбранной машины, показывает свежие model/launch controls и только затем
-   отправляет typed `cursorExecution` + `cursorLaunchControls` + native resume ID.
-   URL не содержит native ID или выбор controls.
+- До ACP startup daemon проверяет одноразовую runner capability, выбранную
+  рабочую директорию, provider, executable и fingerprint CLI.
+- После `session/new` или `session/load` wrapper атомарно привязывает native ID
+  к Remcli session через локальный credential-protected control endpoint.
+- Активный native ID не может получить второй daemon wrapper.
+- Один native ID имеет ровно одного writer-а. Writer lease сохраняется до
+  завершения wrapper; неподтверждённый cleanup остаётся fail-closed.
+- Resume разрешён только для исходной рабочей директории. Provisional parent
+  lineage публикуется до загрузки чата и подтверждается только после успешного
+  `session/load` и bind; при ошибке она удаляется.
+- Durable P2P delivery подтверждается после принятия prompt и reconciliation
+  native metadata. Повторная доставка одного ACK-pending сообщения не создаёт
+  второй native prompt в том же живом runner.
 
-### Picker истории
+Связь Cursor native ID с предыдущей Remcli session хранится daemon-ом. После
+restart daemon внешняя Cursor session может быть выбрана через native history,
+но Remcli не читает приватную Cursor DB как transcript и не выдумывает parent
+chat relation.
 
-Cursor не публикует документированный API title или transcript для native
-history. Поэтому Remcli использует `store.db` только как existence/mtime marker,
-не читает SQLite schema и не создаёт дополнительный prompt cache. Picker
-сортирует по native activity, показывает `Cursor session · project · activity`,
-а короткий native ID оставляет вторичным. Текст первой строки возможен только
-когда provider вернул его в публичном session contract.
+## Модели и режим
 
-### Корректное завершение daemon runner
+Cursor capabilities получаются из реальной авторизованной ACP-сессии. Remcli
+использует точные `modelId`, которые вернул `SessionModelState`, и не парсит
+человекочитаемый вывод `agent models`.
 
-Когда пользователь завершает daemon-owned Cursor wrapper через `Ctrl+C`, runner
-сначала с credential-подтверждением сообщает локальному control server, что
-закрывается. Пока этот переход не завершён, новый `agent --resume` с тем же
-native ID не запускается. После archive, `session-end`, flush и закрытия P2P
-сессии runner отдельно подтверждает completion; только тогда daemon освобождает
-свой immutable tmux pane.
+`get-cursor-capabilities` возвращает:
 
-Если `tmux` не может подтвердить конкретный pane, cleanup по-прежнему
-fail-closed. Исключение возможно только для уже credential-подтверждённого
-graceful shutdown, когда `tmux` отдельно подтвердил отсутствие именно
-daemon-owned session. Это не даёт удалить чужой pane и не превращает PID в proof
-of ownership. Если runner уже умер до final callback, daemon также может
-reconcile tracking только по этому независимому immutable tmux proof: мёртвый
-процесс не способен отправить completion. Повторный Stop отклоняется, а shutdown
-daemon ждёт normal completion ограниченное время и при таймауте завершается
-ошибкой вместо преждевременного уничтожения живого pane.
+- exact model ID и display name;
+- текущую ACP model как default для нового запуска;
+- short-lived `catalogVersion`;
+- fingerprint конкретного executable/version.
 
-## Execution и controls
+Web отправляет `{ model, catalogVersion }`. Перед spawn daemon обновляет catalog
+и отклоняет stale или отсутствующую модель. CLI aliases, которых нет в ACP
+catalog, не принимаются.
 
-| Поверхность | Нативное соответствие |
+ACP публикует три режима сессии:
+
+- `Agent`
+- `Plan`
+- `Ask`
+
+В интерфейсе selector называется «Уровень доступа», но значение остаётся
+provider-native Cursor mode. Root CLI flags `--force`, `--auto-review`,
+`--sandbox` и `--approve-mcps` не являются ACP session controls и поэтому не
+показываются и не передаются Remcli. Отдельного reasoning selector для Cursor
+нет: текущий ACP contract не публикует настраиваемый effort по моделям.
+
+Смена модели в открытом чате использует свежий catalog и применяется через
+ACP session method только перед следующим prompt. Native session и её контекст
+при этом сохраняются.
+
+## Streaming, tools и permissions
+
+Remcli обрабатывает только типизированные ACP updates:
+
+- `agent_message_chunk` дополняет ответ;
+- `tool_call` создаёт tool card с названием, kind и locations;
+- `tool_call_update` завершает карточку статусом `completed` или `failed`;
+- provider reasoning и raw tool result не копируются в публичный чат;
+- update другой native session игнорируется.
+
+Текстовые chunks отправляются в web-клиент сразу с одним logical message ID.
+Клиент собирает их в один ответ, а после завершения turn получает полную
+durable final-версию. При загрузке внешней native session без известного
+Remcli-parent `user_message_chunk` и `agent_message_chunk` воспроизводятся в
+новом чате; для известного parent используется уже сохранённый transcript,
+чтобы не дублировать сообщения.
+
+`session/request_permission` отображается существующей мобильной карточкой
+разрешения. Решение переводится только в один из option kinds, которые Cursor
+явно прислал в запросе:
+
+| Remcli | Cursor ACP |
 |---|---|
-| Execution mode `Agent` | Не передавать `--mode` |
-| Execution mode `Plan` | `--mode plan` |
-| Execution mode `Ask` | `--mode ask` |
-| Launch control `Force` | Независимый `--force` |
-| Launch control `Auto-review` | Независимый `--auto-review` |
-| Sandbox override | `--sandbox enabled|disabled`; без override host-controlled |
-| MCP approval | Opt-in `--approve-mcps`; default не одобряет все MCP |
-| Workspace trust | Daemon-owned headless runner всегда передаёт `--trust` |
+| Разрешить один раз | `allow_once` |
+| Разрешить для сессии | `allow_always` |
+| Отклонить / прервать | `reject_once` |
 
-`plan` и `ask` локальный CLI описывает как read-only. `--force`,
-`--auto-review`, sandbox и MCP approval - отдельные provider-native controls,
-которые Remcli не сжимает в общий `PermissionMode` и не делает искусственно
-взаимоисключающими. Локальные Cursor allow/deny rules остаются источником
-истины: Remcli их не читает, не меняет и не сериализует. Нативный event может
-содержать vendor value `permissionMode: "default"`; Remcli не экспортирует его
-как пользовательский режим.
+Remcli не генерирует option ID и не одобряет запрос автоматически. При stop,
+reconnect reset или отсутствующей поддерживаемой опции request завершается как
+`cancelled`.
 
-В интерфейсе первичный selector всех provider называется «Уровень доступа».
-Для Cursor он выбирает только execution mode (`Agent`/`Plan`/`Ask`); это единая
-терминология UI, а не попытка выдать mode за Codex permission profile. Launch
-controls остаются отдельным sheet.
+Cursor extensions `cursor/ask_question` и `cursor/create_plan` требуют
+отдельного structured UI/P2P contract. Пока Remcli возвращает официальный
+fail-closed outcome и показывает пользователю видимое предупреждение; запрос
+не зависает и не скрывается.
 
-Перед созданием Cursor child command `SessionSpawner` очищает унаследованный
-legacy `REMCLI_CURSOR_PERMISSION_MODE` через `/usr/bin/env -u ...` на границе
-tmux. Этот ключ не читается как input и не может изменить argv нового runner.
+## Ошибки и данные
 
-### Визуальный contract selector-ов
+- Ошибки spawn, protocol, auth, load, bind и prompt проходят через безопасную
+  provider boundary; credentials, prompt, raw stderr/stdout и tool payload не
+  попадают в публичные ошибки или debug log.
+- Provider stderr фиксируется только как факт события.
+- Неизвестные permission и extension requests не одобряются.
+- Abort и crash закрывают pending permissions, P2P state, writer lease и owned
+  process в определённом порядке.
+- `initialize`, auth, load/new, mode/model и cancel имеют bounded deadline;
+  зависший Cursor CLI не оставляет запуск или capability picker в вечном loading.
 
-Выбранные rows модели, execution mode, sandbox и reasoning используют
-`aria-pressed="true"`, accent surface и check-indicator. Длинный label в такой
-row переносится, а не скрывается ellipsis. Resume/history rows не являются
-toggle-selector-ами и не получают этот признак. Локальный `design/` служит
-визуальным reference; versioned contract и Browser/E2E проверка находятся в
-этом документе и `design-smoke.spec.ts`.
+## Terminal
 
-## Account-visible model catalog
+Команда `remcli cursor` сохраняет отдельный native interactive Cursor TUI для
+локальной работы. Daemon-owned телефонная сессия использует ACP и не является
+ANSI screen mirror.
 
-1. Daemon запускает только `agent models` (fallback binary: `cursor-agent`) с
-   ограниченными timeout и output buffer. Он строго принимает header
-   `Available models`, нормальные model rows, ровно один provider default и
-   status markers `(default)`, `(current)` или `(current, default)`, которые
-   формирует текущий CLI. Маркер `(current)` не превращает выбранную модель в
-   provider default. Неизвестная форма или footer отклоняются; raw
-   stdout/stderr, account/quota/auth data не выходят в protocol и логи.
-2. `get-cursor-capabilities` возвращает нормализованный snapshot: exact model
-   id, display name, provider default, source freshness и opaque
-   `catalogVersion`. Web не содержит fallback catalog и блокирует Start/Resume,
-   пока нет этой пары.
-3. New Session передаёт `cursorExecution = { model, catalogVersion }` атомарно
-   со стартом. Daemon принудительно refresh-валидирует пару перед spawn; stale
-   или чужая model отклоняется typed ошибкой, после которой Web очищает выбор и
-   повторно запрашивает catalog.
-4. Cursor CLI допускает parameterized `--model` overrides, включая effort, но
-   не публикует безопасный machine-readable catalog допустимых efforts для
-   конкретной account-visible модели. Это current product limitation Remcli:
-   пока он показывает informational status «reasoning не настраивается
-   отдельно» и не выводит effort из suffix model id. Публичная страница Cursor
-   Models не заменяет `agent models`: фактический список зависит от аккаунта и
-   provider policy.
-5. Web передаёт отдельно `cursorExecution` и полный `cursorLaunchControls`;
-   `Agent` означает отсутствие `--mode`, а native flags не являются generic
-   permission aliases. Workspace trust и local allow/deny rules отображаются
-   как факты, не как телефонные selectors.
-6. Только daemon-owned runner может получить injected `REMCLI_CURSOR_*` model
-   selection. Обычный terminal `remcli cursor` игнорирует эти переменные.
-   Fresh validation также связывает executable и version fingerprint; runner
-   перепроверяет его перед созданием P2P metadata. Concierge получает тот же
-   daemon-owned selection или не запускает Cursor вовсе.
-
-### Модель в открытом чате
-
-Web использует те же strict `get-session-execution` / `set-session-execution`
-machine RPC, CAS revision и fresh account catalog, что и Codex. Cursor snapshot
-содержит только `model + catalogVersion`: отдельного reasoning selector нет,
-потому что CLI не публикует machine-readable effort contract.
-
-Перед следующим durable prompt `runCursor` получает current selection через
-runner-credential-protected consume endpoint. При смене модели он запускает
-следующий headless turn как
-`agent --resume <same-native-id> --model <new-model>`: native session и context
-сохраняются, а reset boundary по-прежнему определяется только launch controls.
-Durable prompts не объединяются между разными model/delivery id. После matching
-`system/init` и native bind runner подтверждает delivery только когда metadata
-содержит фактически принятую модель. Если metadata временно недоступна, повтор
-того же delivery в живом runner повторяет только reconciliation и не запускает
-native prompt второй раз. Raw model в message metadata игнорируется.
-
-Reconciliation пока хранится в памяти runner. Одновременный metadata outage и
-аварийный restart между native acceptance и ACK требует отдельного daemon-side
-outbox или стабильного restart handoff; этот редкий cross-runner сценарий не
-выдаётся за гарантию текущего контракта.
-
-## Ошибки и остановка
-
-- Missing executable, auth, invalid NDJSON, native failure, resume identity
-  mismatch, binding rejection и abort имеют typed error boundary. Pending parent
-  lineage не остаётся в metadata после неуспешного первого native resume.
-- Prompt, raw stderr, tool result payloads и credentials не попадают в public
-  error или debug log; tool completion log содержит только non-sensitive
-  metadata.
-- Abort завершает process group: SIGTERM с bounded SIGKILL fallback.
-- Остановка daemon wrapper и OS signals архивируют Remcli session, отправляют
-  session death, flush и close идемпотентно.
+Одновременный ввод из штатного Cursor TUI и телефона в одну native session не
+объявляется поддержанным: Cursor не публикует attach/fanout contract для двух
+конкурентных клиентов. Remcli не подменяет его screen scraping или общим PTY.
 
 ## Проверки
 
-- Unit/native fixture: success, no init/result, result error, malformed NDJSON,
-  auth redaction, missing binary, resume mismatch, abort process tree.
-- `D`: native fixture покрывает success, no init/result, result error,
-  malformed NDJSON, auth redaction, missing binary, resume mismatch и abort
-  process tree.
-- `I`: encrypted machine-RPC проходит real SessionManager/tmux/compiled runner
-  до controlled native `agent`; проверяются exact argv, ACK no-replay, active
-  native stop с SIGTERM, same-native resume и cleanup.
-- `UI-F`: Cursor-labelled Browser fixture проверяет model catalog, native
-  controls, unsupported reasoning, unavailable/retry и bind/resume error в том
-  же drawer на `390x844` и `1280x800`.
-- `L`: 12.09.2026 opt-in `REMCLI_REAL_CURSOR=1` на
-  `gpt-5.6-luna-xhigh` прошёл create -> prompt -> stop -> same native
-  `--resume` -> context marker -> cleanup. Deterministic I tests отдельно
-  покрывают disconnect-before-ACK, concurrent/pre-init duplicate, workspace
-  mismatch и exact owned tmux pane cleanup.
-- Live tunnel Browser path принят на `390x844` и `1280x800`: account catalog
-  загрузился без ручного retry, доступны `Agent` / `Plan` / `Ask`, реальная
-  Cursor-сессия создалась и штатно перешла в offline после daemon stop.
+- `D`: deterministic ACP protocol tests для initialize/auth, new/load,
+  mode/model validation, streaming, permission options, extensions, cancel,
+  crash, shutdown и redaction.
+- `I`: encrypted machine RPC, real SessionManager/tmux и controlled `agent acp`;
+  проверяются create, same-ID resume, active duplicate guard, ACK replay,
+  workspace mismatch, stop и cleanup.
+- `L`: opt-in `REMCLI_REAL_CURSOR=1` использует установленный авторизованный
+  Cursor CLI: create -> prompt -> external SIGINT -> same-ID resume -> context
+  proof -> stop.
+- `UI-F`: встроенный Browser проверяет New Session и lifecycle state на
+  `390x844` и `1280x800`: real ACP models, `Agent / Plan / Ask`, отсутствие
+  неисполняемых controls, start, chat, stop и resume.
 
-## Явная граница
+Команды:
 
-Cursor CLI integration пока не объявляет full live mirror нативного Cursor TUI:
-Remcli передаёт в phone chat подтверждённый terminal result или строго
-привязанный assistant fallback, но не создаёт отдельную live-ленту
-tool/approval events. Добавление такого mirror требует отдельного
-provider-specific дизайна, контракта и real gate. Официальный `agent acp`
-теперь даёт structured custom-client transport с `session/new`, `session/load`,
-`session/prompt`, `session/update`, `session/request_permission` и cancel. Он
-является кандидатом для следующего adapter generation, но ещё не подключён к
-P2P/UI Remcli.
-
-Cursor-адаптер ограничен `src/cursor/*` и активным native transport
-`agent --print --output-format stream-json`. До process spawn
-`providerSpawnRequest.ts` принимает только `agent: "cursor"`, validated
-`cursorExecution` и provider-native launch controls; Codex sandbox/model,
-внешний runner identity и произвольный terminal I/O не пересекают эту границу.
-Daemon сам добавляет private runner identity только после capability validation.
-
-Daemon-owned tmux pane для Cursor сейчас является lifecycle host для
-`agent --print`, а не интерактивным native TUI. После `Ctrl+C` он должен
-безопасно завершить wrapper; параллельный `agent --resume` не запускается.
-Owned-pane primitives и private interactive host остаются только lifecycle
-infrastructure: они не опубликованы через P2P, `runCursor` или web UI. Нельзя
-превращать `capture-pane` в provider message и нельзя строить generic PTY-слой
-ради parity с Codex. `agent persist attach` документирован для возврата к
-persistent terminal, а текущий CLI позволяет нескольким terminal-клиентам
-присоединиться к одному `tmux`-сеансу. Это общий поток TTY-байтов, а не
-structured message/tool/permission transport; официальный contract не задаёт
-порядок конкурентного ввода или event fanout. Поэтому механизм доказывает
-техническую возможность экспериментального mirror, но сам по себе не даёт
-надёжный Codex-подобный terminal/phone chat. Production mirror следует строить
-через отдельно принятую provider-specific ACP/P2P архитектуру.
-
-## Интерактивный native TUI: подтверждённая база
-
-База проверена 2026-07-20 на `agent 2026.07.16-899851b`; 2026-09-12 CLI
-обновлён до `2026.09.10-fd3934a`, а command surface перепроверен. Исходная
-проверка выполнялась в отдельном временном tmux server с disposable native
-chat:
-
-- `agent --resume <native-session-id>` действительно открывает интерактивный
-  Cursor TUI в TTY/tmux;
-- локальный ввод достигает TUI, а bounded `capture-pane` отражает его результат;
-- official CLI surface документирует interactive default, `--resume`,
-  persistent sessions и ACP custom-client transport; текущий explicit
-  `persist attach` допускает несколько terminal clients, но официальный
-  contract не определяет безопасный одновременный terminal/phone writer;
-- `--print --output-format stream-json` и `--trust` относятся к headless path и
-  не должны попадать в interactive command;
-- один `Ctrl+C` был перехвачен самим TUI и не подтвердил его корректное
-  завершение. Поэтому exact stop/cleanup пока не считается принятым.
-
-Это доказывает только возможность native TUI. До отдельного exclusive writer
-lease нельзя запускать для одного native Cursor ID одновременно interactive
-`agent --resume` и существующий headless `agent --print --resume`.
-
-Следующий технический шаг - auth-enabled ACP protocol probe и сравнительная
-приёмка с текущим headless runner. Terminal bridge остаётся отдельным product
-решением; screen scrape не становится P2P chat-message или provider tool event.
-
-### Owned-pane I/O foundation
-
-Для будущего bridge `TmuxUtilities` имеет только два scoped primitive для
-полного immutable tuple `{sessionName, windowId, paneId, panePid, ownerMarker}`:
-
-- literal text input в verified pane через server-side `if-shell` guard;
-- bounded capture последних 200 terminal lines с payload limit 32 KiB.
-
-Обе операции возвращают `missing`/`mismatch`/`unknown` fail-closed, не логируют
-input или screen text и используют per-call random outcome marker, который
-terminal content не может предсказать. Это не public terminal transport: пока
-нет daemon lease, P2P API или UI, и capture не превращается в chat message,
-tool call либо history source.
-
-### Daemon-owned interactive TUI host
-
-`SessionManager` умеет создать ровно один дочерний Cursor TUI pane для уже
-bound пары `{remcliSessionId, nativeSessionId}`. Он использует только
-daemon-validated executable, model и native launch controls, которые остаются
-в private `WeakMap`, а не приходят из P2P/terminal запроса. У child и shared
-host есть полный immutable ownership tuple; stop и daemon shutdown сначала
-освобождают child, а при `mismatch`/`unknown` сохраняют tracking для retry.
-
-### Exclusive writer lease
-
-Для одной native Cursor session daemon хранит ровно один opaque writer lease:
-`headless` либо `interactive`. Все acquire, bind и release проходят через один
-serialized state machine. Headless runner получает lease до `agent --print
---resume`, подтверждает тот же capability на `system/init` и отдаёт его после
-turn. Если release не подтверждён, runner завершает работу fail-closed и daemon
-cleanup освобождает lease вместе с owned wrapper.
-
-Interactive host получает lease до создания child pane. После подтверждённо
-отсутствующей pane daemon снимает только совпадающий interactive lease; при
-`unknown`/`mismatch` lease и tracking сохраняются. Loopback acquire/release
-требуют credential текущего runner и exact opaque capability, поэтому body с
-`sessionId` или `nativeSessionId` не является правом writer-а.
-
-Если child pane создаётся после удаления wrapper, daemon сохраняет immutable
-pane tuple вместе с exact interactive lease. Cleanup сначала дожидается всех
-in-flight Cursor TUI opens, затем подтверждённо закрывает pane и только после
-этого снимает тот же lease. Пока pane не подтверждённо released/missing,
-headless resume остаётся fail-closed.
-
-`openCursorInteractiveTui` по-прежнему намеренно не опубликован через
-loopback/P2P/`runCursor`. Writer lease устраняет конкурентный native writer, но
-не заменяет отдельный typed bridge для phone input, terminal output, host-side
-confirmation и privacy boundary.
+```bash
+npm -w remcli run typecheck
+npm -w remcli run build
+npm -w remcli run test
+REMCLI_REAL_CURSOR=1 npx vitest run tests/integration/cursorRealLifecycle.integration.test.ts --no-file-parallelism
+npm -w remcli run doctor
+node packages/remcli-cli/bin/remcli.mjs daemon status
+```

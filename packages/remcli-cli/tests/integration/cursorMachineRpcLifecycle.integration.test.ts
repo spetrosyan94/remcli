@@ -48,10 +48,6 @@ const TMUX_SIBLING_SENTINEL_COMMAND = 'sleep 60';
 const CURSOR_WORKSPACE_MISMATCH_ERROR = 'Cursor session belongs to a different working directory. Select its original workspace before resuming.';
 const FIXTURE_CURSOR_LAUNCH_CONTROLS: CursorLaunchControls = {
     executionMode: 'agent',
-    force: false,
-    autoReview: false,
-    sandbox: 'local-configuration',
-    approveMcps: false,
 };
 
 interface RpcCallAck {
@@ -542,20 +538,10 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
         });
 
         const codexCapabilities = new CodexCapabilitiesService({ getAppServerState: () => null });
-        const cursorCapabilities = new CursorCapabilitiesService({
-            readModelList: async () => ({
-                executable: 'agent',
-                version: 'controlled-cursor-agent 1.0.0',
-                output: [
-                    'Available models',
-                    '',
-                    `${FIXTURE_MODEL_A} - Controlled Cursor Model A (default)`,
-                    `${FIXTURE_MODEL_B} - Controlled Cursor Model B`,
-                    '',
-                    'Tip: use --model <id> to switch.',
-                ].join('\n'),
-            }),
-        });
+        // Capability discovery itself goes through the controlled `agent acp`
+        // process. This prevents this product-boundary gate from accepting a
+        // legacy human-readable `agent models` catalog.
+        const cursorCapabilities = new CursorCapabilitiesService();
         const cursorExecution = getDefaultCursorExecution(await cursorCapabilities.getCapabilities());
         if (!cursorExecution) {
             throw new Error('Controlled Cursor model discovery did not provide an explicit provider default.');
@@ -892,7 +878,9 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
         );
 
         expect(harness.fixture.getInvocations()).toEqual([{
-            args: ['--print', '--output-format', 'stream-json', '--trust', '--model', FIXTURE_MODEL_A, FIRST_CONTEXT_PROMPT],
+            args: ['acp'],
+            mode: 'agent',
+            model: FIXTURE_MODEL_A,
             prompt: FIRST_CONTEXT_PROMPT,
             sessionId: TEST_NATIVE_SESSION_ID,
         }]);
@@ -907,14 +895,10 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
         );
     });
 
-    it('creates, guards, stops and resumes one native Cursor session with all independent controls', async () => {
+    it('creates, guards, stops and resumes one native Cursor ACP session', async () => {
         harness = await createLifecycleHarness();
         const launchControls: CursorLaunchControls = {
             executionMode: 'agent',
-            force: true,
-            autoReview: true,
-            sandbox: 'enabled',
-            approveMcps: true,
         };
 
         const spawned = await harness.callMachineRpc(
@@ -943,10 +927,9 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
         );
 
         expect(harness.fixture.getInvocations()).toEqual([{
-            args: [
-                '--print', '--output-format', 'stream-json', '--trust', '--model', FIXTURE_MODEL_A,
-                '--force', '--auto-review', '--sandbox', 'enabled', '--approve-mcps', FIRST_CONTEXT_PROMPT,
-            ],
+            args: ['acp'],
+            mode: 'agent',
+            model: FIXTURE_MODEL_A,
             prompt: FIRST_CONTEXT_PROMPT,
             sessionId: TEST_NATIVE_SESSION_ID,
         }]);
@@ -997,23 +980,10 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
             'the model-switched Cursor turn to preserve context from model A',
         );
         expect(harness.fixture.getInvocations()[1]).toEqual({
-            args: [
-                '--print',
-                '--output-format',
-                'stream-json',
-                '--trust',
-                '--model',
-                FIXTURE_MODEL_B,
-                '--resume',
-                TEST_NATIVE_SESSION_ID,
-                '--force',
-                '--auto-review',
-                '--sandbox', 'enabled',
-                '--approve-mcps',
-                RESUME_CONTEXT_PROMPT,
-            ],
+            args: ['acp'],
+            mode: 'agent',
+            model: FIXTURE_MODEL_B,
             prompt: RESUME_CONTEXT_PROMPT,
-            resumeSessionId: TEST_NATIVE_SESSION_ID,
             sessionId: TEST_NATIVE_SESSION_ID,
         });
 
@@ -1140,75 +1110,37 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
         expect(harness.fixture.getProtocolViolations()).toEqual([]);
         expect(harness.fixture.getInvocations()).toEqual([
             {
-                args: [
-                    '--print', '--output-format', 'stream-json', '--trust', '--model', FIXTURE_MODEL_A,
-                    '--force', '--auto-review', '--sandbox', 'enabled', '--approve-mcps', FIRST_CONTEXT_PROMPT,
-                ],
+                args: ['acp'],
+                mode: 'agent',
+                model: FIXTURE_MODEL_A,
                 prompt: FIRST_CONTEXT_PROMPT,
                 sessionId: TEST_NATIVE_SESSION_ID,
             },
             {
-                args: [
-                    '--print',
-                    '--output-format',
-                    'stream-json',
-                    '--trust',
-                    '--model',
-                    FIXTURE_MODEL_B,
-                    '--resume',
-                    TEST_NATIVE_SESSION_ID,
-                    '--force',
-                    '--auto-review',
-                    '--sandbox', 'enabled',
-                    '--approve-mcps',
-                    RESUME_CONTEXT_PROMPT,
-                ],
+                args: ['acp'],
+                mode: 'agent',
+                model: FIXTURE_MODEL_B,
                 prompt: RESUME_CONTEXT_PROMPT,
-                resumeSessionId: TEST_NATIVE_SESSION_ID,
                 sessionId: TEST_NATIVE_SESSION_ID,
             },
             {
-                args: [
-                    '--print',
-                    '--output-format',
-                    'stream-json',
-                    '--trust',
-                    '--model',
-                    FIXTURE_MODEL_A,
-                    '--resume',
-                    TEST_NATIVE_SESSION_ID,
-                    '--force',
-                    '--auto-review',
-                    '--sandbox', 'enabled',
-                    '--approve-mcps',
-                    ACTIVE_STOP_PROMPT,
-                ],
+                args: ['acp'],
+                mode: 'agent',
+                model: FIXTURE_MODEL_A,
                 prompt: ACTIVE_STOP_PROMPT,
                 resumeSessionId: TEST_NATIVE_SESSION_ID,
                 sessionId: TEST_NATIVE_SESSION_ID,
             },
             {
-                args: [
-                    '--print',
-                    '--output-format',
-                    'stream-json',
-                    '--trust',
-                    '--model',
-                    FIXTURE_MODEL_A,
-                    '--resume',
-                    TEST_NATIVE_SESSION_ID,
-                    '--force',
-                    '--auto-review',
-                    '--sandbox', 'enabled',
-                    '--approve-mcps',
-                    RESUME_CONTEXT_PROMPT,
-                ],
+                args: ['acp'],
+                mode: 'agent',
+                model: FIXTURE_MODEL_A,
                 prompt: RESUME_CONTEXT_PROMPT,
                 resumeSessionId: TEST_NATIVE_SESSION_ID,
                 sessionId: TEST_NATIVE_SESSION_ID,
             },
         ]);
-        expect(harness.fixture.getInvocations().every((invocation) => !invocation.args.includes('--mode'))).toBe(true);
+        expect(harness.fixture.getOperations().filter((entry) => entry.method === 'session/load')).toHaveLength(2);
         const stoppedResumed = await harness.callMachineRpc('stop-session', { sessionId: resumedRemcliSessionId });
         expect(stoppedResumed).toEqual({ message: 'Session stopped', sessionId: resumedRemcliSessionId });
         await waitForCondition(
@@ -1267,17 +1199,9 @@ describe('Cursor encrypted machine RPC lifecycle', { timeout: LIFECYCLE_TIMEOUT_
             'the pre-init Cursor native resume phone response',
         );
         expect(harness.fixture.getInvocations()).toEqual([{
-            args: [
-                '--print',
-                '--output-format',
-                'stream-json',
-                '--trust',
-                '--model',
-                FIXTURE_MODEL_A,
-                '--resume',
-                TEST_NATIVE_SESSION_ID,
-                FIRST_CONTEXT_PROMPT,
-            ],
+            args: ['acp'],
+            mode: 'agent',
+            model: FIXTURE_MODEL_A,
             prompt: FIRST_CONTEXT_PROMPT,
             resumeSessionId: TEST_NATIVE_SESSION_ID,
             sessionId: TEST_NATIVE_SESSION_ID,

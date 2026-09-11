@@ -601,6 +601,40 @@ describe('ChatPage feed mapping', () => {
         });
     });
 
+    it('renders Cursor ACP deltas live and replaces them with the durable final text', () => {
+        const streamMessage = (
+            id: string,
+            seq: number,
+            text: string,
+            streamState: 'delta' | 'final',
+        ): NormalizedMessage => ({
+            id,
+            localId: null,
+            seq,
+            createdAt: 1000 + seq,
+            isSidechain: false,
+            role: 'agent',
+            content: [{
+                type: 'text',
+                text,
+                uuid: 'cursor-turn-1',
+                parentUUID: null,
+                streamState,
+            }],
+        });
+        const feed = buildFeed([
+            streamMessage('delta-1', 1, 'Hello ', 'delta'),
+            streamMessage('delta-2', 2, 'world', 'delta'),
+            streamMessage('final', 3, 'Hello world.', 'final'),
+        ], 'cursor');
+
+        expect(feed).toHaveLength(1);
+        expect(feed[0]).toMatchObject({
+            kind: 'agent-group',
+            texts: ['Hello world.'],
+        });
+    });
+
     it('does not attach tool calls after an error event to the previous agent group', () => {
         const messages: NormalizedMessage[] = [
             {

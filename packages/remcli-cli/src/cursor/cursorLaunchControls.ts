@@ -1,44 +1,25 @@
 /**
  * Cursor launch controls are fixed when a remote session is created.
  *
- * They intentionally do not share the generic provider `PermissionMode`:
- * Cursor exposes execution mode, independent launch flags, sandbox override
- * and MCP approval as distinct native controls.
+ * ACP exposes the provider-native Agent, Plan and Ask session modes. Other
+ * root CLI flags are not accepted by `agent acp` and therefore are not part of
+ * Remcli's Cursor session contract.
  */
 
 export type CursorExecutionMode = 'agent' | 'plan' | 'ask';
-export type CursorSandboxMode = 'local-configuration' | 'enabled' | 'disabled';
 
 export interface CursorLaunchControls {
     executionMode: CursorExecutionMode;
-    force: boolean;
-    autoReview: boolean;
-    sandbox: CursorSandboxMode;
-    approveMcps: boolean;
 }
 
 export const DEFAULT_CURSOR_LAUNCH_CONTROLS: CursorLaunchControls = {
     executionMode: 'agent',
-    force: false,
-    autoReview: false,
-    sandbox: 'local-configuration',
-    approveMcps: false,
 };
 
-const CURSOR_LAUNCH_CONTROL_KEYS = new Set([
-    'executionMode',
-    'force',
-    'autoReview',
-    'sandbox',
-    'approveMcps',
-]);
+const CURSOR_LAUNCH_CONTROL_KEYS = new Set(['executionMode']);
 
 export function isCursorExecutionMode(value: unknown): value is CursorExecutionMode {
     return value === 'agent' || value === 'plan' || value === 'ask';
-}
-
-export function isCursorSandboxMode(value: unknown): value is CursorSandboxMode {
-    return value === 'local-configuration' || value === 'enabled' || value === 'disabled';
 }
 
 /** Strictly validate untrusted machine-RPC data before it reaches a runner. */
@@ -54,19 +35,11 @@ export function isCursorLaunchControls(value: unknown): value is CursorLaunchCon
             return false;
         }
 
-        if (!Object.prototype.hasOwnProperty.call(record, 'executionMode')
-            || !Object.prototype.hasOwnProperty.call(record, 'force')
-            || !Object.prototype.hasOwnProperty.call(record, 'autoReview')
-            || !Object.prototype.hasOwnProperty.call(record, 'sandbox')
-            || !Object.prototype.hasOwnProperty.call(record, 'approveMcps')) {
+        if (!Object.prototype.hasOwnProperty.call(record, 'executionMode')) {
             return false;
         }
 
-        return isCursorExecutionMode(record.executionMode)
-            && typeof record.force === 'boolean'
-            && typeof record.autoReview === 'boolean'
-            && isCursorSandboxMode(record.sandbox)
-            && typeof record.approveMcps === 'boolean';
+        return isCursorExecutionMode(record.executionMode);
     } catch {
         return false;
     }

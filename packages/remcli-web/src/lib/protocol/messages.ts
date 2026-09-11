@@ -260,7 +260,14 @@ const rawAgentRecordSchema = z.discriminatedUnion('type', [z.object({
     provider: z.enum(['gemini', 'codex', 'cursor', 'claude', 'opencode']),
     data: z.discriminatedUnion('type', [
         z.object({ type: z.literal('reasoning'), message: z.string() }),
-        z.object({ type: z.literal('message'), message: z.string(), isError: z.boolean().optional() }),
+        z.object({
+            type: z.literal('message'),
+            message: z.string(),
+            isError: z.boolean().optional(),
+            messageId: z.string().optional(),
+            streamState: z.enum(['delta', 'final']).optional(),
+            historical: z.boolean().optional(),
+        }),
         z.object({ type: z.literal('thinking'), text: z.string() }),
         z.object({
             type: z.literal('tool-call'),
@@ -421,6 +428,7 @@ export type NormalizedAgentContent =
         text: string;
         uuid: string;
         parentUUID: string | null;
+        streamState?: 'delta' | 'final';
     } | {
         type: 'thinking';
         thinking: string;
@@ -699,6 +707,8 @@ export function normalizeRawMessage(
             };
         }
         if (data.type === 'message' || data.type === 'reasoning') {
+            const messageId = data.type === 'message' ? data.messageId : undefined;
+            const streamState = data.type === 'message' ? data.streamState : undefined;
             return {
                 ...base,
                 role: 'agent',
@@ -706,8 +716,9 @@ export function normalizeRawMessage(
                 content: [{
                     type: 'text',
                     text: data.message,
-                    uuid: id,
-                    parentUUID: null
+                    uuid: messageId ?? id,
+                    parentUUID: null,
+                    ...(streamState ? { streamState } : {}),
                 }],
                 meta
             };

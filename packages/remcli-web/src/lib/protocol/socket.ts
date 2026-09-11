@@ -335,23 +335,14 @@ export interface CursorExecutionConfig {
 }
 
 export type CursorExecutionMode = 'agent' | 'plan' | 'ask';
-export type CursorSandboxMode = 'local-configuration' | 'enabled' | 'disabled';
 
-/** Native Cursor controls fixed at session creation and validated by the daemon. */
+/** Cursor ACP session mode fixed at session creation and validated by the daemon. */
 export interface CursorLaunchControls {
     executionMode: CursorExecutionMode;
-    force: boolean;
-    autoReview: boolean;
-    sandbox: CursorSandboxMode;
-    approveMcps: boolean;
 }
 
 export const DEFAULT_CURSOR_LAUNCH_CONTROLS: CursorLaunchControls = {
     executionMode: 'agent',
-    force: false,
-    autoReview: false,
-    sandbox: 'local-configuration',
-    approveMcps: false,
 };
 
 export interface CursorModelCapability {

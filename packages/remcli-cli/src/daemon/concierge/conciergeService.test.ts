@@ -285,10 +285,6 @@ describe('executeToolCall — spawn_agent_session validation', () => {
             },
             cursorLaunchControls: {
                 executionMode: 'agent',
-                force: false,
-                autoReview: false,
-                sandbox: 'local-configuration',
-                approveMcps: false,
             },
             cursorRunner: {
                 executable: 'agent',

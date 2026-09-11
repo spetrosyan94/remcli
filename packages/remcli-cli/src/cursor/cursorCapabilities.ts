@@ -1,33 +1,27 @@
 /**
- * Cursor account-visible model discovery and daemon-side selection validation.
+ * Cursor ACP model discovery and daemon-side selection validation.
  *
- * Cursor currently publishes `agent models` as a text list, rather than a
- * separate machine-readable reasoning API. This boundary keeps that opaque
- * provider list inside the daemon and exposes only normalized model rows.
+ * The available catalog belongs to the authenticated ACP session. Do not use
+ * the human-readable `agent models` output here: it can contain CLI variants
+ * that the ACP transport cannot select.
  */
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
+import type { SessionModelState } from '@agentclientprotocol/sdk';
 import { logger } from '@/ui/logger';
 import {
     CURSOR_EXECUTABLE_CANDIDATES,
     isCursorExecutable,
     type CursorExecutable,
 } from './cursorCli';
+import { CursorAcpClient, type CursorAcpSession } from './cursorAcpClient';
 
 const CAPABILITIES_TTL_MS = 60 * 1_000;
 const DISCOVERY_TIMEOUT_MS = 5_000;
 const DISCOVERY_MAX_BUFFER_BYTES = 256 * 1_024;
 const DISCOVERY_FORCE_KILL_DELAY_MS = 250;
-const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const MODEL_LINE_PATTERN = /^([A-Za-z0-9][A-Za-z0-9._-]*)\s+-\s+(.+?)$/;
-const MODEL_STATUS_SUFFIXES = [
-    { suffix: ' (current, default)', isDefault: true },
-    { suffix: ' (default)', isDefault: true },
-    { suffix: ' (current)', isDefault: false },
-] as const;
-const UNKNOWN_DEFAULT_STATUS_MARKER_PATTERN = /\(.*\b(?:current|default)\b.*\)$/i;
 const CLI_VERSION_MAX_LENGTH = 256;
 const CLI_FINGERPRINT_PATTERN = /^[a-f0-9]{16}$/;
 
@@ -54,8 +48,23 @@ export interface CursorCapabilitiesSnapshot {
     errorCode?: CursorCapabilityErrorCode;
 }
 
+export interface CursorAcpCatalogResult {
+    executable: CursorExecutable;
+    version: string;
+    models: SessionModelState;
+}
+
+export interface CursorAcpCatalogClient {
+    start(): Promise<Pick<CursorAcpSession, 'models'>>;
+    dispose(): Promise<void>;
+}
+
+export interface CursorAcpCatalogClientFactory {
+    (options: { command: CursorExecutable; cwd: string }): CursorAcpCatalogClient;
+}
+
 export interface CursorCapabilitiesServiceOptions {
-    readModelList?: () => Promise<CursorModelListResult>;
+    readCatalog?: () => Promise<CursorAcpCatalogResult>;
     now?: () => number;
     cacheTtlMs?: number;
 }
@@ -63,12 +72,6 @@ export interface CursorCapabilitiesServiceOptions {
 interface CachedCapabilities {
     snapshot: CursorCapabilitiesSnapshot;
     runner: CursorRunnerIdentity | null;
-}
-
-export interface CursorModelListResult {
-    executable: CursorExecutable;
-    output: string;
-    version: string;
 }
 
 /** Opaque identity bound to the fresh account-visible model catalog. */
@@ -135,7 +138,7 @@ function createDefaultCursorRunnerIdentity(): CursorRunnerIdentity {
     };
 }
 
-function createCursorRunnerIdentity(source: CursorModelListResult): CursorRunnerIdentity {
+function createCursorRunnerIdentity(source: CursorAcpCatalogResult): CursorRunnerIdentity {
     return {
         executable: source.executable,
         cliFingerprint: createCursorCliFingerprint(source.executable, source.version),
@@ -159,91 +162,56 @@ export function isCursorRunnerIdentity(value: unknown): value is CursorRunnerIde
     }
 }
 
-function readCursorModelLine(line: string): CursorModelCapability | null {
-    const match = MODEL_LINE_PATTERN.exec(line.trim());
-    if (!match) return null;
-
-    const [, id, rawDisplayName] = match;
-    if (!MODEL_ID_PATTERN.test(id)) return null;
-
-    const status = MODEL_STATUS_SUFFIXES.find(({ suffix }) => rawDisplayName.endsWith(suffix));
-    if (!status
-        && UNKNOWN_DEFAULT_STATUS_MARKER_PATTERN.test(rawDisplayName)) {
-        return null;
+/**
+ * Keep only exact model IDs advertised by the active ACP session. The current
+ * ACP selection is the sole default; multiple defaults would make spawn
+ * behavior ambiguous and are rejected instead of guessed.
+ */
+export function normalizeCursorAcpModels(modelState: SessionModelState): CursorModelCapability[] {
+    const availableModels = modelState?.availableModels;
+    const currentModelId = modelState?.currentModelId;
+    if (!Array.isArray(availableModels) || availableModels.length === 0
+        || typeof currentModelId !== 'string'
+        || currentModelId.trim() !== currentModelId
+        || currentModelId === '') {
+        throw new Error('Cursor ACP did not return a usable model catalog.');
     }
-    const isDefault = status?.isDefault ?? false;
-    const displayName = (status
-        ? rawDisplayName.slice(0, -status.suffix.length)
-        : rawDisplayName).trim();
-    if (!displayName) return null;
 
-    return { id, displayName, isDefault };
-}
-
-/** Parse the documented human-readable `agent models` list without returning raw CLI output. */
-export function parseCursorModelList(output: string): CursorModelCapability[] {
-    const models: CursorModelCapability[] = [];
     const modelIds = new Set<string>();
-    let isInsideModelList = false;
-    let hasModelListHeader = false;
-    let hasModelListFooter = false;
+    const models = availableModels.map((candidate) => {
+        if (!candidate
+            || typeof candidate.modelId !== 'string'
+            || candidate.modelId.trim() !== candidate.modelId
+            || candidate.modelId === ''
+            || typeof candidate.name !== 'string'
+            || candidate.name.trim() === '') {
+            throw new Error('Cursor ACP returned an invalid model capability.');
+        }
+        if (modelIds.has(candidate.modelId)) {
+            throw new Error('Cursor ACP returned a duplicate model ID.');
+        }
+        modelIds.add(candidate.modelId);
+        return {
+            id: candidate.modelId,
+            displayName: candidate.name.trim(),
+            isDefault: candidate.modelId === currentModelId,
+        };
+    });
 
-    for (const rawLine of output.split(/\r?\n/)) {
-        const line = rawLine.trim();
-        if (!hasModelListHeader) {
-            if (line === '') continue;
-            if (line !== 'Available models') {
-                throw new Error('Cursor CLI returned an unsupported model-list header.');
-            }
-            hasModelListHeader = true;
-            isInsideModelList = true;
-            continue;
-        }
-        if (!isInsideModelList) {
-            if (line !== '') {
-                throw new Error('Cursor CLI returned unexpected output after the model list.');
-            }
-            continue;
-        }
-        if (line === '') continue;
-        if (line.startsWith('Tip:')) {
-            hasModelListFooter = true;
-            isInsideModelList = false;
-            continue;
-        }
-
-        const model = readCursorModelLine(line);
-        if (!model) {
-            throw new Error('Cursor CLI returned an unsupported model-list row.');
-        }
-        if (modelIds.has(model.id)) {
-            throw new Error('Cursor CLI returned a duplicate model ID.');
-        }
-        modelIds.add(model.id);
-        models.push(model);
-    }
-
-    if (!hasModelListHeader || models.length === 0) {
-        throw new Error('Cursor CLI did not provide any account-visible models.');
-    }
-    if (!hasModelListFooter) {
-        throw new Error('Cursor CLI did not finish the model list with a recognized footer.');
-    }
-    const defaults = models.filter((model) => model.isDefault);
-    if (defaults.length !== 1) {
-        throw new Error('Cursor CLI did not identify exactly one provider default model.');
+    if (!modelIds.has(currentModelId) || models.filter((model) => model.isDefault).length !== 1) {
+        throw new Error('Cursor ACP did not identify exactly one current model.');
     }
 
     return models;
 }
 
 export function createCursorCapabilitiesSnapshot(
-    output: string,
+    modelState: SessionModelState,
     now: () => number = Date.now,
     cacheTtlMs: number = CAPABILITIES_TTL_MS,
     runner: CursorRunnerIdentity = createDefaultCursorRunnerIdentity(),
 ): CursorCapabilitiesSnapshot {
-    const models = parseCursorModelList(output);
+    const models = normalizeCursorAcpModels(modelState);
     const fetchedAt = now();
     return {
         agent: 'cursor',
@@ -380,10 +348,6 @@ function runCursorTextCommand(
     });
 }
 
-function runCursorModelsCommand(executable: CursorExecutable): Promise<string> {
-    return runCursorTextCommand(executable, ['models'], 'model discovery');
-}
-
 function runCursorVersionCommand(executable: CursorExecutable): Promise<string> {
     return runCursorTextCommand(executable, ['--version'], 'version discovery');
 }
@@ -404,16 +368,32 @@ function isExecutableNotFound(error: unknown): boolean {
     return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
 }
 
-async function readModelListFromCli(): Promise<CursorModelListResult> {
+function createCursorAcpCatalogClient(options: { command: CursorExecutable; cwd: string }): CursorAcpCatalogClient {
+    return new CursorAcpClient(options);
+}
+
+async function readCatalogFromAcp(
+    createClient: CursorAcpCatalogClientFactory = createCursorAcpCatalogClient,
+): Promise<CursorAcpCatalogResult> {
     let lastNotFoundError: Error | null = null;
 
     for (const executable of CURSOR_EXECUTABLE_CANDIDATES) {
         try {
-            const [output, version] = await Promise.all([
-                runCursorModelsCommand(executable),
-                runCursorVersionCommand(executable),
-            ]);
-            return { executable, output, version };
+            const version = await runCursorVersionCommand(executable);
+            const client = createClient({ command: executable, cwd: process.cwd() });
+            try {
+                const session = await client.start();
+                if (!session.models) {
+                    throw new Error('Cursor ACP did not return model capabilities.');
+                }
+                return { executable, version, models: session.models };
+            } finally {
+                try {
+                    await client.dispose();
+                } catch {
+                    logger.debug('[CursorCapabilities] ACP discovery cleanup did not complete.');
+                }
+            }
         } catch (error) {
             if (isExecutableNotFound(error)) {
                 lastNotFoundError = error instanceof Error ? error : new Error('Cursor CLI executable was not found.');
@@ -426,16 +406,16 @@ async function readModelListFromCli(): Promise<CursorModelListResult> {
     throw lastNotFoundError ?? new Error('Cursor CLI executable was not found.');
 }
 
-/** Daemon-owned cache around the account-scoped Cursor CLI model command. */
+/** Daemon-owned cache around the authenticated, exact Cursor ACP model catalog. */
 export class CursorCapabilitiesService {
-    private readonly readModelList: () => Promise<CursorModelListResult>;
+    private readonly readCatalog: () => Promise<CursorAcpCatalogResult>;
     private readonly now: () => number;
     private readonly cacheTtlMs: number;
     private cached: CachedCapabilities | null = null;
     private inFlight: Promise<CachedCapabilities> | null = null;
 
     constructor(options: CursorCapabilitiesServiceOptions = {}) {
-        this.readModelList = options.readModelList ?? readModelListFromCli;
+        this.readCatalog = options.readCatalog ?? readCatalogFromAcp;
         this.now = options.now ?? Date.now;
         this.cacheTtlMs = options.cacheTtlMs ?? CAPABILITIES_TTL_MS;
     }
@@ -445,7 +425,7 @@ export class CursorCapabilitiesService {
     }
 
     async validateSelection(execution: CursorExecutionConfig | undefined): Promise<CursorRunnerIdentity> {
-        const cached = await this.getCachedCapabilities(true);
+        const cached = await this.getCachedCapabilities(false);
         validateCursorExecution(cached.snapshot, execution, this.now());
         if (!cached.runner) {
             throw new CursorCapabilitiesError('unavailable');
@@ -454,7 +434,7 @@ export class CursorCapabilitiesService {
     }
 
     async getDefaultSelection(): Promise<CursorDaemonSelection | null> {
-        const cached = await this.getCachedCapabilities(true);
+        const cached = await this.getCachedCapabilities(false);
         const execution = getDefaultCursorExecution(cached.snapshot);
         if (!execution || !cached.runner) return null;
         validateCursorExecution(cached.snapshot, execution, this.now());
@@ -485,16 +465,16 @@ export class CursorCapabilitiesService {
 
     private async refresh(): Promise<CachedCapabilities> {
         try {
-            const source = await this.readModelList();
+            const source = await this.readCatalog();
             const runner = createCursorRunnerIdentity(source);
             const snapshot = createCursorCapabilitiesSnapshot(
-                source.output,
+                source.models,
                 this.now,
                 this.cacheTtlMs,
                 runner,
             );
             this.cached = { snapshot, runner };
-            logger.debug(`[CursorCapabilities] refreshed ${snapshot.models.length} account-visible models.`);
+            logger.debug(`[CursorCapabilities] refreshed ${snapshot.models.length} ACP models.`);
             return this.cached;
         } catch {
             this.cached = null;
