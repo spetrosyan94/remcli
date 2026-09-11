@@ -421,6 +421,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
         const controlServer = await startDaemonControlServer({
             instanceId: controlInstanceId,
             getChildren: sessionManager.getChildren,
+            consumeSessionExecution: sessionManager.consumeSessionExecution,
             stopSession: sessionManager.stopSession,
             spawnSession: sessionManager.spawnSession,
             requestShutdown: () => undefined,
@@ -433,7 +434,10 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
             verifySessionRunnerCredential: (sessionId, credential) => runnerCredentialStore.verify(sessionId, credential),
             bindNativeCodexThread: sessionManager.bindNativeCodexThread,
             bindNativeCursorSession: sessionManager.bindNativeCursorSession,
+            acquireCursorHeadlessWriterLease: sessionManager.acquireCursorHeadlessWriterLease,
+            releaseCursorNativeWriterLease: sessionManager.releaseCursorNativeWriterLease,
             preflightCursorRunner: sessionManager.preflightCursorRunner,
+            reportCursorRunnerBootstrapFailure: sessionManager.reportCursorRunnerBootstrapFailure,
             markDaemonRunnerStopping: sessionManager.markDaemonRunnerStopping,
             completeDaemonRunnerStopping: sessionManager.completeDaemonRunnerStopping,
             openCodexRemoteTui: async (request) => ({
@@ -682,7 +686,10 @@ realCursorDescribe('Cursor real lifecycle gate (skipped unless REMCLI_REAL_CURSO
         await waitForCondition(
             () => {
                 if (harness!.getExecutionOutcome(firstRemcliSessionId) === 'error') {
-                    throw new Error('Real Cursor reported a terminal error before confirming its native session ID.');
+                    const lastMessage = harness!.getAssistantMessages(firstRemcliSessionId).at(-1);
+                    throw new Error(
+                        `Real Cursor reported a terminal error before confirming its native session ID${lastMessage ? `: ${lastMessage}` : '.'}`,
+                    );
                 }
                 return harness!.getNativeCursorSessionId(firstRemcliSessionId) !== null;
             },
@@ -718,7 +725,10 @@ realCursorDescribe('Cursor real lifecycle gate (skipped unless REMCLI_REAL_CURSO
         await waitForCondition(
             () => {
                 if (harness!.getExecutionOutcome(resumedRemcliSessionId) === 'error') {
-                    throw new Error('Real Cursor reported a terminal error before confirming its resumed native session ID.');
+                    const lastMessage = harness!.getAssistantMessages(resumedRemcliSessionId).at(-1);
+                    throw new Error(
+                        `Real Cursor reported a terminal error before confirming its resumed native session ID${lastMessage ? `: ${lastMessage}` : '.'}`,
+                    );
                 }
                 return harness!.getNativeCursorSessionId(resumedRemcliSessionId) === nativeCursorSessionId;
             },

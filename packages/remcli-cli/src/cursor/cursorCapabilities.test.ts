@@ -24,6 +24,11 @@ const CURRENT_DEFAULT_MODEL_LIST_OUTPUT = MODEL_LIST_OUTPUT.replace(
     'Auto (current, default)',
 );
 
+const CURRENT_NON_DEFAULT_MODEL_LIST_OUTPUT = MODEL_LIST_OUTPUT.replace(
+    'GPT-5.6 Luna 1M Extra High',
+    'GPT-5.6 Luna 1M Extra High (current)',
+);
+
 interface Deferred<T> {
     promise: Promise<T>;
     resolve: (value: T) => void;
@@ -66,6 +71,17 @@ describe('parseCursorModelList', () => {
 
     it('accepts the current Cursor CLI default marker without treating the current state as a model name', () => {
         expect(parseCursorModelList(CURRENT_DEFAULT_MODEL_LIST_OUTPUT)).toEqual([
+            { id: 'auto', displayName: 'Auto', isDefault: true },
+            {
+                id: 'gpt-5.6-luna-xhigh',
+                displayName: 'GPT-5.6 Luna 1M Extra High',
+                isDefault: false,
+            },
+        ]);
+    });
+
+    it('accepts a current model that differs from the provider default', () => {
+        expect(parseCursorModelList(CURRENT_NON_DEFAULT_MODEL_LIST_OUTPUT)).toEqual([
             { id: 'auto', displayName: 'Auto', isDefault: true },
             {
                 id: 'gpt-5.6-luna-xhigh',

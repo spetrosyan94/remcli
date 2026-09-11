@@ -2,10 +2,13 @@
 
 ## Источники
 
-- Official docs: https://cursor.com/docs/cli/headless и https://cursor.com/docs/cli/reference/parameters
-- Local CLI: `agent --help`, `agent models`, `agent 2026.07.16-899851b`
+- Official docs: https://cursor.com/docs/cli/headless,
+  https://cursor.com/docs/cli/overview, https://cursor.com/docs/cli/acp,
+  https://cursor.com/docs/cli/changelog и https://cursor.com/docs/models
+- Local CLI: `agent --help`, `agent acp --help`, `agent persist --help`,
+  `agent models`, `agent 2026.09.10-fd3934a`
 - Context7: anonymous quota исчерпана; не заменять official docs устаревшими заметками.
-- Проверено: 2026-07-19.
+- Проверено: 2026-09-12.
 
 ## Назначение
 
@@ -13,6 +16,11 @@ Remcli удалённо запускает и возобновляет Cursor Ag
 директории. Телефон отправляет prompt в daemon; daemon-owned wrapper исполняет
 один headless Cursor turn и возвращает канонический terminal result в P2P-чат.
 Это не MCP transport и не эмуляция Cursor IDE.
+
+Cursor также публикует официальный `agent acp` для custom clients по
+stdio/JSON-RPC. Production adapter Remcli пока остаётся на документированном
+headless `stream-json`: переход на ACP требует отдельной приёмки identity,
+permissions, Cursor extension methods и reconnect, а не простой замены argv.
 
 ## Владение runtime
 
@@ -176,10 +184,11 @@ toggle-selector-ами и не получают этот признак. Лок�
 
 1. Daemon запускает только `agent models` (fallback binary: `cursor-agent`) с
    ограниченными timeout и output buffer. Он строго принимает header
-   `Available models`, нормальные model rows, ровно один provider default
-   (`(default)` либо текущий CLI marker `(current, default)`) и
-   recognized footer; raw stdout/stderr, account/quota/auth data не выходят в
-   protocol и логи.
+   `Available models`, нормальные model rows, ровно один provider default и
+   status markers `(default)`, `(current)` или `(current, default)`, которые
+   формирует текущий CLI. Маркер `(current)` не превращает выбранную модель в
+   provider default. Неизвестная форма или footer отклоняются; raw
+   stdout/stderr, account/quota/auth data не выходят в protocol и логи.
 2. `get-cursor-capabilities` возвращает нормализованный snapshot: exact model
    id, display name, provider default, source freshness и opaque
    `catalogVersion`. Web не содержит fallback catalog и блокирует Start/Resume,
@@ -192,7 +201,9 @@ toggle-selector-ами и не получают этот признак. Лок�
    не публикует безопасный machine-readable catalog допустимых efforts для
    конкретной account-visible модели. Это current product limitation Remcli:
    пока он показывает informational status «reasoning не настраивается
-   отдельно» и не выводит effort из suffix model id.
+   отдельно» и не выводит effort из suffix model id. Публичная страница Cursor
+   Models не заменяет `agent models`: фактический список зависит от аккаунта и
+   provider policy.
 5. Web передаёт отдельно `cursorExecution` и полный `cursorLaunchControls`;
    `Agent` означает отсутствие `--mode`, а native flags не являются generic
    permission aliases. Workspace trust и local allow/deny rules отображаются
@@ -251,10 +262,14 @@ outbox или стабильного restart handoff; этот редкий cros
 - `UI-F`: Cursor-labelled Browser fixture проверяет model catalog, native
   controls, unsupported reasoning, unavailable/retry и bind/resume error в том
   же drawer на `390x844` и `1280x800`.
-- `L`: opt-in `REMCLI_REAL_CURSOR=1` прошёл create -> prompt -> stop -> same
-  native `--resume` -> context marker -> cleanup. Deterministic I tests отдельно
+- `L`: 12.09.2026 opt-in `REMCLI_REAL_CURSOR=1` на
+  `gpt-5.6-luna-xhigh` прошёл create -> prompt -> stop -> same native
+  `--resume` -> context marker -> cleanup. Deterministic I tests отдельно
   покрывают disconnect-before-ACK, concurrent/pre-init duplicate, workspace
   mismatch и exact owned tmux pane cleanup.
+- Live tunnel Browser path принят на `390x844` и `1280x800`: account catalog
+  загрузился без ручного retry, доступны `Agent` / `Plan` / `Ask`, реальная
+  Cursor-сессия создалась и штатно перешла в offline после daemon stop.
 
 ## Явная граница
 
@@ -262,7 +277,11 @@ Cursor CLI integration пока не объявляет full live mirror нат�
 Remcli передаёт в phone chat подтверждённый terminal result или строго
 привязанный assistant fallback, но не создаёт отдельную live-ленту
 tool/approval events. Добавление такого mirror требует отдельного
-provider-specific дизайна, контракта и real gate.
+provider-specific дизайна, контракта и real gate. Официальный `agent acp`
+теперь даёт structured custom-client transport с `session/new`, `session/load`,
+`session/prompt`, `session/update`, `session/request_permission` и cancel. Он
+является кандидатом для следующего adapter generation, но ещё не подключён к
+P2P/UI Remcli.
 
 Cursor-адаптер ограничен `src/cursor/*` и активным native transport
 `agent --print --output-format stream-json`. До process spawn
@@ -277,19 +296,29 @@ Daemon-owned tmux pane для Cursor сейчас является lifecycle hos
 Owned-pane primitives и private interactive host остаются только lifecycle
 infrastructure: они не опубликованы через P2P, `runCursor` или web UI. Нельзя
 превращать `capture-pane` в provider message и нельзя строить generic PTY-слой
-ради parity с Codex. Product mirror возможен только после документированного
-Cursor remote/attach transport либо отдельного принятого security design.
+ради parity с Codex. `agent persist attach` документирован для возврата к
+persistent terminal, а текущий CLI позволяет нескольким terminal-клиентам
+присоединиться к одному `tmux`-сеансу. Это общий поток TTY-байтов, а не
+structured message/tool/permission transport; официальный contract не задаёт
+порядок конкурентного ввода или event fanout. Поэтому механизм доказывает
+техническую возможность экспериментального mirror, но сам по себе не даёт
+надёжный Codex-подобный terminal/phone chat. Production mirror следует строить
+через отдельно принятую provider-specific ACP/P2P архитектуру.
 
 ## Интерактивный native TUI: подтверждённая база
 
-Проверено 2026-07-20 на установленном `agent 2026.07.16-899851b` в отдельном
-временном tmux server с disposable native chat:
+База проверена 2026-07-20 на `agent 2026.07.16-899851b`; 2026-09-12 CLI
+обновлён до `2026.09.10-fd3934a`, а command surface перепроверен. Исходная
+проверка выполнялась в отдельном временном tmux server с disposable native
+chat:
 
 - `agent --resume <native-session-id>` действительно открывает интерактивный
   Cursor TUI в TTY/tmux;
 - локальный ввод достигает TUI, а bounded `capture-pane` отражает его результат;
-- official CLI surface документирует interactive default и `--resume`, но не
-  документирует app-server, remote attach или structured terminal transport;
+- official CLI surface документирует interactive default, `--resume`,
+  persistent sessions и ACP custom-client transport; текущий explicit
+  `persist attach` допускает несколько terminal clients, но официальный
+  contract не определяет безопасный одновременный terminal/phone writer;
 - `--print --output-format stream-json` и `--trust` относятся к headless path и
   не должны попадать в interactive command;
 - один `Ctrl+C` был перехвачен самим TUI и не подтвердил его корректное
@@ -299,10 +328,9 @@ Cursor remote/attach transport либо отдельного принятого 
 lease нельзя запускать для одного native Cursor ID одновременно interactive
 `agent --resume` и существующий headless `agent --print --resume`.
 
-Следующий технический шаг - чистый тестируемый command builder, затем typed
-runtime handle с immutable tmux ownership tuple. Только после этого допускается
-отдельный terminal bridge; screen scrape не становится P2P chat-message или
-provider tool event.
+Следующий технический шаг - auth-enabled ACP protocol probe и сравнительная
+приёмка с текущим headless runner. Terminal bridge остаётся отдельным product
+решением; screen scrape не становится P2P chat-message или provider tool event.
 
 ### Owned-pane I/O foundation
 

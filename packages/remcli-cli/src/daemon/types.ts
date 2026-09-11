@@ -53,7 +53,7 @@ export interface NativeCursorSessionWrapper {
   remcliSessionId: string;
 }
 
-/** Cursor has no attach transport: exactly one native process may write a session at a time. */
+/** Remcli serializes native Cursor writers through its own lease; provider attach behavior is not an exclusivity proof. */
 export type CursorNativeWriterOwner = 'headless' | 'interactive';
 
 /** Opaque daemon-issued capability; it is never derived from a native session ID. */

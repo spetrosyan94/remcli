@@ -22,7 +22,11 @@ const DISCOVERY_MAX_BUFFER_BYTES = 256 * 1_024;
 const DISCOVERY_FORCE_KILL_DELAY_MS = 250;
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const MODEL_LINE_PATTERN = /^([A-Za-z0-9][A-Za-z0-9._-]*)\s+-\s+(.+?)$/;
-const DEFAULT_SUFFIXES = [' (default)', ' (current, default)'] as const;
+const MODEL_STATUS_SUFFIXES = [
+    { suffix: ' (current, default)', isDefault: true },
+    { suffix: ' (default)', isDefault: true },
+    { suffix: ' (current)', isDefault: false },
+] as const;
 const UNKNOWN_DEFAULT_STATUS_MARKER_PATTERN = /\(.*\b(?:current|default)\b.*\)$/i;
 const CLI_VERSION_MAX_LENGTH = 256;
 const CLI_FINGERPRINT_PATTERN = /^[a-f0-9]{16}$/;
@@ -162,14 +166,14 @@ function readCursorModelLine(line: string): CursorModelCapability | null {
     const [, id, rawDisplayName] = match;
     if (!MODEL_ID_PATTERN.test(id)) return null;
 
-    const defaultSuffix = DEFAULT_SUFFIXES.find((suffix) => rawDisplayName.endsWith(suffix));
-    if (!defaultSuffix
+    const status = MODEL_STATUS_SUFFIXES.find(({ suffix }) => rawDisplayName.endsWith(suffix));
+    if (!status
         && UNKNOWN_DEFAULT_STATUS_MARKER_PATTERN.test(rawDisplayName)) {
         return null;
     }
-    const isDefault = defaultSuffix !== undefined;
-    const displayName = (defaultSuffix
-        ? rawDisplayName.slice(0, -defaultSuffix.length)
+    const isDefault = status?.isDefault ?? false;
+    const displayName = (status
+        ? rawDisplayName.slice(0, -status.suffix.length)
         : rawDisplayName).trim();
     if (!displayName) return null;
 
