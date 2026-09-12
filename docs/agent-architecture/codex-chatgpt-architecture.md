@@ -9,8 +9,9 @@
 - Codex remote connections: https://developers.openai.com/codex/remote-connections
 - Codex MCP: https://developers.openai.com/codex/mcp
 
-Проверено 2026-07-26 через official OpenAI docs, локальные `codex --help`,
-`codex app-server --help` и `codex-cli 0.145.0`.
+Проверено 2026-09-12 через official OpenAI docs, локальные `codex --help`,
+`codex app-server --help`, сгенерированной TypeScript-схеме app-server и
+`codex-cli 0.154.0`.
 
 ## Цель
 
@@ -114,6 +115,10 @@ prompt ждёт следующего `turn/start`.
 - `turn/steer`;
 - `turn/interrupt`.
 
+`initialize` передаёт фактическую версию Remcli и остаётся на stable API
+surface. `experimentalApi` не объявляется: experimental server requests
+включаются только после реализации их полного P2P/UI-контракта.
+
 Уведомления преобразуются в события Remcli:
 
 - `turn/started` -> task started;
@@ -125,7 +130,18 @@ prompt ждёт следующего `turn/start`.
 - `turn/completed(interrupted)` текущего active turn -> turn aborted;
 - `turn/completed(failed)` текущего active turn -> видимая ошибка;
 - stale completion не меняет состояние чата;
-- `error` -> видимая ошибка чата.
+- `error.willRetry = true` -> нефатальное предупреждение;
+- финальный `error.error.message` сохраняется до следующего
+  `turn/completed(failed)` и публикуется один раз;
+- `model/rerouted`, `model/verification` и активный
+  `model/safetyBuffering/updated` -> видимое объяснение изменения или задержки;
+- документированные `warning` и `configWarning`, а также присутствующие в
+  stable-схеме установленного CLI `guardianWarning` и `deprecationNotice` ->
+  нефатальное предупреждение в terminal и Remcli chat.
+
+Server-initiated JSON-RPC requests принимают официальный `RequestId` типа
+`string | number`; Remcli возвращает ответ с исходным id. Собственные request id
+клиента остаются числовыми.
 
 Ошибки Codex app-server проходят через redaction boundary до публикации в
 зашифрованную историю: `runCodex` записывает в chat error event только
@@ -135,8 +151,14 @@ provider payload. Непустой live `agent_message` может записа�
 watermark; summary, history replay, reasoning и status events его не записывают.
 Полные правила watermark и UI-приоритета описаны в [протоколе](../protocol.md).
 
-`codex mcp-server` и `codex-reply` для chat/resume transport не используются.
-`remcli-mcp` остаётся отдельным bridge для инструментов Remcli.
+Удалённый в `codex-cli 0.154.0` entry point `codex mcp-server` и старый
+`codex-reply` для chat/resume transport не используются. `remcli-mcp` остаётся
+отдельным bridge для инструментов Remcli.
+
+Remcli не включает experimental paginated history и создаёт обычные legacy
+threads. Для них `thread/read(includeTurns: true)` остаётся официально
+поддерживаемым; переход на `thread/turns/list` нужен только после готовности
+provider-side paginated history.
 
 ### Доставка и восстановление
 
@@ -365,6 +387,11 @@ P2P session consumer. Повторный authenticated handoff того же own
 ## Не реализовано
 
 - Полное отображение терминала/TUI внутри web.
+- Structured input для `item/tool/requestUserInput` и MCP form elicitation:
+  текущий transport отвечает schema-valid fail-closed и публикует warning, но
+  не подменяет ввод пользователя пустым `accept`. MCP `mode: url` остаётся
+  поддержан через обычный permission flow и возвращает `accept`, `decline` или
+  `cancel` без form content.
 - Межпроцессная блокировка двух одновременных writers одного Codex thread сверх
   текущего duplicate guard.
 - Полная матрица tmux версий: real ownership regression сейчас выполняется на
@@ -393,6 +420,11 @@ P2P session consumer. Повторный authenticated handoff того же own
   delivery без нового native prompt.
 - Unit: daemon запускает `codex app-server --listen ws://127.0.0.1:<port>` и ждёт
   `/readyz`.
+- Integration: explicit gate `REMCLI_REAL_CODEX_PROTOCOL=1` запускает настоящий
+  установленный app-server через private stdio и daemon-style shared WebSocket,
+  затем проверяет `initialize`, `model/list` и `configRequirements/read` без
+  создания thread и model turn. Gate падает, если binary отсутствует; обычный
+  CI от локального binary, auth и network не зависит.
 - Unit: paginated `model/list` сохраняет все provider values, модель без
   reasoning selector не скрывается, stale/forged selection и raw per-message
   override fail closed.

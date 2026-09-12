@@ -213,9 +213,375 @@ describe('CodexAppServerClient websocket transport', () => {
         const { client, ws } = await connectFakeClient();
 
         expect(ws.sent.map((payload) => JSON.parse(payload))).toEqual([
-            expect.objectContaining({ method: 'initialize' }),
+            expect.objectContaining({
+                method: 'initialize',
+                params: {
+                    clientInfo: {
+                        name: 'remcli',
+                        title: 'Remcli',
+                        version: '0.0.1',
+                    },
+                },
+            }),
             { method: 'initialized', params: {} },
         ]);
+
+        await client.disconnect();
+    });
+
+    it.each([1, 'approval-request-1'])('responds to server requests with the original JSON-RPC id %#', async (id) => {
+        const { client, ws } = await connectFakeClient();
+
+        ws.message(JSON.stringify({
+            id,
+            method: 'item/commandExecution/requestApproval',
+            params: {
+                itemId: 'command-1',
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                command: 'pwd',
+                cwd: '/workspace',
+            },
+        }));
+        await waitForSent(ws, 3);
+
+        expect(JSON.parse(ws.sent[2])).toEqual({
+            id,
+            result: { decision: 'decline' },
+        });
+
+        await client.disconnect();
+    });
+
+    it.each([
+        ['approved', 'accept'],
+        ['approved_for_session', 'accept'],
+        ['denied', 'decline'],
+        ['abort', 'cancel'],
+    ] as const)('maps MCP URL elicitation decision %s to %s', async (decision, action) => {
+        const { client, ws } = await connectFakeClient();
+        const handleToolCall = vi.fn().mockResolvedValue({ decision });
+        client.setPermissionHandler({ handleToolCall } as unknown as Parameters<CodexAppServerClient['setPermissionHandler']>[0]);
+        const params = {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            serverName: 'example',
+            mode: 'url',
+            _meta: null,
+            message: 'Open the authorization page',
+            url: 'https://example.test/authorize',
+            elicitationId: 'elicitation-1',
+        };
+
+        ws.message(JSON.stringify({
+            id: 'elicitation-request-1',
+            method: 'mcpServer/elicitation/request',
+            params,
+        }));
+        await waitForSent(ws, 3);
+
+        expect(handleToolCall).toHaveBeenCalledWith(
+            'elicitation-request-1',
+            'CodexMcpElicitation',
+            params,
+        );
+        expect(JSON.parse(ws.sent[2])).toEqual({
+            id: 'elicitation-request-1',
+            result: { action, content: null, _meta: null },
+        });
+
+        await client.disconnect();
+    });
+
+    it.each([
+        {
+            method: 'item/commandExecution/requestApproval',
+            params: { itemId: 'command-1' },
+            result: { decision: 'cancel' },
+        },
+        {
+            method: 'item/fileChange/requestApproval',
+            params: { itemId: 'patch-1' },
+            result: { decision: 'cancel' },
+        },
+        {
+            method: 'mcpServer/elicitation/request',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                serverName: 'example',
+                mode: 'url',
+                _meta: null,
+                message: 'Open the authorization page',
+                url: 'https://example.test/authorize',
+                elicitationId: 'elicitation-1',
+            },
+            result: { action: 'cancel', content: null, _meta: null },
+        },
+        {
+            method: 'item/permissions/requestApproval',
+            params: { itemId: 'permissions-1', permissions: {} },
+            result: { permissions: {}, scope: 'turn', strictAutoReview: true },
+        },
+    ])('returns a schema-valid fail-closed response for $method handler failures', async ({ method, params, result }) => {
+        const { client, ws } = await connectFakeClient();
+        client.setPermissionHandler({
+            handleToolCall: vi.fn().mockRejectedValue(new Error('Permission request was cleared.')),
+        } as unknown as Parameters<CodexAppServerClient['setPermissionHandler']>[0]);
+
+        ws.message(JSON.stringify({ id: 'request-1', method, params }));
+        await waitForSent(ws, 3);
+
+        expect(JSON.parse(ws.sent[2])).toEqual({ id: 'request-1', result });
+
+        await client.disconnect();
+    });
+
+    it.each([
+        {
+            method: 'item/tool/requestUserInput',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                itemId: 'input-1',
+                questions: [],
+                isBlocking: true,
+                autoResolutionMs: null,
+            },
+            result: { answers: {} },
+            warning: 'Codex requested structured user input, which Remcli does not support yet.',
+        },
+        {
+            method: 'mcpServer/elicitation/request',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                serverName: 'example',
+                mode: 'form',
+                _meta: null,
+                message: 'Enter a value',
+                requestedSchema: {
+                    type: 'object',
+                    properties: { value: { type: 'string' } },
+                },
+            },
+            result: { action: 'cancel', content: null, _meta: null },
+            warning: 'Codex requested structured MCP input, which Remcli does not support yet.',
+        },
+    ])('fails closed visibly for unsupported structured input from $method', async ({ method, params, result, warning }) => {
+        const { client, ws } = await connectFakeClient();
+        const handler = vi.fn();
+        client.setHandler(handler);
+
+        ws.message(JSON.stringify({ id: 'request-1', method, params }));
+        await waitForSent(ws, 3);
+
+        expect(JSON.parse(ws.sent[2])).toEqual({ id: 'request-1', result });
+        expect(handler).toHaveBeenCalledWith({ type: 'agent_warning', message: warning });
+
+        await client.disconnect();
+    });
+
+    it('uses current nested error payloads and keeps retryable errors non-fatal', async () => {
+        const { client, ws } = await connectFakeClient();
+        const handler = vi.fn();
+        client.setHandler(handler);
+
+        const startedThread = client.startThread({
+            cwd: '/workspace',
+            sandbox: 'workspace-write',
+            approvalPolicy: 'on-request',
+        });
+        await waitForSent(ws, 3);
+        const startRequest = JSON.parse(ws.sent[2]) as { id: number };
+        ws.message(JSON.stringify({
+            id: startRequest.id,
+            result: { thread: { id: 'thread-1' } },
+        }));
+        await expect(startedThread).resolves.toBe('thread-1');
+
+        ws.message(JSON.stringify({
+            method: 'turn/started',
+            params: { threadId: 'thread-1', turn: { id: 'turn-1' } },
+        }));
+        const completion = client.waitForTurnCompletion({
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+        });
+        handler.mockClear();
+
+        ws.message(JSON.stringify({
+            method: 'error',
+            params: {
+                error: { message: 'Temporary upstream failure' },
+                willRetry: true,
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+            },
+        }));
+        ws.message(JSON.stringify({
+            method: 'error',
+            params: {
+                error: { message: 'Final upstream failure' },
+                willRetry: false,
+            },
+        }));
+        ws.message(JSON.stringify({
+            method: 'turn/completed',
+            params: {
+                threadId: 'thread-1',
+                turn: { id: 'turn-1', status: 'failed' },
+            },
+        }));
+
+        expect(handler).toHaveBeenCalledTimes(2);
+        expect(handler).toHaveBeenNthCalledWith(1, {
+            type: 'agent_warning',
+            message: 'Temporary upstream failure',
+        });
+        expect(handler).toHaveBeenNthCalledWith(2, {
+            type: 'agent_error',
+            message: 'Final upstream failure',
+        });
+        await expect(completion).resolves.toEqual({
+            content: [{ type: 'text', text: 'Final upstream failure' }],
+            isError: true,
+            errorReportedViaEvent: true,
+        });
+
+        await client.disconnect();
+    });
+
+    it('forwards official runtime and configuration warnings', async () => {
+        const { client, ws } = await connectFakeClient();
+        const handler = vi.fn();
+        client.setHandler(handler);
+
+        const startedThread = client.startThread({
+            cwd: '/workspace',
+            sandbox: 'workspace-write',
+            approvalPolicy: 'on-request',
+        });
+        await waitForSent(ws, 3);
+        const startRequest = JSON.parse(ws.sent[2]) as { id: number };
+        ws.message(JSON.stringify({
+            id: startRequest.id,
+            result: { thread: { id: 'thread-1' } },
+        }));
+        await expect(startedThread).resolves.toBe('thread-1');
+
+        ws.message(JSON.stringify({
+            method: 'turn/started',
+            params: { threadId: 'thread-1', turn: { id: 'turn-1' } },
+        }));
+        handler.mockClear();
+        ws.message(JSON.stringify({
+            method: 'model/rerouted',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                fromModel: 'gpt-5.6-terra',
+                toModel: 'gpt-5.6-luna',
+                reason: 'highRiskCyberActivity',
+            },
+        }));
+        ws.message(JSON.stringify({
+            method: 'model/verification',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                verifications: ['trustedAccessForCyber'],
+            },
+        }));
+        ws.message(JSON.stringify({
+            method: 'model/safetyBuffering/updated',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                model: 'gpt-5.6-luna',
+                useCases: [],
+                reasons: [],
+                showBufferingUi: true,
+                fasterModel: null,
+            },
+        }));
+        ws.message(JSON.stringify({
+            method: 'model/rerouted',
+            params: {
+                threadId: 'foreign-thread',
+                turnId: 'foreign-turn',
+                fromModel: 'gpt-5.6-terra',
+                toModel: 'gpt-5.6-luna',
+                reason: 'highRiskCyberActivity',
+            },
+        }));
+        ws.message(JSON.stringify({
+            method: 'model/verification',
+            params: {
+                threadId: 'foreign-thread',
+                turnId: 'foreign-turn',
+                verifications: ['trustedAccessForCyber'],
+            },
+        }));
+        ws.message(JSON.stringify({
+            method: 'model/safetyBuffering/updated',
+            params: {
+                threadId: 'foreign-thread',
+                turnId: 'foreign-turn',
+                model: 'gpt-5.6-luna',
+                useCases: [],
+                reasons: [],
+                showBufferingUi: true,
+                fasterModel: null,
+            },
+        }));
+        ws.message(JSON.stringify({
+            method: 'guardianWarning',
+            params: { threadId: 'thread-1', message: 'Command needs manual review.' },
+        }));
+        ws.message(JSON.stringify({
+            method: 'guardianWarning',
+            params: { threadId: 'foreign-thread', message: 'Foreign warning.' },
+        }));
+        ws.message(JSON.stringify({
+            method: 'configWarning',
+            params: {
+                summary: 'Config warning.',
+                details: null,
+                path: '/workspace/.codex/config.toml',
+                range: { start: { line: 3, column: 7 }, end: { line: 3, column: 10 } },
+            },
+        }));
+        ws.message(JSON.stringify({
+            method: 'deprecationNotice',
+            params: { summary: 'Deprecated option.', details: 'Use the replacement.' },
+        }));
+
+        expect(handler).toHaveBeenCalledTimes(6);
+        expect(handler).toHaveBeenNthCalledWith(1, {
+            type: 'agent_warning',
+            message: 'Codex rerouted the active turn from gpt-5.6-terra to gpt-5.6-luna (highRiskCyberActivity).',
+        });
+        expect(handler).toHaveBeenNthCalledWith(2, {
+            type: 'agent_warning',
+            message: 'Codex requires additional account verification (trustedAccessForCyber). Complete it in Codex and retry.',
+        });
+        expect(handler).toHaveBeenNthCalledWith(3, {
+            type: 'agent_warning',
+            message: 'Codex is applying additional safety checks for gpt-5.6-luna; the response may take longer.',
+        });
+        expect(handler).toHaveBeenNthCalledWith(4, {
+            type: 'agent_warning',
+            message: 'Command needs manual review.',
+        });
+        expect(handler).toHaveBeenNthCalledWith(5, {
+            type: 'agent_warning',
+            message: 'Config warning. /workspace/.codex/config.toml:3:7',
+        });
+        expect(handler).toHaveBeenNthCalledWith(6, {
+            type: 'agent_warning',
+            message: 'Deprecated option. Use the replacement.',
+        });
 
         await client.disconnect();
     });

@@ -900,6 +900,10 @@ export async function runCodex(opts: {
         } else if (msg.type === 'turn_aborted') {
             messageBuffer.addMessage('Turn aborted', 'status');
             sendReady();
+        } else if (msg.type === 'agent_warning') {
+            const warningMessage = redactSensitiveText(msg.message).trim() || 'Codex app-server warning.';
+            messageBuffer.addMessage(`Warning: ${warningMessage}`, 'status');
+            session.sendSessionEvent({ type: 'message', message: warningMessage });
         } else if (msg.type === 'agent_error') {
             publishSessionError(msg.message, 'Codex app-server error.');
         }
@@ -1352,7 +1356,7 @@ export async function runCodex(opts: {
         };
 
         const handleTurnResponse = (response: CodexToolResponse) => {
-            if (!response.isError) {
+            if (!response.isError || response.errorReportedViaEvent) {
                 return;
             }
 

@@ -13,6 +13,7 @@ import {
 import { logger } from '@/ui/logger';
 import { readDaemonState } from '@/persistence';
 import { fetchCodexCapabilities, getDefaultCodexExecution } from './codexCapabilities';
+import type { CodexToolResponse } from './types';
 
 const testAppServerErrors = vi.hoisted(() => {
     class TransportError extends Error {
@@ -75,6 +76,7 @@ type TestAppServerEvent =
     | { type: 'task_started' }
     | { type: 'task_complete' }
     | { type: 'agent_error'; message?: string }
+    | { type: 'agent_warning'; message: string }
     | { type: 'agent_message'; message: string; origin: 'live' | 'replay' }
     | { type: 'exec_command_begin'; command: string };
 
@@ -100,6 +102,7 @@ interface TestState {
     incomingMessages: DeliveredUserMessage[];
     appServerEvents: TestAppServerEvent[];
     resumeAppServerEvents: TestAppServerEvent[];
+    beginTurnResponse: CodexToolResponse;
     beginTurns: CapturedTurn[];
     steeredTurns: CapturedSteer[];
     sentUserMessages: Array<{ text: string; sentFrom?: string }>;
@@ -223,6 +226,7 @@ const testState = vi.hoisted(() => {
         incomingMessages: [],
         appServerEvents: [],
         resumeAppServerEvents: [],
+        beginTurnResponse: { content: [], isError: false },
         beginTurns: [],
         steeredTurns: [],
         sentUserMessages: [],
@@ -317,6 +321,7 @@ const testState = vi.hoisted(() => {
             state.incomingMessages = [];
             state.appServerEvents = [];
             state.resumeAppServerEvents = [];
+            state.beginTurnResponse = { content: [], isError: false };
             state.beginTurns = [];
             state.steeredTurns = [];
             state.sentUserMessages = [];
@@ -792,7 +797,7 @@ vi.mock('./codexAppServerClient', () => ({
             }
         }
 
-        async beginTurn(turn: CapturedTurn): Promise<{ turnId: string; completion: Promise<{ content: []; isError: false }> }> {
+        async beginTurn(turn: CapturedTurn): Promise<{ turnId: string; completion: Promise<CodexToolResponse> }> {
             testState.state.beginTurns.push(turn);
             testState.state.callOrder.push('begin');
             const failure = testState.state.beginTurnFailures.shift();
@@ -819,7 +824,7 @@ vi.mock('./codexAppServerClient', () => ({
             }
             return {
                 turnId: 'turn-1',
-                completion: Promise.resolve({ content: [], isError: false }),
+                completion: Promise.resolve(testState.state.beginTurnResponse),
             };
         }
 
@@ -1410,6 +1415,47 @@ describe('runCodex app-server integration', () => {
         expect(serializedEvent).toContain('[REDACTED]');
         expect(serializedEvent).not.toContain(bearer);
         expect(serializedEvent).not.toContain(cookie);
+        expect(serializedEvent).not.toContain(accessToken);
+    });
+
+    it('publishes a failed turn once when the lifecycle event already reported it', async () => {
+        testState.state.incomingMessages = [createIncomingMessage()];
+        testState.state.appServerEvents = [{
+            type: 'agent_error',
+            message: 'Codex turn failed once.',
+        }];
+        testState.state.beginTurnResponse = {
+            content: [{ type: 'text', text: 'Codex turn failed once.' }],
+            isError: true,
+            errorReportedViaEvent: true,
+        };
+
+        await runTestCodex();
+
+        expect(testState.state.sessionEvents.filter((event) => event.isError)).toEqual([{
+            type: 'message',
+            message: 'Codex turn failed once.',
+            isError: true,
+        }]);
+    });
+
+    it('publishes app-server warnings as redacted non-fatal session messages', async () => {
+        const accessToken = 'warning-access-token-value';
+        testState.state.incomingMessages = [createIncomingMessage()];
+        testState.state.appServerEvents = [{
+            type: 'agent_warning',
+            message: `Retrying https://example.test/run?access_token=${accessToken}`,
+        }];
+
+        await runTestCodex();
+
+        const warningEvent = testState.state.sessionEvents.find((event) => (
+            event.type === 'message' && event.message?.includes('Retrying')
+        ));
+        expect(warningEvent).toMatchObject({ type: 'message' });
+        expect(warningEvent).not.toHaveProperty('isError', true);
+        const serializedEvent = JSON.stringify(warningEvent);
+        expect(serializedEvent).toContain('[REDACTED]');
         expect(serializedEvent).not.toContain(accessToken);
     });
 

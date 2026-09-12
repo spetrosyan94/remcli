@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
+import { startCodexAppServerHost } from '@/codex/codexAppServerHost';
 import {
     fetchCodexCapabilities,
     getDefaultCodexSelection,
@@ -13,6 +14,15 @@ import { resolveCodexPermissionConfig } from '@/codex/runCodex';
 import { expectTurnSucceeded } from './codexRealTestUtils';
 
 const runRealAi = process.env.REMCLI_REAL_AI === '1';
+const runRealProtocol = process.env.REMCLI_REAL_CODEX_PROTOCOL === '1';
+
+function hasInstalledCodexCli(): boolean {
+    try {
+        return execFileSync('codex', ['--version'], { encoding: 'utf8' }).trim().startsWith('codex-cli ');
+    } catch {
+        return false;
+    }
+}
 
 function selectLiveCapabilitySelection(snapshot: CodexCapabilitiesSnapshot) {
     return getDefaultCodexSelection(snapshot);
@@ -46,6 +56,40 @@ async function hasRunnableLiveCapabilitySelection(): Promise<boolean> {
 const realCodexDescribe = runRealAi && await hasRunnableLiveCapabilitySelection()
     ? describe
     : describe.skip;
+
+const installedCodexDescribe = runRealProtocol ? describe : describe.skip;
+
+installedCodexDescribe('Codex installed app-server protocol', { timeout: 30_000 }, () => {
+    it('initializes the real binary and reads capabilities without starting a model turn', async () => {
+        expect(hasInstalledCodexCli(), 'REMCLI_REAL_CODEX_PROTOCOL requires an installed Codex CLI.').toBe(true);
+        const client = new CodexAppServerClient();
+        try {
+            const snapshot = await fetchCodexCapabilities(client);
+
+            expect(snapshot.status).toBe('ready');
+            expect(snapshot.models.length).toBeGreaterThan(0);
+            expect(snapshot.permissionModes.length).toBeGreaterThan(0);
+            expect(snapshot.approvalPolicies.length).toBeGreaterThan(0);
+        } finally {
+            await client.disconnect().catch(() => undefined);
+        }
+    });
+
+    it('initializes through the real daemon-style shared WebSocket host', async () => {
+        expect(hasInstalledCodexCli(), 'REMCLI_REAL_CODEX_PROTOCOL requires an installed Codex CLI.').toBe(true);
+        const host = await startCodexAppServerHost();
+        const client = new CodexAppServerClient({ endpoint: host.endpoint });
+        try {
+            const snapshot = await fetchCodexCapabilities(client);
+
+            expect(snapshot.status).toBe('ready');
+            expect(snapshot.models.length).toBeGreaterThan(0);
+        } finally {
+            await client.disconnect().catch(() => undefined);
+            await host.stop();
+        }
+    });
+});
 
 realCodexDescribe('Codex real capabilities spawn contract', { timeout: 180_000 }, () => {
     it('uses live provider defaults for the first native thread and turn through the narrow app-server boundary (no daemon P2P/UI spawn)', async (context) => {

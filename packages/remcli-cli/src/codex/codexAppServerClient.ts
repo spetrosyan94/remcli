@@ -4,6 +4,7 @@ import readline from 'node:readline';
 
 import { logger } from '@/ui/logger';
 import { redactDiagnosticData, redactSensitiveText } from '@/utils/redaction';
+import packageJson from '../../package.json';
 import type { CodexApprovalPolicy, CodexSandbox, CodexToolResponse } from './types';
 import { CodexPermissionHandler, type PermissionResult } from './utils/permissionHandler';
 
@@ -19,7 +20,7 @@ const RECOVERY_REQUEST_TIMEOUT = 10_000;
 const THREAD_START_RESPONSE_TIMEOUT = 10_000;
 const CAPABILITY_REQUEST_TIMEOUT = 10_000;
 
-type JsonRpcId = number;
+type JsonRpcId = string | number;
 
 interface JsonRpcMessage {
     id?: JsonRpcId;
@@ -171,6 +172,7 @@ export type CodexAppServerEvent =
     | { type: 'turn_aborted' }
     | { type: 'turn_diff'; unified_diff: string }
     | { type: 'agent_error'; message: string }
+    | { type: 'agent_warning'; message: string }
     | CodexAgentMessageEvent
     | { type: 'agent_reasoning'; text: string }
     | { type: 'exec_command_begin'; command: string }
@@ -359,7 +361,7 @@ function permissionResultToCommandDecision(result: PermissionResult): string {
     return 'cancel';
 }
 
-function permissionResultToMcpAction(result: PermissionResult): string {
+function permissionResultToMcpAction(result: PermissionResult): 'accept' | 'decline' | 'cancel' {
     if (result.decision === 'approved' || result.decision === 'approved_for_session') return 'accept';
     if (result.decision === 'denied') return 'decline';
     return 'cancel';
@@ -642,6 +644,7 @@ export class CodexAppServerClient {
     private readonly interruptedTurnWaiters = new Map<string, InterruptedTurnWaiter>();
     private readonly interruptedTurnFailures = new Map<string, Error>();
     private readonly turnThreadIds = new Map<string, string>();
+    private readonly pendingTurnErrors = new Map<string, string>();
     private isStartingThread = false;
     private resumingThreadId: string | null = null;
     private hasAmbiguousThreadStart = false;
@@ -684,6 +687,16 @@ export class CodexAppServerClient {
             const oldestTurnId = this.turnThreadIds.keys().next().value;
             if (typeof oldestTurnId !== 'string') return;
             this.turnThreadIds.delete(oldestTurnId);
+        }
+    }
+
+    private rememberTurnError(turnId: string, message: string): void {
+        this.pendingTurnErrors.delete(turnId);
+        this.pendingTurnErrors.set(turnId, message);
+        while (this.pendingTurnErrors.size > MAX_RECENT_TURN_THREAD_IDS) {
+            const oldestTurnId = this.pendingTurnErrors.keys().next().value;
+            if (typeof oldestTurnId !== 'string') return;
+            this.pendingTurnErrors.delete(oldestTurnId);
         }
     }
 
@@ -806,10 +819,7 @@ export class CodexAppServerClient {
                 clientInfo: {
                     name: 'remcli',
                     title: 'Remcli',
-                    version: '1.0.0',
-                },
-                capabilities: {
-                    experimentalApi: true,
+                    version: packageJson.version,
                 },
             }, undefined, CONNECTION_HANDSHAKE_TIMEOUT);
             this.notify('initialized', {});
@@ -1862,7 +1872,7 @@ export class CodexAppServerClient {
             return;
         }
 
-        if (typeof message.id === 'number' && !message.method) {
+        if ((typeof message.id === 'number' || typeof message.id === 'string') && !message.method) {
             const pending = this.pendingRequests.get(message.id);
             if (pending) {
                 this.pendingRequests.delete(message.id);
@@ -1877,7 +1887,7 @@ export class CodexAppServerClient {
             return;
         }
 
-        if (typeof message.id === 'number' && typeof message.method === 'string') {
+        if ((typeof message.id === 'number' || typeof message.id === 'string') && typeof message.method === 'string') {
             void this.handleServerRequest(message);
             return;
         }
@@ -1889,7 +1899,7 @@ export class CodexAppServerClient {
 
     private async handleServerRequest(message: JsonRpcMessage): Promise<void> {
         const id = message.id;
-        if (typeof id !== 'number') return;
+        if (typeof id !== 'number' && typeof id !== 'string') return;
         const method = message.method;
         const params = message.params ?? {};
 
@@ -1909,10 +1919,29 @@ export class CodexAppServerClient {
                 this.respond(id, { decision: permissionResultToCommandDecision(result) });
                 return;
             }
+            if (method === 'item/tool/requestUserInput') {
+                this.handler?.({
+                    type: 'agent_warning',
+                    message: 'Codex requested structured user input, which Remcli does not support yet.',
+                });
+                this.respond(id, { answers: {} });
+                return;
+            }
             if (method === 'mcpServer/elicitation/request') {
-                const result = await this.requestPermission(String(id), 'CodexMcpElicitation', params);
-                const action = permissionResultToMcpAction(result);
-                this.respond(id, { action, content: action === 'accept' ? {} : null, _meta: null });
+                if (params.mode === 'url') {
+                    const result = await this.requestPermission(String(id), 'CodexMcpElicitation', params);
+                    this.respond(id, {
+                        action: permissionResultToMcpAction(result),
+                        content: null,
+                        _meta: null,
+                    });
+                    return;
+                }
+                this.handler?.({
+                    type: 'agent_warning',
+                    message: 'Codex requested structured MCP input, which Remcli does not support yet.',
+                });
+                this.respond(id, { action: 'cancel', content: null, _meta: null });
                 return;
             }
             if (method === 'item/permissions/requestApproval') {
@@ -1930,7 +1959,23 @@ export class CodexAppServerClient {
             this.respondError(id, -32601, `Unsupported remcli app-server request: ${method ?? 'unknown'}`);
         } catch (error) {
             logger.debug('[CodexAppServer] request handler failed:', redactDiagnosticData(error));
-            this.respond(id, { decision: 'cancel' });
+            switch (method) {
+                case 'item/commandExecution/requestApproval':
+                case 'item/fileChange/requestApproval':
+                    this.respond(id, { decision: 'cancel' });
+                    return;
+                case 'mcpServer/elicitation/request':
+                    this.respond(id, { action: 'cancel', content: null, _meta: null });
+                    return;
+                case 'item/tool/requestUserInput':
+                    this.respond(id, { answers: {} });
+                    return;
+                case 'item/permissions/requestApproval':
+                    this.respond(id, { permissions: {}, scope: 'turn', strictAutoReview: true });
+                    return;
+                default:
+                    this.respondError(id, -32603, 'Remcli could not handle the app-server request.');
+            }
         }
     }
 
@@ -1991,7 +2036,97 @@ export class CodexAppServerClient {
                 ) {
                     return;
                 }
-                this.handler?.({ type: 'agent_error', message: params?.message ?? 'Codex app-server error.' });
+                {
+                    const message = isRecord(params?.error)
+                        ? readString(params.error, 'message')
+                        : undefined;
+                    const safeMessage = message ?? 'Codex app-server error.';
+                    if (params?.willRetry === true) {
+                        this.handler?.({ type: 'agent_warning', message: safeMessage });
+                        return;
+                    }
+
+                    const turnId = getNotificationTurnId(params) ?? this.activeTurnId;
+                    if (turnId) {
+                        // app-server follows a terminal error with authoritative
+                        // turn/completed(failed); defer publication to avoid a duplicate.
+                        this.rememberTurnError(turnId, safeMessage);
+                        return;
+                    }
+                    this.handler?.({ type: 'agent_error', message: safeMessage });
+                }
+                return;
+            case 'model/rerouted':
+                if (!this.shouldHandleThreadScopedNotification(method, params, false)) return;
+                if (isRecord(params)) {
+                    const fromModel = readString(params, 'fromModel');
+                    const toModel = readString(params, 'toModel');
+                    const reason = readString(params, 'reason');
+                    const route = fromModel && toModel ? ` from ${fromModel} to ${toModel}` : '';
+                    const reasonText = reason ? ` (${reason})` : '';
+                    this.handler?.({
+                        type: 'agent_warning',
+                        message: `Codex rerouted the active turn${route}${reasonText}.`,
+                    });
+                }
+                return;
+            case 'model/verification':
+                if (!this.shouldHandleThreadScopedNotification(method, params, false)) return;
+                if (isRecord(params)) {
+                    const verifications = Array.isArray(params.verifications)
+                        ? params.verifications.filter((value): value is string => typeof value === 'string')
+                        : [];
+                    const details = verifications.length > 0 ? ` (${verifications.join(', ')})` : '';
+                    this.handler?.({
+                        type: 'agent_warning',
+                        message: `Codex requires additional account verification${details}. Complete it in Codex and retry.`,
+                    });
+                }
+                return;
+            case 'model/safetyBuffering/updated':
+                if (!this.shouldHandleThreadScopedNotification(method, params, false)) return;
+                if (isRecord(params) && params.showBufferingUi === true) {
+                    const model = readString(params, 'model');
+                    this.handler?.({
+                        type: 'agent_warning',
+                        message: `Codex is applying additional safety checks${model ? ` for ${model}` : ''}; the response may take longer.`,
+                    });
+                }
+                return;
+            case 'warning':
+            case 'guardianWarning':
+                if (
+                    getNotificationThreadId(params)
+                    && !this.shouldHandleThreadScopedNotification(method, params, false)
+                ) {
+                    return;
+                }
+                if (isRecord(params)) {
+                    const message = readString(params, 'message');
+                    if (message) {
+                        this.handler?.({ type: 'agent_warning', message });
+                    }
+                }
+                return;
+            case 'configWarning':
+            case 'deprecationNotice':
+                if (isRecord(params)) {
+                    const summary = readString(params, 'summary');
+                    const details = readString(params, 'details');
+                    const path = method === 'configWarning' ? readString(params, 'path') : undefined;
+                    const start = isRecord(params.range) && isRecord(params.range.start)
+                        ? params.range.start
+                        : undefined;
+                    const line = typeof start?.line === 'number' ? start.line : undefined;
+                    const column = typeof start?.column === 'number' ? start.column : undefined;
+                    const location = path
+                        ? [path, line, column].filter((part) => part !== undefined).join(':')
+                        : undefined;
+                    const message = [summary, details, location].filter(Boolean).join(' ');
+                    if (message) {
+                        this.handler?.({ type: 'agent_warning', message });
+                    }
+                }
                 return;
             default:
                 return;
@@ -2118,15 +2253,28 @@ export class CodexAppServerClient {
         const threadId = getNotificationThreadId(params) ?? this.turnThreadIds.get(turnId);
         if (!threadId) return null;
         const status = params.turn.status;
-        const errorText = getTurnErrorText(params.turn);
+        const errorText = getTurnErrorText(params.turn) ?? this.pendingTurnErrors.get(turnId);
+        this.pendingTurnErrors.delete(turnId);
         const isInterrupted = status === 'interrupted';
         const isSuccessful = status === 'completed' && !errorText;
-        const response: CodexToolResponse = errorText
-            ? { content: [{ type: 'text', text: errorText }], isError: true }
-            : { content: [], isError: !isSuccessful && !isInterrupted };
-
         const isCurrentActiveTurn = this.activeThreadId === threadId && this.activeTurnId === turnId;
         const hasInterruptedBarrier = this.interruptingTurnIds.get(turnId) === threadId;
+        const reportsFailureViaEvent = isCurrentActiveTurn
+            && !hasInterruptedBarrier
+            && !isInterrupted
+            && !isSuccessful;
+        const response: CodexToolResponse = errorText
+            ? {
+                content: [{ type: 'text', text: errorText }],
+                isError: true,
+                ...(reportsFailureViaEvent ? { errorReportedViaEvent: true } : {}),
+            }
+            : {
+                content: [],
+                isError: !isSuccessful && !isInterrupted,
+                ...(reportsFailureViaEvent ? { errorReportedViaEvent: true } : {}),
+            };
+
         if (hasInterruptedBarrier) {
             if (!isCurrentActiveTurn || !isInterrupted) {
                 return null;
@@ -2252,6 +2400,7 @@ export class CodexAppServerClient {
     private rejectAll(error: Error): void {
         this.clearUserMessageTracking();
         this.completedTurns.clear();
+        this.pendingTurnErrors.clear();
         for (const turnId of Array.from(this.interruptedTurnWaiters.keys())) {
             this.rejectInterruptedTurnWaiter(turnId, error);
         }
