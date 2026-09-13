@@ -179,7 +179,6 @@ export type CursorSessionExecution = z.infer<typeof CursorSessionExecutionSchema
 export const AntigravitySessionExecutionSchema = z.object({
     model: z.string().min(1),
     reasoningEffort: z.enum(['low', 'medium', 'high']).optional(),
-    catalogVersion: z.string().min(1),
 });
 
 export type AntigravitySessionExecution = z.infer<typeof AntigravitySessionExecutionSchema>;
@@ -308,7 +307,6 @@ export type PermissionMode =
     | 'read-only'
     | 'workspace-write'
     | 'danger-full-access'
-    | 'auto_edit'
     | 'default'
     | 'accept-edits';
 

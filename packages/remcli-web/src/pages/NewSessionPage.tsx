@@ -32,6 +32,7 @@ import {
     sendSessionMessage,
     useMachines,
     useProtocolStore,
+    useSessions,
     type AgentSessionInfo,
     type CodexCapabilitiesSnapshot,
     type AntigravityCapabilitiesSnapshot,
@@ -55,6 +56,11 @@ import {
     type SpawnSessionResult,
 } from "@/lib/protocol";
 import { isProviderAvailable } from "@/lib/providerAvailability";
+import {
+    mergeAntigravityResumeItems,
+    resolveStoredAntigravityResumeExecution,
+    SAFE_ANTIGRAVITY_RESUME_CONTROLS,
+} from "@/lib/sessionResume";
 import { linkZenTaskSession } from "@/lib/zenTasks";
 
 type SheetKind = "machine" | "model" | "permission" | "reasoning" | "resume" | "directory";
@@ -815,6 +821,7 @@ export function NewSessionPage() {
     const navigationState = parseNewSessionNavigationState(location.state);
 
     const machines = useMachines();
+    const protocolSessions = useSessions();
 
     const [cursorResumePreset, setCursorResumePreset] = React.useState<CursorResumeNavigationPreset | null>(
         () => navigationState.cursorResume ?? null,
@@ -1225,14 +1232,22 @@ export function NewSessionPage() {
         setResumeRetryItem(null);
         void machineListAgentSessions(activeMachineId, agent, activeDir || undefined, RESUME_LIST_LIMIT)
             .then((items) => {
-                if (!isStale) setResumeItems(items);
+                if (isStale) return;
+                setResumeItems(agent === "antigravity"
+                    ? mergeAntigravityResumeItems(
+                        items,
+                        protocolSessions,
+                        activeMachineId,
+                        activeDir || undefined,
+                    ).slice(0, RESUME_LIST_LIMIT)
+                    : items);
             })
             .catch((error: unknown) => {
                 if (isStale) return;
                 setResumeError(formatResumeError(error));
             });
         return () => { isStale = true; };
-    }, [activeDir, activeMachineId, agent, resumeReloadKey, sheetKind]);
+    }, [activeDir, activeMachineId, agent, protocolSessions, resumeReloadKey, sheetKind]);
 
     // directory-picker: RPC list-directory, stale responses ignored when user navigates fast.
     React.useEffect(() => {
@@ -1501,6 +1516,47 @@ export function NewSessionPage() {
         }
         setIsSpawning(true);
         try {
+            let effectiveAntigravityExecution = antigravityExecution;
+            let effectiveAntigravityLaunchControls = antigravityLaunchControls;
+            if (spawnAgent === "antigravity" && selectedResume) {
+                let freshCapabilities: AntigravityCapabilitiesSnapshot;
+                try {
+                    freshCapabilities = await machineGetAntigravityCapabilities(machine.id, true);
+                } catch {
+                    setResumeError(t("new.capabilitiesUnavailable"));
+                    setResumeRetryItem(selectedResume);
+                    return;
+                }
+                setAntigravityCapabilities(freshCapabilities);
+                const storedResolution = resolveStoredAntigravityResumeExecution(
+                    freshCapabilities,
+                    protocolSessions,
+                    machine.id,
+                    selectedResume,
+                );
+                if (storedResolution.type === "configuration-unavailable") {
+                    setResumeError(t("chat.resumeConfigurationUnavailable"));
+                    setResumeRetryItem(selectedResume);
+                    return;
+                }
+                if (storedResolution.type === "ready") {
+                    effectiveAntigravityExecution = storedResolution.execution;
+                    effectiveAntigravityLaunchControls = SAFE_ANTIGRAVITY_RESUME_CONTROLS;
+                } else {
+                    effectiveAntigravityExecution = antigravityModelId
+                        ? createAntigravityExecutionForModel(
+                            freshCapabilities,
+                            antigravityModelId,
+                            antigravityExecution?.reasoningEffort,
+                        )
+                        : null;
+                    if (!effectiveAntigravityExecution) {
+                        setResumeError(t("chat.resumeConfigurationUnavailable"));
+                        setResumeRetryItem(selectedResume);
+                        return;
+                    }
+                }
+            }
             const options = buildNewSessionSpawnOptions({
                 machineId: machine.id,
                 directory,
@@ -1512,8 +1568,8 @@ export function NewSessionPage() {
                     : [],
                 cursorExecution,
                 cursorLaunchControls,
-                antigravityExecution,
-                antigravityLaunchControls,
+                antigravityExecution: effectiveAntigravityExecution,
+                antigravityLaunchControls: effectiveAntigravityLaunchControls,
                 resume: selectedResume,
             });
             const result = await machineSpawnNewSession(options);

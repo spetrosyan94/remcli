@@ -1644,7 +1644,6 @@ export async function fixtureSpawnNewSession(options: SpawnSessionOptions): Prom
                     ...(options.antigravityExecution.reasoningEffort
                         ? { reasoningEffort: options.antigravityExecution.reasoningEffort }
                         : {}),
-                    catalogVersion: options.antigravityExecution.catalogVersion,
                 },
             }
             : {}),

@@ -130,6 +130,36 @@ describe('directoryProjects', () => {
         expect(JSON.parse(readFileSync(storeFilePath, 'utf-8'))).toMatchObject({ v: 2 });
     });
 
+    it('preserves a v2 project when its last agent is no longer known', () => {
+        const workspace = join(homeDirectory, 'workspace');
+        mkdirSync(workspace);
+        mkdirSync(join(testDirectory, 'state'));
+        writeFileSync(storeFilePath, JSON.stringify({
+            v: 2,
+            machines: {
+                'machine-a': [{
+                    canonicalPath: realpathSync(workspace),
+                    displayPath: '~/workspace',
+                    lastUsedAt: 200,
+                    pinnedAt: 100,
+                    lastAgent: 'retired-provider',
+                    branchAtLastLaunch: 'feature/saved',
+                }],
+            },
+        }));
+
+        expect(createStore('machine-a').listProjects()).toEqual({
+            projects: [{
+                canonicalPath: realpathSync(workspace),
+                displayPath: '~/workspace',
+                lastUsedAt: 200,
+                isPinned: true,
+                lastAgent: null,
+                branchAtLastLaunch: 'feature/saved',
+            }],
+        });
+    });
+
     it('does not surface stale paths and rejects arbitrary missing pin targets', () => {
         const workspace = join(homeDirectory, 'workspace');
         mkdirSync(workspace);

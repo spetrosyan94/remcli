@@ -4,7 +4,7 @@
  * Abstract base class for reasoning processors that handle streaming reasoning
  * deltas/chunks and identify reasoning sections with **[Title]** format.
  *
- * Shared by Codex and Gemini reasoning processors.
+ * Shared by Codex reasoning processors.
  *
  * @module BaseReasoningProcessor
  */
@@ -17,7 +17,7 @@ import { logger } from '@/ui/logger';
  */
 export interface ReasoningToolCall {
     type: 'tool-call';
-    name: string;  // 'CodexReasoning' or 'GeminiReasoning'
+    name: string;  // provider-specific reasoning tool name
     callId: string;
     input: {
         title: string;
@@ -53,7 +53,7 @@ export type ReasoningOutput = ReasoningToolCall | ReasoningToolResult | Reasonin
  * Abstract base class for reasoning processors.
  *
  * Subclasses must implement:
- * - `getToolName()` - returns the tool name (e.g., 'CodexReasoning', 'GeminiReasoning')
+ * - `getToolName()` - returns the provider-specific tool name
  * - `getLogPrefix()` - returns the log prefix (e.g., '[ReasoningProcessor]')
  */
 export abstract class BaseReasoningProcessor {

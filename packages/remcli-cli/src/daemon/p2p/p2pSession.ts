@@ -1,7 +1,7 @@
 /**
  * P2P session setup for CLI session processes
  *
- * When a CLI session starts (runClaude, runCodex, runGemini), it needs to connect
+ * When a CLI session starts, it needs to connect
  * to the local P2P server instead of the cloud. This module reads the daemon state
  * to get P2P connection info and creates appropriate credentials.
  */

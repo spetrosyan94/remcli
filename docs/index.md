@@ -25,4 +25,5 @@ state или UX-контракт, обновлять соответствующ�
 |----------|---------------|
 | [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) | Codex app-server, native resume/TUI и capability-driven model/reasoning contract |
 | [agent-architecture/cursor-cli-architecture.md](agent-architecture/cursor-cli-architecture.md) | Cursor ACP: session lifecycle, exact models, resume, permissions и ownership |
+| [agent-architecture/antigravity-cli-architecture.md](agent-architecture/antigravity-cli-architecture.md) | Antigravity `agy`: stream-json, dynamic account catalog, exact conversation resume и controls |
 | [agent-architecture/agent-remote-control-template.md](agent-architecture/agent-remote-control-template.md) | Шаблон для следующих provider-specific архитектур |

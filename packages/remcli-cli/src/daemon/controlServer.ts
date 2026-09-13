@@ -119,7 +119,7 @@ const protectedCursorNativeWriterLeaseReleaseRequestSchema = cursorNativeWriterL
 });
 
 const cursorRunnerPreflightRequestSchema = z.object({
-  agent: z.enum(['claude', 'codex', 'cursor', 'gemini']),
+  agent: z.enum(['claude', 'codex', 'cursor']),
   nativeResumeSessionId: z.string().min(1).optional(),
   pid: z.number().int().positive(),
   runnerToken: z.string().min(1),
@@ -234,7 +234,6 @@ const metadataSchema = z.object({
     permissionMode: z.enum(['read-only', 'workspace-write', 'danger-full-access']),
   }).optional(),
   cursorSessionId: z.string().optional(),
-  geminiSessionId: z.string().optional(),
   tools: z.array(z.string()).optional(),
   slashCommands: z.array(z.string()).optional(),
   homeDir: z.string(),
@@ -323,7 +322,7 @@ const nativeCodexThreadBindingResultSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('agent-mismatch'),
     binding: nativeCodexThreadBindingSchema,
-    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini', 'antigravity']),
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'antigravity']),
   }),
 ]);
 
@@ -342,7 +341,7 @@ const nativeCursorSessionBindingResultSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('agent-mismatch'),
     binding: nativeCursorSessionBindingSchema,
-    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini', 'antigravity']),
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'antigravity']),
   }),
 ]);
 
@@ -371,7 +370,7 @@ const nativeAntigravityConversationBindingResultSchema = z.discriminatedUnion('t
   z.object({
     type: z.literal('agent-mismatch'),
     binding: nativeAntigravityConversationBindingSchema,
-    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini', 'antigravity']),
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'antigravity']),
   }).strict(),
 ]);
 
@@ -382,7 +381,7 @@ const cursorHeadlessWriterLeaseAcquireResultSchema = z.discriminatedUnion('type'
   z.object({
     type: z.literal('agent-mismatch'),
     request: cursorHeadlessWriterLeaseAcquireRequestSchema,
-    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini', 'antigravity']),
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'antigravity']),
   }),
   z.object({
     type: z.literal('native-session-mismatch'),
@@ -410,7 +409,7 @@ const codexRemoteTuiOpenResultSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('agent-mismatch'),
     request: codexRemoteTuiOpenRequestSchema,
-    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini', 'antigravity']),
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'antigravity']),
   }),
   z.object({
     type: z.literal('native-thread-mismatch'),

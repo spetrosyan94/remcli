@@ -49,7 +49,7 @@ export interface StartOptions {
 
 export async function runClaude(credentials: Credentials, options: StartOptions = {}): Promise<void> {
     logger.debug(`[CLAUDE] ===== CLAUDE MODE STARTING =====`);
-    logger.debug(`[CLAUDE] This is the Claude agent, NOT Gemini`);
+    logger.debug(`[CLAUDE] Claude agent mode starting`);
     
     const workingDirectory = process.cwd();
     const sessionTag = randomUUID();

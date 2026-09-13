@@ -84,28 +84,27 @@ afterAll(() => {
 describe('ChatPage ended-session resume availability', () => {
     it.each([
         ['claude', 'deferred'],
-        ['antigravity', 'capability-gated'],
+        ['antigravity', 'machine-spawn'],
         ['codex', 'machine-spawn'],
         ['cursor', 'cursor-navigation'],
     ] as const)('maps %s to the %s resume action', (agent, expectedAction) => {
         expect(getChatResumeAction(agent)).toBe(expectedAction);
     });
 
-    it('renders Antigravity Resume as capability-gated and disabled', () => {
+    it('keeps Antigravity Resume available after capability-bound integration', () => {
         const markup = renderToStaticMarkup(React.createElement(EndedSessionResume, {
             agent: 'antigravity',
             isResuming: false,
             onResume: () => undefined,
             onBackToList: () => undefined,
         }));
-        const resumeButton = markup.match(/<button[^>]*data-resume-availability="capability-gated"[^>]*>/)?.[0];
+        const resumeButton = markup.match(/<button[^>]*data-resume-availability="available"[^>]*>/)?.[0];
 
         expect(resumeButton).toBeDefined();
-        expect(resumeButton).toContain('disabled=""');
-        expect(resumeButton).not.toContain('aria-describedby="chat-deferred-resume-note"');
+        expect(resumeButton).not.toMatch(/\sdisabled(?:=|\s|>)/);
     });
 
-    it.each(['codex', 'cursor'] as const)('keeps %s Resume available', (agent) => {
+    it.each(['codex', 'cursor', 'antigravity'] as const)('keeps %s Resume available', (agent) => {
         const markup = renderToStaticMarkup(React.createElement(EndedSessionResume, {
             agent,
             isResuming: false,
@@ -403,6 +402,28 @@ describe('ChatPage feed mapping', () => {
             metadata: { ...child.metadata, machineId: 'other-machine' },
         } as Session;
         expect(resolveLineageParent(child, [foreignMachineParent])).toMatchObject({ parentId: null, isKnown: true });
+    });
+
+    it('accepts a same-machine Antigravity parent for resumed chat history', () => {
+        const parent = {
+            id: 'antigravity-parent',
+            metadata: {
+                path: '/workspace', host: 'host', machineId: 'machine', flavor: 'antigravity',
+            },
+        } as Session;
+        const child = {
+            id: 'antigravity-child',
+            metadata: {
+                ...parent.metadata,
+                resumedFromRemcliSessionId: parent.id,
+            },
+        } as Session;
+
+        expect(resolveLineageParent(child, [parent, child])).toMatchObject({
+            parentId: parent.id,
+            parentSession: parent,
+            isKnown: true,
+        });
     });
 
     it('requests parent history through the existing protocol loader', async () => {

@@ -19,7 +19,6 @@ const permissionModeSchema = z.enum([
     'read-only',
     'workspace-write',
     'danger-full-access',
-    'auto_edit',
 ]);
 
 // ─── Message meta ────────────────────────────────────────────────

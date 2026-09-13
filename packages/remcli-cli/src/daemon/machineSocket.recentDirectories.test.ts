@@ -378,13 +378,7 @@ describe('machine RPC directory projects', { timeout: 15_000 }, () => {
                 directory: process.cwd(),
                 codexExecution: { model: 'gpt-5.6-terra', catalogVersion: 'forged' },
             },
-            {
-                agent: 'gemini',
-                directory: process.cwd(),
-                cursorExecution: { model: 'cursor-model', catalogVersion: 'forged' },
-            },
             { agent: 'claude', directory: process.cwd(), permissionMode: 'workspace-write' },
-            { agent: 'gemini', directory: process.cwd(), permissionMode: 'acceptEdits' },
             {
                 agent: 'cursor',
                 directory: process.cwd(),

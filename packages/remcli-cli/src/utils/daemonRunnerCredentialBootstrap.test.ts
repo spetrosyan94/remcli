@@ -59,7 +59,7 @@ const metadata = {
     remcliToolsDir: '/workspace/remcli/tools',
 };
 
-const daemonRunnerAgents = ['Claude', 'Codex', 'Gemini', 'Cursor'] as const;
+const daemonRunnerAgents = ['Claude', 'Codex', 'Cursor'] as const;
 
 describe('daemon runner credential bootstrap', () => {
     beforeEach(() => {

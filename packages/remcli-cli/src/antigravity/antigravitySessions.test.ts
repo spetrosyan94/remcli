@@ -6,6 +6,7 @@ import {
     readAntigravitySessions,
     type AntigravityHistoryFileSystem,
 } from './antigravitySessions';
+import type { AntigravitySessionRegistry } from './antigravitySessionRegistry';
 
 function row(value: Record<string, unknown>): string {
     return JSON.stringify(value);
@@ -25,7 +26,34 @@ function createFileSystem(content: string, reportedSize = Buffer.byteLength(cont
     };
 }
 
+const emptyRegistry: AntigravitySessionRegistry = {
+    list: vi.fn(() => []),
+    record: vi.fn(),
+};
+
 describe('Antigravity native session history', () => {
+    it('merges the Remcli registry with provider history, dedupes, filters exactly, and sorts newest first', () => {
+        const registry: AntigravitySessionRegistry = {
+            list: vi.fn(() => [
+                { conversationId: 'headless', workspace: '/repo', updatedAt: 300 },
+                { conversationId: 'shared', workspace: '/repo', updatedAt: 400 },
+                { conversationId: 'other', workspace: '/other', updatedAt: 500 },
+            ]),
+            record: vi.fn(),
+        };
+        const history = createFileSystem([
+            row({ conversationId: 'shared', workspace: '/repo', display: 'Native title', timestamp: 450 }),
+            row({ conversationId: 'provider-only', workspace: '/repo', display: 'Provider title', timestamp: 350 }),
+        ].join('\n'));
+
+        expect(listAntigravitySessions({ workspace: '/repo', fileSystem: history, registry })).toEqual([
+            { provider: 'antigravity', conversationId: 'shared', workspace: '/repo', display: 'Native title', updatedAt: 450, messageCount: 1 },
+            { provider: 'antigravity', conversationId: 'provider-only', workspace: '/repo', display: 'Provider title', updatedAt: 350, messageCount: 1 },
+            { provider: 'antigravity', conversationId: 'headless', workspace: '/repo', display: '', updatedAt: 300, messageCount: 0 },
+        ]);
+        expect(registry.list).toHaveBeenCalledWith('/repo');
+    });
+
     it('reads the official path through the injected home/path/read boundaries', () => {
         const fileSystem = createFileSystem(row({ conversationId: 'conv-1', workspace: '/repo', display: 'Fix the bug', timestamp: 100 }));
         const sessions = readAntigravitySessions({
@@ -49,10 +77,31 @@ describe('Antigravity native session history', () => {
             row({ conversationId: 'new', workspace: '/repo', display: 'Second new', timestamp: 25, type: 'prompt' }),
         ].join('\n');
 
-        expect(listAntigravitySessions({ homeDir: '/home/tester', fileSystem: createFileSystem(content) })).toEqual([
+        expect(listAntigravitySessions({ homeDir: '/home/tester', fileSystem: createFileSystem(content), registry: emptyRegistry })).toEqual([
             { provider: 'antigravity', conversationId: 'old', workspace: '/repo', display: 'First old', updatedAt: 30, messageCount: 2 },
             { provider: 'antigravity', conversationId: 'new', workspace: '/repo', display: 'First new', updatedAt: 25, messageCount: 2 },
         ]);
+    });
+
+    it('keeps provider display and message count when a newer registry timestamp wins', () => {
+        const registry: AntigravitySessionRegistry = {
+            list: () => [{ conversationId: 'shared', workspace: '/repo', updatedAt: 200 }],
+            record: vi.fn(),
+        };
+        const sessions = listAntigravitySessions({
+            workspace: '/repo',
+            fileSystem: createFileSystem(row({ conversationId: 'shared', workspace: '/repo', display: 'Provider title', timestamp: 100 })),
+            registry,
+        });
+
+        expect(sessions).toEqual([{
+            provider: 'antigravity',
+            conversationId: 'shared',
+            workspace: '/repo',
+            display: 'Provider title',
+            updatedAt: 200,
+            messageCount: 1,
+        }]);
     });
 
     it('uses an exact workspace filter and fails closed per malformed row', () => {

@@ -278,6 +278,27 @@ describe('Antigravity daemon ownership', () => {
         })).resolves.toMatchObject({ type: 'bound' });
     }
 
+    it('notifies the persistence boundary only after a validated native binding', async () => {
+        const onBound = vi.fn();
+        const manager = createSessionManager({ onNativeAntigravityConversationBound: onBound });
+
+        await expect(manager.bindNativeAntigravityConversation({
+            agent: 'antigravity',
+            nativeConversationId: 'untracked-conversation',
+            remcliSessionId: 'untracked-wrapper',
+        })).resolves.toMatchObject({ type: 'wrapper-not-tracked' });
+        expect(onBound).not.toHaveBeenCalled();
+
+        await startBoundConversation(manager, 31_000, 'remcli-antigravity-registry', 'conversation-registry');
+
+        expect(onBound).toHaveBeenCalledOnce();
+        expect(onBound).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'antigravity',
+            nativeConversationId: 'conversation-registry',
+            remcliSessionId: 'remcli-antigravity-registry',
+        }), process.cwd());
+    });
+
     it('uses the current CLI entrypoint and emits daemon options accepted by the Antigravity boundary', async () => {
         const pid = 31_001;
         const runnerEntrypointPath = '/private/remcli-test-artifact/dist/index.mjs';
@@ -289,6 +310,11 @@ describe('Antigravity daemon ownership', () => {
         vi.stubEnv(legacyEffortKey, 'stale-legacy-effort');
         vi.stubEnv('GOOGLE_API_KEY', 'stale-google-api-key');
         vi.stubEnv('GOOGLE_APPLICATION_CREDENTIALS', '/tmp/stale-google-credentials.json');
+        vi.stubEnv('GEMINI_API_KEY', 'stale-gemini-api-key');
+        vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'stale-anthropic-token');
+        vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'stale-claude-token');
+        vi.stubEnv('CURSOR_API_KEY', 'stale-cursor-api-key');
+        vi.stubEnv('OPENAI_API_KEY', 'stale-openai-api-key');
         tmuxMocks.spawnInTmux.mockResolvedValueOnce({ success: true, sessionId: 'tmux-antigravity-command:main', pid });
         const manager = createSessionManager({ runnerEntrypointPath });
         const spawning = manager.spawnSession({
@@ -313,8 +339,17 @@ describe('Antigravity daemon ownership', () => {
             REMCLI_ANTIGRAVITY_DANGEROUSLY_SKIP_PERMISSIONS: 'false',
             REMCLI_ANTIGRAVITY_SANDBOX: 'true',
         });
-        expect(environment).not.toHaveProperty('GOOGLE_API_KEY');
-        expect(environment).not.toHaveProperty('GOOGLE_APPLICATION_CREDENTIALS');
+        for (const key of [
+            'GOOGLE_API_KEY',
+            'GOOGLE_APPLICATION_CREDENTIALS',
+            'GEMINI_API_KEY',
+            'ANTHROPIC_AUTH_TOKEN',
+            'CLAUDE_CODE_OAUTH_TOKEN',
+            'CURSOR_API_KEY',
+            'OPENAI_API_KEY',
+        ]) {
+            expect(environment).not.toHaveProperty(key);
+        }
         expect(getAntigravityDaemonRunOptions('daemon', environment)).toMatchObject({
             execution: CONTROLLED_ANTIGRAVITY_SELECTION.antigravityExecution,
             launchControls: {
@@ -4999,10 +5034,9 @@ describe('createSessionManager resume deduplication', () => {
         expect(onSessionStopped).toHaveBeenCalledOnce();
     });
 
-    it.each(['cursor', 'gemini'] as const)(
-        'keeps the %s webhook received during terminal attach',
-        async (agent) => {
-            const runnerPid = agent === 'cursor' ? 10_061 : 10_062;
+    it('keeps the cursor webhook received during terminal attach', async () => {
+            const agent = 'cursor' as const;
+            const runnerPid = 10_061;
             let resolveTerminalAttach: (result: boolean) => void = () => {};
             openTerminalMocks.openTerminalWithCommand.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
                 resolveTerminalAttach = resolve;
@@ -5014,13 +5048,11 @@ describe('createSessionManager resume deduplication', () => {
             });
 
             const manager = createSessionManager();
-            const spawning = agent === 'cursor'
-                ? manager.spawnSession({
-                    directory: process.cwd(),
-                    agent,
-                    ...CONTROLLED_CURSOR_SELECTION,
-                })
-                : manager.spawnSession({ directory: process.cwd(), agent });
+            const spawning = manager.spawnSession({
+                directory: process.cwd(),
+                agent,
+                ...CONTROLLED_CURSOR_SELECTION,
+            });
             await vi.waitFor(() => expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledOnce());
 
             manager.onRemcliSessionWebhook(
@@ -5065,53 +5097,6 @@ describe('createSessionManager resume deduplication', () => {
             expect.objectContaining({
                 remcliSessionId: 'remcli-terminal-unavailable',
                 terminalLaunch: { type: 'unavailable', error: 'terminal-unavailable' },
-            }),
-        ]);
-    });
-
-    it('settles a Cursor spawn displaced during terminal attach while its PID replacement resolves independently', async () => {
-        const reusedPid = 10_063;
-        let resolveFirstTerminalAttach: (result: boolean) => void = () => {};
-        openTerminalMocks.openTerminalWithCommand
-            .mockImplementationOnce(() => new Promise<boolean>((resolve) => {
-                resolveFirstTerminalAttach = resolve;
-            }))
-            .mockResolvedValueOnce(true);
-        tmuxMocks.spawnInTmux
-            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-cursor-displaced:main', windowId: '@463', paneId: '%463', pid: reusedPid })
-            .mockResolvedValueOnce({ success: true, sessionId: 'tmux-gemini-replacement:main', windowId: '@464', paneId: '%464', pid: reusedPid });
-
-        const manager = createSessionManager();
-        const displacedSpawn = manager.spawnSession({
-            directory: process.cwd(),
-            agent: 'cursor',
-            ...CONTROLLED_CURSOR_SELECTION,
-        });
-        await vi.waitFor(() => expect(openTerminalMocks.openTerminalWithCommand).toHaveBeenCalledOnce());
-
-        const replacementSpawn = manager.spawnSession({ directory: process.cwd(), agent: 'gemini' });
-        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
-        await expect(displacedSpawn).resolves.toEqual({
-            type: 'error',
-            errorMessage: `Session process ${reusedPid} stopped before reporting its Remcli session.`,
-        });
-
-        manager.onRemcliSessionWebhook(
-            'remcli-gemini-replacement',
-            createSessionMetadata(reusedPid, { startedBy: 'daemon', flavor: 'gemini' }),
-            getDaemonRunnerToken(1),
-        );
-        await expect(replacementSpawn).resolves.toMatchObject({
-            type: 'success',
-            sessionId: 'remcli-gemini-replacement',
-        });
-
-        resolveFirstTerminalAttach(true);
-        await Promise.resolve();
-        expect(manager.getChildren()).toEqual([
-            expect.objectContaining({
-                pid: reusedPid,
-                remcliSessionId: 'remcli-gemini-replacement',
             }),
         ]);
     });

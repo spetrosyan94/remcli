@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
-import { resumeCodexSession } from "@/lib/sessionResume";
-import type { CodexCapabilitiesSnapshot, Session, SpawnSessionOptions } from "@/lib/protocol";
+import {
+    mergeAntigravityResumeItems,
+    resolveStoredAntigravityResumeExecution,
+    resumeAntigravitySession,
+    resumeCodexSession,
+} from "@/lib/sessionResume";
+import type {
+    AgentSessionInfo,
+    AntigravityCapabilitiesSnapshot,
+    CodexCapabilitiesSnapshot,
+    Session,
+    SpawnSessionOptions,
+} from "@/lib/protocol";
 
 function createCapabilities(overrides: Partial<CodexCapabilitiesSnapshot> = {}): CodexCapabilitiesSnapshot {
     return {
@@ -169,5 +180,197 @@ describe("resumeCodexSession", () => {
         });
 
         expect(result).toEqual({ type: "configuration-unavailable" });
+    });
+});
+
+function createAntigravityCapabilities(): AntigravityCapabilitiesSnapshot {
+    return {
+        agent: "antigravity",
+        status: "ready",
+        fetchedAt: 1,
+        expiresAt: 2,
+        catalogVersion: "fresh-antigravity-catalog",
+        executionModes: ["default", "accept-edits", "plan"],
+        supportsDangerouslySkipPermissions: true,
+        supportsSandbox: true,
+        models: [{
+            id: "gemini-flash",
+            displayName: "Gemini Flash",
+            isDefault: true,
+            defaultReasoningEffort: "medium",
+            supportedReasoningEfforts: ["low", "medium", "high"],
+            runtimeModels: {
+                low: "gemini-flash-low",
+                medium: "gemini-flash-medium",
+                high: "gemini-flash-high",
+            },
+        }],
+    };
+}
+
+function createAntigravitySession(overrides: Partial<Session> = {}): Session {
+    return {
+        ...createSession(),
+        id: "ended-antigravity-session",
+        metadata: {
+            path: "/Users/dev/projects/remcli",
+            host: "macbook.local",
+            machineId: "machine-online",
+            flavor: "antigravity",
+            name: "Antigravity lifecycle",
+            antigravitySessionId: "native-antigravity-conversation",
+            antigravityExecution: {
+                model: "gemini-flash-low",
+                reasoningEffort: "low",
+            },
+        },
+        ...overrides,
+    };
+}
+
+describe("Antigravity resume", () => {
+    it("replays the newest trusted Remcli wrapper model tuple for a New Session resume row", () => {
+        const older = createAntigravitySession({
+            id: "older-wrapper",
+            updatedAt: 10,
+            metadata: {
+                ...createAntigravitySession().metadata!,
+                antigravityExecution: { model: "gemini-flash-medium", reasoningEffort: "medium" },
+            },
+        });
+        const newer = createAntigravitySession({ updatedAt: 20 });
+
+        expect(resolveStoredAntigravityResumeExecution(
+            createAntigravityCapabilities(),
+            [older, newer],
+            "machine-online",
+            {
+                sessionId: "native-antigravity-conversation",
+                projectPath: "/Users/dev/projects/remcli",
+            },
+        )).toEqual({
+            type: "ready",
+            execution: {
+                model: "gemini-flash-low",
+                reasoningEffort: "low",
+                catalogVersion: "fresh-antigravity-catalog",
+            },
+        });
+    });
+
+    it("distinguishes provider-only history from a saved tuple removed from the fresh catalog", () => {
+        expect(resolveStoredAntigravityResumeExecution(
+            createAntigravityCapabilities(),
+            [],
+            "machine-online",
+            { sessionId: "provider-only", projectPath: "/Users/dev/projects/remcli" },
+        )).toEqual({ type: "not-found" });
+
+        expect(resolveStoredAntigravityResumeExecution(
+            createAntigravityCapabilities(),
+            [createAntigravitySession({
+                metadata: {
+                    ...createAntigravitySession().metadata!,
+                    antigravityExecution: { model: "removed-model", reasoningEffort: "low" },
+                },
+            })],
+            "machine-online",
+            {
+                sessionId: "native-antigravity-conversation",
+                projectPath: "/Users/dev/projects/remcli",
+            },
+        )).toEqual({ type: "configuration-unavailable" });
+    });
+
+    it("resumes the exact conversation with a freshly validated model tuple and safe controls", async () => {
+        let isSessionPresent = false;
+        const spawn = vi.fn(async (_options: SpawnSessionOptions) => ({
+            type: "success" as const,
+            sessionId: "resumed-antigravity-session",
+        }));
+
+        const result = await resumeAntigravitySession(createAntigravitySession(), "machine-online", {
+            getCapabilities: vi.fn(async () => createAntigravityCapabilities()),
+            spawn,
+            refreshSessions: vi.fn(async () => { isSessionPresent = true; }),
+            hasSession: () => isSessionPresent,
+            sleep: async () => undefined,
+        });
+
+        expect(result).toEqual({ type: "success", sessionId: "resumed-antigravity-session" });
+        expect(spawn).toHaveBeenCalledWith({
+            machineId: "machine-online",
+            directory: "/Users/dev/projects/remcli",
+            agent: "antigravity",
+            resumeSessionId: "native-antigravity-conversation",
+            resumeSessionName: "Antigravity lifecycle",
+            antigravityExecution: {
+                model: "gemini-flash-low",
+                reasoningEffort: "low",
+                catalogVersion: "fresh-antigravity-catalog",
+            },
+            antigravityLaunchControls: {
+                mode: "default",
+                dangerouslySkipPermissions: false,
+                sandbox: false,
+            },
+        });
+    });
+
+    it("fails closed when the saved runtime model is absent from the fresh catalog", async () => {
+        const spawn = vi.fn();
+        const result = await resumeAntigravitySession(createAntigravitySession({
+            metadata: {
+                ...createAntigravitySession().metadata!,
+                antigravityExecution: { model: "removed-model", reasoningEffort: "low" },
+            },
+        }), "machine-online", {
+            getCapabilities: vi.fn(async () => createAntigravityCapabilities()),
+            spawn,
+            refreshSessions: vi.fn(async () => undefined),
+            hasSession: () => false,
+        });
+
+        expect(result).toEqual({ type: "configuration-unavailable" });
+        expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it("merges completed Remcli conversations into native history and excludes active wrappers", () => {
+        const nativeItems: AgentSessionInfo[] = [{
+            sessionId: "native-history-conversation",
+            agent: "antigravity",
+            projectPath: "/Users/dev/projects/remcli",
+            lastModified: 10,
+            firstMessage: "Native history",
+            messageCount: 1,
+            createdAt: null,
+            sessionName: null,
+        }];
+        const active = createAntigravitySession({
+            id: "active-wrapper",
+            active: true,
+            presence: "online",
+            metadata: {
+                ...createAntigravitySession().metadata!,
+                antigravitySessionId: "active-conversation",
+            },
+        });
+
+        const result = mergeAntigravityResumeItems(
+            nativeItems,
+            [createAntigravitySession({ updatedAt: 20 }), active],
+            "machine-online",
+            "/Users/dev/projects/remcli",
+        );
+
+        expect(result.map((item) => item.sessionId)).toEqual([
+            "native-antigravity-conversation",
+            "native-history-conversation",
+        ]);
+        expect(result.some((item) => item.sessionId === "active-conversation")).toBe(false);
+        expect(result[0]).toMatchObject({
+            sessionName: "Antigravity lifecycle",
+            lastModified: 20,
+        });
     });
 });

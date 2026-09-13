@@ -43,7 +43,7 @@ graph TB
 - **API-клиент:** `src/api` отвечает за HTTP + Socket.IO, шифрование и RPC.
 - **Демон:** `src/daemon` работает в фоне, запускает сессии и поддерживает состояние машины.
 - **Персистентность/конфигурация:** `src/persistence.ts` + `src/configuration.ts` управляют локальным состоянием в `~/.remcli`.
-- **Агенты:** `src/claude`, `src/cursor`, `src/codex`, `src/gemini` — раннеры для конкретных провайдеров.
+- **Агенты:** `src/claude`, `src/cursor`, `src/codex`, `src/antigravity` — terminal/provider runners. Claude terminal wrapper остаётся доступен; его phone/Web provider flow deferred.
 
 ## Поток запуска CLI
 
@@ -54,7 +54,7 @@ flowchart TD
     Parse --> Doctor{doctor?}
     Parse --> Auth{auth?}
     Parse --> Connect{connect?}
-    Parse --> Agent{cursor/codex/gemini?}
+    Parse --> Agent{claude/cursor/codex/antigravity?}
     Parse --> Default{default}
 
     Doctor --> RunDoctor[Run diagnostics]
@@ -72,7 +72,7 @@ flowchart TD
 ```
 
 `src/index.ts` — роутер CLI. Он:
-- Разбирает подкоманды (`doctor`, `setup`, `auth`, `connect`, `cursor`, `codex`, `gemini` и сценарии запуска по умолчанию).
+- Разбирает подкоманды (`doctor`, `setup`, `auth`, `connect`, `claude`, `cursor`, `codex`, `antigravity` и сценарии запуска по умолчанию).
 - При необходимости обеспечивает аутентификацию и настройку машины (`authAndSetupMachineIfNeeded`).
 - Запускает демон или агент напрямую в зависимости от подкоманды/контекста.
 
@@ -162,8 +162,9 @@ graph LR
 - Отправляет `message`, `update-metadata`, `update-state`, `session-alive` и `usage-report`.
 - Выбирает схему live user prompt один раз из initial `metadata.flavor` daemon-owned
   runner-а. Позднее изменение metadata не способно сменить schema: Codex и
-  Cursor принимают только текст с безопасной меткой источника, Claude/Gemini —
-  только свои legacy native поля. Для старой transport-сессии без известного
+  Claude, Cursor и Antigravity принимают только текст с безопасной меткой
+  источника в своих runner boundaries.
+  Для старой transport-сессии без известного
   provider допустим лишь такой же безопасный text prompt; model, permissions,
   system prompt и tool controls отклоняются до runner callback.
 - Typed `metadata.executionOutcome` синхронизируется через `update-metadata` как
@@ -231,7 +232,7 @@ graph TB
 | `run.ts` | Оркестрация запуска/остановки: lock-файл, P2P-сервер, QR-код, туннель, связывание модулей ниже |
 | `sessionSpawner.ts` | Фабрика менеджера сессий: запуск/остановка/трекинг дочерних сессий, окна tmux, очистка |
 | `providerSpawnRequest.ts` | Строгая provider-discriminated граница encrypted machine-RPC перед capability validation и process spawn |
-| `src/daemon/sessions/listAgentSessions.ts` | Сканирует on-disk хранилища сессий агентов (Claude/Codex/Cursor/Gemini) для пикера resume (RPC `list-agent-sessions`) |
+| `src/daemon/sessions/listAgentSessions.ts` | Сканирует on-disk хранилища сессий Claude/Codex/Cursor/Antigravity для пикера resume (RPC `list-agent-sessions`) |
 | `machineSocket.ts` | Machine-scoped Socket.IO-клиент, подключающийся к собственному P2P-серверу демона; регистрирует RPC-обработчики (`spawn-session` и др.) |
 | `heartbeat.ts` | Интервальный цикл: удаляет мёртвые сессии, при смене версии запрашивает свой graceful shutdown и передаёт replacement только после release lock, обнаруживает чужие демоны, пишет heartbeat в файл состояния |
 | `controlServer.ts` | Локальный HTTP IPC только на `127.0.0.1` |
@@ -424,9 +425,9 @@ Cursor применяет ACP session operation и отправляет след
 
 | Агент | Resume | Механизм |
 |-------|--------|----------|
-| Claude Code | Реализован путь, acceptance pending | `--resume <id>`; история исходной сессии реплеится в P2P-хранилище (`src/claude/utils/replaySessionHistory.ts`). Отдельные provider-specific daemon-boundary, real CLI и Browser fixture gates ещё не приняты. |
+| Claude Code | Terminal wrapper доступен; phone/Web deferred | `npm run claude` / `runClaude` остаются терминальным surface. Phone/Web provider flow и его resume ждут отдельной provider-specific acceptance. |
 | Cursor | Lifecycle D/I/L/UI-F принят | Один daemon-owned `agent acp` process держит native Cursor session. `session/new` создаёт её, строгий `session/load` возобновляет тот же ID, а `session/prompt` продолжает контекст. Exact model catalog и `Agent` / `Plan` / `Ask` берутся из ACP; permission requests и typed tool updates передаются в Remcli. Active resume и cleanup защищены runner credential, native bind и immutable writer ownership. Детали: [Cursor CLI](agent-architecture/cursor-cli-architecture.md). |
-| Gemini | Реализован путь, acceptance pending | ACP `session/load`, если агент декларирует capability `loadSession`; иначе откат к новой сессии (`src/agent/acp/AcpBackend.ts`). Отдельные ACP daemon-boundary, real provider и Browser fixture gates ещё не приняты. |
+| Antigravity | Поддерживается | `agy` stream-json, dynamic account catalog, exact `conversation_id` resume, modes `default` / `accept-edits` / `plan`, efforts `low` / `medium` / `high`, sandbox и explicit dangerous control. Детали: [Antigravity CLI](agent-architecture/antigravity-cli-architecture.md). |
 | Codex | Поддерживается | Официальный app-server хранит один native thread для phone и remote TUI. Attach-only resume не создаёт фиктивный prompt. Account-visible model/reasoning валидируются daemon-ом; смена в открытом чате применяется к следующему `turn/start`, а активный старый turn не получает новый prompt через `turn/steer`. Shared transport имеет typed private fallback; MCP не используется как chat/resume transport. Детали: [Codex / ChatGPT](agent-architecture/codex-chatgpt-architecture.md). |
 
 ### Контракт resume picker
@@ -447,7 +448,7 @@ Cursor применяет ACP session operation и отправляет след
 
 Примечания по агентам:
 - **Cursor**: бинарник определяется как `agent` (fallback: `cursor-agent`), а remote session использует официальный постоянный `agent acp`. Daemon получает exact model IDs из `SessionModelState`, связывает catalog с executable/version fingerprint и отклоняет stale selection. Один wrapper владеет одним ACP process, одной native session и одним writer lease; `session/load` не откатывается к новой сессии при ошибке. `Agent` / `Plan` / `Ask` применяются как ACP modes, model change - как ACP session operation перед следующим prompt. `session/update`, `session/request_permission` и `session/cancel` имеют типизированный bridge в P2P; unsupported structured questions/plan approval завершаются fail-closed с видимым сообщением. Детали: [agent-architecture/cursor-cli-architecture.md](agent-architecture/cursor-cli-architecture.md).
-- **Gemini**: режим ACP использует `--acp` на новых сборках с откатом к `--experimental-acp` (проверяется однократно через `gemini --help`). С 2026-06-18 Google отключил доступ Gemini CLI для OAuth-пользователей (аккаунт Google) — CLI выводит понятную ошибку с предложением аутентификации по API-ключу вместо общего сбоя.
+- **Antigravity**: daemon получает dynamic account catalog через `agy models` и текущую модель через `agy -p /model`; upstream history находится в `~/.gemini/antigravity-cli/history.jsonl`. Gemini-модели в этом catalog являются моделями Antigravity, а не отдельным provider.
 
 ### Состояние машины
 
@@ -550,7 +551,7 @@ RPC используется для отправки команд по Socket.IO
 | Агент | Бинарник | macOS / Linux | Windows |
 |-------|----------|---------------|---------|
 | Claude Code | `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` | `irm https://claude.ai/install.ps1 \| iex` |
-| Gemini CLI | `gemini` | `npm install -g @google/gemini-cli` | `npm install -g @google/gemini-cli` |
+| Antigravity | `agy` | Установка и auth управляются upstream Antigravity CLI | Установка и auth управляются upstream Antigravity CLI |
 | Codex CLI | `codex` | `npm install -g @openai/codex` | `npm install -g @openai/codex` |
 | Cursor CLI | `agent` (старые сборки: `cursor-agent`) | `curl https://cursor.com/install -fsS \| bash` | `curl https://cursor.com/install -fsS \| bash` |
 
@@ -575,7 +576,7 @@ Authtoken не нужен — quick tunnels cloudflared работают из к
 - Статус демона и процессы
 - Статус модели Whisper STT
 - Статус TTS-провайдера
-- **Доступность AI-агентов** — обнаруживает все четыре агента (Claude Code, Gemini CLI, Codex CLI, Cursor CLI) через `which`/`where` и сообщает установленные версии (Cursor: `agent`, fallback `cursor-agent`)
+- **Доступность AI-агентов** — обнаруживает Claude, Codex CLI, Cursor CLI и Antigravity (`agy`) через `which`/`where` и сообщает установленные версии. Для Claude отдельно указывается: terminal wrapper доступен, phone/Web provider flow deferred.
 - Файлы логов и ссылки на поддержку
 
 ## Ссылки на реализацию

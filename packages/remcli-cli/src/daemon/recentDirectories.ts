@@ -23,7 +23,7 @@ const DIRECTORY_PROJECTS_FILE_NAME = 'recent-directories.json';
 const DIRECTORY_PROJECTS_FILE_MODE = 0o600;
 const DIRECTORY_PROJECTS_FILE_VERSION = 2;
 
-export type DirectoryProjectAgent = 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
+export type DirectoryProjectAgent = 'claude' | 'codex' | 'cursor' | 'antigravity';
 export type DirectoryProjectsErrorCode = 'unavailable' | 'invalid_machine_id' | 'invalid_directory';
 
 export class DirectoryProjectsError extends Error {
@@ -79,6 +79,10 @@ interface PersistedDirectoryProject {
     branchAtLastLaunch: string | null;
 }
 
+type PersistedDirectoryProjectInput = Omit<PersistedDirectoryProject, 'lastAgent'> & {
+    lastAgent: unknown;
+};
+
 interface LegacyRecentDirectory {
     canonicalPath: string;
     displayPath: string;
@@ -113,7 +117,6 @@ function isDirectoryProjectAgent(value: unknown): value is DirectoryProjectAgent
     return value === 'claude'
         || value === 'codex'
         || value === 'cursor'
-        || value === 'gemini'
         || value === 'antigravity';
 }
 
@@ -129,13 +132,20 @@ function isLegacyRecentDirectory(value: unknown): value is LegacyRecentDirectory
         && isTimestamp(value.lastUsedAt);
 }
 
-function isPersistedDirectoryProject(value: unknown): value is PersistedDirectoryProject {
+function isPersistedDirectoryProject(value: unknown): value is PersistedDirectoryProjectInput {
     if (!isRecord(value)) return false;
 
     return isLegacyRecentDirectory(value)
         && (value.pinnedAt === null || isTimestamp(value.pinnedAt))
-        && (value.lastAgent === null || isDirectoryProjectAgent(value.lastAgent))
+        && (value.lastAgent === null || typeof value.lastAgent === 'string')
         && isNullableString(value.branchAtLastLaunch);
+}
+
+function normalizePersistedDirectoryProject(project: PersistedDirectoryProjectInput): PersistedDirectoryProject {
+    return {
+        ...project,
+        lastAgent: isDirectoryProjectAgent(project.lastAgent) ? project.lastAgent : null,
+    };
 }
 
 function parsePersistedDirectoryProjects(value: unknown): PersistedDirectoryProjects | null {
@@ -167,7 +177,7 @@ function parsePersistedDirectoryProjects(value: unknown): PersistedDirectoryProj
         if (!Array.isArray(projects) || !projects.every(isPersistedDirectoryProject)) {
             return null;
         }
-        machines[machineId] = projects.map((project) => ({ ...project }));
+        machines[machineId] = projects.map(normalizePersistedDirectoryProject);
     }
 
     return { v: DIRECTORY_PROJECTS_FILE_VERSION, machines };

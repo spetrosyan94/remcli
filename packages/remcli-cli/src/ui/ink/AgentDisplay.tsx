@@ -4,7 +4,7 @@
  * Renders a scrolling message log plus a status/confirmation bar and handles
  * the double-Ctrl-C exit flow. Agent-specific chrome (icon, labels, colors,
  * message filtering and an optional status extra) is supplied via props so the
- * same component backs Codex, Cursor and Gemini.
+ * same component backs provider wrappers such as Codex.
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react'

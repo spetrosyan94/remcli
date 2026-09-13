@@ -149,7 +149,7 @@ export interface SpawnSessionEnvironmentVariables {
 }
 
 interface NonAntigravitySpawnSessionOptions extends SpawnSessionBaseOptions {
-    agent?: 'claude' | 'codex' | 'cursor' | 'gemini';
+    agent?: 'claude' | 'codex' | 'cursor';
     /** Provider-specific permission selection validated by the daemon before spawn. */
     permissionMode?: PermissionMode;
     /** Atomic, daemon-validated Codex model + reasoning selection. */

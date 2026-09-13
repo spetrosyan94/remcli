@@ -25,6 +25,7 @@ import {
     agentSessionIdOf,
     buildCursorResumeNavigationState,
     getProviderResumeAction,
+    resumeAntigravitySession,
     resumeCodexSession,
     type ResumeAction,
 } from "@/lib/sessionResume";
@@ -34,7 +35,7 @@ import { createPermissionDecision, createPermissionDecisionGate, type Permission
 import { terminalMachineForSession, terminalPlatform, TERMINAL_PLATFORM_LABEL_KEYS } from "@/lib/terminalHandoff";
 import {
     fetchWhisperStatus, getRestConfig, isClientStarted, loadSessionMessages,
-    machineGetCodexCapabilities, machineGetCursorCapabilities, machineGetSessionExecution,
+    machineGetAntigravityCapabilities, machineGetCodexCapabilities, machineGetCursorCapabilities, machineGetSessionExecution,
     machineSetSessionExecution, machineSpawnNewSession, refreshSessions, restoreProtocolClient, sendSessionMessage,
     sessionAllow, sessionDeny, useConnectionStatus, useMachines, useProtocolStore,
     useSession, useSessionMessages, useSessionMessagesLoaded, useSessions,
@@ -471,7 +472,6 @@ export function EndedSessionResume({
 }: EndedSessionResumeProps) {
     const resumeAction = getProviderResumeAction(agent);
     const isDeferred = resumeAction === "deferred";
-    const isCapabilityGated = resumeAction === "capability-gated";
 
     return (
         <div className="flex flex-col items-center gap-2.5 rounded-xl border border-dashed border-border bg-card/50 px-4 py-4">
@@ -485,9 +485,9 @@ export function EndedSessionResume({
                 <button
                     type="button"
                     onClick={onResume}
-                    disabled={isResuming || isDeferred || isCapabilityGated}
+                    disabled={isResuming || isDeferred}
                     aria-describedby={isDeferred ? "chat-deferred-resume-note" : undefined}
-                    data-resume-availability={isDeferred ? "deferred" : isCapabilityGated ? "capability-gated" : "available"}
+                    data-resume-availability={isDeferred ? "deferred" : "available"}
                     className="flex h-11 items-center gap-1.5 rounded-[9px] bg-primary px-3.5 text-[13px] font-semibold text-primary-foreground transition-transform active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100 lg:h-9"
                 >
                     {isResuming && <Loader2 className="size-3.5 animate-spin" />}
@@ -793,7 +793,9 @@ export function resolveLineageParent(
         && currentMetadata.path === parentMetadata.path
         && (!currentMetadata.remcliHomeDir || !parentMetadata.remcliHomeDir
             || currentMetadata.remcliHomeDir === parentMetadata.remcliHomeDir);
-    const hasTrustedAgent = agentOf(session) === "cursor" && agentOf(parentSession) === "cursor";
+    const currentAgent = agentOf(session);
+    const hasTrustedAgent = (currentAgent === "cursor" || currentAgent === "antigravity")
+        && agentOf(parentSession) === currentAgent;
 
     if (!hasTrustedWorkspace || !hasTrustedAgent) {
         return { parentId: null, parentSession: null, isKnown: true };
@@ -1798,19 +1800,27 @@ export function ChatPage() {
             return;
         }
 
-        if (agent !== "codex") {
+        if (agent !== "codex" && agent !== "antigravity") {
             toast.error(t("chat.resumeConfigurationUnavailable"));
             return;
         }
 
         setIsResuming(true);
         try {
-            const result = await resumeCodexSession(sessionToResume, rpcMachineId, {
-                getCapabilities: machineGetCodexCapabilities,
-                spawn: (options) => machineSpawnNewSession(options),
+            const resumeDependencies = {
+                spawn: (options: Parameters<typeof machineSpawnNewSession>[0]) => machineSpawnNewSession(options),
                 refreshSessions,
-                hasSession: (id) => Boolean(useProtocolStore.getState().sessions[id]),
-            });
+                hasSession: (id: string) => Boolean(useProtocolStore.getState().sessions[id]),
+            };
+            const result = agent === "antigravity"
+                ? await resumeAntigravitySession(sessionToResume, rpcMachineId, {
+                    ...resumeDependencies,
+                    getCapabilities: machineGetAntigravityCapabilities,
+                })
+                : await resumeCodexSession(sessionToResume, rpcMachineId, {
+                    ...resumeDependencies,
+                    getCapabilities: machineGetCodexCapabilities,
+                });
             if (result.type === "capabilities-unavailable") {
                 toast.error(t("new.capabilitiesUnavailable"));
                 return;

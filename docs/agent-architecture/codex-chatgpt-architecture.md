@@ -376,7 +376,7 @@ Credential привязан к daemon-spawned runner и отзывается д�
 inactive state. Повторный или чужой exchange не выдаёт capability и не может
 привязать native thread или открыть managed TUI.
 
-Общий bootstrap для daemon-runner'ов Claude, Codex, Gemini и Cursor сначала
+Общий bootstrap для daemon-runner'ов Claude, Codex, Cursor и Antigravity сначала
 получает этот credential через `/session-started`, а только затем создаёт
 P2P session consumer. Повторный authenticated handoff того же owner возвращает
 тот же lease после потери HTTP-ответа; другой owner его не получает. После

@@ -178,7 +178,7 @@ type CursorNativeWriterLeaseAttempt =
 type CursorWriterLeaseTargetLookup =
     | { type: 'found'; pid: number; session: TrackedSession }
     | { type: 'wrapper-not-tracked' }
-    | { type: 'agent-mismatch'; trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity' }
+    | { type: 'agent-mismatch'; trackedAgent: 'claude' | 'codex' | 'cursor' | 'antigravity' }
     | { type: 'native-session-mismatch'; trackedNativeSessionId?: string };
 
 interface NativeCodexThreadMapping {
@@ -223,7 +223,7 @@ interface CursorInteractiveTuiOpening {
     promise: Promise<CursorInteractiveTuiOpenResult>;
 }
 
-type SpawnAgent = 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
+type SpawnAgent = 'claude' | 'codex' | 'cursor' | 'antigravity';
 
 function resolveSpawnAgent(agent: unknown): SpawnAgent | undefined {
     if (agent === undefined) {
@@ -231,7 +231,7 @@ function resolveSpawnAgent(agent: unknown): SpawnAgent | undefined {
         return 'claude';
     }
 
-    return agent === 'claude' || agent === 'codex' || agent === 'cursor' || agent === 'gemini' || agent === 'antigravity'
+    return agent === 'claude' || agent === 'codex' || agent === 'cursor' || agent === 'antigravity'
         ? agent
         : undefined;
 }
@@ -489,6 +489,8 @@ export interface SessionManager {
 
 export interface SessionManagerOptions {
     onSessionStopped?: (sessionId: string) => void;
+    /** Called only after a native Antigravity conversation binding is validated. */
+    onNativeAntigravityConversationBound?: (binding: NativeAntigravityConversationBinding, workspace: string) => void | Promise<void>;
     /** Called after the set of daemon-owned child PIDs changes. */
     onOwnedChildrenChanged?: (childPids: number[]) => void;
     /**
@@ -501,7 +503,7 @@ export interface SessionManagerOptions {
 // Get environment variables for a profile, filtered for agent compatibility
 async function getProfileEnvironmentVariablesForAgent(
     profileId: string,
-    agentType: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity'
+    agentType: 'claude' | 'codex' | 'cursor' | 'antigravity'
 ): Promise<Record<string, string>> {
     if (agentType === 'antigravity') {
         return {};
@@ -1377,9 +1379,9 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         throw new Error(`Cannot safely clean up daemon tmux runner ${runner.ownership.sessionName}: ${reason}.`);
     };
 
-    const getTrackedAgent = (session: TrackedSession): 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity' | undefined => {
+    const getTrackedAgent = (session: TrackedSession): 'claude' | 'codex' | 'cursor' | 'antigravity' | undefined => {
         const reportedAgent = session.remcliSessionMetadataFromLocalWebhook?.flavor;
-        if (reportedAgent === 'claude' || reportedAgent === 'codex' || reportedAgent === 'cursor' || reportedAgent === 'gemini' || reportedAgent === 'antigravity') {
+        if (reportedAgent === 'claude' || reportedAgent === 'codex' || reportedAgent === 'cursor' || reportedAgent === 'antigravity') {
             return reportedAgent;
         }
         return session.expectedAgent;
@@ -1441,8 +1443,6 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         switch (agent) {
             case 'cursor':
                 return metadata.cursorSessionId ?? metadata.agentSessionId;
-            case 'gemini':
-                return metadata.geminiSessionId ?? metadata.agentSessionId;
             case 'antigravity':
                 return metadata.antigravitySessionId ?? metadata.agentSessionId;
             case 'claude':
@@ -2386,7 +2386,14 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         const promise = bindNativeAntigravityConversationInternal(binding);
         nativeAntigravityConversationBindingPromises.set(binding.nativeConversationId, promise);
         try {
-            return await promise;
+            const result = await promise;
+            if ((result.type === 'bound' || result.type === 'already-bound') && options.onNativeAntigravityConversationBound) {
+                const tracked = nativeAntigravityConversationIdToTrackedSession.get(binding.nativeConversationId);
+                if (tracked?.session.expectedDirectory) {
+                    await options.onNativeAntigravityConversationBound(binding, tracked.session.expectedDirectory);
+                }
+            }
+            return result;
         } finally {
             if (nativeAntigravityConversationBindingPromises.get(binding.nativeConversationId) === promise) {
                 nativeAntigravityConversationBindingPromises.delete(binding.nativeConversationId);

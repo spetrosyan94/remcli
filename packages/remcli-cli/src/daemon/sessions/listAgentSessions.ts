@@ -10,7 +10,7 @@ import { listAntigravitySessions as readAntigravitySessions } from '@/antigravit
 
 export interface AgentSessionInfo {
     sessionId: string;
-    agent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
+    agent: 'claude' | 'codex' | 'cursor' | 'antigravity';
     projectPath: string;
     lastModified: number;
     firstMessage: string | null;
@@ -907,107 +907,6 @@ export function listCursorSessions(directory?: string): AgentSessionInfo[] {
     return sessions;
 }
 
-// ─── Gemini ──────────────────────────────────────────────────────────────────
-
-/**
- * List Gemini sessions from ~/.gemini/tmp/<project-hash>/chats/session-*.json.
- */
-export function listGeminiSessions(): AgentSessionInfo[] {
-    const sessions: AgentSessionInfo[] = [];
-
-    try {
-        const tmpDir = join(os.homedir(), '.gemini', 'tmp');
-        if (!existsSync(tmpDir)) return sessions;
-
-        for (const projectHash of listSubdirs(tmpDir)) {
-            const chatsDir = join(tmpDir, projectHash, 'chats');
-            if (!existsSync(chatsDir)) continue;
-
-            let entries: string[];
-            try {
-                entries = readdirSync(chatsDir);
-            } catch {
-                continue;
-            }
-
-            for (const entry of entries) {
-                if (!entry.startsWith('session-') || !entry.endsWith('.json')) continue;
-
-                const filePath = join(chatsDir, entry);
-                let st: ReturnType<typeof statSync>;
-                try {
-                    st = statSync(filePath);
-                    if (!st.isFile()) continue;
-                } catch {
-                    continue;
-                }
-
-                try {
-                    const raw = readFileSync(filePath, 'utf-8');
-                    const data = JSON.parse(raw) as Record<string, unknown>;
-
-                    const sessionId = typeof data.sessionId === 'string'
-                        ? data.sessionId as string
-                        : entry.replace('.json', '');
-
-                    let createdAt: number | null = null;
-                    if (typeof data.startTime === 'number') {
-                        createdAt = data.startTime as number;
-                    } else if (typeof data.startTime === 'string') {
-                        const ts = Date.parse(data.startTime as string);
-                        if (!isNaN(ts)) createdAt = ts;
-                    }
-
-                    let firstUserMessage: string | null = null;
-                    let messageCount = 0;
-
-                    if (Array.isArray(data.messages)) {
-                        messageCount = (data.messages as unknown[]).length;
-
-                        for (const msg of data.messages as Record<string, unknown>[]) {
-                            if (msg.role !== 'user') continue;
-
-                            if (Array.isArray(msg.content)) {
-                                for (const part of msg.content as Record<string, unknown>[]) {
-                                    if (part.type === 'text' && typeof part.text === 'string') {
-                                        firstUserMessage = truncate(part.text as string, 200);
-                                        break;
-                                    }
-                                }
-                            } else if (typeof msg.content === 'string') {
-                                firstUserMessage = truncate(msg.content as string, 200);
-                            }
-
-                            if (firstUserMessage !== null) break;
-                        }
-                    }
-
-                    sessions.push({
-                        sessionId,
-                        agent: 'gemini',
-                        projectPath: typeof data.cwd === 'string'
-                            ? data.cwd
-                            : typeof data.projectPath === 'string'
-                                ? data.projectPath
-                                : '',
-                        lastModified: st.mtimeMs,
-                        firstMessage: firstUserMessage,
-                        messageCount,
-                        createdAt,
-                        sessionName: null,
-                    });
-                } catch (e) {
-                    logger.debug(`[LIST_SESSIONS] Error parsing Gemini session ${filePath}: ${e}`);
-                }
-            }
-        }
-    } catch (e) {
-        logger.debug(`[LIST_SESSIONS] Error listing Gemini sessions: ${e}`);
-    }
-
-    return sessions;
-}
-
 // ─── Antigravity ────────────────────────────────────────────────────────────
 
 export function listAntigravitySessions(directory?: string): AgentSessionInfo[] {
@@ -1028,7 +927,7 @@ export function listAntigravitySessions(directory?: string): AgentSessionInfo[] 
 /**
  * List sessions across all (or a specific) AI agent.
  *
- * @param agent  - Filter by agent name ('claude' | 'codex' | 'cursor' | 'gemini')
+ * @param agent  - Filter by agent name ('claude' | 'codex' | 'cursor' | 'antigravity')
  * @param directory - Filter sessions by the exact known working directory
  * @param limit - Max sessions to return (default 50), sorted by lastModified desc
  */
@@ -1049,9 +948,6 @@ export function listAllAgentSessions(
     }
     if (shouldInclude('cursor')) {
         all.push(...listCursorSessions(directory));
-    }
-    if (shouldInclude('gemini')) {
-        all.push(...listGeminiSessions());
     }
     if (shouldInclude('antigravity')) {
         all.push(...listAntigravitySessions(directory));

@@ -1,6 +1,8 @@
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
+import { configuration } from '@/configuration';
+import { createAntigravitySessionRegistry, type AntigravitySessionRegistry, type AntigravitySessionRegistryEntry } from './antigravitySessionRegistry';
 
 export const ANTIGRAVITY_PROVIDER = 'antigravity' as const;
 
@@ -23,6 +25,7 @@ export interface AntigravitySessionReaderOptions {
     homeDir?: string;
     workspace?: string;
     fileSystem?: AntigravityHistoryFileSystem;
+    registry?: AntigravitySessionRegistry;
 }
 
 export interface AntigravityHistoryFileSystem {
@@ -168,4 +171,38 @@ export function readAntigravitySessions(options: AntigravitySessionReaderOptions
     });
 }
 
-export const listAntigravitySessions = readAntigravitySessions;
+function registrySession(entry: AntigravitySessionRegistryEntry): AntigravitySession {
+    return {
+        provider: ANTIGRAVITY_PROVIDER,
+        conversationId: entry.conversationId,
+        workspace: entry.workspace,
+        display: '',
+        updatedAt: entry.updatedAt,
+        messageCount: 0,
+    };
+}
+
+export function listAntigravitySessions(options: AntigravitySessionReaderOptions = {}): AntigravitySession[] {
+    const providerSessions = readAntigravitySessions(options);
+    const registry = options.registry ?? createAntigravitySessionRegistry(configuration.remcliHomeDir);
+    const merged = new Map<string, AntigravitySession>();
+
+    for (const session of providerSessions) {
+        merged.set(session.conversationId, session);
+    }
+    for (const session of registry.list(options.workspace)) {
+        if (options.workspace !== undefined && session.workspace !== options.workspace) continue;
+        const existing = merged.get(session.conversationId);
+        if (existing) {
+            existing.updatedAt = Math.max(existing.updatedAt, session.updatedAt);
+        } else {
+            merged.set(session.conversationId, registrySession(session));
+        }
+    }
+
+    return [...merged.values()].sort((left, right) => {
+        const timestampOrder = right.updatedAt - left.updatedAt;
+        if (timestampOrder !== 0) return timestampOrder;
+        return left.conversationId < right.conversationId ? -1 : left.conversationId > right.conversationId ? 1 : 0;
+    });
+}

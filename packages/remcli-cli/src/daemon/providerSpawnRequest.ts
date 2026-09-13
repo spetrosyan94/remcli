@@ -6,7 +6,7 @@
  * process-spawning code can observe it.
  */
 
-import type { ClaudePermissionMode, GeminiPermissionMode, PermissionMode } from '@/api/types';
+import type { ClaudePermissionMode, PermissionMode } from '@/api/types';
 import { isClaudePermissionMode } from '@/claude/utils/permissionMode';
 import type { CodexExecutionConfig } from '@/codex/codexCapabilities';
 import type { CodexSandbox } from '@/codex/types';
@@ -19,7 +19,7 @@ import type { SpawnSessionEnvironmentVariables } from '@/modules/common/register
 import type { AntigravityExecutionConfig } from '@/antigravity/antigravityCapabilities';
 import type { AntigravityLaunchControls } from '@/antigravity/antigravityCli';
 
-const PROVIDER_AGENTS = ['claude', 'codex', 'cursor', 'gemini', 'antigravity'] as const;
+const PROVIDER_AGENTS = ['claude', 'codex', 'cursor', 'antigravity'] as const;
 const SPAWN_TRANSPORT_ENVELOPE_TYPE = 'spawn-in-directory';
 const COMMON_REQUEST_KEYS = new Set([
     'agent',
@@ -95,11 +95,6 @@ export interface CursorSpawnRequest extends CommonProviderSpawnRequest {
     cursorLaunchControls: CursorLaunchControls;
 }
 
-export interface GeminiSpawnRequest extends CommonProviderSpawnRequest {
-    agent: 'gemini';
-    permissionMode?: GeminiPermissionMode;
-}
-
 export interface AntigravitySpawnRequest extends BaseProviderSpawnRequest {
     agent: 'antigravity';
     antigravityExecution: AntigravityExecutionConfig;
@@ -108,7 +103,7 @@ export interface AntigravitySpawnRequest extends BaseProviderSpawnRequest {
     environmentVariables?: never;
 }
 
-export type ProviderSpawnRequest = ClaudeSpawnRequest | CodexSpawnRequest | CursorSpawnRequest | GeminiSpawnRequest | AntigravitySpawnRequest;
+export type ProviderSpawnRequest = ClaudeSpawnRequest | CodexSpawnRequest | CursorSpawnRequest | AntigravitySpawnRequest;
 
 export class ProviderSpawnRequestError extends Error {
     constructor(message = 'Invalid provider spawn request.') {
@@ -219,16 +214,11 @@ function isKnownPermissionMode(value: unknown): value is PermissionMode {
         || value === 'dontAsk'
         || value === 'read-only'
         || value === 'workspace-write'
-        || value === 'danger-full-access'
-        || value === 'auto_edit';
+        || value === 'danger-full-access';
 }
 
 function isProviderAgent(value: unknown): value is ProviderAgent {
     return typeof value === 'string' && (PROVIDER_AGENTS as readonly string[]).includes(value);
-}
-
-function isGeminiProviderPermissionMode(value: unknown): value is GeminiPermissionMode {
-    return value === 'manual' || value === 'auto_edit' || value === 'plan';
 }
 
 function isCodexSandbox(value: unknown): value is CodexSandbox {
@@ -470,10 +460,6 @@ export function parseProviderSpawnRequest(value: unknown): ProviderSpawnRequest 
     if (agent === 'claude'
         && isKnownPermissionMode(permissionMode)
         && isClaudePermissionMode(permissionMode)) {
-        return { ...common, agent, permissionMode };
-    }
-    if (agent === 'gemini'
-        && isGeminiProviderPermissionMode(permissionMode)) {
         return { ...common, agent, permissionMode };
     }
     throw new ProviderSpawnRequestError();

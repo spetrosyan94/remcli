@@ -1,7 +1,7 @@
 # Шаблон архитектуры AI-агента
 
 Использовать для каждой новой или существенно изменённой интеграции:
-Claude Code, Codex, Gemini, Cursor и будущие агенты.
+Codex, Cursor, Antigravity и будущие агенты.
 
 ## Official Sources
 

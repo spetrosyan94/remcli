@@ -31,11 +31,17 @@ QR сканируется один раз: pairing-данные и порт со
 ## AI-агенты в терминале
 
 ```bash
-npm run claude       # Claude Code
+npm run claude       # Claude terminal wrapper
 npm run codex        # Codex
-npm run gemini       # Gemini
 npm run cursor       # Cursor
+npm run antigravity  # Antigravity через agy
 ```
+
+Claude terminal wrapper остаётся доступен через `npm run claude` и
+`runClaude`; его phone/Web provider flow disabled/deferred до отдельной
+provider-specific приёмки. Для Antigravity Remcli использует `agy` в режиме
+`stream-json`, account-visible model catalog и точный resume по conversation ID;
+подробности: [архитектура Antigravity](docs/agent-architecture/antigravity-cli-architecture.md).
 
 ## Разработка
 

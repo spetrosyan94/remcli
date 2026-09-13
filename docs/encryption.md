@@ -366,8 +366,8 @@ Payload, хранящийся в `SessionMessage.content`, всегда заши
 
 `meta` в зашифрованном сообщении не является универсальной control plane.
 Live user prompt разбирается по provider, зафиксированному при создании
-daemon-owned runner: Codex/Cursor получают только текст и безопасную метку
-источника; Claude/Gemini принимают лишь свои документированные legacy поля.
+daemon-owned runner: Codex/Cursor/Antigravity получают только текст и
+безопасную метку источника.
 Сессия без provider metadata может передать только такой же text prompt.
 Model, permission, system prompt, tool fields и внутренние значения `sentFrom`
 в этом случае отбрасываются до запуска provider. История остаётся читаемой, но
@@ -387,7 +387,7 @@ web-клиент также удаляет из неё meta поля чужог�
   "os": "...",
   "summary": { "text": "...", "updatedAt": 123 },
   "machineId": "...",
-  "claudeSessionId": "...",
+  "antigravitySessionId": "...",
   "tools": ["..."],
   "slashCommands": ["..."],
   "startedFromDaemon": true,
@@ -416,7 +416,7 @@ web-клиент также удаляет из неё meta поля чужог�
       "completedAt": 123,
       "status": "canceled | denied | approved",
       "reason": "...",
-      "mode": "manual | acceptEdits | bypassPermissions | plan | auto | dontAsk | read-only | workspace-write | danger-full-access | auto_edit",
+      "mode": "manual | acceptEdits | bypassPermissions | plan | auto | dontAsk | read-only | workspace-write | danger-full-access",
       "decision": "approved | approved_for_session | denied | abort",
       "allowTools": ["..."]
     }
@@ -424,8 +424,9 @@ web-клиент также удаляет из неё meta поля чужог�
 }
 ```
 
-`mode` описывает только подтверждённые permission modes Claude Code, Codex и
-Gemini. Cursor получает отдельный строго типизированный ACP session mode
+`mode` описывает только подтверждённые permission modes Claude и Codex.
+Antigravity launch controls валидируются daemon-ом отдельно. Cursor получает
+отдельный строго типизированный ACP session mode
 `agent | plan | ask`; остальные root CLI flags не сериализуются и не могут
 быть внедрены через P2P metadata. Exact Cursor model и short-lived catalog
 version валидируются daemon-ом отдельно. Runtime `session/request_permission`

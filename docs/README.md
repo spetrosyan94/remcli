@@ -14,6 +14,7 @@ provider-specific архитектура AI-агентов.
 | [cli-architecture.md](cli-architecture.md) | Поток запуска CLI, жизненный цикл демона, управление сессиями, RPC |
 | [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) | Архитектура Codex/ChatGPT через официальный Codex app-server |
 | [agent-architecture/cursor-cli-architecture.md](agent-architecture/cursor-cli-architecture.md) | Архитектура Cursor Agent CLI: native resume, capability catalog и controls запуска |
+| [agent-architecture/antigravity-cli-architecture.md](agent-architecture/antigravity-cli-architecture.md) | Antigravity CLI: `agy` stream-json, dynamic catalog, exact resume и launch controls |
 | [agent-architecture/agent-remote-control-template.md](agent-architecture/agent-remote-control-template.md) | Шаблон документации для следующих AI-агентов |
 
 ## Соглашения

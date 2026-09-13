@@ -3,7 +3,6 @@ import { UsageSchema } from '@/claude/types'
 
 export type ClaudePermissionMode = 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk'
 export type CodexPermissionMode = 'read-only' | 'workspace-write' | 'danger-full-access'
-export type GeminiPermissionMode = 'manual' | 'auto_edit' | 'plan'
 
 /**
  * Permission mode type - union of native agent modes.
@@ -12,7 +11,7 @@ export type GeminiPermissionMode = 'manual' | 'auto_edit' | 'plan'
  * Agent-specific modes are validated at each backend boundary.
  * `default` is a model sentinel only, never a permission mode.
  */
-export type PermissionMode = ClaudePermissionMode | CodexPermissionMode | GeminiPermissionMode
+export type PermissionMode = ClaudePermissionMode | CodexPermissionMode
 
 /** Public, daemon-owned Codex selection. Permission remains private to the daemon. */
 export interface CodexSessionExecutionSelection {
@@ -275,8 +274,7 @@ export const MessageMetaSchema = z.object({
   sentFrom: z.string().optional(), // Source identifier
   permissionMode: z.enum([
     'manual', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk',
-    'read-only', 'workspace-write', 'danger-full-access',
-    'auto_edit'
+    'read-only', 'workspace-write', 'danger-full-access'
   ]).optional(), // Permission mode for this message
   model: z.string().nullable().optional(), // Model name for this message (null = reset)
   fallbackModel: z.string().nullable().optional(), // Fallback model for this message (null = reset)
@@ -396,7 +394,6 @@ export type Metadata = {
     model: string,
   },
   cursorSessionId?: string, // Cursor agent session ID
-  geminiSessionId?: string, // Gemini ACP session ID
   /** Daemon-owned Antigravity session identity. */
   antigravitySessionId?: string,
   /** Safe projection of the daemon-validated Antigravity execution. */

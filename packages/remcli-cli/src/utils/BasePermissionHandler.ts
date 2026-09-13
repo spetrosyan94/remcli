@@ -2,7 +2,7 @@
  * Base Permission Handler
  *
  * Abstract base class for permission handlers that manage tool approval requests.
- * Shared by Codex and Gemini permission handlers.
+ * Shared by Codex and Cursor permission handlers.
  *
  * @module BasePermissionHandler
  */

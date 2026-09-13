@@ -61,7 +61,6 @@ const ProfileCompatibilitySchema = z.object({
     claude: z.boolean().default(true),
     codex: z.boolean().default(true),
     cursor: z.boolean().default(true),
-    gemini: z.boolean().default(true),
 });
 
 // AIBackendProfile schema - EXACT MATCH with GUI schema
@@ -88,15 +87,14 @@ export const AIBackendProfileSchema = z.object({
     // Default permission mode for this profile. Values must be native Remcli permission modes.
     defaultPermissionMode: z.enum([
         'manual', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk',
-        'read-only', 'workspace-write', 'danger-full-access',
-        'auto_edit'
+        'read-only', 'workspace-write', 'danger-full-access'
     ]).optional(),
 
     // Default model mode for this profile
     defaultModelMode: z.string().optional(),
 
     // Compatibility metadata
-    compatibility: ProfileCompatibilitySchema.default({ claude: true, codex: true, cursor: true, gemini: true }),
+    compatibility: ProfileCompatibilitySchema.default({ claude: true, codex: true, cursor: true }),
 
     // Built-in profile indicator
     isBuiltIn: z.boolean().default(false),
@@ -110,7 +108,7 @@ export const AIBackendProfileSchema = z.object({
 export type AIBackendProfile = z.infer<typeof AIBackendProfileSchema>;
 
 // Helper functions matching the remcli app exactly
-export function validateProfileForAgent(profile: AIBackendProfile, agent: 'claude' | 'codex' | 'cursor' | 'gemini'): boolean {
+export function validateProfileForAgent(profile: AIBackendProfile, agent: 'claude' | 'codex' | 'cursor'): boolean {
   return profile.compatibility[agent];
 }
 

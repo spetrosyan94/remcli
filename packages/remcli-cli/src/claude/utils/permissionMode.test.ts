@@ -4,7 +4,7 @@ import type { ClaudePermissionMode, PermissionMode } from '@/api/types';
 
 describe('mapToClaudeMode', () => {
     describe('non-Claude modes are rejected', () => {
-        it.each(['danger-full-access', 'read-only', 'workspace-write', 'auto_edit'] as PermissionMode[])(
+        it.each(['danger-full-access', 'read-only', 'workspace-write'] as PermissionMode[])(
             'rejects %s',
             (mode) => {
                 expect(() => mapToClaudeMode(mode)).toThrow('Unsupported Claude permission mode');
@@ -25,7 +25,6 @@ describe('mapToClaudeMode', () => {
         const allModes: PermissionMode[] = [
             'manual', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk',
             'read-only', 'workspace-write', 'danger-full-access',
-            'auto_edit',
         ];
 
         it('passes Claude modes and rejects other agents modes', () => {

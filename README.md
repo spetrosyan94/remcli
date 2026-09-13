@@ -54,12 +54,12 @@ Remcli даёт полноценный desktop-режим для работы з
 | --- | :---: | --- |
 | Codex CLI | ✅ | Полный рабочий цикл: новая сессия из папки проекта, общий чат телефона и терминала, tool calls, запросы разрешений, остановка и resume без потери контекста. |
 | Cursor CLI | ✅ | Официальный ACP transport: запуск и строгий resume с контекстом, streaming, tool calls, запросы разрешений, модели и режимы установленного Cursor CLI. |
-| Claude Code | ⏳ | В разработке: завершаем полный пользовательский сценарий от терминала до телефона. |
-| Gemini CLI | ⏳ | В разработке: завершаем полный пользовательский сценарий от терминала до телефона. |
+| Antigravity | ✅ | `agy` через `stream-json`: динамический catalog аккаунта, exact conversation resume, модели и provider-native controls. |
+| Claude Code | terminal wrapper доступен; phone/Web deferred | `npm run claude` и `runClaude` остаются доступны в терминале. Phone/Web provider flow отключён до отдельной provider-specific приёмки. |
 
 ## Быстрый старт
 
-Нужны Node.js 20+, установленный и авторизованный CLI выбранного AI-провайдера и `tmux` для управляемых сессий. Для удалённого режима нужен `cloudflared`. Remcli запускается на macOS и Linux; на Windows используйте WSL с `tmux`. `ffmpeg` нужен только для голосовых функций.
+Нужны Node.js 20+, установленный CLI выбранного AI-провайдера и `tmux` для управляемых сессий. Для удалённого режима нужен `cloudflared`. Remcli запускается на macOS и Linux; на Windows используйте WSL с `tmux`. `ffmpeg` нужен только для голосовых функций.
 
 ```bash
 git clone https://github.com/spetrosyan94/remcli.git
@@ -121,7 +121,7 @@ npm run start:tunnel
 
 ## Roadmap
 
-- Завершить полный capability/lifecycle contract Claude Code и Gemini CLI.
+- Принять отдельный Claude Code provider capability/lifecycle contract для phone/Web flow.
 - Отдельно спроектировать безопасный live web terminal.
 - При подтверждённой необходимости добавить durable cross-runner recovery для редкого Cursor failure window.
 
@@ -133,6 +133,7 @@ npm run start:tunnel
 - [CLI и daemon](docs/cli-architecture.md)
 - [Архитектура Codex](docs/agent-architecture/codex-chatgpt-architecture.md)
 - [Архитектура Cursor](docs/agent-architecture/cursor-cli-architecture.md)
+- [Архитектура Antigravity](docs/agent-architecture/antigravity-cli-architecture.md)
 
 ## Лицензия
 

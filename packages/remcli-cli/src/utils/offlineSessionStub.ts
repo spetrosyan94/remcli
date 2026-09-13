@@ -2,7 +2,7 @@
  * Offline Session Stub Factory
  *
  * Creates a no-op session stub for offline mode that can be used across all backends
- * (Claude, Codex, Gemini, etc.). All session methods become no-ops until reconnection.
+ * (Claude, Codex, Cursor, Antigravity, etc.). All session methods become no-ops until reconnection.
  *
  * This follows DRY principles by providing a single implementation for all backends,
  * satisfying REQ-8 from serverConnectionErrors.ts.

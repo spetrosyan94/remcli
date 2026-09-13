@@ -64,14 +64,13 @@ describe('MetadataSchema execution outcome', () => {
         }).success).toBe(false);
     });
 
-    it('persists only official Antigravity reasoning efforts with the exact execution tuple', () => {
+    it('accepts the safe Antigravity execution projection without daemon-only catalog state', () => {
         const metadata = {
             path: '/tmp/project',
             host: 'test-host',
             antigravityExecution: {
                 model: 'antigravity-flash-medium',
                 reasoningEffort: 'medium',
-                catalogVersion: 'antigravity-catalog-v1',
             },
         };
 

@@ -17,7 +17,7 @@ export const LLM_TIMEOUT_MS = 60_000;
 /** Timeout for the cheap availability probe against `/models`. */
 export const PROBE_TIMEOUT_MS = 1_500;
 
-export const WHITELISTED_AGENTS = ['claude', 'codex', 'gemini', 'cursor'] as const;
+export const WHITELISTED_AGENTS = ['claude', 'codex', 'cursor'] as const;
 
 export const CONCIERGE_SYSTEM_PROMPT = [
     'You are the remcli concierge, a small assistant embedded in the remcli daemon.',
@@ -28,7 +28,7 @@ export const CONCIERGE_SYSTEM_PROMPT = [
     "Always answer in the user's language.",
     'You can ONLY do the following:',
     '  1. Report the status of running agent sessions and of the daemon itself.',
-    '  2. Start an agent session (claude, codex, gemini or cursor) ONLY when the user explicitly asks for it.',
+    '  2. Start an agent session (claude, codex or cursor) ONLY when the user explicitly asks for it.',
     '  3. Explain how to use remcli.',
     'NEVER invent or guess data. To know what is running or the daemon status you MUST call the provided tools.',
     'When the user explicitly asks to start an agent, call spawn_agent_session with an absolute directory path.',

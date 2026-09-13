@@ -23,7 +23,6 @@ describe('agent permission modes', () => {
     it('keeps supported modes unchanged', () => {
         expect(normalizeAgentPermissionMode('codex', 'danger-full-access')).toBe('danger-full-access');
         expect(normalizeAgentPermissionMode('claude', 'acceptEdits')).toBe('acceptEdits');
-        expect(normalizeAgentPermissionMode('antigravity', 'auto_edit')).toBe('default');
     });
 
     it('falls back instead of sending unsupported modes to an agent', () => {
@@ -42,7 +41,6 @@ describe('agent permission modes', () => {
     });
 
     it('keeps non-Codex labels as backend-native permission values', () => {
-        expect(getAgentPermissionLabel('antigravity', 'auto_edit')).toBe('auto_edit');
         expect(getAgentPermissionLabel('claude', 'acceptEdits')).toBe('acceptEdits');
     });
 });

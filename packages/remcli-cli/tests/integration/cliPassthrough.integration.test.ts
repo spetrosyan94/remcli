@@ -17,8 +17,8 @@ const remcliPassthroughCases: Array<[string, string[], string, string]> = [
 const agentPassthroughCases: Array<[string, string[], string]> = [
     ['codex --version', ['codex', '--version'], 'codex-cli 9.9.9'],
     ['codex --help', ['codex', '--help'], 'codex fake help'],
-    ['gemini --version', ['gemini', '--version'], '9.9.9'],
-    ['gemini --help', ['gemini', '--help'], 'gemini fake help'],
+    ['antigravity --version', ['antigravity', '--version'], '9.9.9'],
+    ['antigravity --help', ['antigravity', '--help'], 'agy fake help'],
     ['cursor --version', ['cursor', '--version'], 'fake-cursor-agent 9.9.9'],
     ['cursor --help', ['cursor', '--help'], 'agent fake help']
 ];
@@ -43,7 +43,7 @@ function createCliPassthroughTestEnvironment(): CliPassthroughTestEnvironment {
     const binDir = mkdtempSync(join(tmpdir(), 'remcli-cli-passthrough-bin-'));
     writeFakeBinary(binDir, 'claude', 'fake-claude 1.2.3');
     writeFakeBinary(binDir, 'codex', 'codex-cli 9.9.9');
-    writeFakeBinary(binDir, 'gemini', '9.9.9');
+    writeFakeBinary(binDir, 'agy', '9.9.9');
     writeFakeBinary(binDir, 'agent', 'fake-cursor-agent 9.9.9');
     return { homeDir, binDir };
 }
@@ -150,6 +150,15 @@ describe('CLI help/version passthrough', { timeout: cliPassthroughTimeoutMs }, (
             const result = runRemcli(args, environment);
             expectSuccessfulPassthrough(result);
             expect(result.stdout).toContain(expected);
+            expectNoDaemonState(environment);
+        });
+    });
+
+    it('rejects an unknown positional command before starting Claude', () => {
+        withCliPassthroughTestEnvironment((environment) => {
+            const result = runRemcli(['unknown-command', '--help'], environment);
+            expect(result.status).toBe(1);
+            expect(result.stderr).toContain('Unknown command: unknown-command');
             expectNoDaemonState(environment);
         });
     });

@@ -34,9 +34,6 @@ function deriveAgentLabel(model: string): string {
     if (m.includes('codex')) {
         return 'Codex';
     }
-    if (m.includes('gemini')) {
-        return 'Gemini';
-    }
     return 'Assistant';
 }
 

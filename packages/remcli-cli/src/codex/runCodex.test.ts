@@ -197,7 +197,7 @@ interface TestState {
             type: 'bound' | 'already-bound' | 'reuse-active-wrapper' | 'wrapper-not-tracked' | 'agent-mismatch';
             wrapper?: { agent: 'codex'; nativeThreadId: string; remcliSessionId: string };
             binding?: { agent: 'codex'; nativeThreadId: string; remcliSessionId: string };
-            trackedAgent?: 'claude' | 'codex' | 'cursor' | 'gemini';
+            trackedAgent?: 'claude' | 'codex' | 'cursor';
         };
         error?: string;
     };

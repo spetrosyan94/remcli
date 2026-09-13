@@ -12,7 +12,6 @@ const PERMISSION_LABELS: Partial<Record<PermissionMode, string>> = {
     acceptEdits: "acceptEdits",
     bypassPermissions: "bypassPermissions",
     dontAsk: "dontAsk",
-    auto_edit: "auto_edit",
 };
 
 export function getAgentPermissionModes(agent: AgentId): PermissionMode[] {

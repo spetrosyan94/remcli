@@ -109,19 +109,6 @@ function createCursorSession(chatsDir: string, workspaceId: string, sessionId: s
     return storeDbPath;
 }
 
-function createGeminiSession(
-    tmpDir: string,
-    projectHash: string,
-    sessionFileName: string,
-    data: Record<string, unknown>,
-): string {
-    const chatsDir = join(tmpDir, projectHash, 'chats');
-    mkdirSync(chatsDir, { recursive: true });
-    const filePath = join(chatsDir, sessionFileName);
-    writeFileSync(filePath, JSON.stringify(data));
-    return filePath;
-}
-
 function appendAntigravityHistory(
     homeDir: string,
     row: { conversationId: string; workspace: string; display: string; timestamp: number },
@@ -985,149 +972,6 @@ describe('listAgentSessions', () => {
     });
 
     // =========================================================================
-    // listGeminiSessions
-    // =========================================================================
-
-    describe('listGeminiSessions', () => {
-        let geminiTmpDir: string;
-
-        beforeEach(() => {
-            geminiTmpDir = join(testDir, '.gemini', 'tmp');
-            mkdirSync(geminiTmpDir, { recursive: true });
-        });
-
-        async function getListGeminiSessions() {
-            const mod = await import('./listAgentSessions');
-            return mod.listGeminiSessions;
-        }
-
-        it('should parse JSON session files', async () => {
-            const listGeminiSessions = await getListGeminiSessions();
-            createGeminiSession(geminiTmpDir, 'project-hash-1', 'session-001.json', {
-                sessionId: 'gemini-session-001',
-                startTime: 1737990000000,
-                messages: [
-                    { role: 'user', content: 'Write a Python script to analyze CSV data' },
-                    { role: 'assistant', content: 'Here is the script...' },
-                ],
-            });
-
-            const sessions = listGeminiSessions();
-            expect(sessions).toHaveLength(1);
-            expect(sessions[0]).toMatchObject({
-                sessionId: 'gemini-session-001',
-                agent: 'gemini',
-                firstMessage: 'Write a Python script to analyze CSV data',
-                messageCount: 2,
-                createdAt: 1737990000000,
-            });
-        });
-
-        it('should extract sessionId from data', async () => {
-            const listGeminiSessions = await getListGeminiSessions();
-            createGeminiSession(geminiTmpDir, 'hash-a', 'session-custom-id.json', {
-                sessionId: 'my-custom-gemini-id',
-                messages: [],
-            });
-
-            const sessions = listGeminiSessions();
-            expect(sessions[0]!.sessionId).toBe('my-custom-gemini-id');
-        });
-
-        it('should fallback to filename when sessionId is missing', async () => {
-            const listGeminiSessions = await getListGeminiSessions();
-            createGeminiSession(geminiTmpDir, 'hash-b', 'session-fallback.json', {
-                messages: [],
-            });
-
-            const sessions = listGeminiSessions();
-            expect(sessions[0]!.sessionId).toBe('session-fallback');
-        });
-
-        it('should extract firstMessage from first user message', async () => {
-            const listGeminiSessions = await getListGeminiSessions();
-            createGeminiSession(geminiTmpDir, 'hash-c', 'session-msg.json', {
-                sessionId: 'msg-test',
-                messages: [
-                    { role: 'assistant', content: 'Hello! How can I help?' },
-                    { role: 'user', content: 'Set up a Kubernetes deployment manifest' },
-                    { role: 'user', content: 'Also add a service' },
-                ],
-            });
-
-            const sessions = listGeminiSessions();
-            expect(sessions[0]!.firstMessage).toBe('Set up a Kubernetes deployment manifest');
-        });
-
-        it('should handle content as array with text parts', async () => {
-            const listGeminiSessions = await getListGeminiSessions();
-            createGeminiSession(geminiTmpDir, 'hash-d', 'session-arr.json', {
-                sessionId: 'arr-test',
-                messages: [
-                    { role: 'user', content: [{ type: 'text', text: 'Configure nginx reverse proxy' }] },
-                ],
-            });
-
-            const sessions = listGeminiSessions();
-            expect(sessions[0]!.firstMessage).toBe('Configure nginx reverse proxy');
-        });
-
-        it('should handle startTime as string', async () => {
-            const listGeminiSessions = await getListGeminiSessions();
-            createGeminiSession(geminiTmpDir, 'hash-e', 'session-strtime.json', {
-                sessionId: 'strtime-test',
-                startTime: '2026-04-15T08:00:00Z',
-                messages: [],
-            });
-
-            const sessions = listGeminiSessions();
-            expect(sessions[0]!.createdAt).toBe(Date.parse('2026-04-15T08:00:00Z'));
-        });
-
-        it('should return empty array when directory does not exist', async () => {
-            const listGeminiSessions = await getListGeminiSessions();
-            rmSync(geminiTmpDir, { recursive: true, force: true });
-
-            const sessions = listGeminiSessions();
-            expect(sessions).toEqual([]);
-        });
-
-        it('should only process session-*.json files', async () => {
-            const listGeminiSessions = await getListGeminiSessions();
-            const chatsDir = join(geminiTmpDir, 'hash-f', 'chats');
-            mkdirSync(chatsDir, { recursive: true });
-
-            // Valid
-            writeFileSync(join(chatsDir, 'session-valid.json'), JSON.stringify({
-                sessionId: 'valid', messages: [],
-            }));
-
-            // Invalid names
-            writeFileSync(join(chatsDir, 'config.json'), JSON.stringify({ messages: [] }));
-            writeFileSync(join(chatsDir, 'session-data.txt'), 'not json');
-
-            const sessions = listGeminiSessions();
-            expect(sessions).toHaveLength(1);
-            expect(sessions[0]!.sessionId).toBe('valid');
-        });
-
-        it('should find sessions across multiple project hashes', async () => {
-            const listGeminiSessions = await getListGeminiSessions();
-            createGeminiSession(geminiTmpDir, 'project-alpha', 'session-a.json', {
-                sessionId: 'alpha-session', messages: [],
-            });
-            createGeminiSession(geminiTmpDir, 'project-beta', 'session-b.json', {
-                sessionId: 'beta-session', messages: [],
-            });
-
-            const sessions = listGeminiSessions();
-            expect(sessions).toHaveLength(2);
-            const ids = sessions.map(s => s.sessionId).sort();
-            expect(ids).toEqual(['alpha-session', 'beta-session']);
-        });
-    });
-
-    // =========================================================================
     // listAllAgentSessions
     // =========================================================================
 
@@ -1152,12 +996,6 @@ describe('listAgentSessions', () => {
             const cursorDir = join(testDir, '.cursor', 'chats');
             createCursorSession(cursorDir, 'ws-combined', '22222222-2222-2222-2222-222222222222');
 
-            // Create Gemini session
-            const geminiDir = join(testDir, '.gemini', 'tmp');
-            createGeminiSession(geminiDir, 'hash-combined', 'session-combined.json', {
-                sessionId: 'gemini-combined', messages: [],
-            });
-
             appendAntigravityHistory(testDir, {
                 conversationId: 'antigravity-combined',
                 workspace: '/home/user/projects/antigravity',
@@ -1167,7 +1005,7 @@ describe('listAgentSessions', () => {
 
             const sessions = listAllAgentSessions();
             const agents = sessions.map(s => s.agent).sort();
-            expect(agents).toEqual(['antigravity', 'claude', 'codex', 'cursor', 'gemini']);
+            expect(agents).toEqual(['antigravity', 'claude', 'codex', 'cursor']);
         });
 
         it('should preserve the selected Cursor workspace when listing through the aggregate API', async () => {
@@ -1283,19 +1121,11 @@ describe('listAgentSessions', () => {
             const requestedDirectory = '/workspace/requested';
             const otherDirectory = '/workspace/other';
             const codexDir = join(testDir, '.codex', 'sessions');
-            const geminiDir = join(testDir, '.gemini', 'tmp');
             createCodexSession(codexDir, 'codex-requested', { cwd: requestedDirectory });
             createCodexSession(codexDir, 'codex-other', { cwd: otherDirectory });
-            createGeminiSession(geminiDir, 'unknown-path', 'session-unknown.json', {
-                sessionId: 'gemini-unknown', messages: [],
-            });
-            createGeminiSession(geminiDir, 'requested-path', 'session-requested.json', {
-                sessionId: 'gemini-requested', cwd: requestedDirectory, messages: [],
-            });
 
             expect(listAllAgentSessions(undefined, requestedDirectory).map((session) => session.sessionId).sort()).toEqual([
                 'codex-requested',
-                'gemini-requested',
             ]);
         });
 
@@ -1303,7 +1133,6 @@ describe('listAgentSessions', () => {
             const listAllAgentSessions = await getListAllAgentSessions();
             const requestedDirectory = '/workspace/recent';
             const codexDir = join(testDir, '.codex', 'sessions');
-            const geminiDir = join(testDir, '.gemini', 'tmp');
             const cursorDir = join(testDir, '.cursor', 'chats');
             const cursorSessionId = '12121212-3434-5656-7878-909090909090';
 
@@ -1319,12 +1148,6 @@ describe('listAgentSessions', () => {
                 lastEventTimestamp: '2026-07-21T13:00:00Z',
                 threadSource: 'user',
             });
-            const geminiFile = createGeminiSession(geminiDir, 'recent-project', 'session-recent.json', {
-                sessionId: 'gemini-scoped-later',
-                cwd: requestedDirectory,
-                messages: [],
-            });
-            utimesSync(geminiFile, new Date('2026-07-21T11:00:00Z'), new Date('2026-07-21T11:00:00Z'));
             const cursorStore = createCursorSession(
                 cursorDir,
                 createHash('md5').update(requestedDirectory).digest('hex'),
@@ -1336,7 +1159,7 @@ describe('listAgentSessions', () => {
 
             expect(sessions.map((session) => session.sessionId)).toEqual([
                 cursorSessionId,
-                'gemini-scoped-later',
+                'codex-scoped-earlier',
             ]);
             expect(sessions[0]!.lastModified).toBeGreaterThan(sessions[1]!.lastModified);
         });

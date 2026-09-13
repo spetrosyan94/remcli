@@ -5,7 +5,7 @@
  * Manages the agent lifecycle, session state, and communication
  * with the Remcli server and mobile app.
  *
- * Follows the same pattern as runCodex.ts / runGemini.ts:
+ * Follows the same pattern as runCodex.ts:
  * session setup → message queue → UI → main loop → cleanup
  */
 

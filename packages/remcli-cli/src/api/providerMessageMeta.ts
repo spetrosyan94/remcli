@@ -16,12 +16,6 @@ const ClaudePermissionModeSchema = z.enum([
     'dontAsk',
 ]);
 
-const GeminiPermissionModeSchema = z.enum([
-    'manual',
-    'auto_edit',
-    'plan',
-]);
-
 const SafeUserMessageMetaSchema = z.object({
     sentFrom: SafeUserSentFromSchema.optional(),
     displayText: z.string().optional(),
@@ -37,12 +31,6 @@ const ClaudeUserMessageMetaSchema = SafeUserMessageMetaSchema.extend({
     disallowedTools: z.array(z.string()).nullable().optional(),
 }).strict();
 
-const GeminiUserMessageMetaSchema = SafeUserMessageMetaSchema.extend({
-    permissionMode: GeminiPermissionModeSchema.optional(),
-    model: z.string().nullable().optional(),
-    appendSystemPrompt: z.string().nullable().optional(),
-}).strict();
-
 function createProviderUserMessageSchema(metaSchema: z.ZodType<unknown>) {
     return z.object({
         role: z.literal('user'),
@@ -55,13 +43,12 @@ function createProviderUserMessageSchema(metaSchema: z.ZodType<unknown>) {
 const CodexUserMessageSchema = createProviderUserMessageSchema(SafeUserMessageMetaSchema);
 const CursorUserMessageSchema = createProviderUserMessageSchema(SafeUserMessageMetaSchema);
 const ClaudeUserMessageSchema = createProviderUserMessageSchema(ClaudeUserMessageMetaSchema);
-const GeminiUserMessageSchema = createProviderUserMessageSchema(GeminiUserMessageMetaSchema);
 // Antigravity has no per-turn permission or model controls. Its launch
 // selection is daemon-owned and is never accepted from live message metadata.
 const AntigravityUserMessageSchema = createProviderUserMessageSchema(SafeUserMessageMetaSchema);
 const UnscopedUserMessageSchema = createProviderUserMessageSchema(SafeUserMessageMetaSchema);
 
-export type ProviderFlavor = 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
+export type ProviderFlavor = 'claude' | 'codex' | 'cursor' | 'antigravity';
 
 export interface ProviderUserMessage {
     role: 'user';
@@ -73,7 +60,7 @@ export interface ProviderUserMessage {
     meta?: {
         sentFrom?: 'web' | 'phone';
         displayText?: string;
-        permissionMode?: 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk' | 'auto_edit';
+        permissionMode?: 'manual' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk';
         model?: string | null;
         fallbackModel?: string | null;
         customSystemPrompt?: string | null;
@@ -98,7 +85,6 @@ const providerUserMessageSchemas: Record<ProviderFlavor, z.ZodType<unknown>> = {
     claude: ClaudeUserMessageSchema,
     codex: CodexUserMessageSchema,
     cursor: CursorUserMessageSchema,
-    gemini: GeminiUserMessageSchema,
     antigravity: AntigravityUserMessageSchema,
 };
 

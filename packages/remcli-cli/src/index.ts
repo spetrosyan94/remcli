@@ -255,202 +255,6 @@ async function ensureDaemonRunning(): Promise<void> {
       exitWithSubcommandError(error)
     }
     return;
-  } else if (subcommand === 'gemini') {
-    // Handle gemini subcommands
-    const geminiSubcommand = args[1];
-    
-    // Handle "remcli gemini model set <model>" command
-    if (geminiSubcommand === 'model' && args[2] === 'set' && args[3]) {
-      const modelName = args[3];
-      const { VALID_GEMINI_MODELS } = await import('@/gemini/constants');
-      const validModels: readonly string[] = VALID_GEMINI_MODELS;
-
-      if (!validModels.includes(modelName)) {
-        console.error(`Invalid model: ${modelName}`);
-        console.error(`Available models: ${validModels.join(', ')}`);
-        process.exit(1);
-      }
-      
-      try {
-        const { existsSync, readFileSync, writeFileSync, mkdirSync } = require('fs');
-        const { join } = require('path');
-        const { homedir } = require('os');
-        
-        const configDir = join(homedir(), '.gemini');
-        const configPath = join(configDir, 'config.json');
-        
-        // Create directory if it doesn't exist
-        if (!existsSync(configDir)) {
-          mkdirSync(configDir, { recursive: true });
-        }
-        
-        // Read existing config or create new one
-        let config: any = {};
-        if (existsSync(configPath)) {
-          try {
-            config = JSON.parse(readFileSync(configPath, 'utf-8'));
-          } catch (error) {
-            // Ignore parse errors, start fresh
-            config = {};
-          }
-        }
-        
-        // Update model in config
-        config.model = modelName;
-        
-        // Write config back
-        writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
-        console.log(`✓ Model set to: ${modelName}`);
-        console.log(`  Config saved to: ${configPath}`);
-        console.log(`  This model will be used in future sessions.`);
-        process.exit(0);
-      } catch (error) {
-        console.error('Failed to save model configuration:', error);
-        process.exit(1);
-      }
-    }
-    
-    // Handle "remcli gemini model get" command
-    if (geminiSubcommand === 'model' && args[2] === 'get') {
-      try {
-        const { existsSync, readFileSync } = require('fs');
-        const { join } = require('path');
-        const { homedir } = require('os');
-        
-        const configPaths = [
-          join(homedir(), '.gemini', 'config.json'),
-          join(homedir(), '.config', 'gemini', 'config.json'),
-        ];
-        
-        let model: string | null = null;
-        for (const configPath of configPaths) {
-          if (existsSync(configPath)) {
-            try {
-              const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-              model = config.model || config.GEMINI_MODEL || null;
-              if (model) break;
-            } catch (error) {
-              // Ignore parse errors
-            }
-          }
-        }
-        
-        if (model) {
-          console.log(`Current model: ${model}`);
-        } else if (process.env.GEMINI_MODEL) {
-          console.log(`Current model: ${process.env.GEMINI_MODEL} (from GEMINI_MODEL env var)`);
-        } else {
-          console.log('Current model: gemini-2.5-pro (default)');
-        }
-        process.exit(0);
-      } catch (error) {
-        console.error('Failed to read model configuration:', error);
-        process.exit(1);
-      }
-    }
-    
-    // Handle "remcli gemini project set <project-id>" command
-    if (geminiSubcommand === 'project' && args[2] === 'set' && args[3]) {
-      const projectId = args[3];
-      
-      try {
-        const { saveGoogleCloudProjectToConfig } = await import('@/gemini/utils/config');
-        const { getVendorToken } = await import('@/api/vendorTokens');
-
-        // Try to get current user email from local vendor token
-        let userEmail: string | undefined = undefined;
-        try {
-          const vendorToken = getVendorToken('gemini') as any;
-          if (vendorToken?.oauth?.id_token) {
-            const parts = vendorToken.oauth.id_token.split('.');
-            if (parts.length === 3) {
-              const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-              userEmail = payload.email;
-            }
-          }
-        } catch {
-          // If we can't get email, project will be saved globally
-        }
-        
-        saveGoogleCloudProjectToConfig(projectId, userEmail);
-        console.log(`✓ Google Cloud Project set to: ${projectId}`);
-        if (userEmail) {
-          console.log(`  Linked to account: ${userEmail}`);
-        }
-        console.log(`  This project will be used for Google Workspace accounts.`);
-        process.exit(0);
-      } catch (error) {
-        console.error('Failed to save project configuration:', error);
-        process.exit(1);
-      }
-    }
-    
-    // Handle "remcli gemini project get" command
-    if (geminiSubcommand === 'project' && args[2] === 'get') {
-      try {
-        const { readGeminiLocalConfig } = await import('@/gemini/utils/config');
-        const config = readGeminiLocalConfig();
-        
-        if (config.googleCloudProject) {
-          console.log(`Current Google Cloud Project: ${config.googleCloudProject}`);
-          if (config.googleCloudProjectEmail) {
-            console.log(`  Linked to account: ${config.googleCloudProjectEmail}`);
-          } else {
-            console.log(`  Applies to: all accounts (global)`);
-          }
-        } else if (process.env.GOOGLE_CLOUD_PROJECT) {
-          console.log(`Current Google Cloud Project: ${process.env.GOOGLE_CLOUD_PROJECT} (from env var)`);
-        } else {
-          console.log('No Google Cloud Project configured.');
-          console.log('');
-          console.log('If you see "Authentication required" error, you may need to set a project:');
-          console.log('  remcli gemini project set <your-project-id>');
-          console.log('');
-          console.log('This is required for Google Workspace accounts.');
-          console.log('Guide: https://goo.gle/gemini-cli-auth-docs#workspace-gca');
-        }
-        process.exit(0);
-      } catch (error) {
-        console.error('Failed to read project configuration:', error);
-        process.exit(1);
-      }
-    }
-    
-    // Handle "remcli gemini project" (no subcommand) - show help
-    if (geminiSubcommand === 'project' && !args[2]) {
-      console.log('Usage: remcli gemini project <command>');
-      console.log('');
-      console.log('Commands:');
-      console.log('  set <project-id>   Set Google Cloud Project ID');
-      console.log('  get                Show current Google Cloud Project ID');
-      console.log('');
-      console.log('Google Workspace accounts require a Google Cloud Project.');
-      console.log('If you see "Authentication required" error, set your project ID.');
-      console.log('');
-      console.log('Guide: https://goo.gle/gemini-cli-auth-docs#workspace-gca');
-      process.exit(0);
-    }
-    
-    // Handle gemini command (ACP-based agent)
-    try {
-      const { runGemini } = await import('@/gemini/runGemini');
-
-      const { startedBy, resumeSessionId, passthroughArgs, shouldPassthrough } = parseAgentRunArgs(args);
-      if (shouldPassthrough) {
-        runPassthroughCommand('gemini', passthroughArgs);
-        process.exit(0);
-      }
-
-      await ensureDaemonRunning();
-      const {
-        credentials
-      } = await setupP2PForSession();
-
-      await runGemini({credentials, startedBy, resumeSessionId});
-    } catch (error) {
-      exitWithSubcommandError(error)
-    }
-    return;
   } else if (subcommand === 'logout') {
     // Keep for backward compatibility - redirect to auth logout
     console.log(chalk.yellow('Note: "remcli logout" is deprecated. Use "remcli auth logout" instead.\n'));
@@ -733,6 +537,10 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('remcli doctor 
     }
     return;
   } else {
+    if (subcommand && !subcommand.startsWith('-') && subcommand !== 'claude') {
+      console.error(chalk.red(`Unknown command: ${subcommand}`))
+      process.exit(1)
+    }
 
     // If the first argument is claude, remove it
     if (args.length > 0 && args[0] === 'claude') {
@@ -826,7 +634,7 @@ ${chalk.bold('Usage:')}
   remcli auth              Manage authentication
   remcli codex             Start Codex mode
   remcli cursor            Start Cursor mode
-  remcli gemini            Start Gemini mode (ACP)
+  remcli antigravity       Start Antigravity mode
   remcli setup             Setup wizard (Whisper, AI agents)
   remcli connect           Connect AI vendor API keys
   remcli daemon            Manage background service that allows

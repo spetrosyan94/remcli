@@ -130,7 +130,7 @@ export interface CursorInteractiveTuiOpenRequest {
 
 /** Capability-bound request made by a daemon-spawned Cursor runner before it creates P2P metadata. */
 export interface CursorRunnerPreflightRequest {
-  agent: 'claude' | 'codex' | 'cursor' | 'gemini';
+  agent: 'claude' | 'codex' | 'cursor';
   nativeResumeSessionId?: string;
   pid: number;
   runnerToken: string;
@@ -198,7 +198,7 @@ export type NativeCodexThreadBindingResult =
   | {
     type: 'agent-mismatch';
     binding: NativeCodexThreadBinding;
-    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
+    trackedAgent: 'claude' | 'codex' | 'cursor' | 'antigravity';
   };
 
 export type NativeCursorSessionBindingResult =
@@ -216,7 +216,7 @@ export type NativeCursorSessionBindingResult =
   | {
     type: 'agent-mismatch';
     binding: NativeCursorSessionBinding;
-    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
+    trackedAgent: 'claude' | 'codex' | 'cursor' | 'antigravity';
   };
 
 export type NativeAntigravityConversationBindingResult =
@@ -225,7 +225,7 @@ export type NativeAntigravityConversationBindingResult =
   | { type: 'reuse-active-wrapper'; wrapper: NativeAntigravityConversationWrapper }
   | { type: 'wrapper-not-tracked'; binding: NativeAntigravityConversationBinding }
   | { type: 'native-conversation-mismatch'; binding: NativeAntigravityConversationBinding; expectedNativeConversationId: string }
-  | { type: 'agent-mismatch'; binding: NativeAntigravityConversationBinding; trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity' };
+  | { type: 'agent-mismatch'; binding: NativeAntigravityConversationBinding; trackedAgent: 'claude' | 'codex' | 'cursor' | 'antigravity' };
 
 export type CursorHeadlessWriterLeaseAcquireResult =
   | { type: 'acquired'; writerLease: CursorNativeWriterLease }
@@ -234,7 +234,7 @@ export type CursorHeadlessWriterLeaseAcquireResult =
   | {
     type: 'agent-mismatch';
     request: CursorHeadlessWriterLeaseAcquireRequest;
-    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
+    trackedAgent: 'claude' | 'codex' | 'cursor' | 'antigravity';
   }
   | {
     type: 'native-session-mismatch';
@@ -249,7 +249,7 @@ export type CodexRemoteTuiOpenResult =
   | {
     type: 'agent-mismatch';
     request: CodexRemoteTuiOpenRequest;
-    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
+    trackedAgent: 'claude' | 'codex' | 'cursor' | 'antigravity';
   }
   | {
     type: 'native-thread-mismatch';
@@ -274,7 +274,7 @@ export type CursorInteractiveTuiOpenResult =
   | {
     type: 'agent-mismatch';
     request: CursorInteractiveTuiOpenRequest;
-    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
+    trackedAgent: 'claude' | 'codex' | 'cursor' | 'antigravity';
   }
   | {
     type: 'native-session-mismatch';
@@ -341,7 +341,7 @@ export interface TrackedSession {
   startedBy: 'daemon' | string;
   remcliSessionId?: string;
   remcliSessionMetadataFromLocalWebhook?: Metadata;
-  expectedAgent?: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
+  expectedAgent?: 'claude' | 'codex' | 'cursor' | 'antigravity';
   expectedResumeSessionId?: string;
   expectedResumeKey?: string;
   /** Daemon-selected working directory before the runner has published metadata. */

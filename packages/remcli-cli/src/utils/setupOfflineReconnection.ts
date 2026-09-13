@@ -2,7 +2,7 @@
  * Offline Reconnection Setup
  *
  * Handles the common pattern of creating an offline session stub with
- * automatic background reconnection for all backends (Codex, Gemini).
+ * automatic background reconnection for all supported backends.
  *
  * @module setupOfflineReconnection
  */

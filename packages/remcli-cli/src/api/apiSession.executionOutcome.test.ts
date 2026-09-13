@@ -167,7 +167,7 @@ describe('ApiSessionClient execution outcome', () => {
             },
         })));
 
-        client.sendAgentMessage('gemini', {
+        client.sendAgentMessage('claude', {
             type: 'message',
             message: 'The operation completed successfully.',
             isError: false,
@@ -185,9 +185,9 @@ describe('ApiSessionClient execution outcome', () => {
     it('persists a typed error outcome for an explicit ACP error message', async () => {
         vi.spyOn(Date, 'now').mockReturnValue(ERROR_OCCURRED_AT);
         const client = new ApiSessionClient('fake-token', createSession(createMetadata()));
-        const errorMessage = 'Gemini returned a provider error.';
+        const errorMessage = 'Provider returned a provider error.';
 
-        client.sendAgentMessage('gemini', {
+        client.sendAgentMessage('claude', {
             type: 'message',
             message: errorMessage,
             isError: true,
@@ -216,7 +216,7 @@ describe('ApiSessionClient execution outcome', () => {
         client.sendUserTextMessage('Please retry this task.');
         client.keepAlive(false, 'remote');
         client.sendSessionEvent({ type: 'ready' });
-        client.sendAgentMessage('gemini', {
+        client.sendAgentMessage('claude', {
             type: 'message',
             message: 'Error output without an explicit signal.',
         });

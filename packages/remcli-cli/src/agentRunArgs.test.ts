@@ -16,7 +16,7 @@ describe('parseAgentRunArgs', () => {
             passthroughArgs: ['--help'],
             shouldPassthrough: true
         });
-        expect(parseAgentRunArgs(['gemini', '-v'])).toMatchObject({
+        expect(parseAgentRunArgs(['antigravity', '-v'])).toMatchObject({
             passthroughArgs: ['-v'],
             shouldPassthrough: true
         });

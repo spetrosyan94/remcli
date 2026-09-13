@@ -57,6 +57,8 @@ import { commitPairingRekeyAfterMachineReadiness } from './p2p/pairingRekeyTrans
 import { redactDiagnosticData } from '@/utils/redaction';
 import { spawnRemcliCLI } from '@/utils/spawnRemcliCLI';
 import QRCode from 'qrcode';
+import { createAntigravitySessionRegistry, type AntigravitySessionRegistry } from '@/antigravity/antigravitySessionRegistry';
+import type { NativeAntigravityConversationBinding } from './types';
 
 // Prepare initial metadata
 export const initialMachineMetadata: MachineMetadata = {
@@ -171,6 +173,23 @@ export function createDaemonStartupAbortController(): DaemonStartupAbortControll
 
 type ExitProcess = (code: number) => void;
 type ShutdownSource = 'remcli-web' | 'remcli-cli' | 'os-signal' | 'exception';
+
+export function persistAntigravitySessionRegistryEntry(
+  registry: Pick<AntigravitySessionRegistry, 'record'>,
+  binding: NativeAntigravityConversationBinding,
+  workspace: string,
+  updatedAt: number = Date.now(),
+): void {
+  try {
+    registry.record({
+      conversationId: binding.nativeConversationId,
+      workspace,
+      updatedAt,
+    });
+  } catch {
+    logger.warn('[DAEMON RUN] Failed to persist Antigravity session registry entry; keeping the validated binding active.');
+  }
+}
 
 function shutdownSourceToStateReason(source: ShutdownSource): DaemonStateReason {
     switch (source) {
@@ -658,8 +677,12 @@ export async function startDaemon(): Promise<void> {
         },
     });
     // Session manager owns tracked child sessions and emits every confirmed stop path.
+    const antigravitySessionRegistry = createAntigravitySessionRegistry(configuration.remcliHomeDir);
     const sessionManager = createSessionManager({
         onSessionStopped: handleSessionStopped,
+        onNativeAntigravityConversationBound: (binding, workspace) => {
+            persistAntigravitySessionRegistryEntry(antigravitySessionRegistry, binding, workspace);
+        },
         onOwnedChildrenChanged: () => {
             const persist = persistDaemonState;
             if (persist) {

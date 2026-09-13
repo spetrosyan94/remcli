@@ -240,7 +240,6 @@ describe('fixture resume history', () => {
                 antigravityExecution: {
                     model: 'antigravity-flash-medium',
                     reasoningEffort: 'medium',
-                    catalogVersion: 'fixture-antigravity-v1',
                 },
             });
         } finally {

@@ -1,12 +1,8 @@
 import chalk from 'chalk';
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
 import { readCredentials } from '@/persistence';
 import { registerVendorToken, getVendorToken } from '@/api/vendorTokens';
 import { authenticateCodex } from './connect/authenticateCodex';
 import { authenticateClaude } from './connect/authenticateClaude';
-import { authenticateGemini } from './connect/authenticateGemini';
 import { decodeJwtPayload } from './connect/utils';
 
 /**
@@ -15,7 +11,6 @@ import { decodeJwtPayload } from './connect/utils';
  * Implements connect subcommands for storing AI vendor API keys:
  * - connect codex: Store OpenAI API key in Remcli cloud
  * - connect claude: Store Anthropic API key in Remcli cloud
- * - connect gemini: Store Gemini API key in Remcli cloud
  * - connect help: Show help for connect command
  */
 export async function handleConnectCommand(args: string[]): Promise<void> {
@@ -32,9 +27,6 @@ export async function handleConnectCommand(args: string[]): Promise<void> {
             break;
         case 'claude':
             await handleConnectVendor('claude', 'Anthropic');
-            break;
-        case 'gemini':
-            await handleConnectVendor('gemini', 'Gemini');
             break;
         case 'status':
             await handleConnectStatus();
@@ -53,7 +45,6 @@ ${chalk.bold('remcli connect')} - Store AI vendor API keys locally
 ${chalk.bold('Usage:')}
   remcli connect codex        Store your Codex API key
   remcli connect claude       Store your Anthropic API key
-  remcli connect gemini       Store your Gemini API key
   remcli connect status       Show connection status for all vendors
   remcli connect help         Show this help message
 
@@ -65,7 +56,6 @@ ${chalk.bold('Description:')}
 ${chalk.bold('Examples:')}
   remcli connect codex
   remcli connect claude
-  remcli connect gemini
   remcli connect status
 
 ${chalk.bold('Notes:')}
@@ -74,7 +64,7 @@ ${chalk.bold('Notes:')}
 `);
 }
 
-async function handleConnectVendor(vendor: 'codex' | 'claude' | 'gemini', displayName: string): Promise<void> {
+async function handleConnectVendor(vendor: 'codex' | 'claude', displayName: string): Promise<void> {
     console.log(chalk.bold(`\n🔌 Connecting ${displayName}\n`));
 
     // Check if authenticated
@@ -98,16 +88,6 @@ async function handleConnectVendor(vendor: 'codex' | 'claude' | 'gemini', displa
         registerVendorToken('anthropic', { oauth: anthropicAuthTokens });
         console.log('✅ Anthropic token saved');
         process.exit(0);
-    } else if (vendor === 'gemini') {
-        console.log('🚀 Registering Gemini token');
-        const geminiAuthTokens = await authenticateGemini();
-        registerVendorToken('gemini', { oauth: geminiAuthTokens });
-        console.log('✅ Gemini token saved');
-
-        // Also update local Gemini config to keep tokens in sync
-        updateLocalGeminiCredentials(geminiAuthTokens);
-
-        process.exit(0);
     } else {
         throw new Error(`Unsupported vendor: ${vendor}`);
     }
@@ -120,8 +100,7 @@ async function handleConnectStatus(): Promise<void> {
     console.log(chalk.bold('\n🔌 Connection Status\n'));
 
     // Check each vendor
-    const vendors: Array<{ key: 'openai' | 'anthropic' | 'gemini'; name: string; display: string }> = [
-        { key: 'gemini', name: 'Gemini', display: 'Google Gemini' },
+    const vendors: Array<{ key: 'openai' | 'anthropic'; name: string; display: string }> = [
         { key: 'openai', name: 'Codex', display: 'OpenAI Codex' },
         { key: 'anthropic', name: 'Claude', display: 'Anthropic Claude' },
     ];
@@ -160,45 +139,6 @@ async function handleConnectStatus(): Promise<void> {
 
     console.log('');
     console.log(chalk.gray('To connect a vendor, run: remcli connect <vendor>'));
-    console.log(chalk.gray('Example: remcli connect gemini'));
+    console.log(chalk.gray('Example: remcli connect codex'));
     console.log('');
-}
-
-/**
- * Update local Gemini credentials file to keep in sync with Remcli cloud
- * This ensures the Gemini SDK uses the same account as Remcli
- */
-function updateLocalGeminiCredentials(tokens: {
-    access_token: string;
-    refresh_token?: string;
-    id_token?: string;
-    expires_in?: number;
-    token_type?: string;
-    scope?: string;
-}): void {
-    try {
-        const geminiDir = join(homedir(), '.gemini');
-        const credentialsPath = join(geminiDir, 'oauth_creds.json');
-        
-        // Create directory if it doesn't exist
-        if (!existsSync(geminiDir)) {
-            mkdirSync(geminiDir, { recursive: true });
-        }
-        
-        // Write credentials in the format Gemini CLI expects
-        const credentials = {
-            access_token: tokens.access_token,
-            token_type: tokens.token_type || 'Bearer',
-            scope: tokens.scope || 'https://www.googleapis.com/auth/cloud-platform',
-            ...(tokens.refresh_token && { refresh_token: tokens.refresh_token }),
-            ...(tokens.id_token && { id_token: tokens.id_token }),
-            ...(tokens.expires_in && { expires_in: tokens.expires_in }),
-        };
-        
-        writeFileSync(credentialsPath, JSON.stringify(credentials, null, 2), 'utf-8');
-        console.log(chalk.gray(`  Updated local credentials: ${credentialsPath}`));
-    } catch (error) {
-        // Non-critical error - server tokens will still work
-        console.log(chalk.yellow(`  ⚠️ Could not update local credentials: ${error}`));
-    }
 }

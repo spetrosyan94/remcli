@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { configuration } from '@/configuration';
 import { logger } from '@/ui/logger';
 
-type VendorName = 'openai' | 'anthropic' | 'gemini';
+type VendorName = 'openai' | 'anthropic';
 
 interface VendorTokenStore {
     [vendor: string]: unknown;

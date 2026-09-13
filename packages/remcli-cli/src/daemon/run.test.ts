@@ -10,6 +10,7 @@ import {
     cleanupDaemonStartupFailure,
     handleUnexpectedTunnelStop,
     performDaemonShutdown,
+    persistAntigravitySessionRegistryEntry,
     runDaemonShutdownLifecycle,
     type DaemonShutdownDependencies,
 } from './run';
@@ -19,6 +20,20 @@ afterEach(() => {
 });
 
 describe('daemon shutdown lifecycle', () => {
+    it('keeps a validated Antigravity binding successful when registry persistence fails', () => {
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+        const binding = {
+            agent: 'antigravity' as const,
+            nativeConversationId: 'conversation-id',
+            remcliSessionId: 'remcli-session-id',
+        };
+
+        expect(() => persistAntigravitySessionRegistryEntry({
+            record: () => { throw new Error('filesystem failure'); },
+        }, binding, '/repo', 123)).not.toThrow();
+        expect(warn).toHaveBeenCalledWith('[DAEMON RUN] Failed to persist Antigravity session registry entry; keeping the validated binding active.');
+    });
+
     it('aborts delayed startup readiness when daemon state ownership is lost', async () => {
         const startupAbort = createDaemonStartupAbortController();
         const delayedReadiness = new Promise<void>(() => undefined);

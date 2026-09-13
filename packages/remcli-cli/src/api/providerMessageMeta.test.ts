@@ -96,23 +96,6 @@ describe('parseProviderUserMessage', () => {
         })).success).toBe(false);
     });
 
-    it('accepts Gemini legacy per-turn controls only through the Gemini schema', () => {
-        expect(parseProviderUserMessage('gemini', createUserMessage({
-            sentFrom: 'phone',
-            permissionMode: 'auto_edit',
-            model: 'gemini-model',
-            appendSystemPrompt: 'extra instructions',
-        })).success).toBe(true);
-
-        expect(parseProviderUserMessage('gemini', createUserMessage({
-            permissionMode: 'bypassPermissions',
-        })).success).toBe(false);
-
-        expect(parseProviderUserMessage('gemini', createUserMessage({
-            fallbackModel: 'foreign-control',
-        })).success).toBe(false);
-    });
-
     it.each([undefined, 'unknown-provider'])('allows only safe prompts when flavor is %s', (flavor) => {
         expect(parseProviderUserMessage(flavor, createUserMessage({
             sentFrom: 'phone',
