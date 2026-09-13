@@ -23,7 +23,7 @@ const DIRECTORY_PROJECTS_FILE_NAME = 'recent-directories.json';
 const DIRECTORY_PROJECTS_FILE_MODE = 0o600;
 const DIRECTORY_PROJECTS_FILE_VERSION = 2;
 
-export type DirectoryProjectAgent = 'claude' | 'codex' | 'cursor' | 'gemini';
+export type DirectoryProjectAgent = 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
 export type DirectoryProjectsErrorCode = 'unavailable' | 'invalid_machine_id' | 'invalid_directory';
 
 export class DirectoryProjectsError extends Error {
@@ -110,7 +110,11 @@ function isTimestamp(value: unknown): value is number {
 }
 
 function isDirectoryProjectAgent(value: unknown): value is DirectoryProjectAgent {
-    return value === 'claude' || value === 'codex' || value === 'cursor' || value === 'gemini';
+    return value === 'claude'
+        || value === 'codex'
+        || value === 'cursor'
+        || value === 'gemini'
+        || value === 'antigravity';
 }
 
 function isNullableString(value: unknown): value is string | null {

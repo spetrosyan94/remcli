@@ -40,6 +40,7 @@ import {
 } from './codex/codexCapabilities'
 import type { CodexSandbox } from './codex/types'
 import { getCursorDaemonRunOptions } from './cursor/daemonExecution'
+import { getAntigravityDaemonRunOptions } from './antigravity/daemonExecution'
 
 /**
  * Print a subcommand error consistently and terminate the process.
@@ -227,6 +228,28 @@ async function ensureDaemonRunning(): Promise<void> {
         startedBy,
         resumeSessionId,
         ...daemonCursorExecution,
+      });
+    } catch (error) {
+      exitWithSubcommandError(error)
+    }
+    return;
+  } else if (subcommand === 'antigravity') {
+    try {
+      const { runAntigravity } = await import('@/antigravity/runAntigravity');
+      const { startedBy, resumeSessionId, passthroughArgs, shouldPassthrough } = parseAgentRunArgs(args);
+      if (shouldPassthrough) {
+        runPassthroughCommand('agy', passthroughArgs);
+        process.exit(0);
+      }
+
+      await ensureDaemonRunning();
+      const { credentials } = await setupP2PForSession();
+      const daemonAntigravityExecution = getAntigravityDaemonRunOptions(startedBy);
+      await runAntigravity({
+        credentials,
+        startedBy,
+        resumeSessionId,
+        ...daemonAntigravityExecution,
       });
     } catch (error) {
       exitWithSubcommandError(error)

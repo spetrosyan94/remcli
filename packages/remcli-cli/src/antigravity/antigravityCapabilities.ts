@@ -9,6 +9,7 @@ import {
     runAntigravityCommand,
     type AntigravityCommandRunner,
     type AntigravityExecutionMode,
+    type AntigravityLaunchControls,
 } from './antigravityCli';
 
 const DEFAULT_TTL_MS = 5 * 60 * 1_000;
@@ -34,6 +35,13 @@ export interface AntigravityExecutionConfig {
     catalogVersion: string;
 }
 
+export type AntigravitySpawnLaunchControls = Required<AntigravityLaunchControls>;
+
+export interface AntigravitySpawnSelection {
+    execution: AntigravityExecutionConfig;
+    launchControls: AntigravitySpawnLaunchControls;
+}
+
 export interface AntigravityCapabilitiesSnapshot {
     agent: 'antigravity';
     status: 'ready' | 'unavailable';
@@ -44,6 +52,8 @@ export interface AntigravityCapabilitiesSnapshot {
     models: AntigravityModelCapability[];
     executionModes: AntigravityExecutionMode[];
     supportsDangerouslySkipPermissions: boolean;
+    /** Whether an explicit `--sandbox` launch override is supported. */
+    supportsSandbox: boolean;
     errorCode?: AntigravityCapabilityErrorCode;
 }
 
@@ -153,7 +163,8 @@ export function createAntigravityCapabilitiesSnapshot(source: AntigravityCatalog
     return {
         agent: 'antigravity', status: 'ready', fetchedAt, expiresAt: fetchedAt + cacheTtlMs,
         catalogVersion: catalogFingerprint(source.version, models), cliVersion: source.version,
-        models, executionModes: ['default', 'accept-edits', 'plan'], supportsDangerouslySkipPermissions: true,
+        models, executionModes: ['default', 'accept-edits', 'plan'],
+        supportsDangerouslySkipPermissions: true, supportsSandbox: true,
     };
 }
 
@@ -175,12 +186,37 @@ export function validateAntigravityExecution(snapshot: AntigravityCapabilitiesSn
         item.id === execution.model || Object.values(item.runtimeModels).includes(execution.model)
     ));
     if (!model) throw new AntigravityCapabilitiesError('unsupported_selection');
-    if (model.id === execution.model && Object.keys(model.runtimeModels).length > 0) {
+    const hasEffortSpecificRuntimeModels = Object.keys(model.runtimeModels).length > 0;
+    if (hasEffortSpecificRuntimeModels && (
+        model.id === execution.model
+        || execution.reasoningEffort === undefined
+        || model.runtimeModels[execution.reasoningEffort] !== execution.model
+    )) {
         throw new AntigravityCapabilitiesError('unsupported_selection');
     }
-    if (execution.reasoningEffort !== undefined && model.runtimeModels[execution.reasoningEffort] !== execution.model) {
+    if (!hasEffortSpecificRuntimeModels && execution.reasoningEffort !== undefined) {
         throw new AntigravityCapabilitiesError('unsupported_selection');
     }
+}
+
+export function validateAntigravitySpawnSelection(
+    snapshot: AntigravityCapabilitiesSnapshot,
+    execution: AntigravityExecutionConfig | undefined,
+    launchControls: AntigravitySpawnLaunchControls | undefined,
+    now = Date.now(),
+): AntigravitySpawnSelection {
+    if (!execution || !launchControls) {
+        throw new AntigravityCapabilitiesError('unavailable');
+    }
+    validateAntigravityExecution(snapshot, execution, now);
+    if (!snapshot.executionModes.includes(launchControls.mode)
+        || typeof launchControls.dangerouslySkipPermissions !== 'boolean'
+        || typeof launchControls.sandbox !== 'boolean'
+        || (launchControls.dangerouslySkipPermissions && !snapshot.supportsDangerouslySkipPermissions)
+        || (launchControls.sandbox && !snapshot.supportsSandbox)) {
+        throw new AntigravityCapabilitiesError('unsupported_selection');
+    }
+    return { execution, launchControls };
 }
 
 export class AntigravityCapabilitiesService {
@@ -215,7 +251,7 @@ export class AntigravityCapabilitiesService {
             return {
                 agent: 'antigravity', status: 'unavailable', fetchedAt: null, expiresAt: null,
                 catalogVersion: null, cliVersion: null, models: [], executionModes: [],
-                supportsDangerouslySkipPermissions: false, errorCode: 'unavailable',
+                supportsDangerouslySkipPermissions: false, supportsSandbox: false, errorCode: 'unavailable',
             };
         } finally {
             this.inFlight = null;
@@ -225,5 +261,13 @@ export class AntigravityCapabilitiesService {
     async validateSelection(execution: AntigravityExecutionConfig | undefined): Promise<AntigravityExecutionConfig> {
         validateAntigravityExecution(await this.getCapabilities(false), execution, this.now());
         return execution as AntigravityExecutionConfig;
+    }
+
+    async validateSpawnSelection(
+        execution: AntigravityExecutionConfig | undefined,
+        launchControls: AntigravitySpawnLaunchControls | undefined,
+    ): Promise<AntigravitySpawnSelection> {
+        const snapshot = await this.getCapabilities(true);
+        return validateAntigravitySpawnSelection(snapshot, execution, launchControls, this.now());
     }
 }

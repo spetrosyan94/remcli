@@ -36,6 +36,10 @@ import {
     CursorCapabilitiesError,
     CursorCapabilitiesService,
 } from '@/cursor/cursorCapabilities';
+import {
+    AntigravityCapabilitiesError,
+    AntigravityCapabilitiesService,
+} from '@/antigravity/antigravityCapabilities';
 import type {
     DaemonSessionExecutionState,
     SessionExecutionLookupResult,
@@ -62,6 +66,7 @@ export interface MachineSocketDeps {
     pairingRekeyCoordinator: PairingRekeyCoordinator;
     codexCapabilities: CodexCapabilitiesService;
     cursorCapabilities: CursorCapabilitiesService;
+    antigravityCapabilities: AntigravityCapabilitiesService;
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
     stopSession: (sessionId: string) => StopSessionResult | Promise<StopSessionResult>;
     getSessionExecution: (sessionId: string) => SessionExecutionLookupResult;
@@ -208,6 +213,7 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
         pairingRekeyCoordinator,
         codexCapabilities,
         cursorCapabilities,
+        antigravityCapabilities,
         spawnSession,
         stopSession,
         getSessionExecution,
@@ -272,6 +278,20 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
             }
         }
 
+        if (request.agent === 'antigravity') {
+            try {
+                await antigravityCapabilities.validateSpawnSelection(
+                    request.antigravityExecution,
+                    request.antigravityLaunchControls,
+                );
+            } catch (error) {
+                if (error instanceof AntigravityCapabilitiesError) {
+                    throw new Error(`Antigravity capability selection rejected: ${error.code}.`);
+                }
+                throw new Error('Antigravity capability discovery is unavailable. Refresh and try again.');
+            }
+        }
+
         const result = await spawnSession(spawnOptions);
 
         switch (result.type) {
@@ -314,6 +334,11 @@ export function bootstrapMachineSocket(deps: MachineSocketDeps): MachineSocketHa
     machineRpcManager.registerHandler('get-cursor-capabilities', async (params: { forceRefresh?: unknown }) => {
         const forceRefresh = params?.forceRefresh === true;
         return await cursorCapabilities.getCapabilities(forceRefresh);
+    });
+
+    machineRpcManager.registerHandler('get-antigravity-capabilities', async (params: { forceRefresh?: unknown }) => {
+        const forceRefresh = params?.forceRefresh === true;
+        return await antigravityCapabilities.getCapabilities(forceRefresh);
     });
 
     machineRpcManager.registerHandler('get-session-execution', (params: unknown) => {

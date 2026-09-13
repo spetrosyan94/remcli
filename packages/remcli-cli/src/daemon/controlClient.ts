@@ -33,6 +33,12 @@ import {
     type NativeCodexThreadBindingResult,
     type NativeCursorSessionBinding,
     type NativeCursorSessionBindingResult,
+    type NativeAntigravityConversationBinding,
+    type NativeAntigravityConversationBindingResult,
+    type AntigravityRunnerPreflightRequest,
+    type AntigravityRunnerPreflightResponse,
+    type AntigravityRunnerBootstrapFailureRequest,
+    type AntigravityRunnerBootstrapFailureResult,
     type TrackedSession,
 } from './types';
 import { getSessionRunnerCredential, rememberSessionRunnerCredential } from './p2p/p2pRunnerCredentials';
@@ -267,6 +273,20 @@ export async function bindDaemonCursorSession(
   });
 }
 
+export async function bindDaemonAntigravityConversation(
+  binding: NativeAntigravityConversationBinding,
+): Promise<DaemonResponse<NativeAntigravityConversationBindingResult>> {
+  const runnerCredential = getSessionRunnerCredential(binding.remcliSessionId);
+  if (!runnerCredential) {
+    return { ok: false, error: MISSING_SESSION_RUNNER_CREDENTIAL_ERROR };
+  }
+
+  return daemonPost<NativeAntigravityConversationBindingResult>('/antigravity-conversation-bound', {
+    ...binding,
+    runnerCredential,
+  });
+}
+
 export async function acquireDaemonCursorHeadlessWriterLease(
   request: CursorHeadlessWriterLeaseAcquireRequest,
 ): Promise<DaemonResponse<CursorHeadlessWriterLeaseAcquireResult>> {
@@ -318,6 +338,34 @@ export async function reportDaemonCursorRunnerBootstrapFailure(
   }
 
   return daemonPost<CursorRunnerBootstrapFailureResult>('/cursor-runner-bootstrap-failed', {
+    ...request,
+    runnerToken,
+  });
+}
+
+export async function preflightDaemonAntigravityRunner(
+  request: Omit<AntigravityRunnerPreflightRequest, 'runnerToken'>,
+): Promise<DaemonResponse<AntigravityRunnerPreflightResponse>> {
+  const runnerToken = process.env.REMCLI_DAEMON_RUNNER_TOKEN;
+  if (!runnerToken) {
+    return { ok: false, error: MISSING_DAEMON_RUNNER_CAPABILITY_ERROR };
+  }
+
+  return daemonPost<AntigravityRunnerPreflightResponse>('/antigravity-runner-preflight', {
+    ...request,
+    runnerToken,
+  });
+}
+
+export async function reportDaemonAntigravityRunnerBootstrapFailure(
+  request: Omit<AntigravityRunnerBootstrapFailureRequest, 'runnerToken'>,
+): Promise<DaemonResponse<AntigravityRunnerBootstrapFailureResult>> {
+  const runnerToken = process.env.REMCLI_DAEMON_RUNNER_TOKEN;
+  if (!runnerToken) {
+    return { ok: false, error: MISSING_DAEMON_RUNNER_CAPABILITY_ERROR };
+  }
+
+  return daemonPost<AntigravityRunnerBootstrapFailureResult>('/antigravity-runner-bootstrap-failed', {
     ...request,
     runnerToken,
   });

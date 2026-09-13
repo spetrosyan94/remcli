@@ -51,6 +51,7 @@ import { startHeartbeatLoop } from './heartbeat';
 import { startCodexAppServerHost, type CodexAppServerHostHandle } from '@/codex/codexAppServerHost';
 import { CodexCapabilitiesService } from '@/codex/codexCapabilities';
 import { CursorCapabilitiesService } from '@/cursor/cursorCapabilities';
+import { AntigravityCapabilitiesService } from '@/antigravity/antigravityCapabilities';
 import { PairingRekeyCoordinator } from './p2p/pairingRekey';
 import { commitPairingRekeyAfterMachineReadiness } from './p2p/pairingRekeyTransaction';
 import { redactDiagnosticData } from '@/utils/redaction';
@@ -707,6 +708,7 @@ export async function startDaemon(): Promise<void> {
     let machineSocketHandle: ReturnType<typeof bootstrapMachineSocket> | null = null;
     let codexCapabilities: CodexCapabilitiesService | null = null;
     let cursorCapabilities: CursorCapabilitiesService | null = null;
+    let antigravityCapabilities: AntigravityCapabilitiesService | null = null;
     let machineId = '';
     let tunnelStop: (() => void) | null = null;
     let tunnelUrl: string | undefined;
@@ -738,10 +740,11 @@ export async function startDaemon(): Promise<void> {
         const activeP2PServer = p2pServer;
         const activeCodexCapabilities = codexCapabilities;
         const activeCursorCapabilities = cursorCapabilities;
+        const activeAntigravityCapabilities = antigravityCapabilities;
         if (!activeP2PServer) {
           throw new Error('P2P server is not ready');
         }
-        if (!machineId || !activeCodexCapabilities || !activeCursorCapabilities) {
+        if (!machineId || !activeCodexCapabilities || !activeCursorCapabilities || !activeAntigravityCapabilities) {
           throw new Error('Machine RPC dependencies are unavailable before pairing rekey.');
         }
         if (!activeP2PServer.daemonMachineCredential) {
@@ -763,6 +766,7 @@ export async function startDaemon(): Promise<void> {
             pairingRekeyCoordinator,
             codexCapabilities: activeCodexCapabilities,
             cursorCapabilities: activeCursorCapabilities,
+            antigravityCapabilities: activeAntigravityCapabilities,
             spawnSession: sessionManager.spawnSession,
             stopSession: sessionManager.stopSession,
             getSessionExecution: sessionManager.getSessionExecution,
@@ -799,10 +803,13 @@ export async function startDaemon(): Promise<void> {
       verifySessionRunnerCredential: (sessionId, credential) => runnerCredentialStore.verify(sessionId, credential),
       bindNativeCodexThread: sessionManager.bindNativeCodexThread,
       bindNativeCursorSession: sessionManager.bindNativeCursorSession,
+      bindNativeAntigravityConversation: sessionManager.bindNativeAntigravityConversation,
       acquireCursorHeadlessWriterLease: sessionManager.acquireCursorHeadlessWriterLease,
       releaseCursorNativeWriterLease: sessionManager.releaseCursorNativeWriterLease,
       preflightCursorRunner: sessionManager.preflightCursorRunner,
       reportCursorRunnerBootstrapFailure: sessionManager.reportCursorRunnerBootstrapFailure,
+      preflightAntigravityRunner: sessionManager.preflightAntigravityRunner,
+      reportAntigravityRunnerBootstrapFailure: sessionManager.reportAntigravityRunnerBootstrapFailure,
       markDaemonRunnerStopping: sessionManager.markDaemonRunnerStopping,
       completeDaemonRunnerStopping: sessionManager.completeDaemonRunnerStopping,
       openCodexRemoteTui: sessionManager.openCodexRemoteTui,
@@ -830,6 +837,7 @@ export async function startDaemon(): Promise<void> {
       }),
     });
     cursorCapabilities = new CursorCapabilitiesService();
+    antigravityCapabilities = new AntigravityCapabilitiesService();
     writeDaemonState(fileState);
     runtimeStateWritesAllowed = true;
     logger.debug('[DAEMON RUN] Daemon state written');
@@ -975,7 +983,7 @@ export async function startDaemon(): Promise<void> {
     logger.debug('[DAEMON RUN] Daemon state updated with P2P info');
 
     // ─── Self-connect as machine client for RPC handling ────────────
-    if (!codexCapabilities || !cursorCapabilities) {
+    if (!codexCapabilities || !cursorCapabilities || !antigravityCapabilities) {
         throw new Error('Provider capability services were not initialized.');
     }
     if (!p2pServer.daemonMachineCredential) {
@@ -991,6 +999,7 @@ export async function startDaemon(): Promise<void> {
         pairingRekeyCoordinator,
         codexCapabilities,
         cursorCapabilities,
+        antigravityCapabilities,
         spawnSession: sessionManager.spawnSession,
         stopSession: sessionManager.stopSession,
         getSessionExecution: sessionManager.getSessionExecution,

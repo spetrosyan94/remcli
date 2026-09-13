@@ -397,6 +397,13 @@ export type Metadata = {
   },
   cursorSessionId?: string, // Cursor agent session ID
   geminiSessionId?: string, // Gemini ACP session ID
+  /** Daemon-owned Antigravity session identity. */
+  antigravitySessionId?: string,
+  /** Safe projection of the daemon-validated Antigravity execution. */
+  antigravityExecution?: {
+    model: string,
+    reasoningEffort?: string,
+  },
   /** Trusted daemon-lifetime P2P parent for a Cursor native resume. */
   resumedFromRemcliSessionId?: string,
   tools?: string[],

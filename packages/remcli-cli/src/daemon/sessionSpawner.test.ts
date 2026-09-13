@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { Metadata } from '@/api/types';
 import type { SpawnSessionOptions } from '@/modules/common/registerCommonHandlers';
 import type { CursorNativeWriterLease, NativeCursorSessionBindingResult } from './types';
+import { getAntigravityDaemonRunOptions } from '@/antigravity/daemonExecution';
 
 const tmuxMocks = vi.hoisted(() => ({
     executeTmuxCommand: vi.fn(),
@@ -243,8 +244,385 @@ beforeEach(() => {
     openTerminalMocks.openTerminalWithCommand.mockResolvedValue(true);
 });
 
+describe('Antigravity daemon ownership', () => {
+    async function startBoundConversation(
+        manager: ReturnType<typeof createSessionManager>,
+        pid: number,
+        remcliSessionId: string,
+        nativeConversationId: string,
+        directory = process.cwd(),
+    ): Promise<void> {
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({
+            success: true,
+            sessionId: `tmux-${remcliSessionId}:main`,
+            windowId: `@${pid}`,
+            paneId: `%${pid}`,
+            pid,
+        });
+        const spawning = manager.spawnSession({
+            directory,
+            agent: 'antigravity',
+            ...CONTROLLED_ANTIGRAVITY_SELECTION,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalled());
+        manager.onRemcliSessionWebhook(
+            remcliSessionId,
+            createSessionMetadata(pid, { path: directory, startedBy: 'daemon', flavor: 'antigravity' }),
+            getDaemonRunnerToken(tmuxMocks.spawnInTmux.mock.calls.length - 1),
+        );
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: remcliSessionId });
+        await expect(manager.bindNativeAntigravityConversation({
+            agent: 'antigravity',
+            nativeConversationId,
+            remcliSessionId,
+        })).resolves.toMatchObject({ type: 'bound' });
+    }
+
+    it('uses the current CLI entrypoint and emits daemon options accepted by the Antigravity boundary', async () => {
+        const pid = 31_001;
+        const runnerEntrypointPath = '/private/remcli-test-artifact/dist/index.mjs';
+        const legacyEffortKey = ['REMCLI', 'ANTIGRAVITY', 'EFFORT'].join('_');
+        vi.stubEnv('REMCLI_ANTIGRAVITY_MODEL', 'stale-model');
+        vi.stubEnv('REMCLI_ANTIGRAVITY_REASONING_EFFORT', 'stale-effort');
+        vi.stubEnv('REMCLI_ANTIGRAVITY_SANDBOX', 'false');
+        vi.stubEnv('REMCLI_ANTIGRAVITY_STALE', 'stale-value');
+        vi.stubEnv(legacyEffortKey, 'stale-legacy-effort');
+        vi.stubEnv('GOOGLE_API_KEY', 'stale-google-api-key');
+        vi.stubEnv('GOOGLE_APPLICATION_CREDENTIALS', '/tmp/stale-google-credentials.json');
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({ success: true, sessionId: 'tmux-antigravity-command:main', pid });
+        const manager = createSessionManager({ runnerEntrypointPath });
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'antigravity',
+            ...CONTROLLED_ANTIGRAVITY_SELECTION,
+        });
+
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        const [commands, , environment] = tmuxMocks.spawnInTmux.mock.calls[0]!;
+        expect(commands).toEqual([
+            "node --no-warnings --no-deprecation '/private/remcli-test-artifact/dist/index.mjs' 'antigravity' --remcli-starting-mode remote --started-by daemon",
+        ]);
+        const antigravityEnvironment = Object.fromEntries(
+            Object.entries(environment).filter(([key]) => key.startsWith('REMCLI_ANTIGRAVITY_')),
+        );
+        expect(antigravityEnvironment).toEqual({
+            REMCLI_ANTIGRAVITY_MODEL: 'controlled-antigravity-model',
+            REMCLI_ANTIGRAVITY_REASONING_EFFORT: 'medium',
+            REMCLI_ANTIGRAVITY_CATALOG_VERSION: 'controlled-antigravity-catalog',
+            REMCLI_ANTIGRAVITY_MODE: 'accept-edits',
+            REMCLI_ANTIGRAVITY_DANGEROUSLY_SKIP_PERMISSIONS: 'false',
+            REMCLI_ANTIGRAVITY_SANDBOX: 'true',
+        });
+        expect(environment).not.toHaveProperty('GOOGLE_API_KEY');
+        expect(environment).not.toHaveProperty('GOOGLE_APPLICATION_CREDENTIALS');
+        expect(getAntigravityDaemonRunOptions('daemon', environment)).toMatchObject({
+            execution: CONTROLLED_ANTIGRAVITY_SELECTION.antigravityExecution,
+            launchControls: {
+                mode: 'accept-edits',
+                dangerouslySkipPermissions: false,
+                sandbox: true,
+            },
+        });
+
+        manager.onRemcliSessionWebhook(
+            'remcli-antigravity-command',
+            createSessionMetadata(pid, { startedBy: 'daemon', flavor: 'antigravity' }),
+            getDaemonRunnerToken(),
+        );
+        await expect(spawning).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-antigravity-command' });
+    });
+
+    it('binds a fresh native conversation and reuses it only after immutable tmux ownership exists', async () => {
+        const manager = createSessionManager();
+        await startBoundConversation(manager, 31_011, 'remcli-antigravity-exists', 'conversation-exists');
+
+        await expect(manager.bindNativeAntigravityConversation({
+            agent: 'antigravity',
+            nativeConversationId: 'conversation-exists',
+            remcliSessionId: 'remcli-antigravity-exists',
+        })).resolves.toEqual({
+            type: 'already-bound',
+            wrapper: {
+                agent: 'antigravity',
+                nativeConversationId: 'conversation-exists',
+                remcliSessionId: 'remcli-antigravity-exists',
+            },
+        });
+        await expect(manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'antigravity',
+            resumeSessionId: 'conversation-exists',
+            ...CONTROLLED_ANTIGRAVITY_SELECTION,
+        })).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-antigravity-exists' });
+        expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+    });
+
+    it('deduplicates concurrent resumes of one ownership-confirmed conversation', async () => {
+        const manager = createSessionManager();
+        await startBoundConversation(manager, 31_021, 'remcli-antigravity-duplicate', 'conversation-duplicate');
+        const resume = () => manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'antigravity' as const,
+            resumeSessionId: 'conversation-duplicate',
+            ...CONTROLLED_ANTIGRAVITY_SELECTION,
+        });
+
+        await expect(Promise.all([resume(), resume()])).resolves.toEqual([
+            expect.objectContaining({ type: 'success', sessionId: 'remcli-antigravity-duplicate' }),
+            expect.objectContaining({ type: 'success', sessionId: 'remcli-antigravity-duplicate' }),
+        ]);
+        expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+    });
+
+    it('removes a confirmed-missing wrapper before spawning its replacement', async () => {
+        const manager = createSessionManager();
+        await startBoundConversation(manager, 31_031, 'remcli-antigravity-missing', 'conversation-missing');
+        const runner = manager.getChildren()[0]?.tmuxRunner;
+        expect(runner).toBeDefined();
+        tmuxMocks.ownedPanes.delete(runner!.paneId);
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({ success: true, sessionId: 'tmux-antigravity-replacement:main', pid: 31_032 });
+
+        const resumed = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'antigravity',
+            resumeSessionId: 'conversation-missing',
+            ...CONTROLLED_ANTIGRAVITY_SELECTION,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+        manager.onRemcliSessionWebhook(
+            'remcli-antigravity-replacement',
+            createSessionMetadata(31_032, { startedBy: 'daemon', flavor: 'antigravity' }),
+            getDaemonRunnerToken(1),
+        );
+        await expect(resumed).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-antigravity-replacement' });
+        expect(manager.getChildren()).toEqual([
+            expect.objectContaining({ remcliSessionId: 'remcli-antigravity-replacement' }),
+        ]);
+    });
+
+    it('fails closed when the active conversation tmux identity mismatches', async () => {
+        const manager = createSessionManager();
+        await startBoundConversation(manager, 31_041, 'remcli-antigravity-mismatch', 'conversation-mismatch');
+        const runner = manager.getChildren()[0]?.tmuxRunner;
+        expect(runner).toBeDefined();
+        tmuxMocks.ownedPanes.set(runner!.paneId, { ...runner!, ownerMarker: 'foreign-owner-marker' });
+
+        await expect(manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'antigravity',
+            resumeSessionId: 'conversation-mismatch',
+            ...CONTROLLED_ANTIGRAVITY_SELECTION,
+        })).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Could not confirm ownership of the Antigravity conversation tmux pane. Resume was not started.',
+        });
+        expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+        expect(manager.getChildren()).toHaveLength(1);
+    });
+
+    it('rejects a native bind that does not exactly match the requested resume conversation', async () => {
+        const pid = 31_051;
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({ success: true, sessionId: 'tmux-antigravity-bind-mismatch:main', pid });
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'antigravity',
+            resumeSessionId: 'conversation-expected',
+            ...CONTROLLED_ANTIGRAVITY_SELECTION,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        const runnerToken = getDaemonRunnerToken();
+        await expect(manager.preflightAntigravityRunner({
+            agent: 'antigravity',
+            nativeResumeConversationId: 'conversation-expected',
+            directory: process.cwd(),
+            pid,
+            runnerToken,
+        })).resolves.toEqual({ type: 'verified' });
+        manager.onRemcliSessionWebhook(
+            'remcli-antigravity-bind-mismatch',
+            createSessionMetadata(pid, { startedBy: 'daemon', flavor: 'antigravity' }),
+            runnerToken,
+        );
+        await expect(spawning).resolves.toMatchObject({ type: 'success' });
+
+        const mismatchedBinding = {
+            agent: 'antigravity' as const,
+            nativeConversationId: 'conversation-other',
+            remcliSessionId: 'remcli-antigravity-bind-mismatch',
+        };
+        await expect(manager.bindNativeAntigravityConversation(mismatchedBinding)).resolves.toEqual({
+            type: 'native-conversation-mismatch',
+            binding: mismatchedBinding,
+            expectedNativeConversationId: 'conversation-expected',
+        });
+        await expect(manager.bindNativeAntigravityConversation({
+            ...mismatchedBinding,
+            nativeConversationId: 'conversation-expected',
+        })).resolves.toMatchObject({ type: 'bound' });
+    });
+
+    it('rejects an active native conversation resume from another directory', async () => {
+        const manager = createSessionManager();
+        await startBoundConversation(manager, 31_061, 'remcli-antigravity-directory', 'conversation-directory');
+
+        await expect(manager.spawnSession({
+            directory: join(process.cwd(), 'src'),
+            agent: 'antigravity',
+            resumeSessionId: 'conversation-directory',
+            ...CONTROLLED_ANTIGRAVITY_SELECTION,
+        })).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Antigravity conversation belongs to a different working directory. Select its original workspace before resuming.',
+        });
+        expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce();
+    });
+
+    it('keeps stop lineage for an authenticated same-directory resume preflight', async () => {
+        const runnerEntrypointPath = '/private/remcli-test-artifact/dist/index.mjs';
+        const manager = createSessionManager({ runnerEntrypointPath });
+        await startBoundConversation(manager, 31_071, 'remcli-antigravity-parent', 'conversation-lineage');
+        await expect(manager.stopSession('remcli-antigravity-parent')).resolves.toEqual({
+            success: true,
+            stoppedSessionId: 'remcli-antigravity-parent',
+        });
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({ success: true, sessionId: 'tmux-antigravity-child:main', pid: 31_072 });
+
+        const resumed = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'antigravity',
+            resumeSessionId: 'conversation-lineage',
+            resumeSessionName: 'Lineage resume',
+            ...CONTROLLED_ANTIGRAVITY_SELECTION,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledTimes(2));
+        const [commands, , environment] = tmuxMocks.spawnInTmux.mock.calls[1]!;
+        expect(commands).toEqual([
+            "node --no-warnings --no-deprecation '/private/remcli-test-artifact/dist/index.mjs' 'antigravity' --remcli-starting-mode remote --started-by daemon --resume 'conversation-lineage'",
+        ]);
+        expect(environment.REMCLI_SESSION_NAME).toBe('Lineage resume');
+        expect(commands[0]).not.toContain('--continue');
+        const runnerToken = getDaemonRunnerToken(1);
+        await expect(manager.preflightAntigravityRunner({
+            agent: 'antigravity',
+            nativeResumeConversationId: 'conversation-lineage',
+            directory: process.cwd(),
+            pid: 31_072,
+            runnerToken,
+        })).resolves.toEqual({
+            type: 'verified',
+            parentRemcliSessionId: 'remcli-antigravity-parent',
+        });
+        manager.onRemcliSessionWebhook(
+            'remcli-antigravity-child',
+            createSessionMetadata(31_072, { startedBy: 'daemon', flavor: 'antigravity' }),
+            runnerToken,
+        );
+        await expect(resumed).resolves.toMatchObject({ type: 'success', sessionId: 'remcli-antigravity-child' });
+    });
+
+    it('authenticates runner preflight against the exact PID, resume id, and directory', async () => {
+        const pid = 31_081;
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({ success: true, sessionId: 'tmux-antigravity-preflight:main', pid });
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'antigravity',
+            resumeSessionId: 'conversation-preflight',
+            ...CONTROLLED_ANTIGRAVITY_SELECTION,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+        const runnerToken = getDaemonRunnerToken();
+        const request = {
+            agent: 'antigravity' as const,
+            nativeResumeConversationId: 'conversation-preflight',
+            directory: process.cwd(),
+            pid,
+            runnerToken,
+        };
+
+        await expect(manager.preflightAntigravityRunner({ ...request, runnerToken: 'wrong-token' })).resolves.toEqual({ type: 'rejected' });
+        await expect(manager.preflightAntigravityRunner({ ...request, pid: pid + 1 })).resolves.toEqual({ type: 'rejected' });
+        await expect(manager.preflightAntigravityRunner({ ...request, nativeResumeConversationId: 'conversation-other' })).resolves.toEqual({ type: 'rejected' });
+        await expect(manager.preflightAntigravityRunner({ ...request, directory: join(process.cwd(), 'src') })).resolves.toEqual({ type: 'rejected' });
+        await expect(manager.preflightAntigravityRunner(request)).resolves.toEqual({ type: 'verified' });
+
+        manager.onRemcliSessionWebhook(
+            'remcli-antigravity-preflight',
+            createSessionMetadata(pid, { startedBy: 'daemon', flavor: 'antigravity' }),
+            runnerToken,
+        );
+        await expect(spawning).resolves.toMatchObject({ type: 'success' });
+    });
+
+    it('accepts a bootstrap failure only from the exact pending runner capability', async () => {
+        const pid = 31_091;
+        tmuxMocks.spawnInTmux.mockResolvedValueOnce({ success: true, sessionId: 'tmux-antigravity-bootstrap:main', pid });
+        const manager = createSessionManager();
+        const spawning = manager.spawnSession({
+            directory: process.cwd(),
+            agent: 'antigravity',
+            ...CONTROLLED_ANTIGRAVITY_SELECTION,
+        });
+        await vi.waitFor(() => expect(tmuxMocks.spawnInTmux).toHaveBeenCalledOnce());
+
+        await expect(manager.reportAntigravityRunnerBootstrapFailure({
+            agent: 'antigravity',
+            pid,
+            runnerToken: 'wrong-token',
+        })).resolves.toEqual({ accepted: false });
+        await expect(manager.reportAntigravityRunnerBootstrapFailure({
+            agent: 'antigravity',
+            pid,
+            runnerToken: getDaemonRunnerToken(),
+        })).resolves.toEqual({ accepted: true });
+        await expect(spawning).resolves.toEqual({
+            type: 'error',
+            errorMessage: 'Antigravity daemon runner bootstrap failed before creating a Remcli session.',
+        });
+        expect(manager.getChildren()).toHaveLength(0);
+    });
+
+    it('refuses Antigravity spawn without validated execution and mandatory sandbox controls', async () => {
+        const manager = createSessionManager();
+        const missingExecution = {
+            directory: process.cwd(),
+            agent: 'antigravity',
+            antigravityLaunchControls: CONTROLLED_ANTIGRAVITY_SELECTION.antigravityLaunchControls,
+        } as unknown as SpawnSessionOptions;
+        const missingSandbox = {
+            directory: process.cwd(),
+            agent: 'antigravity',
+            antigravityExecution: CONTROLLED_ANTIGRAVITY_SELECTION.antigravityExecution,
+            antigravityLaunchControls: {
+                mode: 'accept-edits',
+                dangerouslySkipPermissions: false,
+            },
+        } as unknown as SpawnSessionOptions;
+        const invalidExecution = {
+            directory: process.cwd(),
+            agent: 'antigravity',
+            antigravityExecution: {
+                model: '',
+                catalogVersion: 'catalog',
+            },
+            antigravityLaunchControls: CONTROLLED_ANTIGRAVITY_SELECTION.antigravityLaunchControls,
+        } as unknown as SpawnSessionOptions;
+        const refusal = {
+            type: 'error',
+            errorMessage: 'Antigravity requires a daemon-validated execution and launch controls.',
+        };
+
+        await expect(manager.spawnSession(missingExecution)).resolves.toEqual(refusal);
+        await expect(manager.spawnSession(missingSandbox)).resolves.toEqual(refusal);
+        await expect(manager.spawnSession(invalidExecution)).resolves.toEqual(refusal);
+        expect(tmuxMocks.spawnInTmux).not.toHaveBeenCalled();
+    });
+});
+
 afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
 });
 
 function createSessionMetadata(hostPid: number, overrides: Partial<Metadata> = {}): Metadata {
@@ -283,6 +661,22 @@ const CONTROLLED_CURSOR_SELECTION = {
         cliFingerprint: '0123456789abcdef',
     },
 } satisfies Pick<SpawnSessionOptions, 'cursorExecution' | 'cursorLaunchControls' | 'cursorRunner'>;
+
+const CONTROLLED_ANTIGRAVITY_SELECTION = {
+    antigravityExecution: {
+        model: 'controlled-antigravity-model',
+        reasoningEffort: 'medium',
+        catalogVersion: 'controlled-antigravity-catalog',
+    },
+    antigravityLaunchControls: {
+        mode: 'accept-edits',
+        dangerouslySkipPermissions: false,
+        sandbox: true,
+    },
+} satisfies {
+    antigravityExecution: NonNullable<SpawnSessionOptions['antigravityExecution']>;
+    antigravityLaunchControls: NonNullable<SpawnSessionOptions['antigravityLaunchControls']> & { sandbox: boolean };
+};
 
 function mockTrackedDaemonTmuxOwnership(
     manager: ReturnType<typeof createSessionManager>,
@@ -417,6 +811,10 @@ describe('resolveSpawnAuthEnvironment', () => {
         expect(resolveSpawnAuthEnvironment({
             agent: 'codex',
         })).toEqual({});
+    });
+
+    it('keeps Antigravity authentication local to agy even when a token is supplied', () => {
+        expect(resolveSpawnAuthEnvironment({ agent: 'antigravity', token: 'must-not-forward' })).toEqual({});
     });
 });
 
@@ -704,8 +1102,8 @@ describe('createSessionManager resume deduplication', () => {
 
         await expect(manager.spawnSession({
             directory: process.cwd(),
-            agent: 'unknown-agent' as SpawnSessionOptions['agent'],
-        })).resolves.toEqual({
+            agent: 'unknown-agent',
+        } as unknown as SpawnSessionOptions)).resolves.toEqual({
             type: 'error',
             errorMessage: 'Daemon session spawn requires a supported agent.',
         });

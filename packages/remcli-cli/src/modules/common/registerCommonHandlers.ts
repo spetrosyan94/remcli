@@ -13,6 +13,8 @@ import type { CodexExecutionConfig } from '@/codex/codexCapabilities';
 import type { CursorExecutionConfig, CursorRunnerIdentity } from '@/cursor/cursorCapabilities';
 import type { CursorLaunchControls } from '@/cursor/cursorLaunchControls';
 import type { DaemonTerminalLaunchResult } from '@/daemon/types';
+import type { AntigravityExecutionConfig } from '@/antigravity/antigravityCapabilities';
+import type { AntigravityLaunchControls } from '@/antigravity/antigravityCli';
 
 const execAsync = promisify(exec);
 
@@ -120,7 +122,7 @@ interface DifftasticResponse {
  * This rpc type is used by the daemon, all other RPCs here are for sessions
 */
 
-export interface SpawnSessionOptions {
+interface SpawnSessionBaseOptions {
     machineId?: string;
     directory: string;
     sessionId?: string;
@@ -129,6 +131,24 @@ export interface SpawnSessionOptions {
     /** Session name for resumed sessions (shown in app) */
     resumeSessionName?: string;
     approvedNewDirectoryCreation?: boolean;
+    token?: string;
+}
+
+export interface SpawnSessionEnvironmentVariables {
+    // Anthropic Claude API configuration
+    ANTHROPIC_BASE_URL?: string;        // Custom API endpoint (overrides default)
+    ANTHROPIC_AUTH_TOKEN?: string;      // API authentication token
+    ANTHROPIC_MODEL?: string;           // Model to use (e.g., claude-3-5-sonnet-20241022)
+
+    // Tmux session management environment variables
+    // Based on tmux(1) manual and common tmux usage patterns
+    TMUX_SESSION_NAME?: string;         // Name for tmux session (creates/attaches to named session)
+    TMUX_TMPDIR?: string;               // Temporary directory for tmux server socket files
+    // Note: TMUX_TMPDIR is used by tmux to store socket files when default /tmp is not suitable
+    // Common use case: When /tmp has limited space or different permissions
+}
+
+interface NonAntigravitySpawnSessionOptions extends SpawnSessionBaseOptions {
     agent?: 'claude' | 'codex' | 'cursor' | 'gemini';
     /** Provider-specific permission selection validated by the daemon before spawn. */
     permissionMode?: PermissionMode;
@@ -140,21 +160,26 @@ export interface SpawnSessionOptions {
     cursorLaunchControls?: CursorLaunchControls;
     /** Internal daemon-only executable identity from fresh capability validation. */
     cursorRunner?: CursorRunnerIdentity;
-    token?: string;
-    environmentVariables?: {
-        // Anthropic Claude API configuration
-        ANTHROPIC_BASE_URL?: string;        // Custom API endpoint (overrides default)
-        ANTHROPIC_AUTH_TOKEN?: string;      // API authentication token
-        ANTHROPIC_MODEL?: string;           // Model to use (e.g., claude-3-5-sonnet-20241022)
-
-        // Tmux session management environment variables
-        // Based on tmux(1) manual and common tmux usage patterns
-        TMUX_SESSION_NAME?: string;         // Name for tmux session (creates/attaches to named session)
-        TMUX_TMPDIR?: string;               // Temporary directory for tmux server socket files
-        // Note: TMUX_TMPDIR is used by tmux to store socket files when default /tmp is not suitable
-        // Common use case: When /tmp has limited space or different permissions
-    };
+    antigravityExecution?: never;
+    antigravityLaunchControls?: never;
+    environmentVariables?: SpawnSessionEnvironmentVariables;
 }
+
+interface AntigravitySpawnSessionOptions extends SpawnSessionBaseOptions {
+    agent: 'antigravity';
+    permissionMode?: never;
+    codexExecution?: never;
+    cursorExecution?: never;
+    cursorLaunchControls?: never;
+    cursorRunner?: never;
+    /** Atomic, daemon-validated Antigravity runtime model selection. */
+    antigravityExecution: AntigravityExecutionConfig;
+    /** Atomic Antigravity native launch controls. */
+    antigravityLaunchControls: Required<AntigravityLaunchControls>;
+    environmentVariables?: never;
+}
+
+export type SpawnSessionOptions = NonAntigravitySpawnSessionOptions | AntigravitySpawnSessionOptions;
 
 export type SpawnSessionResult =
     | { type: 'success'; sessionId: string; terminal?: DaemonTerminalLaunchResult }

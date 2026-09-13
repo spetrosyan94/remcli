@@ -15,9 +15,11 @@ import {
     type CursorLaunchControls,
 } from '@/cursor/cursorLaunchControls';
 import type { CursorExecutionConfig } from '@/cursor/cursorCapabilities';
-import type { SpawnSessionOptions } from '@/modules/common/registerCommonHandlers';
+import type { SpawnSessionEnvironmentVariables } from '@/modules/common/registerCommonHandlers';
+import type { AntigravityExecutionConfig } from '@/antigravity/antigravityCapabilities';
+import type { AntigravityLaunchControls } from '@/antigravity/antigravityCli';
 
-const PROVIDER_AGENTS = ['claude', 'codex', 'cursor', 'gemini'] as const;
+const PROVIDER_AGENTS = ['claude', 'codex', 'cursor', 'gemini', 'antigravity'] as const;
 const SPAWN_TRANSPORT_ENVELOPE_TYPE = 'spawn-in-directory';
 const COMMON_REQUEST_KEYS = new Set([
     'agent',
@@ -32,10 +34,24 @@ const COMMON_REQUEST_KEYS = new Set([
 ]);
 const CODEX_REQUEST_KEYS = new Set([...COMMON_REQUEST_KEYS, 'permissionMode', 'codexExecution']);
 const CURSOR_REQUEST_KEYS = new Set([...COMMON_REQUEST_KEYS, 'cursorExecution', 'cursorLaunchControls']);
+const ANTIGRAVITY_REQUEST_KEYS = new Set([
+    'agent',
+    'directory',
+    'sessionId',
+    'machineId',
+    'approvedNewDirectoryCreation',
+    'token',
+    'resumeSessionId',
+    'resumeSessionName',
+    'antigravityExecution',
+    'antigravityLaunchControls',
+]);
 const GENERIC_REQUEST_KEYS = new Set([...COMMON_REQUEST_KEYS, 'permissionMode']);
 const CODEX_EXECUTION_KEYS = new Set(['model', 'catalogVersion', 'reasoningEffort']);
 const CURSOR_EXECUTION_KEYS = new Set(['model', 'catalogVersion']);
 const CURSOR_LAUNCH_CONTROL_KEYS = new Set(['executionMode']);
+const ANTIGRAVITY_EXECUTION_KEYS = new Set(['model', 'reasoningEffort', 'catalogVersion']);
+const ANTIGRAVITY_LAUNCH_CONTROL_KEYS = new Set(['mode', 'dangerouslySkipPermissions', 'sandbox']);
 const ENVIRONMENT_VARIABLE_KEYS = new Set([
     'ANTHROPIC_BASE_URL',
     'ANTHROPIC_AUTH_TOKEN',
@@ -45,17 +61,21 @@ const ENVIRONMENT_VARIABLE_KEYS = new Set([
 ]);
 
 type ProviderAgent = typeof PROVIDER_AGENTS[number];
-type SpawnEnvironmentVariables = NonNullable<SpawnSessionOptions['environmentVariables']>;
+type SpawnEnvironmentVariables = SpawnSessionEnvironmentVariables;
+type ParsedAntigravityLaunchControls = Required<AntigravityLaunchControls>;
 
-interface CommonProviderSpawnRequest {
+interface BaseProviderSpawnRequest {
     directory: string;
     sessionId?: string;
     machineId?: string;
     approvedNewDirectoryCreation?: boolean;
     token?: string;
-    environmentVariables?: SpawnEnvironmentVariables;
     resumeSessionId?: string;
     resumeSessionName?: string;
+}
+
+interface CommonProviderSpawnRequest extends BaseProviderSpawnRequest {
+    environmentVariables?: SpawnEnvironmentVariables;
 }
 
 export interface ClaudeSpawnRequest extends CommonProviderSpawnRequest {
@@ -80,7 +100,15 @@ export interface GeminiSpawnRequest extends CommonProviderSpawnRequest {
     permissionMode?: GeminiPermissionMode;
 }
 
-export type ProviderSpawnRequest = ClaudeSpawnRequest | CodexSpawnRequest | CursorSpawnRequest | GeminiSpawnRequest;
+export interface AntigravitySpawnRequest extends BaseProviderSpawnRequest {
+    agent: 'antigravity';
+    antigravityExecution: AntigravityExecutionConfig;
+    antigravityLaunchControls: ParsedAntigravityLaunchControls;
+    permissionMode?: never;
+    environmentVariables?: never;
+}
+
+export type ProviderSpawnRequest = ClaudeSpawnRequest | CodexSpawnRequest | CursorSpawnRequest | GeminiSpawnRequest | AntigravitySpawnRequest;
 
 export class ProviderSpawnRequestError extends Error {
     constructor(message = 'Invalid provider spawn request.') {
@@ -98,6 +126,9 @@ function throwProviderNativeValidationError(agent: ProviderAgent, value: object)
             throw new ProviderSpawnRequestError('Cursor launch controls must not use the generic permissionMode field.');
         }
         throw new ProviderSpawnRequestError('Cursor requires a current model and validated launch controls.');
+    }
+    if (agent === 'antigravity') {
+        throw new ProviderSpawnRequestError('Antigravity requires a current runtime model and validated launch controls.');
     }
     throw new ProviderSpawnRequestError();
 }
@@ -258,6 +289,42 @@ function parseCursorLaunchControls(value: unknown): CursorLaunchControls | null 
     return { executionMode };
 }
 
+function parseAntigravityExecutionConfig(value: unknown): AntigravityExecutionConfig | null {
+    if (!isPlainDataRecord(value)
+        || !hasOnlyAllowedDataProperties(value, ANTIGRAVITY_EXECUTION_KEYS)
+        || !isNonEmptyStringDataProperty(value, 'model')
+        || !isNonEmptyStringDataProperty(value, 'catalogVersion')
+        || !isOptionalNonEmptyStringDataProperty(value, 'reasoningEffort')) {
+        return null;
+    }
+    const model = readRequiredNonEmptyString(value, 'model');
+    const catalogVersion = readRequiredNonEmptyString(value, 'catalogVersion');
+    const reasoningEffort = readOptionalNonEmptyString(value, 'reasoningEffort');
+    if (!model || !catalogVersion || reasoningEffort === null
+        || (reasoningEffort !== undefined && !isAntigravityReasoningEffort(reasoningEffort))) return null;
+    return { model, catalogVersion, ...(reasoningEffort ? { reasoningEffort } : {}) };
+}
+
+function isAntigravityReasoningEffort(value: string): value is NonNullable<AntigravityExecutionConfig['reasoningEffort']> {
+    return value === 'low' || value === 'medium' || value === 'high';
+}
+
+function parseAntigravityLaunchControls(value: unknown): ParsedAntigravityLaunchControls | null {
+    if (!isPlainDataRecord(value)
+        || !hasOnlyAllowedDataProperties(value, ANTIGRAVITY_LAUNCH_CONTROL_KEYS)) {
+        return null;
+    }
+    const mode = readOwnDataProperty(value, 'mode');
+    const dangerouslySkipPermissions = readOwnDataProperty(value, 'dangerouslySkipPermissions');
+    const sandbox = readOwnDataProperty(value, 'sandbox');
+    if ((mode !== 'default' && mode !== 'accept-edits' && mode !== 'plan')
+        || typeof dangerouslySkipPermissions !== 'boolean'
+        || typeof sandbox !== 'boolean') {
+        return null;
+    }
+    return { mode, dangerouslySkipPermissions, sandbox };
+}
+
 function readEnvironmentVariables(value: object): SpawnEnvironmentVariables | undefined | null {
     if (!Object.prototype.hasOwnProperty.call(value, 'environmentVariables')) return undefined;
     const environmentVariables = readOwnDataProperty(value, 'environmentVariables');
@@ -292,7 +359,7 @@ function readEnvironmentVariables(value: object): SpawnEnvironmentVariables | un
     return result;
 }
 
-function parseCommonRequest(value: object): CommonProviderSpawnRequest | null {
+function parseBaseRequest(value: object): BaseProviderSpawnRequest | null {
     const directory = readRequiredNonEmptyString(value, 'directory');
     const sessionId = readOptionalNonEmptyString(value, 'sessionId');
     const machineId = readOptionalNonEmptyString(value, 'machineId');
@@ -300,15 +367,13 @@ function parseCommonRequest(value: object): CommonProviderSpawnRequest | null {
     const token = readOptionalNonEmptyString(value, 'token');
     const resumeSessionId = readOptionalNonEmptyString(value, 'resumeSessionId');
     const resumeSessionName = readOptionalNonEmptyString(value, 'resumeSessionName');
-    const environmentVariables = readEnvironmentVariables(value);
     if (directory === null
         || sessionId === null
         || machineId === null
         || approvedNewDirectoryCreation === null
         || token === null
         || resumeSessionId === null
-        || resumeSessionName === null
-        || environmentVariables === null) {
+        || resumeSessionName === null) {
         return null;
     }
 
@@ -318,9 +383,18 @@ function parseCommonRequest(value: object): CommonProviderSpawnRequest | null {
         ...(machineId ? { machineId } : {}),
         ...(approvedNewDirectoryCreation !== undefined ? { approvedNewDirectoryCreation } : {}),
         ...(token ? { token } : {}),
-        ...(environmentVariables ? { environmentVariables } : {}),
         ...(resumeSessionId ? { resumeSessionId } : {}),
         ...(resumeSessionName ? { resumeSessionName } : {}),
+    };
+}
+
+function parseCommonRequest(value: object): CommonProviderSpawnRequest | null {
+    const base = parseBaseRequest(value);
+    const environmentVariables = readEnvironmentVariables(value);
+    if (!base || environmentVariables === null) return null;
+    return {
+        ...base,
+        ...(environmentVariables ? { environmentVariables } : {}),
     };
 }
 
@@ -347,12 +421,24 @@ export function parseProviderSpawnRequest(value: unknown): ProviderSpawnRequest 
         ? CODEX_REQUEST_KEYS
         : agent === 'cursor'
             ? CURSOR_REQUEST_KEYS
-            : GENERIC_REQUEST_KEYS;
+            : agent === 'antigravity'
+                ? ANTIGRAVITY_REQUEST_KEYS
+                : GENERIC_REQUEST_KEYS;
     if (!hasOnlyAllowedDataProperties(providerRequest, allowedKeys)) {
         if (agent === 'cursor' && Object.prototype.hasOwnProperty.call(providerRequest, 'permissionMode')) {
             throwProviderNativeValidationError(agent, providerRequest);
         }
         throw new ProviderSpawnRequestError();
+    }
+
+    if (agent === 'antigravity') {
+        const base = parseBaseRequest(providerRequest);
+        const antigravityExecution = parseAntigravityExecutionConfig(readOwnDataProperty(providerRequest, 'antigravityExecution'));
+        const antigravityLaunchControls = parseAntigravityLaunchControls(readOwnDataProperty(providerRequest, 'antigravityLaunchControls'));
+        if (!base || !antigravityExecution || !antigravityLaunchControls) {
+            throwProviderNativeValidationError(agent, providerRequest);
+        }
+        return { ...base, agent, antigravityExecution, antigravityLaunchControls };
     }
 
     const common = parseCommonRequest(providerRequest);

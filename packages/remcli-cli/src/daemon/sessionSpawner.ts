@@ -40,6 +40,13 @@ import {
     NativeCursorSessionBinding,
     NativeCursorSessionBindingResult,
     NativeCursorSessionWrapper,
+    NativeAntigravityConversationBinding,
+    NativeAntigravityConversationBindingResult,
+    NativeAntigravityConversationWrapper,
+    AntigravityRunnerPreflightRequest,
+    AntigravityRunnerPreflightResult,
+    AntigravityRunnerBootstrapFailureRequest,
+    AntigravityRunnerBootstrapFailureResult,
     SessionExecutionConsumeResult,
     SessionExecutionLookupResult,
     SessionExecutionSetResult,
@@ -101,6 +108,9 @@ const CURSOR_DAEMON_SELECTION_ENV_KEYS = [
     'REMCLI_CURSOR_EXECUTABLE',
     'REMCLI_CURSOR_CLI_FINGERPRINT',
 ] as const;
+const ANTIGRAVITY_DAEMON_ENV_PREFIX = 'REMCLI_ANTIGRAVITY_';
+const ANTIGRAVITY_BOOTSTRAP_FAILURE_ERROR = 'Antigravity daemon runner bootstrap failed before creating a Remcli session.';
+const ANTIGRAVITY_RESUME_OWNERSHIP_UNCONFIRMED_ERROR = 'Could not confirm ownership of the Antigravity conversation tmux pane. Resume was not started.';
 
 interface SessionSpawnAwaiter {
     session: TrackedSession;
@@ -134,12 +144,17 @@ interface DaemonRunnerStoppingFence {
 type OwnedPaneStatus = 'exists' | 'missing' | 'mismatch' | 'unknown';
 type TrackedSessionStatus = OwnedPaneStatus;
 
-interface BoundNativeCursorSessionLookup {
+interface BoundNativeSessionLookup {
     type: 'found' | 'not-found' | 'unavailable';
     session?: TrackedSession;
 }
 
 interface NativeCursorSessionMapping {
+    pid: number;
+    session: TrackedSession;
+}
+
+interface NativeAntigravityConversationMapping {
     pid: number;
     session: TrackedSession;
 }
@@ -163,7 +178,7 @@ type CursorNativeWriterLeaseAttempt =
 type CursorWriterLeaseTargetLookup =
     | { type: 'found'; pid: number; session: TrackedSession }
     | { type: 'wrapper-not-tracked' }
-    | { type: 'agent-mismatch'; trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' }
+    | { type: 'agent-mismatch'; trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity' }
     | { type: 'native-session-mismatch'; trackedNativeSessionId?: string };
 
 interface NativeCodexThreadMapping {
@@ -191,6 +206,10 @@ interface CursorSessionLineage {
     parentRemcliSessionId: string;
     directory: string;
 }
+interface AntigravitySessionLineage {
+    parentRemcliSessionId: string;
+    directory: string;
+}
 
 /** Immutable native Cursor launch selection retained only inside the daemon. */
 interface CursorInteractiveTuiLaunch {
@@ -204,7 +223,7 @@ interface CursorInteractiveTuiOpening {
     promise: Promise<CursorInteractiveTuiOpenResult>;
 }
 
-type SpawnAgent = 'claude' | 'codex' | 'cursor' | 'gemini';
+type SpawnAgent = 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
 
 function resolveSpawnAgent(agent: unknown): SpawnAgent | undefined {
     if (agent === undefined) {
@@ -212,7 +231,7 @@ function resolveSpawnAgent(agent: unknown): SpawnAgent | undefined {
         return 'claude';
     }
 
-    return agent === 'claude' || agent === 'codex' || agent === 'cursor' || agent === 'gemini'
+    return agent === 'claude' || agent === 'codex' || agent === 'cursor' || agent === 'gemini' || agent === 'antigravity'
         ? agent
         : undefined;
 }
@@ -232,6 +251,54 @@ function hasValidatedCodexSelection(options: SpawnSessionOptions): boolean {
         && typeof options.permissionMode === 'string'
         && CODEX_SANDBOXES.has(options.permissionMode as CodexSandbox),
     );
+}
+
+interface DaemonAntigravityLaunchControls {
+    mode: 'default' | 'accept-edits' | 'plan';
+    dangerouslySkipPermissions: boolean;
+    sandbox: boolean;
+}
+
+interface DaemonAntigravityExecution {
+    model: string;
+    reasoningEffort?: 'low' | 'medium' | 'high';
+    catalogVersion: string;
+}
+
+function getValidatedAntigravityExecution(options: SpawnSessionOptions): DaemonAntigravityExecution | undefined {
+    const execution = options.antigravityExecution as (Record<string, unknown> | undefined);
+    if (!execution
+        || typeof execution.model !== 'string'
+        || execution.model.length === 0
+        || typeof execution.catalogVersion !== 'string'
+        || execution.catalogVersion.length === 0
+        || (execution.reasoningEffort !== undefined
+            && execution.reasoningEffort !== 'low'
+            && execution.reasoningEffort !== 'medium'
+            && execution.reasoningEffort !== 'high')) {
+        return undefined;
+    }
+
+    return {
+        model: execution.model,
+        ...(execution.reasoningEffort ? { reasoningEffort: execution.reasoningEffort } : {}),
+        catalogVersion: execution.catalogVersion,
+    };
+}
+
+function getValidatedAntigravityLaunchControls(options: SpawnSessionOptions): DaemonAntigravityLaunchControls | undefined {
+    const controls = options.antigravityLaunchControls as (Record<string, unknown> | undefined);
+    if (!controls
+        || (controls.mode !== 'default' && controls.mode !== 'accept-edits' && controls.mode !== 'plan')
+        || typeof controls.dangerouslySkipPermissions !== 'boolean'
+        || typeof controls.sandbox !== 'boolean') {
+        return undefined;
+    }
+    return {
+        mode: controls.mode,
+        dangerouslySkipPermissions: controls.dangerouslySkipPermissions,
+        sandbox: controls.sandbox,
+    };
 }
 
 function createSessionExecutionSeed(options: SpawnSessionOptions, agent: SpawnAgent): DaemonSessionExecutionSeed | undefined {
@@ -375,6 +442,7 @@ export interface SessionManager {
     bindNativeCodexThread: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
     /** Bind a native Cursor session to its already-created Remcli wrapper session. */
     bindNativeCursorSession: (binding: NativeCursorSessionBinding) => Promise<NativeCursorSessionBindingResult>;
+    bindNativeAntigravityConversation: (binding: NativeAntigravityConversationBinding) => Promise<NativeAntigravityConversationBindingResult>;
     /** Acquire one daemon-issued headless writer capability before a known Cursor native resume starts. */
     acquireCursorHeadlessWriterLease: (
         request: CursorHeadlessWriterLeaseAcquireRequest,
@@ -391,6 +459,8 @@ export interface SessionManager {
     reportCursorRunnerBootstrapFailure: (
         request: CursorRunnerBootstrapFailureRequest,
     ) => Promise<CursorRunnerBootstrapFailureResult>;
+    preflightAntigravityRunner: (request: AntigravityRunnerPreflightRequest) => Promise<AntigravityRunnerPreflightResult>;
+    reportAntigravityRunnerBootstrapFailure: (request: AntigravityRunnerBootstrapFailureRequest) => Promise<AntigravityRunnerBootstrapFailureResult>;
     /** Prevent a graceful daemon-owned runner from being resumed while it exits. */
     markDaemonRunnerStopping: (sessionId: string) => DaemonRunnerLifecycleResult;
     /** Release a graceful daemon-owned runner after it flushed its final P2P lifecycle event. */
@@ -431,8 +501,11 @@ export interface SessionManagerOptions {
 // Get environment variables for a profile, filtered for agent compatibility
 async function getProfileEnvironmentVariablesForAgent(
     profileId: string,
-    agentType: 'claude' | 'codex' | 'cursor' | 'gemini'
+    agentType: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity'
 ): Promise<Record<string, string>> {
+    if (agentType === 'antigravity') {
+        return {};
+    }
     try {
         const settings = await readSettings();
         const profile = settings.profiles.find(p => p.id === profileId);
@@ -476,6 +549,12 @@ export function resolveSpawnAuthEnvironment(options: Pick<SpawnSessionOptions, '
         // Cursor accepts its API key only through the environment. Never put a
         // provider credential in a native process argument where it is visible.
         return { CURSOR_API_KEY: options.token };
+    }
+
+    if (options.agent === 'antigravity') {
+        // Authentication is owned by the local agy installation. Never inject
+        // a Remcli or Google credential into the native process.
+        return {};
     }
 
     return { CLAUDE_CODE_OAUTH_TOKEN: options.token };
@@ -545,9 +624,12 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
     const nativeCodexThreadIdToTrackedSession = new Map<string, NativeCodexThreadMapping>();
     const nativeCursorSessionIdToTrackedSession = new Map<string, NativeCursorSessionMapping>();
     const nativeCursorSessionBindingPromises = new Map<string, Promise<NativeCursorSessionBindingResult>>();
+    const nativeAntigravityConversationIdToTrackedSession = new Map<string, NativeAntigravityConversationMapping>();
+    const nativeAntigravityConversationBindingPromises = new Map<string, Promise<NativeAntigravityConversationBindingResult>>();
     const cursorNativeWriterLeases = new Map<string, CursorNativeWriterLeaseState>();
     let cursorNativeWriterStateLock = Promise.resolve();
     const cursorSessionLineageByNativeSessionId = new Map<string, CursorSessionLineage>();
+    const antigravitySessionLineageByConversationId = new Map<string, AntigravitySessionLineage>();
     const runnerSessionIdToTrackedSession = new Map<string, RunnerSessionMapping>();
     const codexRemoteTuiOpenPromises = new Map<string, Promise<CodexRemoteTuiOpenResult>>();
     const cursorInteractiveTuiOpenPromises = new Map<string, CursorInteractiveTuiOpening>();
@@ -731,6 +813,13 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         }
     };
 
+    const detachNativeAntigravityConversationMapping = (session: TrackedSession): void => {
+        const conversationId = session.nativeAntigravityConversationId;
+        if (conversationId && nativeAntigravityConversationIdToTrackedSession.get(conversationId)?.session === session) {
+            nativeAntigravityConversationIdToTrackedSession.delete(conversationId);
+        }
+    };
+
     const detachRunnerSessionMapping = (session: TrackedSession): void => {
         const remcliSessionId = session.runnerControlTokenSessionId;
         if (!remcliSessionId) {
@@ -780,6 +869,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
         detachNativeCodexThreadMapping(session);
         detachNativeCursorSessionMapping(session);
+        detachNativeAntigravityConversationMapping(session);
         clearCursorNativeWriterLeasesForSession(session);
         detachRunnerSessionMapping(session);
         delete session.executionState;
@@ -1287,9 +1377,9 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         throw new Error(`Cannot safely clean up daemon tmux runner ${runner.ownership.sessionName}: ${reason}.`);
     };
 
-    const getTrackedAgent = (session: TrackedSession): 'claude' | 'codex' | 'cursor' | 'gemini' | undefined => {
+    const getTrackedAgent = (session: TrackedSession): 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity' | undefined => {
         const reportedAgent = session.remcliSessionMetadataFromLocalWebhook?.flavor;
-        if (reportedAgent === 'claude' || reportedAgent === 'codex' || reportedAgent === 'cursor' || reportedAgent === 'gemini') {
+        if (reportedAgent === 'claude' || reportedAgent === 'codex' || reportedAgent === 'cursor' || reportedAgent === 'gemini' || reportedAgent === 'antigravity') {
             return reportedAgent;
         }
         return session.expectedAgent;
@@ -1310,6 +1400,21 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         }
 
         cursorSessionLineageByNativeSessionId.set(nativeSessionId, {
+            parentRemcliSessionId: session.remcliSessionId,
+            directory,
+        });
+    };
+
+    const recordAntigravitySessionLineage = (conversationId: string, session: TrackedSession): void => {
+        if (session.startedBy !== 'daemon' || !session.remcliSessionId) return;
+        const directory = getTrackedSessionDirectory(session);
+        if (!directory) return;
+        antigravitySessionLineageByConversationId.delete(conversationId);
+        if (antigravitySessionLineageByConversationId.size >= 128) {
+            const oldest = antigravitySessionLineageByConversationId.keys().next().value;
+            if (oldest) antigravitySessionLineageByConversationId.delete(oldest);
+        }
+        antigravitySessionLineageByConversationId.set(conversationId, {
             parentRemcliSessionId: session.remcliSessionId,
             directory,
         });
@@ -1338,12 +1443,14 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 return metadata.cursorSessionId ?? metadata.agentSessionId;
             case 'gemini':
                 return metadata.geminiSessionId ?? metadata.agentSessionId;
+            case 'antigravity':
+                return metadata.antigravitySessionId ?? metadata.agentSessionId;
             case 'claude':
                 return metadata.claudeSessionId ?? metadata.agentSessionId;
         }
     };
 
-    const resumeKeyOf = (agent: 'claude' | 'codex' | 'cursor' | 'gemini', resumeSessionId: string | undefined): string | null => (
+    const resumeKeyOf = (agent: SpawnAgent, resumeSessionId: string | undefined): string | null => (
         resumeSessionId ? `${agent}:${resumeSessionId}` : null
     );
 
@@ -1758,7 +1865,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
     const findBoundNativeCursorSession = async (
         nativeSessionId: string,
-    ): Promise<BoundNativeCursorSessionLookup> => {
+    ): Promise<BoundNativeSessionLookup> => {
         const inFlightBinding = nativeCursorSessionBindingPromises.get(nativeSessionId);
         if (inFlightBinding) {
             await inFlightBinding;
@@ -1798,7 +1905,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
     const findTrackedCursorResumeSession = async (
         resumeSessionId: string,
-    ): Promise<BoundNativeCursorSessionLookup> => {
+    ): Promise<BoundNativeSessionLookup> => {
         for (const [pid, session] of pidToTrackedSession.entries()) {
             const reportedNativeSessionId = getNativeSessionId(
                 session.remcliSessionMetadataFromLocalWebhook,
@@ -1836,6 +1943,84 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             return { type: 'found', session };
         }
 
+        return { type: 'not-found' };
+    };
+
+    const findBoundNativeAntigravityConversation = async (
+        nativeConversationId: string,
+    ): Promise<BoundNativeSessionLookup> => {
+        const inFlightBinding = nativeAntigravityConversationBindingPromises.get(nativeConversationId);
+        if (inFlightBinding) {
+            await inFlightBinding;
+        }
+
+        const mapping = nativeAntigravityConversationIdToTrackedSession.get(nativeConversationId);
+        if (!mapping) {
+            return { type: 'not-found' };
+        }
+        const { pid, session } = mapping;
+        if (
+            !isTrackedSessionIdentity(pid, session)
+            || session.nativeAntigravityConversationId !== nativeConversationId
+        ) {
+            nativeAntigravityConversationIdToTrackedSession.delete(nativeConversationId);
+            return { type: 'not-found' };
+        }
+        if (!isReadyTrackedSession(pid, session)) {
+            return { type: 'unavailable' };
+        }
+
+        const status = await getDaemonTmuxRunnerStatus(session);
+        if (!isReadyTrackedSession(pid, session)) {
+            return { type: 'unavailable' };
+        }
+        if (status === 'missing') {
+            return await releaseAndRemoveTrackedSession(pid, session)
+                ? { type: 'not-found' }
+                : { type: 'unavailable' };
+        }
+        return status === 'exists'
+            ? { type: 'found', session }
+            : { type: 'unavailable' };
+    };
+
+    const findTrackedAntigravityResumeSession = async (
+        nativeConversationId: string,
+    ): Promise<BoundNativeSessionLookup> => {
+        for (const [pid, session] of pidToTrackedSession.entries()) {
+            const reportedNativeSessionId = getNativeSessionId(
+                session.remcliSessionMetadataFromLocalWebhook,
+                'antigravity',
+            );
+            if (
+                getTrackedAgent(session) !== 'antigravity'
+                || (reportedNativeSessionId ?? session.expectedResumeSessionId) !== nativeConversationId
+            ) {
+                continue;
+            }
+            if (
+                !isReadyTrackedSession(pid, session)
+                || session.startedBy !== 'daemon'
+                || !session.tmuxRunner
+                || !session.remcliSessionId
+                || (session.nativeAntigravityConversationId && session.nativeAntigravityConversationId !== nativeConversationId)
+            ) {
+                return { type: 'unavailable' };
+            }
+
+            const status = await getDaemonTmuxRunnerStatus(session);
+            if (!isReadyTrackedSession(pid, session)) {
+                return { type: 'unavailable' };
+            }
+            if (status === 'missing') {
+                return await releaseAndRemoveTrackedSession(pid, session)
+                    ? { type: 'not-found' }
+                    : { type: 'unavailable' };
+            }
+            return status === 'exists'
+                ? { type: 'found', session }
+                : { type: 'unavailable' };
+        }
         return { type: 'not-found' };
     };
 
@@ -2025,6 +2210,188 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             logger.warn(`[DAEMON RUN] Could not safely clean up Cursor bootstrap failure runner ${request.pid}; preserving tracking for retry.`);
         }
         return { accepted: true };
+    };
+
+    const preflightAntigravityRunner = async (
+        request: AntigravityRunnerPreflightRequest,
+    ): Promise<AntigravityRunnerPreflightResult> => {
+        const session = pidToTrackedSession.get(request.pid);
+        if (
+            request.agent !== 'antigravity'
+            || !session
+            || !isReadyTrackedSession(request.pid, session)
+            || session.startedBy !== 'daemon'
+            || !session.tmuxRunner
+            || session.expectedAgent !== request.agent
+            || session.expectedResumeSessionId !== request.nativeResumeConversationId
+            || session.expectedDirectory !== request.directory
+            || !hasMatchingRunnerControlToken(session.runnerControlToken, request.runnerToken)
+        ) {
+            return { type: 'rejected' };
+        }
+
+        const status = await getDaemonTmuxRunnerStatus(session);
+        if (!isReadyTrackedSession(request.pid, session) || status !== 'exists') {
+            return { type: 'rejected' };
+        }
+
+        const lineage = session.antigravityResumeLineage;
+        if (
+            !request.nativeResumeConversationId
+            || !lineage
+            || lineage.nativeResumeConversationId !== request.nativeResumeConversationId
+        ) {
+            return { type: 'verified' };
+        }
+
+        return {
+            type: 'verified',
+            parentRemcliSessionId: lineage.parentRemcliSessionId,
+        };
+    };
+
+    const reportAntigravityRunnerBootstrapFailure = async (
+        request: AntigravityRunnerBootstrapFailureRequest,
+    ): Promise<AntigravityRunnerBootstrapFailureResult> => {
+        const session = pidToTrackedSession.get(request.pid);
+        const awaiter = pidToAwaiter.get(request.pid);
+        if (
+            request.agent !== 'antigravity'
+            || !session
+            || awaiter?.session !== session
+            || !isReadyTrackedSession(request.pid, session)
+            || session.startedBy !== 'daemon'
+            || !session.tmuxRunner
+            || session.expectedAgent !== request.agent
+            || session.remcliSessionId !== undefined
+            || session.runnerControlTokenSessionId !== undefined
+            || !hasMatchingRunnerControlToken(session.runnerControlToken, request.runnerToken)
+        ) {
+            return { accepted: false };
+        }
+
+        awaiter.fail(ANTIGRAVITY_BOOTSTRAP_FAILURE_ERROR);
+        if (!await releaseAndRemoveTrackedSession(request.pid, session)) {
+            logger.warn(`[DAEMON RUN] Could not safely clean up Antigravity bootstrap failure runner ${request.pid}; preserving tracking for retry.`);
+        }
+        return { accepted: true };
+    };
+
+    const bindNativeAntigravityConversationInternal = async (
+        binding: NativeAntigravityConversationBinding,
+    ): Promise<NativeAntigravityConversationBindingResult> => {
+        const existingMapping = nativeAntigravityConversationIdToTrackedSession.get(binding.nativeConversationId);
+        if (existingMapping) {
+            const { pid: existingPid, session: existingSession } = existingMapping;
+            if (
+                !isTrackedSessionIdentity(existingPid, existingSession)
+                || existingSession.nativeAntigravityConversationId !== binding.nativeConversationId
+            ) {
+                nativeAntigravityConversationIdToTrackedSession.delete(binding.nativeConversationId);
+            } else if (!isReadyTrackedSession(existingPid, existingSession)) {
+                return { type: 'wrapper-not-tracked', binding };
+            } else {
+                const status = await getTrackedSessionStatus(existingPid, existingSession);
+                if (!isReadyTrackedSession(existingPid, existingSession)) {
+                    return { type: 'wrapper-not-tracked', binding };
+                }
+                if (status === 'missing') {
+                    await releaseAndRemoveTrackedSession(existingPid, existingSession);
+                    return { type: 'wrapper-not-tracked', binding };
+                }
+                if (status !== 'exists' || !existingSession.remcliSessionId) {
+                    return { type: 'wrapper-not-tracked', binding };
+                }
+                if (existingSession.remcliSessionId === binding.remcliSessionId) {
+                    return {
+                        type: 'already-bound',
+                        wrapper: {
+                            agent: 'antigravity',
+                            nativeConversationId: binding.nativeConversationId,
+                            remcliSessionId: binding.remcliSessionId,
+                        },
+                    };
+                }
+                return {
+                    type: 'reuse-active-wrapper',
+                    wrapper: {
+                        agent: 'antigravity',
+                        nativeConversationId: binding.nativeConversationId,
+                        remcliSessionId: existingSession.remcliSessionId,
+                    },
+                };
+            }
+        }
+
+        const entry = Array.from(pidToTrackedSession.entries())
+            .find(([, session]) => session.remcliSessionId === binding.remcliSessionId);
+        if (!entry) {
+            return { type: 'wrapper-not-tracked', binding };
+        }
+        const [pid, session] = entry;
+        if (!isReadyTrackedSession(pid, session)) {
+            return { type: 'wrapper-not-tracked', binding };
+        }
+        const status = await getTrackedSessionStatus(pid, session);
+        if (!isReadyTrackedSession(pid, session)) {
+            return { type: 'wrapper-not-tracked', binding };
+        }
+        if (status === 'missing') {
+            await releaseAndRemoveTrackedSession(pid, session);
+            return { type: 'wrapper-not-tracked', binding };
+        }
+        if (status !== 'exists') {
+            return { type: 'wrapper-not-tracked', binding };
+        }
+
+        const trackedAgent = getTrackedAgent(session);
+        if (trackedAgent && trackedAgent !== 'antigravity') {
+            return { type: 'agent-mismatch', binding, trackedAgent };
+        }
+        if (
+            session.expectedResumeSessionId
+            && session.expectedResumeSessionId !== binding.nativeConversationId
+        ) {
+            return {
+                type: 'native-conversation-mismatch',
+                binding,
+                expectedNativeConversationId: session.expectedResumeSessionId,
+            };
+        }
+
+        detachNativeAntigravityConversationMapping(session);
+        session.nativeAntigravityConversationId = binding.nativeConversationId;
+        session.expectedResumeSessionId = undefined;
+        nativeAntigravityConversationIdToTrackedSession.set(binding.nativeConversationId, { pid, session });
+        recordAntigravitySessionLineage(binding.nativeConversationId, session);
+        return {
+            type: 'bound',
+            wrapper: {
+                agent: 'antigravity',
+                nativeConversationId: binding.nativeConversationId,
+                remcliSessionId: binding.remcliSessionId,
+            },
+        };
+    };
+
+    const bindNativeAntigravityConversation = async (
+        binding: NativeAntigravityConversationBinding,
+    ): Promise<NativeAntigravityConversationBindingResult> => {
+        const inFlight = nativeAntigravityConversationBindingPromises.get(binding.nativeConversationId);
+        if (inFlight) {
+            await inFlight;
+            return bindNativeAntigravityConversation(binding);
+        }
+
+        const promise = bindNativeAntigravityConversationInternal(binding);
+        nativeAntigravityConversationBindingPromises.set(binding.nativeConversationId, promise);
+        try {
+            return await promise;
+        } finally {
+            if (nativeAntigravityConversationBindingPromises.get(binding.nativeConversationId) === promise) {
+                nativeAntigravityConversationBindingPromises.delete(binding.nativeConversationId);
+            }
+        }
     };
 
     const ensureCodexRemoteTuiHostInternal = async (): Promise<{ ok: true } | { ok: false; error: string }> => {
@@ -2535,7 +2902,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         return openingPromise;
     };
 
-    const findTrackedResumeSession = (agent: 'claude' | 'codex' | 'gemini', resumeSessionId: string): TrackedSession | null => {
+    const findTrackedResumeSession = (agent: SpawnAgent, resumeSessionId: string): TrackedSession | null => {
         for (const [pid, session] of pidToTrackedSession.entries()) {
             const reportedAgent = session.remcliSessionMetadataFromLocalWebhook?.flavor;
             const trackedAgent = reportedAgent ?? session.expectedAgent;
@@ -2675,6 +3042,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         options: SpawnSessionOptions,
         pendingSpawnTask?: PendingSpawnTask,
         cursorSessionLineage?: CursorSessionLineage,
+        antigravitySessionLineage?: AntigravitySessionLineage,
     ): Promise<DaemonSpawnSessionResult> => {
         logger.debugLargeJson('[DAEMON RUN] Spawning session', buildSafeSpawnSessionLogPayload(options));
         let cancelledTmuxCleanupError: Error | undefined;
@@ -2684,6 +3052,15 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         }
         if (agent === 'codex' && !hasValidatedCodexSelection(options)) {
             return { type: 'error', errorMessage: CODEX_DAEMON_SELECTION_REQUIRED_ERROR };
+        }
+        const antigravityExecution = agent === 'antigravity'
+            ? getValidatedAntigravityExecution(options)
+            : undefined;
+        const antigravityLaunchControls = agent === 'antigravity'
+            ? getValidatedAntigravityLaunchControls(options)
+            : undefined;
+        if (agent === 'antigravity' && (!antigravityExecution || !antigravityLaunchControls)) {
+            return { type: 'error', errorMessage: 'Antigravity requires a daemon-validated execution and launch controls.' };
         }
 
         const getCancellationResult = (): DaemonSpawnSessionResult | undefined => (
@@ -2772,7 +3149,10 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
 
             if (options.environmentVariables && Object.keys(options.environmentVariables).length > 0) {
                 // GUI provided profile environment variables - highest priority for profile settings
-                profileEnv = options.environmentVariables;
+                profileEnv = Object.fromEntries(
+                    Object.entries(options.environmentVariables)
+                        .filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+                );
                 logger.info(`[DAEMON RUN] Using GUI-provided profile environment variables (${Object.keys(profileEnv).length} vars)`);
                 logger.debug(`[DAEMON RUN] GUI profile env var keys: ${Object.keys(profileEnv).join(', ')}`);
             } else {
@@ -2915,6 +3295,18 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                     delete tmuxEnv[key];
                 }
             }
+            if (agent === 'antigravity') {
+                for (const key of Object.keys(tmuxEnv)) {
+                    if (key.startsWith(ANTIGRAVITY_DAEMON_ENV_PREFIX)) delete tmuxEnv[key];
+                }
+                tmuxEnv.REMCLI_ANTIGRAVITY_MODEL = antigravityExecution!.model;
+                if (antigravityExecution!.reasoningEffort) tmuxEnv.REMCLI_ANTIGRAVITY_REASONING_EFFORT = antigravityExecution!.reasoningEffort;
+                tmuxEnv.REMCLI_ANTIGRAVITY_CATALOG_VERSION = antigravityExecution!.catalogVersion;
+                tmuxEnv.REMCLI_ANTIGRAVITY_MODE = antigravityLaunchControls!.mode;
+                tmuxEnv.REMCLI_ANTIGRAVITY_DANGEROUSLY_SKIP_PERMISSIONS = String(antigravityLaunchControls!.dangerouslySkipPermissions);
+                tmuxEnv.REMCLI_ANTIGRAVITY_SANDBOX = String(antigravityLaunchControls!.sandbox);
+                for (const key of ['GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'GEMINI_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CURSOR_API_KEY', 'OPENAI_API_KEY']) delete tmuxEnv[key];
+            }
 
             // Pass session name for resumed sessions (used by runClaude to set P2P metadata)
             if (options.resumeSessionName) {
@@ -3003,6 +3395,14 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                             cursorResumeLineage: {
                                 nativeResumeSessionId: options.resumeSessionId,
                                 parentRemcliSessionId: cursorSessionLineage.parentRemcliSessionId,
+                            },
+                        }
+                        : {}),
+                    ...(agent === 'antigravity' && antigravitySessionLineage && options.resumeSessionId
+                        ? {
+                            antigravityResumeLineage: {
+                                nativeResumeConversationId: options.resumeSessionId,
+                                parentRemcliSessionId: antigravitySessionLineage.parentRemcliSessionId,
                             },
                         }
                         : {}),
@@ -3129,13 +3529,19 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         options: SpawnSessionOptions,
         nativeThreadId?: string,
         cursorSessionLineage?: CursorSessionLineage,
+        antigravitySessionLineage?: AntigravitySessionLineage,
         resumeKey?: string,
     ): PendingSpawnTask => {
         const pendingSpawnTask = createPendingSpawnTask(nativeThreadId);
         pendingSpawnTask.resumeKey = resumeKey;
         inFlightSpawnTasks.add(pendingSpawnTask);
 
-        void spawnSessionWithoutResumeDedup(options, pendingSpawnTask, cursorSessionLineage).then(
+        void spawnSessionWithoutResumeDedup(
+            options,
+            pendingSpawnTask,
+            cursorSessionLineage,
+            antigravitySessionLineage,
+        ).then(
             (result) => pendingSpawnTask.resolve(result),
             (error) => {
                 const errorMessage = error instanceof Error ? error.message : String(error);
@@ -3215,7 +3621,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             return startSpawnTask(options).promise;
         }
 
-        let cursorResumeSession: BoundNativeCursorSessionLookup | null = null;
+        let cursorResumeSession: BoundNativeSessionLookup | null = null;
         if (agent === 'cursor') {
             const boundCursorSession = await findBoundNativeCursorSession(options.resumeSessionId);
             cursorResumeSession = boundCursorSession.type === 'not-found'
@@ -3228,21 +3634,45 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 };
             }
         }
+        let antigravityResumeSession: BoundNativeSessionLookup | null = null;
+        if (agent === 'antigravity') {
+            const boundConversation = await findBoundNativeAntigravityConversation(options.resumeSessionId);
+            antigravityResumeSession = boundConversation.type === 'not-found'
+                ? await findTrackedAntigravityResumeSession(options.resumeSessionId)
+                : boundConversation;
+            if (isShuttingDown) {
+                return { type: 'error', errorMessage: DAEMON_SHUTTING_DOWN_SPAWN_ERROR_MESSAGE };
+            }
+        }
         const cursorSessionLineage = agent === 'cursor'
             ? cursorSessionLineageByNativeSessionId.get(options.resumeSessionId)
+            : undefined;
+        const antigravityLineage = agent === 'antigravity'
+            ? antigravitySessionLineageByConversationId.get(options.resumeSessionId)
             : undefined;
         if (cursorResumeSession?.type === 'unavailable') {
             logger.warn('[DAEMON RUN] Refusing Cursor resume because tmux runner ownership could not be confirmed.');
             return { type: 'error', errorMessage: CURSOR_RESUME_OWNERSHIP_UNCONFIRMED_ERROR };
         }
+        if (antigravityResumeSession?.type === 'unavailable') {
+            logger.warn('[DAEMON RUN] Refusing Antigravity resume because tmux runner ownership could not be confirmed.');
+            return { type: 'error', errorMessage: ANTIGRAVITY_RESUME_OWNERSHIP_UNCONFIRMED_ERROR };
+        }
         const existing = agent === 'cursor'
             ? cursorResumeSession?.type === 'found'
                 ? cursorResumeSession.session
                 : null
-            : findTrackedResumeSession(agent, options.resumeSessionId);
+            : agent === 'antigravity'
+                ? antigravityResumeSession?.type === 'found'
+                    ? antigravityResumeSession.session
+                    : null
+                : findTrackedResumeSession(agent, options.resumeSessionId);
         if (agent === 'cursor' && existing && !isReadyTrackedSession(existing.pid, existing)) {
             logger.warn('[DAEMON RUN] Refusing Cursor resume because its wrapper was removed during ownership lookup.');
             return { type: 'error', errorMessage: CURSOR_RESUME_OWNERSHIP_UNCONFIRMED_ERROR };
+        }
+        if (agent === 'antigravity' && existing && !isReadyTrackedSession(existing.pid, existing)) {
+            return { type: 'error', errorMessage: ANTIGRAVITY_RESUME_OWNERSHIP_UNCONFIRMED_ERROR };
         }
         if (agent === 'cursor' && (existing || cursorSessionLineage)) {
             const existingDirectory = existing
@@ -3252,6 +3682,12 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
                 const errorMessage = 'Cursor session belongs to a different working directory. Select its original workspace before resuming.';
                 logger.warn(`[DAEMON RUN] Refusing Cursor resume across workspaces for ${options.resumeSessionId}`);
                 return { type: 'error', errorMessage };
+            }
+        }
+        if (agent === 'antigravity' && (existing || antigravityLineage)) {
+            const existingDirectory = existing ? getTrackedSessionDirectory(existing) : antigravityLineage?.directory;
+            if (!existingDirectory || existingDirectory !== options.directory) {
+                return { type: 'error', errorMessage: 'Antigravity conversation belongs to a different working directory. Select its original workspace before resuming.' };
             }
         }
         if (existing?.remcliSessionId) {
@@ -3282,7 +3718,13 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             };
         }
 
-        const spawnPromise = startSpawnTask(options, undefined, cursorSessionLineage, resumeKey).promise
+        const spawnPromise = startSpawnTask(
+            options,
+            undefined,
+            cursorSessionLineage,
+            antigravityLineage,
+            resumeKey,
+        ).promise
             .finally(() => {
                 resumeSpawnPromises.delete(resumeKey);
             });
@@ -3547,6 +3989,7 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
             nativeCursorSessionIdToTrackedSession.clear();
             cursorNativeWriterLeases.clear();
             cursorSessionLineageByNativeSessionId.clear();
+            antigravitySessionLineageByConversationId.clear();
             pidToAwaiter.clear();
             pidToPendingCodexThreadResume.clear();
             pidToPendingSpawnTask.clear();
@@ -3576,10 +4019,13 @@ export function createSessionManager(options: SessionManagerOptions = {}): Sessi
         consumeSessionExecution,
         bindNativeCodexThread,
         bindNativeCursorSession,
+        bindNativeAntigravityConversation,
         acquireCursorHeadlessWriterLease,
         releaseCursorNativeWriterLease,
         preflightCursorRunner,
         reportCursorRunnerBootstrapFailure,
+        preflightAntigravityRunner,
+        reportAntigravityRunnerBootstrapFailure,
         markDaemonRunnerStopping,
         completeDaemonRunnerStopping,
         openCodexRemoteTui,

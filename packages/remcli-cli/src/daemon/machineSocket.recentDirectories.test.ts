@@ -12,6 +12,7 @@ import {
     type CodexCapabilityClient,
 } from '@/codex/codexCapabilities';
 import { CursorCapabilitiesService, getDefaultCursorExecution } from '@/cursor/cursorCapabilities';
+import { AntigravityCapabilitiesService } from '@/antigravity/antigravityCapabilities';
 import {
     bootstrapMachineSocket,
     type MachineSocketDeps,
@@ -97,6 +98,16 @@ function createCursorCapabilities(): CursorCapabilitiesService {
             executable: 'agent',
             version: 'test',
             models: { availableModels: [], currentModelId: '' },
+        }),
+    });
+}
+
+function createAntigravityCapabilities(): AntigravityCapabilitiesService {
+    return new AntigravityCapabilitiesService({
+        readCatalog: async () => ({
+            version: '1.2.2',
+            modelsOutput: 'model-a\tModel A',
+            currentModelOutput: 'model-a\tModel A',
         }),
     });
 }
@@ -226,6 +237,7 @@ async function startHarness(
     codexCapabilities: CodexCapabilitiesService = createCodexCapabilities(),
     sessionExecution: SessionExecutionHarnessDeps = unavailableSessionExecution,
     cursorCapabilities: CursorCapabilitiesService = createCursorCapabilities(),
+    antigravityCapabilities: AntigravityCapabilitiesService = createAntigravityCapabilities(),
 ): Promise<Uint8Array> {
     const secret = generateSharedSecret();
     const bearerToken = deriveBearerToken(secret);
@@ -251,6 +263,7 @@ async function startHarness(
         pairingRekeyCoordinator: createPairingRekeyCoordinator(secret),
         codexCapabilities,
         cursorCapabilities,
+        antigravityCapabilities,
         spawnSession,
         stopSession: () => ({ success: false }),
         ...sessionExecution,
@@ -420,6 +433,134 @@ describe('machine RPC directory projects', { timeout: 15_000 }, () => {
             permissionMode: 'workspace-write',
             codexExecution: execution,
         }));
+    });
+
+    it('exposes Antigravity capabilities and validates its spawn selection before spawning', async () => {
+        const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'antigravity-session' }));
+        testDirectory = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-antigravity-'));
+        const workspace = join(testDirectory, 'workspace');
+        mkdirSync(workspace);
+        const directoryProjects = createDirectoryProjectsStore({
+            machineId: TEST_MACHINE_ID,
+            filePath: join(testDirectory, 'recent-directories.json'),
+        });
+        const secret = await startHarness(directoryProjects, spawn);
+        const capabilities = await callMachineRpc(secret, 'get-antigravity-capabilities', {});
+
+        expect(capabilities).toMatchObject({
+            agent: 'antigravity',
+            status: 'ready',
+            catalogVersion: expect.any(String),
+            supportsSandbox: true,
+        });
+        const catalogVersion = (capabilities as { catalogVersion: string }).catalogVersion;
+        await expect(callMachineRpc(secret, 'spawn-remcli-session', {
+            type: 'spawn-in-directory',
+            agent: 'antigravity',
+            directory: workspace,
+            antigravityExecution: { model: 'model-a', catalogVersion },
+            antigravityLaunchControls: { mode: 'default', dangerouslySkipPermissions: false, sandbox: false },
+        })).resolves.toEqual({ type: 'success', sessionId: 'antigravity-session' });
+        expect(spawn).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'antigravity',
+            antigravityExecution: { model: 'model-a', catalogVersion },
+            antigravityLaunchControls: { mode: 'default', dangerouslySkipPermissions: false, sandbox: false },
+        }));
+        await expect(callMachineRpc(secret, 'list-directory-projects', {})).resolves.toEqual({
+            projects: [expect.objectContaining({
+                canonicalPath: realpathSync(workspace),
+                lastAgent: 'antigravity',
+            })],
+        });
+    });
+
+    it('rejects stale and unknown Antigravity selections before spawning', async () => {
+        const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'unused' }));
+        const antigravityCapabilities = createAntigravityCapabilities();
+        const capabilities = await antigravityCapabilities.getCapabilities();
+        expect(capabilities.catalogVersion).not.toBeNull();
+        testDirectory = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-antigravity-rejection-'));
+        const directoryProjects = createDirectoryProjectsStore({
+            machineId: TEST_MACHINE_ID,
+            filePath: join(testDirectory, 'recent-directories.json'),
+        });
+        const secret = await startHarness(
+            directoryProjects,
+            spawn,
+            createCodexCapabilities(),
+            unavailableSessionExecution,
+            createCursorCapabilities(),
+            antigravityCapabilities,
+        );
+        const commonRequest = {
+            type: 'spawn-in-directory',
+            agent: 'antigravity',
+            directory: process.cwd(),
+            antigravityLaunchControls: { mode: 'default', dangerouslySkipPermissions: false, sandbox: false },
+        } as const;
+
+        await expect(callMachineRpc(secret, 'spawn-remcli-session', {
+            ...commonRequest,
+            antigravityExecution: { model: 'model-a', catalogVersion: 'stale-catalog' },
+        })).resolves.toEqual(expect.objectContaining({
+            error: 'Antigravity capability selection rejected: expired.',
+        }));
+        await expect(callMachineRpc(secret, 'spawn-remcli-session', {
+            ...commonRequest,
+            antigravityExecution: { model: 'unknown-model', catalogVersion: capabilities.catalogVersion },
+        })).resolves.toEqual(expect.objectContaining({
+            error: 'Antigravity capability selection rejected: unsupported_selection.',
+        }));
+        expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it('rejects unsupported Antigravity launch controls before spawning', async () => {
+        const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'unused' }));
+        const antigravityCapabilities = createAntigravityCapabilities();
+        const discovered = await antigravityCapabilities.getCapabilities();
+        expect(discovered.catalogVersion).not.toBeNull();
+        const getCapabilities = vi.spyOn(antigravityCapabilities, 'getCapabilities').mockResolvedValue({
+            ...discovered,
+            executionModes: ['default'],
+            supportsDangerouslySkipPermissions: false,
+            supportsSandbox: false,
+        });
+        testDirectory = mkdtempSync(join(tmpdir(), 'remcli-machine-rpc-antigravity-controls-'));
+        const directoryProjects = createDirectoryProjectsStore({
+            machineId: TEST_MACHINE_ID,
+            filePath: join(testDirectory, 'recent-directories.json'),
+        });
+        const secret = await startHarness(
+            directoryProjects,
+            spawn,
+            createCodexCapabilities(),
+            unavailableSessionExecution,
+            createCursorCapabilities(),
+            antigravityCapabilities,
+        );
+        const commonRequest = {
+            type: 'spawn-in-directory',
+            agent: 'antigravity',
+            directory: process.cwd(),
+            antigravityExecution: { model: 'model-a', catalogVersion: discovered.catalogVersion },
+        } as const;
+        const unsupportedControls = [
+            { mode: 'accept-edits', dangerouslySkipPermissions: false, sandbox: false },
+            { mode: 'default', dangerouslySkipPermissions: true, sandbox: false },
+            { mode: 'default', dangerouslySkipPermissions: false, sandbox: true },
+        ] as const;
+
+        for (const antigravityLaunchControls of unsupportedControls) {
+            await expect(callMachineRpc(secret, 'spawn-remcli-session', {
+                ...commonRequest,
+                antigravityLaunchControls,
+            })).resolves.toEqual(expect.objectContaining({
+                error: 'Antigravity capability selection rejected: unsupported_selection.',
+            }));
+        }
+        expect(getCapabilities).toHaveBeenCalledTimes(3);
+        expect(getCapabilities).toHaveBeenCalledWith(true);
+        expect(spawn).not.toHaveBeenCalled();
     });
 
     it('validates a fresh Cursor selection and rejects a changed runner identity', async () => {

@@ -20,7 +20,13 @@ import type {
     CursorRunnerBootstrapFailureResult,
     CursorRunnerPreflightRequest,
     CursorRunnerPreflightResult,
+    AntigravityRunnerBootstrapFailureRequest,
+    AntigravityRunnerBootstrapFailureResult,
+    AntigravityRunnerPreflightRequest,
+    AntigravityRunnerPreflightResult,
     DaemonRunnerLifecycleResult,
+    NativeAntigravityConversationBinding,
+    NativeAntigravityConversationBindingResult,
     NativeCodexThreadBinding,
     NativeCodexThreadBindingResult,
     NativeCursorSessionBinding,
@@ -58,6 +64,9 @@ interface ControlServerTestOptions {
     verifySessionRunnerCredential?: (sessionId: string, credential: string) => boolean;
     bindNativeCodexThread?: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
     bindNativeCursorSession?: (binding: NativeCursorSessionBinding) => Promise<NativeCursorSessionBindingResult>;
+    bindNativeAntigravityConversation?: (
+        binding: NativeAntigravityConversationBinding,
+    ) => Promise<NativeAntigravityConversationBindingResult>;
     acquireCursorHeadlessWriterLease?: (
         request: CursorHeadlessWriterLeaseAcquireRequest,
     ) => Promise<CursorHeadlessWriterLeaseAcquireResult>;
@@ -70,6 +79,12 @@ interface ControlServerTestOptions {
     reportCursorRunnerBootstrapFailure?: (
         request: CursorRunnerBootstrapFailureRequest,
     ) => Promise<CursorRunnerBootstrapFailureResult>;
+    preflightAntigravityRunner?: (
+        request: AntigravityRunnerPreflightRequest,
+    ) => Promise<AntigravityRunnerPreflightResult>;
+    reportAntigravityRunnerBootstrapFailure?: (
+        request: AntigravityRunnerBootstrapFailureRequest,
+    ) => Promise<AntigravityRunnerBootstrapFailureResult>;
     markDaemonRunnerStopping?: (sessionId: string) => DaemonRunnerLifecycleResult;
     completeDaemonRunnerStopping?: (sessionId: string) => Promise<DaemonRunnerLifecycleResult>;
     openCodexRemoteTui?: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
@@ -119,6 +134,10 @@ async function startControlServerForTest(options: ControlServerTestOptions = {})
             type: 'wrapper-not-tracked',
             binding,
         })),
+        bindNativeAntigravityConversation: options.bindNativeAntigravityConversation ?? (async (binding) => ({
+            type: 'wrapper-not-tracked',
+            binding,
+        })),
         acquireCursorHeadlessWriterLease: options.acquireCursorHeadlessWriterLease ?? (async (request) => ({
             type: 'wrapper-not-tracked',
             request,
@@ -126,6 +145,8 @@ async function startControlServerForTest(options: ControlServerTestOptions = {})
         releaseCursorNativeWriterLease: options.releaseCursorNativeWriterLease ?? (async () => ({ released: false })),
         preflightCursorRunner: options.preflightCursorRunner ?? (async () => ({ type: 'rejected' })),
         reportCursorRunnerBootstrapFailure: options.reportCursorRunnerBootstrapFailure ?? (async () => ({ accepted: false })),
+        preflightAntigravityRunner: options.preflightAntigravityRunner ?? (async () => ({ type: 'rejected' })),
+        reportAntigravityRunnerBootstrapFailure: options.reportAntigravityRunnerBootstrapFailure ?? (async () => ({ accepted: false })),
         markDaemonRunnerStopping: options.markDaemonRunnerStopping ?? (() => ({ accepted: false })),
         completeDaemonRunnerStopping: options.completeDaemonRunnerStopping ?? (async () => ({ accepted: false })),
         openCodexRemoteTui: options.openCodexRemoteTui ?? (async (request) => ({
@@ -393,6 +414,84 @@ describe('startDaemonControlServer', () => {
         });
     });
 
+    it('exposes a strict authenticated Antigravity runner preflight', async () => {
+        const preflightAntigravityRunner = vi.fn(async (request: AntigravityRunnerPreflightRequest) => (
+            request.runnerToken === 'valid-antigravity-token'
+                ? { type: 'verified' as const, parentRemcliSessionId: 'remcli-antigravity-parent' }
+                : { type: 'rejected' as const }
+        ));
+        const controlServer = await startControlServerForTest({ preflightAntigravityRunner });
+        stopServer = controlServer.stop;
+        const request = {
+            agent: 'antigravity',
+            nativeResumeConversationId: 'conversation-123',
+            directory: '/tmp/remcli-antigravity',
+            pid: process.pid,
+        } as const;
+
+        const acceptedResponse = await fetch(`http://127.0.0.1:${controlServer.port}/antigravity-runner-preflight`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...request, runnerToken: 'valid-antigravity-token' }),
+        });
+        const rejectedResponse = await fetch(`http://127.0.0.1:${controlServer.port}/antigravity-runner-preflight`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...request, runnerToken: 'forged-antigravity-token' }),
+        });
+        const nonStrictResponse = await fetch(`http://127.0.0.1:${controlServer.port}/antigravity-runner-preflight`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...request, runnerToken: 'valid-antigravity-token', unexpected: true }),
+        });
+
+        expect(acceptedResponse.status).toBe(200);
+        await expect(acceptedResponse.json()).resolves.toEqual({
+            type: 'verified',
+            parentRemcliSessionId: 'remcli-antigravity-parent',
+        });
+        expect(rejectedResponse.status).toBe(403);
+        await expect(rejectedResponse.json()).resolves.toEqual({ error: 'antigravity-runner-preflight-rejected' });
+        expect(nonStrictResponse.status).toBe(400);
+        expect(preflightAntigravityRunner).toHaveBeenCalledTimes(2);
+        expect(preflightAntigravityRunner).toHaveBeenNthCalledWith(1, {
+            ...request,
+            runnerToken: 'valid-antigravity-token',
+        });
+    });
+
+    it('accepts only a strict capability-authenticated Antigravity bootstrap failure report', async () => {
+        const reportAntigravityRunnerBootstrapFailure = vi.fn(async (request: AntigravityRunnerBootstrapFailureRequest) => ({
+            accepted: request.runnerToken === 'valid-antigravity-token',
+        }));
+        const controlServer = await startControlServerForTest({ reportAntigravityRunnerBootstrapFailure });
+        stopServer = controlServer.stop;
+        const request = { agent: 'antigravity', pid: process.pid } as const;
+
+        const acceptedResponse = await fetch(`http://127.0.0.1:${controlServer.port}/antigravity-runner-bootstrap-failed`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...request, runnerToken: 'valid-antigravity-token' }),
+        });
+        const rejectedResponse = await fetch(`http://127.0.0.1:${controlServer.port}/antigravity-runner-bootstrap-failed`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...request, runnerToken: 'forged-antigravity-token' }),
+        });
+        const malformedResponse = await fetch(`http://127.0.0.1:${controlServer.port}/antigravity-runner-bootstrap-failed`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...request, runnerToken: 'valid-antigravity-token', unexpected: true }),
+        });
+
+        expect(acceptedResponse.status).toBe(200);
+        await expect(acceptedResponse.json()).resolves.toEqual({ accepted: true });
+        expect(rejectedResponse.status).toBe(403);
+        await expect(rejectedResponse.json()).resolves.toEqual({ error: 'antigravity-runner-bootstrap-failure-rejected' });
+        expect(malformedResponse.status).toBe(400);
+        expect(reportAntigravityRunnerBootstrapFailure).toHaveBeenCalledTimes(2);
+    });
+
     it('accepts daemon runner lifecycle transitions only with the runner credential', async () => {
         const markDaemonRunnerStopping = vi.fn(() => ({ accepted: true }));
         const completeDaemonRunnerStopping = vi.fn(async () => ({ accepted: true }));
@@ -559,6 +658,58 @@ describe('startDaemonControlServer', () => {
         expect(bindingResponse.status).toBe(200);
         await expect(bindingResponse.json()).resolves.toEqual(bindingResult);
         expect(bindNativeCursorSession).toHaveBeenCalledWith(binding);
+    });
+
+    it('binds an Antigravity conversation only with the exact runner credential and strict body', async () => {
+        const binding: NativeAntigravityConversationBinding = {
+            agent: 'antigravity',
+            nativeConversationId: 'conversation-credential',
+            remcliSessionId: 'remcli-antigravity-credential',
+        };
+        const bindingResult: NativeAntigravityConversationBindingResult = {
+            type: 'bound',
+            wrapper: binding,
+        };
+        const bindNativeAntigravityConversation = vi.fn(async () => bindingResult);
+        const verifySessionRunnerCredential = vi.fn((sessionId: string, credential: string) => (
+            sessionId === binding.remcliSessionId && credential === 'valid-runner-credential'
+        ));
+        const controlServer = await startControlServerForTest({
+            bindNativeAntigravityConversation,
+            verifySessionRunnerCredential,
+        });
+        stopServer = controlServer.stop;
+
+        const acceptedResponse = await fetch(`http://127.0.0.1:${controlServer.port}/antigravity-conversation-bound`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...binding, runnerCredential: 'valid-runner-credential' }),
+        });
+        const wrongCredentialResponse = await fetch(`http://127.0.0.1:${controlServer.port}/antigravity-conversation-bound`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...binding, runnerCredential: 'wrong-runner-credential' }),
+        });
+        const missingCredentialResponse = await fetch(`http://127.0.0.1:${controlServer.port}/antigravity-conversation-bound`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(binding),
+        });
+        const nonStrictResponse = await fetch(`http://127.0.0.1:${controlServer.port}/antigravity-conversation-bound`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...binding, runnerCredential: 'valid-runner-credential', unexpected: true }),
+        });
+
+        expect(acceptedResponse.status).toBe(200);
+        await expect(acceptedResponse.json()).resolves.toEqual(bindingResult);
+        expect(wrongCredentialResponse.status).toBe(403);
+        await expect(wrongCredentialResponse.json()).resolves.toEqual({ error: 'invalid-runner-credential' });
+        expect(missingCredentialResponse.status).toBe(403);
+        await expect(missingCredentialResponse.json()).resolves.toEqual({ error: 'invalid-runner-credential' });
+        expect(nonStrictResponse.status).toBe(400);
+        expect(bindNativeAntigravityConversation).toHaveBeenCalledOnce();
+        expect(bindNativeAntigravityConversation).toHaveBeenCalledWith(binding);
     });
 
     it('requires the daemon-issued runner credential and exact opaque capability for Cursor writer lease operations', async () => {

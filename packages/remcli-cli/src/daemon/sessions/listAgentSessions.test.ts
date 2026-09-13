@@ -122,6 +122,15 @@ function createGeminiSession(
     return filePath;
 }
 
+function appendAntigravityHistory(
+    homeDir: string,
+    row: { conversationId: string; workspace: string; display: string; timestamp: number },
+): void {
+    const historyDir = join(homeDir, '.gemini', 'antigravity-cli');
+    mkdirSync(historyDir, { recursive: true });
+    appendFileSync(join(historyDir, 'history.jsonl'), `${JSON.stringify(row)}\n`);
+}
+
 // ---- Tests ----
 
 describe('listAgentSessions', () => {
@@ -1149,9 +1158,16 @@ describe('listAgentSessions', () => {
                 sessionId: 'gemini-combined', messages: [],
             });
 
+            appendAntigravityHistory(testDir, {
+                conversationId: 'antigravity-combined',
+                workspace: '/home/user/projects/antigravity',
+                display: 'Review the native stream lifecycle',
+                timestamp: Date.parse('2026-08-01T10:00:00Z'),
+            });
+
             const sessions = listAllAgentSessions();
             const agents = sessions.map(s => s.agent).sort();
-            expect(agents).toEqual(['claude', 'codex', 'cursor', 'gemini']);
+            expect(agents).toEqual(['antigravity', 'claude', 'codex', 'cursor', 'gemini']);
         });
 
         it('should preserve the selected Cursor workspace when listing through the aggregate API', async () => {

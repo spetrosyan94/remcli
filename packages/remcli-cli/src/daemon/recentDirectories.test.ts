@@ -57,6 +57,27 @@ describe('directoryProjects', () => {
         });
     });
 
+    it('persists and reloads Antigravity as a first-class project provider', () => {
+        const workspace = join(homeDirectory, 'antigravity-workspace');
+        mkdirSync(workspace);
+
+        createStore('machine-a', () => 100).recordSuccessfulSpawn(workspace, {
+            agent: 'antigravity',
+            branchAtLastLaunch: 'feature/antigravity',
+        });
+
+        expect(createStore('machine-a').listProjects()).toEqual({
+            projects: [{
+                canonicalPath: realpathSync(workspace),
+                displayPath: '~/antigravity-workspace',
+                lastUsedAt: 100,
+                isPinned: false,
+                lastAgent: 'antigravity',
+                branchAtLastLaunch: 'feature/antigravity',
+            }],
+        });
+    });
+
     it('keeps a user pin while refreshing the last launch snapshot', () => {
         const workspace = join(homeDirectory, 'workspace');
         mkdirSync(workspace);

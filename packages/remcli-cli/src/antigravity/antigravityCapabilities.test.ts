@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AntigravityCapabilitiesError, AntigravityCapabilitiesService, createAntigravityCapabilitiesSnapshot, getDefaultAntigravityExecution, parseAntigravityModels, validateAntigravityExecution } from './antigravityCapabilities';
+import {
+    AntigravityCapabilitiesError,
+    AntigravityCapabilitiesService,
+    createAntigravityCapabilitiesSnapshot,
+    getDefaultAntigravityExecution,
+    parseAntigravityModels,
+    validateAntigravityExecution,
+    validateAntigravitySpawnSelection,
+    type AntigravityCapabilitiesSnapshot,
+} from './antigravityCapabilities';
 
 const catalog = 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)\nclaude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)';
 const source = { version: '1.2.2', modelsOutput: catalog, currentModelOutput: 'gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n' };
@@ -33,6 +42,70 @@ describe('Antigravity capabilities', () => {
         });
         expect(() => validateAntigravityExecution({ ...standalone, expiresAt: 10_000 }, { model: 'claude-sonnet-4-6', catalogVersion: standalone.catalogVersion! }, 1_001)).not.toThrow();
         expect(() => createAntigravityCapabilitiesSnapshot({ ...source, version: 'not-semver' })).toThrow();
+    });
+
+    it('requires an exact effort for variants and no effort for standalone models', () => {
+        const snapshot = createAntigravityCapabilitiesSnapshot(source, () => 1_000, 5_000);
+        const catalogVersion = snapshot.catalogVersion!;
+
+        expect(() => validateAntigravityExecution(snapshot, {
+            model: 'gemini-3.8-flash-high',
+            catalogVersion,
+        }, 1_001)).toThrowError(AntigravityCapabilitiesError);
+        expect(() => validateAntigravityExecution(snapshot, {
+            model: 'gemini-3.8-flash-high',
+            reasoningEffort: 'medium',
+            catalogVersion,
+        }, 1_001)).toThrowError(AntigravityCapabilitiesError);
+        expect(() => validateAntigravityExecution(snapshot, {
+            model: 'gemini-3.8-flash-high',
+            reasoningEffort: 'high',
+            catalogVersion,
+        }, 1_001)).not.toThrow();
+        expect(() => validateAntigravityExecution(snapshot, {
+            model: 'claude-sonnet-4-6',
+            reasoningEffort: 'high',
+            catalogVersion,
+        }, 1_001)).toThrowError(AntigravityCapabilitiesError);
+        expect(() => validateAntigravityExecution(snapshot, {
+            model: 'claude-sonnet-4-6',
+            catalogVersion,
+        }, 1_001)).not.toThrow();
+    });
+
+    it('validates execution and launch controls against one capability snapshot', () => {
+        const discovered = createAntigravityCapabilitiesSnapshot(source, () => 1_000, 5_000);
+        const snapshot: AntigravityCapabilitiesSnapshot = {
+            ...discovered,
+            executionModes: ['default'],
+            supportsDangerouslySkipPermissions: false,
+            supportsSandbox: false,
+        };
+        const execution = getDefaultAntigravityExecution(snapshot)!;
+
+        expect(validateAntigravitySpawnSelection(snapshot, execution, {
+            mode: 'default',
+            dangerouslySkipPermissions: false,
+            sandbox: false,
+        }, 1_001)).toEqual({
+            execution,
+            launchControls: { mode: 'default', dangerouslySkipPermissions: false, sandbox: false },
+        });
+        expect(() => validateAntigravitySpawnSelection(snapshot, execution, {
+            mode: 'accept-edits',
+            dangerouslySkipPermissions: false,
+            sandbox: false,
+        }, 1_001)).toThrowError(AntigravityCapabilitiesError);
+        expect(() => validateAntigravitySpawnSelection(snapshot, execution, {
+            mode: 'default',
+            dangerouslySkipPermissions: true,
+            sandbox: false,
+        }, 1_001)).toThrowError(AntigravityCapabilitiesError);
+        expect(() => validateAntigravitySpawnSelection(snapshot, execution, {
+            mode: 'default',
+            dangerouslySkipPermissions: false,
+            sandbox: true,
+        }, 1_001)).toThrowError(AntigravityCapabilitiesError);
     });
 
     it('parses the current model as strict TSV and rejects malformed current output', () => {
@@ -99,5 +172,51 @@ describe('Antigravity capabilities', () => {
         const snapshot = await service.getCapabilities();
         const execution = getDefaultAntigravityExecution(snapshot)!;
         await expect(service.validateSelection(execution)).resolves.toEqual(execution);
+    });
+
+    it('refreshes once and atomically validates a spawn selection', async () => {
+        const service = new AntigravityCapabilitiesService({ readCatalog: async () => source, now: () => 1_000 });
+        const snapshot = createAntigravityCapabilitiesSnapshot(source, () => 1_000);
+        const getCapabilities = vi.spyOn(service, 'getCapabilities').mockResolvedValue(snapshot);
+        const execution = getDefaultAntigravityExecution(snapshot)!;
+        const launchControls = { mode: 'plan', dangerouslySkipPermissions: true, sandbox: true } as const;
+
+        await expect(service.validateSpawnSelection(execution, launchControls)).resolves.toEqual({
+            execution,
+            launchControls,
+        });
+        expect(getCapabilities).toHaveBeenCalledOnce();
+        expect(getCapabilities).toHaveBeenCalledWith(true);
+    });
+
+    it('rejects unsupported launch controls from the same refreshed snapshot', async () => {
+        const service = new AntigravityCapabilitiesService({ readCatalog: async () => source, now: () => 1_000 });
+        const discovered = createAntigravityCapabilitiesSnapshot(source, () => 1_000);
+        const snapshot: AntigravityCapabilitiesSnapshot = {
+            ...discovered,
+            executionModes: ['default'],
+            supportsDangerouslySkipPermissions: false,
+            supportsSandbox: false,
+        };
+        const getCapabilities = vi.spyOn(service, 'getCapabilities').mockResolvedValue(snapshot);
+        const execution = getDefaultAntigravityExecution(snapshot)!;
+
+        await expect(service.validateSpawnSelection(execution, {
+            mode: 'accept-edits',
+            dangerouslySkipPermissions: false,
+            sandbox: false,
+        })).rejects.toMatchObject({ code: 'unsupported_selection' });
+        await expect(service.validateSpawnSelection(execution, {
+            mode: 'default',
+            dangerouslySkipPermissions: true,
+            sandbox: false,
+        })).rejects.toMatchObject({ code: 'unsupported_selection' });
+        await expect(service.validateSpawnSelection(execution, {
+            mode: 'default',
+            dangerouslySkipPermissions: false,
+            sandbox: true,
+        })).rejects.toMatchObject({ code: 'unsupported_selection' });
+        expect(getCapabilities).toHaveBeenCalledTimes(3);
+        expect(getCapabilities).toHaveBeenCalledWith(true);
     });
 });

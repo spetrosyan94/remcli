@@ -16,13 +16,22 @@ vi.mock('./doctor', () => ({
 }));
 
 import {
+    bindDaemonAntigravityConversation,
     checkIfDaemonRunningAndCleanupStaleState,
     getLiveLegacyDaemonMigrationBlocker,
     getDaemonOwnershipStatus,
     isVerifiedDaemonLive,
     listDaemonSessions,
+    preflightDaemonAntigravityRunner,
+    reportDaemonAntigravityRunnerBootstrapFailure,
     stopDaemon,
 } from './controlClient';
+import {
+    forgetSessionRunnerCredential,
+    rememberSessionRunnerCredential,
+} from './p2p/p2pRunnerCredentials';
+
+const ANTIGRAVITY_CLIENT_SESSION_ID = 'remcli-antigravity-client';
 
 function createDaemonState(
     overrides: Partial<DaemonLocallyPersistedState> = {},
@@ -44,6 +53,8 @@ function createDaemonState(
 afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    forgetSessionRunnerCredential(ANTIGRAVITY_CLIENT_SESSION_ID);
     readDaemonState.mockReset();
     readLegacyDaemonStateDiagnostic.mockReset();
     findAllRemcliProcesses.mockReset();
@@ -462,5 +473,108 @@ describe('daemon control lifecycle safety', () => {
         }]);
 
         await expect(getLiveLegacyDaemonMigrationBlocker()).resolves.toBeNull();
+    });
+
+    it('uses the stable authenticated Antigravity control paths and exact request bodies', async () => {
+        const state = createDaemonState();
+        readDaemonState.mockResolvedValue(state);
+        vi.spyOn(process, 'kill').mockReturnValue(true);
+        vi.stubEnv('REMCLI_DAEMON_RUNNER_TOKEN', 'antigravity-runner-token');
+        rememberSessionRunnerCredential(ANTIGRAVITY_CLIENT_SESSION_ID, 'antigravity-runner-credential');
+        const fetchSpy = vi.fn(async (input: string, _init?: RequestInit) => {
+            if (input.endsWith('/identity')) {
+                return new Response(JSON.stringify({ instanceId: state.instanceId }), { status: 200 });
+            }
+            if (input.endsWith('/antigravity-runner-preflight')) {
+                return new Response(JSON.stringify({
+                    type: 'verified',
+                    parentRemcliSessionId: 'remcli-antigravity-parent',
+                }), { status: 200 });
+            }
+            if (input.endsWith('/antigravity-runner-bootstrap-failed')) {
+                return new Response(JSON.stringify({ accepted: true }), { status: 200 });
+            }
+            return new Response(JSON.stringify({
+                type: 'bound',
+                wrapper: {
+                    agent: 'antigravity',
+                    nativeConversationId: 'conversation-client',
+                    remcliSessionId: ANTIGRAVITY_CLIENT_SESSION_ID,
+                },
+            }), { status: 200 });
+        });
+        vi.stubGlobal('fetch', fetchSpy);
+
+        await expect(preflightDaemonAntigravityRunner({
+            agent: 'antigravity',
+            nativeResumeConversationId: 'conversation-client',
+            directory: '/tmp/remcli-antigravity-client',
+            pid: 41_001,
+        })).resolves.toEqual({
+            ok: true,
+            data: {
+                type: 'verified',
+                parentRemcliSessionId: 'remcli-antigravity-parent',
+            },
+        });
+        await expect(reportDaemonAntigravityRunnerBootstrapFailure({
+            agent: 'antigravity',
+            pid: 41_001,
+        })).resolves.toEqual({ ok: true, data: { accepted: true } });
+        await expect(bindDaemonAntigravityConversation({
+            agent: 'antigravity',
+            nativeConversationId: 'conversation-client',
+            remcliSessionId: ANTIGRAVITY_CLIENT_SESSION_ID,
+        })).resolves.toMatchObject({ ok: true, data: { type: 'bound' } });
+
+        expect(fetchSpy.mock.calls.map(([url]) => url)).toEqual([
+            `http://127.0.0.1:${state.httpPort}/identity`,
+            `http://127.0.0.1:${state.httpPort}/antigravity-runner-preflight`,
+            `http://127.0.0.1:${state.httpPort}/identity`,
+            `http://127.0.0.1:${state.httpPort}/antigravity-runner-bootstrap-failed`,
+            `http://127.0.0.1:${state.httpPort}/identity`,
+            `http://127.0.0.1:${state.httpPort}/antigravity-conversation-bound`,
+        ]);
+        expect(JSON.parse(fetchSpy.mock.calls[1]![1]!.body as string)).toEqual({
+            agent: 'antigravity',
+            nativeResumeConversationId: 'conversation-client',
+            directory: '/tmp/remcli-antigravity-client',
+            pid: 41_001,
+            runnerToken: 'antigravity-runner-token',
+        });
+        expect(JSON.parse(fetchSpy.mock.calls[3]![1]!.body as string)).toEqual({
+            agent: 'antigravity',
+            pid: 41_001,
+            runnerToken: 'antigravity-runner-token',
+        });
+        expect(JSON.parse(fetchSpy.mock.calls[5]![1]!.body as string)).toEqual({
+            agent: 'antigravity',
+            nativeConversationId: 'conversation-client',
+            remcliSessionId: ANTIGRAVITY_CLIENT_SESSION_ID,
+            runnerCredential: 'antigravity-runner-credential',
+        });
+    });
+
+    it('fails Antigravity control calls locally without a runner token or session credential', async () => {
+        vi.stubEnv('REMCLI_DAEMON_RUNNER_TOKEN', '');
+        forgetSessionRunnerCredential(ANTIGRAVITY_CLIENT_SESSION_ID);
+        const fetchSpy = vi.fn();
+        vi.stubGlobal('fetch', fetchSpy);
+
+        await expect(preflightDaemonAntigravityRunner({
+            agent: 'antigravity',
+            directory: '/tmp/remcli-antigravity-client',
+            pid: 41_002,
+        })).resolves.toEqual({ ok: false, error: 'Missing daemon runner capability' });
+        await expect(reportDaemonAntigravityRunnerBootstrapFailure({
+            agent: 'antigravity',
+            pid: 41_002,
+        })).resolves.toEqual({ ok: false, error: 'Missing daemon runner capability' });
+        await expect(bindDaemonAntigravityConversation({
+            agent: 'antigravity',
+            nativeConversationId: 'conversation-client',
+            remcliSessionId: ANTIGRAVITY_CLIENT_SESSION_ID,
+        })).resolves.toEqual({ ok: false, error: 'Missing session runner credential' });
+        expect(fetchSpy).not.toHaveBeenCalled();
     });
 });

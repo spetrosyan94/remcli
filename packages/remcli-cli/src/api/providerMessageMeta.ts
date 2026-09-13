@@ -56,9 +56,12 @@ const CodexUserMessageSchema = createProviderUserMessageSchema(SafeUserMessageMe
 const CursorUserMessageSchema = createProviderUserMessageSchema(SafeUserMessageMetaSchema);
 const ClaudeUserMessageSchema = createProviderUserMessageSchema(ClaudeUserMessageMetaSchema);
 const GeminiUserMessageSchema = createProviderUserMessageSchema(GeminiUserMessageMetaSchema);
+// Antigravity has no per-turn permission or model controls. Its launch
+// selection is daemon-owned and is never accepted from live message metadata.
+const AntigravityUserMessageSchema = createProviderUserMessageSchema(SafeUserMessageMetaSchema);
 const UnscopedUserMessageSchema = createProviderUserMessageSchema(SafeUserMessageMetaSchema);
 
-export type ProviderFlavor = 'claude' | 'codex' | 'cursor' | 'gemini';
+export type ProviderFlavor = 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
 
 export interface ProviderUserMessage {
     role: 'user';
@@ -96,6 +99,7 @@ const providerUserMessageSchemas: Record<ProviderFlavor, z.ZodType<unknown>> = {
     codex: CodexUserMessageSchema,
     cursor: CursorUserMessageSchema,
     gemini: GeminiUserMessageSchema,
+    antigravity: AntigravityUserMessageSchema,
 };
 
 export function resolveProviderFlavor(flavor: unknown): ProviderFlavor | null {

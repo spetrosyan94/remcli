@@ -27,6 +27,12 @@ import type {
   NativeCodexThreadBindingResult,
   NativeCursorSessionBinding,
   NativeCursorSessionBindingResult,
+  NativeAntigravityConversationBinding,
+  NativeAntigravityConversationBindingResult,
+  AntigravityRunnerPreflightRequest,
+  AntigravityRunnerPreflightResult,
+  AntigravityRunnerBootstrapFailureRequest,
+  AntigravityRunnerBootstrapFailureResult,
   SessionExecutionConsumeResult,
   StopSessionResult,
   TrackedSession,
@@ -61,6 +67,35 @@ const nativeCursorSessionBindingSchema = nativeCursorSessionWrapperSchema.extend
 const protectedNativeCursorSessionBindingSchema = nativeCursorSessionBindingSchema.extend({
   runnerCredential: runnerCredentialSchema,
 });
+
+const nativeAntigravityConversationBindingSchema = z.object({
+  agent: z.literal('antigravity'),
+  nativeConversationId: z.string().min(1).max(256),
+  remcliSessionId: z.string().min(1),
+}).strict();
+const protectedNativeAntigravityConversationBindingSchema = nativeAntigravityConversationBindingSchema.extend({
+  runnerCredential: runnerCredentialSchema,
+}).strict();
+const nativeAntigravityConversationWrapperSchema = nativeAntigravityConversationBindingSchema;
+const antigravityRunnerPreflightRequestSchema = z.object({
+  agent: z.literal('antigravity'),
+  nativeResumeConversationId: z.string().min(1).max(256).optional(),
+  directory: z.string().min(1),
+  pid: z.number().int().positive(),
+  runnerToken: z.string().min(1),
+}).strict();
+const antigravityRunnerPreflightResponseSchema = z.object({
+  type: z.literal('verified'),
+  parentRemcliSessionId: z.string().min(1).optional(),
+}).strict();
+const antigravityRunnerBootstrapFailureRequestSchema = z.object({
+  agent: z.literal('antigravity'),
+  pid: z.number().int().positive(),
+  runnerToken: z.string().min(1),
+}).strict();
+const antigravityRunnerBootstrapFailureResultSchema = z.object({
+  accepted: z.boolean(),
+}).strict();
 
 const cursorNativeWriterOwnerSchema = z.enum(['headless', 'interactive']);
 
@@ -255,6 +290,18 @@ const cursorRunnerBootstrapFailureRejectedResponseSchema = z.object({
   error: z.literal(CURSOR_RUNNER_BOOTSTRAP_FAILURE_REJECTED_ERROR),
 });
 
+const ANTIGRAVITY_RUNNER_PREFLIGHT_REJECTED_ERROR = 'antigravity-runner-preflight-rejected';
+
+const antigravityRunnerPreflightRejectedResponseSchema = z.object({
+  error: z.literal(ANTIGRAVITY_RUNNER_PREFLIGHT_REJECTED_ERROR),
+}).strict();
+
+const ANTIGRAVITY_RUNNER_BOOTSTRAP_FAILURE_REJECTED_ERROR = 'antigravity-runner-bootstrap-failure-rejected';
+
+const antigravityRunnerBootstrapFailureRejectedResponseSchema = z.object({
+  error: z.literal(ANTIGRAVITY_RUNNER_BOOTSTRAP_FAILURE_REJECTED_ERROR),
+}).strict();
+
 const pairingRekeyApprovalRequestSchema = z.object({
   requestId: z.string().min(16).max(128),
   approvalCode: z.string().regex(/^[A-F0-9]{8}$/),
@@ -276,7 +323,7 @@ const nativeCodexThreadBindingResultSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('agent-mismatch'),
     binding: nativeCodexThreadBindingSchema,
-    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini']),
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini', 'antigravity']),
   }),
 ]);
 
@@ -295,8 +342,37 @@ const nativeCursorSessionBindingResultSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('agent-mismatch'),
     binding: nativeCursorSessionBindingSchema,
-    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini']),
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini', 'antigravity']),
   }),
+]);
+
+const nativeAntigravityConversationBindingResultSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('bound'),
+    wrapper: nativeAntigravityConversationWrapperSchema,
+  }).strict(),
+  z.object({
+    type: z.literal('already-bound'),
+    wrapper: nativeAntigravityConversationWrapperSchema,
+  }).strict(),
+  z.object({
+    type: z.literal('reuse-active-wrapper'),
+    wrapper: nativeAntigravityConversationWrapperSchema,
+  }).strict(),
+  z.object({
+    type: z.literal('wrapper-not-tracked'),
+    binding: nativeAntigravityConversationBindingSchema,
+  }).strict(),
+  z.object({
+    type: z.literal('native-conversation-mismatch'),
+    binding: nativeAntigravityConversationBindingSchema,
+    expectedNativeConversationId: z.string().min(1),
+  }).strict(),
+  z.object({
+    type: z.literal('agent-mismatch'),
+    binding: nativeAntigravityConversationBindingSchema,
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini', 'antigravity']),
+  }).strict(),
 ]);
 
 const cursorHeadlessWriterLeaseAcquireResultSchema = z.discriminatedUnion('type', [
@@ -306,7 +382,7 @@ const cursorHeadlessWriterLeaseAcquireResultSchema = z.discriminatedUnion('type'
   z.object({
     type: z.literal('agent-mismatch'),
     request: cursorHeadlessWriterLeaseAcquireRequestSchema,
-    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini']),
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini', 'antigravity']),
   }),
   z.object({
     type: z.literal('native-session-mismatch'),
@@ -334,7 +410,7 @@ const codexRemoteTuiOpenResultSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('agent-mismatch'),
     request: codexRemoteTuiOpenRequestSchema,
-    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini']),
+    trackedAgent: z.enum(['claude', 'codex', 'cursor', 'gemini', 'antigravity']),
   }),
   z.object({
     type: z.literal('native-thread-mismatch'),
@@ -361,10 +437,13 @@ export function startDaemonControlServer({
   verifySessionRunnerCredential,
   bindNativeCodexThread,
   bindNativeCursorSession,
+  bindNativeAntigravityConversation = async (binding: NativeAntigravityConversationBinding): Promise<NativeAntigravityConversationBindingResult> => ({ type: 'wrapper-not-tracked', binding }),
   acquireCursorHeadlessWriterLease,
   releaseCursorNativeWriterLease,
   preflightCursorRunner,
   reportCursorRunnerBootstrapFailure,
+  preflightAntigravityRunner = async (_request: AntigravityRunnerPreflightRequest): Promise<AntigravityRunnerPreflightResult> => ({ type: 'rejected' }),
+  reportAntigravityRunnerBootstrapFailure = async (_request: AntigravityRunnerBootstrapFailureRequest): Promise<AntigravityRunnerBootstrapFailureResult> => ({ accepted: false }),
   markDaemonRunnerStopping,
   completeDaemonRunnerStopping,
   openCodexRemoteTui,
@@ -382,6 +461,7 @@ export function startDaemonControlServer({
   verifySessionRunnerCredential: (sessionId: string, credential: string) => boolean;
   bindNativeCodexThread: (binding: NativeCodexThreadBinding) => Promise<NativeCodexThreadBindingResult>;
   bindNativeCursorSession: (binding: NativeCursorSessionBinding) => Promise<NativeCursorSessionBindingResult>;
+  bindNativeAntigravityConversation?: (binding: NativeAntigravityConversationBinding) => Promise<NativeAntigravityConversationBindingResult>;
   acquireCursorHeadlessWriterLease: (
     request: CursorHeadlessWriterLeaseAcquireRequest,
   ) => Promise<CursorHeadlessWriterLeaseAcquireResult>;
@@ -392,6 +472,8 @@ export function startDaemonControlServer({
   reportCursorRunnerBootstrapFailure: (
     request: CursorRunnerBootstrapFailureRequest,
   ) => Promise<CursorRunnerBootstrapFailureResult>;
+  preflightAntigravityRunner?: (request: AntigravityRunnerPreflightRequest) => Promise<AntigravityRunnerPreflightResult>;
+  reportAntigravityRunnerBootstrapFailure?: (request: AntigravityRunnerBootstrapFailureRequest) => Promise<AntigravityRunnerBootstrapFailureResult>;
   markDaemonRunnerStopping: (sessionId: string) => DaemonRunnerLifecycleResult;
   completeDaemonRunnerStopping: (sessionId: string) => Promise<DaemonRunnerLifecycleResult>;
   openCodexRemoteTui: (request: CodexRemoteTuiOpenRequest) => Promise<CodexRemoteTuiOpenResult>;
@@ -519,6 +601,42 @@ export function startDaemonControlServer({
       return result;
     });
 
+    typed.post('/antigravity-runner-preflight', {
+      schema: {
+        body: antigravityRunnerPreflightRequestSchema,
+        response: {
+          200: antigravityRunnerPreflightResponseSchema,
+          403: antigravityRunnerPreflightRejectedResponseSchema,
+        },
+      },
+    }, async (request, reply) => {
+      const result = await preflightAntigravityRunner(request.body);
+      if (result.type === 'rejected') {
+        reply.code(403);
+        return { error: ANTIGRAVITY_RUNNER_PREFLIGHT_REJECTED_ERROR } as const;
+      }
+
+      return result;
+    });
+
+    typed.post('/antigravity-runner-bootstrap-failed', {
+      schema: {
+        body: antigravityRunnerBootstrapFailureRequestSchema,
+        response: {
+          200: antigravityRunnerBootstrapFailureResultSchema,
+          403: antigravityRunnerBootstrapFailureRejectedResponseSchema,
+        },
+      },
+    }, async (request, reply) => {
+      const result = await reportAntigravityRunnerBootstrapFailure(request.body);
+      if (!result.accepted) {
+        reply.code(403);
+        return { error: ANTIGRAVITY_RUNNER_BOOTSTRAP_FAILURE_REJECTED_ERROR } as const;
+      }
+
+      return result;
+    });
+
     const registerDaemonRunnerLifecycleRoute = (
       path: '/daemon-runner-stopping' | '/daemon-runner-stopped',
       lifecycleHandler: (sessionId: string) => DaemonRunnerLifecycleResult | Promise<DaemonRunnerLifecycleResult>,
@@ -589,6 +707,27 @@ export function startDaemonControlServer({
       };
       const result = await bindNativeCursorSession(binding);
       logger.debug(`[CONTROL SERVER] Cursor session ${nativeSessionId} binding result: ${result.type}`);
+      return result;
+    });
+
+    typed.post('/antigravity-conversation-bound', {
+      schema: {
+        body: protectedNativeAntigravityConversationBindingSchema,
+        response: {
+          200: nativeAntigravityConversationBindingResultSchema,
+          403: runnerCredentialDeniedResponseSchema.strict(),
+        },
+      },
+    }, async (request, reply) => {
+      const { agent, nativeConversationId, remcliSessionId, runnerCredential } = request.body;
+      if (!runnerCredential || !verifySessionRunnerCredential(remcliSessionId, runnerCredential)) {
+        reply.code(403);
+        return { error: INVALID_SESSION_RUNNER_CREDENTIAL_ERROR } as const;
+      }
+
+      const binding: NativeAntigravityConversationBinding = { agent, nativeConversationId, remcliSessionId };
+      const result = await bindNativeAntigravityConversation(binding);
+      logger.debug(`[CONTROL SERVER] Antigravity conversation ${nativeConversationId} binding result: ${result.type}`);
       return result;
     });
 

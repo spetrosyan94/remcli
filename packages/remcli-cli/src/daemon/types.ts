@@ -53,6 +53,43 @@ export interface NativeCursorSessionWrapper {
   remcliSessionId: string;
 }
 
+export interface NativeAntigravityConversationBinding {
+  agent: 'antigravity';
+  nativeConversationId: string;
+  remcliSessionId: string;
+}
+
+export interface NativeAntigravityConversationWrapper {
+  agent: 'antigravity';
+  nativeConversationId: string;
+  remcliSessionId: string;
+}
+
+export interface AntigravityRunnerPreflightRequest {
+  agent: 'antigravity';
+  nativeResumeConversationId?: string;
+  directory: string;
+  pid: number;
+  runnerToken: string;
+}
+
+export interface AntigravityRunnerPreflightResponse {
+  type: 'verified';
+  parentRemcliSessionId?: string;
+}
+
+export type AntigravityRunnerPreflightResult = AntigravityRunnerPreflightResponse | { type: 'rejected' };
+
+export interface AntigravityRunnerBootstrapFailureRequest {
+  agent: 'antigravity';
+  pid: number;
+  runnerToken: string;
+}
+
+export interface AntigravityRunnerBootstrapFailureResult {
+  accepted: boolean;
+}
+
 /** Remcli serializes native Cursor writers through its own lease; provider attach behavior is not an exclusivity proof. */
 export type CursorNativeWriterOwner = 'headless' | 'interactive';
 
@@ -128,6 +165,12 @@ export interface CursorResumeLineage {
   parentRemcliSessionId: string;
 }
 
+/** Parent relation captured only after daemon-owned native Antigravity binding and workspace validation. */
+export interface AntigravityResumeLineage {
+  nativeResumeConversationId: string;
+  parentRemcliSessionId: string;
+}
+
 export interface CodexRemoteTuiOpenRequest {
   agent: 'codex';
   nativeThreadId: string;
@@ -155,7 +198,7 @@ export type NativeCodexThreadBindingResult =
   | {
     type: 'agent-mismatch';
     binding: NativeCodexThreadBinding;
-    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini';
+    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
   };
 
 export type NativeCursorSessionBindingResult =
@@ -173,8 +216,16 @@ export type NativeCursorSessionBindingResult =
   | {
     type: 'agent-mismatch';
     binding: NativeCursorSessionBinding;
-    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini';
+    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
   };
+
+export type NativeAntigravityConversationBindingResult =
+  | { type: 'bound'; wrapper: NativeAntigravityConversationWrapper }
+  | { type: 'already-bound'; wrapper: NativeAntigravityConversationWrapper }
+  | { type: 'reuse-active-wrapper'; wrapper: NativeAntigravityConversationWrapper }
+  | { type: 'wrapper-not-tracked'; binding: NativeAntigravityConversationBinding }
+  | { type: 'native-conversation-mismatch'; binding: NativeAntigravityConversationBinding; expectedNativeConversationId: string }
+  | { type: 'agent-mismatch'; binding: NativeAntigravityConversationBinding; trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity' };
 
 export type CursorHeadlessWriterLeaseAcquireResult =
   | { type: 'acquired'; writerLease: CursorNativeWriterLease }
@@ -183,7 +234,7 @@ export type CursorHeadlessWriterLeaseAcquireResult =
   | {
     type: 'agent-mismatch';
     request: CursorHeadlessWriterLeaseAcquireRequest;
-    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini';
+    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
   }
   | {
     type: 'native-session-mismatch';
@@ -198,7 +249,7 @@ export type CodexRemoteTuiOpenResult =
   | {
     type: 'agent-mismatch';
     request: CodexRemoteTuiOpenRequest;
-    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini';
+    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
   }
   | {
     type: 'native-thread-mismatch';
@@ -223,7 +274,7 @@ export type CursorInteractiveTuiOpenResult =
   | {
     type: 'agent-mismatch';
     request: CursorInteractiveTuiOpenRequest;
-    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini';
+    trackedAgent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
   }
   | {
     type: 'native-session-mismatch';
@@ -290,7 +341,7 @@ export interface TrackedSession {
   startedBy: 'daemon' | string;
   remcliSessionId?: string;
   remcliSessionMetadataFromLocalWebhook?: Metadata;
-  expectedAgent?: 'claude' | 'codex' | 'cursor' | 'gemini';
+  expectedAgent?: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
   expectedResumeSessionId?: string;
   expectedResumeKey?: string;
   /** Daemon-selected working directory before the runner has published metadata. */
@@ -301,6 +352,9 @@ export interface TrackedSession {
   executionState?: DaemonSessionExecutionState;
   /** In-memory resume relation eligible only for a capability-bound Cursor preflight. */
   cursorResumeLineage?: CursorResumeLineage;
+  /** In-memory resume relation eligible only for a capability-bound Antigravity preflight. */
+  antigravityResumeLineage?: AntigravityResumeLineage;
+  nativeAntigravityConversationId?: string;
   nativeCodexThreadId?: string;
   nativeCursorSessionId?: string;
   runnerControlToken?: string;

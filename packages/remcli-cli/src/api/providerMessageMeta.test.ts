@@ -27,6 +27,12 @@ describe('parseProviderUserMessage', () => {
         }).success).toBe(false);
     });
 
+    it('accepts only safe prompt metadata for Antigravity', () => {
+        expect(parseProviderUserMessage('antigravity', createUserMessage({ sentFrom: 'web' })).success).toBe(true);
+        expect(parseProviderUserMessage('antigravity', createUserMessage({ model: 'forged-model' })).success).toBe(false);
+        expect(parseProviderUserMessage('antigravity', createUserMessage({ permissionMode: 'plan' })).success).toBe(false);
+    });
+
     it.each(['codex', 'cursor'] as const)('rejects internal sentFrom values for %s', (flavor) => {
         for (const sentFrom of ['history', 'native-app-server', 'cli']) {
             expect(parseProviderUserMessage(flavor, createUserMessage({ sentFrom })).success).toBe(false);

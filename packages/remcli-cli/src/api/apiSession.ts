@@ -46,7 +46,7 @@ export type ACPMessageData =
     // Usage/metrics
     | { type: 'token_count';[key: string]: unknown };
 
-export type ACPProvider = 'gemini' | 'codex' | 'cursor' | 'claude' | 'opencode';
+export type ACPProvider = 'gemini' | 'codex' | 'cursor' | 'claude' | 'antigravity' | 'opencode';
 
 export type SessionEvent = {
     type: 'switch', mode: 'local' | 'remote'
@@ -563,7 +563,7 @@ export class ApiSessionClient extends EventEmitter {
      * @param provider - The agent provider sending the message (e.g., 'gemini', 'codex', 'claude')
      * @param body - The message payload (type: 'message' | 'reasoning' | 'tool-call' | 'tool-result')
      */
-    sendAgentMessage(provider: 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode', body: ACPMessageData) {
+    sendAgentMessage(provider: ACPProvider, body: ACPMessageData) {
         let content = {
             role: 'agent',
             content: {

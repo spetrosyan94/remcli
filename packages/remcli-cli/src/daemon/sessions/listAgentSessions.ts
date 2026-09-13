@@ -4,12 +4,13 @@ import * as os from 'node:os';
 import { createHash } from 'node:crypto';
 import { getProjectPath } from '@/claude/utils/path';
 import { logger } from '@/ui/logger';
+import { listAntigravitySessions as readAntigravitySessions } from '@/antigravity/antigravitySessions';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface AgentSessionInfo {
     sessionId: string;
-    agent: 'claude' | 'codex' | 'cursor' | 'gemini';
+    agent: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity';
     projectPath: string;
     lastModified: number;
     firstMessage: string | null;
@@ -1007,6 +1008,21 @@ export function listGeminiSessions(): AgentSessionInfo[] {
     return sessions;
 }
 
+// ─── Antigravity ────────────────────────────────────────────────────────────
+
+export function listAntigravitySessions(directory?: string): AgentSessionInfo[] {
+    return readAntigravitySessions({ workspace: directory }).map((session) => ({
+        sessionId: session.conversationId,
+        agent: 'antigravity',
+        projectPath: session.workspace,
+        lastModified: session.updatedAt,
+        firstMessage: truncate(session.display, 200),
+        messageCount: session.messageCount,
+        createdAt: null,
+        sessionName: null,
+    }));
+}
+
 // ─── Aggregate ───────────────────────────────────────────────────────────────
 
 /**
@@ -1036,6 +1052,9 @@ export function listAllAgentSessions(
     }
     if (shouldInclude('gemini')) {
         all.push(...listGeminiSessions());
+    }
+    if (shouldInclude('antigravity')) {
+        all.push(...listAntigravitySessions(directory));
     }
 
     const scopedSessions = directory
