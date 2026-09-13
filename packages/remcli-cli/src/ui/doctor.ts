@@ -331,7 +331,7 @@ export async function runDoctorCommand(filter?: 'all' | 'daemon'): Promise<void>
     const whichCmd = process.platform === 'win32' ? 'where' : 'which';
     const agents: { name: string; binaries: string[] }[] = [
         { name: 'Claude Code', binaries: ['claude'] },
-        { name: 'Gemini CLI',  binaries: ['gemini'] },
+        { name: 'Antigravity CLI', binaries: ['agy'] },
         { name: 'Codex CLI',   binaries: ['codex'] },
         // Cursor Agent CLI installs as `agent` (older builds: `cursor-agent`).
         // A `cursor` binary is the IDE launcher shim, not the agent CLI.

@@ -3,7 +3,7 @@
  *
  * Interactive setup command that configures:
  * 1. Whisper STT model selection and download
- * 2. AI agent installation (Claude Code, Gemini CLI, Codex CLI, Cursor CLI)
+ * 2. AI agent installation (Claude Code, Antigravity CLI, Codex CLI, Cursor CLI)
  * 3. Saves configuration to ~/.remcli/setup.json
  */
 
@@ -19,7 +19,7 @@ import { resolveCloudflaredBinary } from '@/daemon/p2p/tunnel';
 
 // ─── Types ──────────────────────────────────────────────────────
 
-interface AgentDefinition {
+export interface AgentDefinition {
     name: string;
     binary: string;
     /** Alternative binary names to accept if the primary one is not on PATH */
@@ -27,26 +27,34 @@ interface AgentDefinition {
     install: {
         unix: string;      // macOS/Linux/WSL
         windows: string;   // Windows PowerShell
+        windowsShell: 'system' | 'powershell';
     };
+}
+
+interface InstallInvocation {
+    command: string;
+    args?: string[];
 }
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const AGENTS: AgentDefinition[] = [
+export const AGENTS: AgentDefinition[] = [
     {
         name: 'Claude Code',
         binary: 'claude',
         install: {
             unix: 'curl -fsSL https://claude.ai/install.sh | bash',
             windows: 'powershell -Command "irm https://claude.ai/install.ps1 | iex"',
+            windowsShell: 'system',
         },
     },
     {
-        name: 'Gemini CLI',
-        binary: 'gemini',
+        name: 'Antigravity CLI',
+        binary: 'agy',
         install: {
-            unix: 'npm install -g @google/gemini-cli',
-            windows: 'npm install -g @google/gemini-cli',
+            unix: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
+            windows: 'irm https://antigravity.google/cli/install.ps1 | iex',
+            windowsShell: 'powershell',
         },
     },
     {
@@ -55,6 +63,7 @@ const AGENTS: AgentDefinition[] = [
         install: {
             unix: 'npm install -g @openai/codex',
             windows: 'npm install -g @openai/codex',
+            windowsShell: 'system',
         },
     },
     {
@@ -68,6 +77,7 @@ const AGENTS: AgentDefinition[] = [
             // The ?win32=true query returns the native PowerShell installer
             // (the plain URL serves a bash script that iex cannot execute).
             windows: 'powershell -Command "irm \'https://cursor.com/install?win32=true\' | iex"',
+            windowsShell: 'system',
         },
     },
 ];
@@ -94,6 +104,26 @@ function isBinaryInstalled(binary: string): boolean {
 function resolveInstalledBinary(agent: AgentDefinition): string | null {
     const candidates = [agent.binary, ...(agent.fallbackBinaries ?? [])];
     return candidates.find(isBinaryInstalled) ?? null;
+}
+
+export function createAgentInstallInvocation(
+    agent: AgentDefinition,
+    platform: NodeJS.Platform,
+    resolvePowerShell: () => string | null = () => ['pwsh', 'powershell'].find(isBinaryInstalled) ?? null,
+): InstallInvocation {
+    if (platform !== 'win32' || agent.install.windowsShell === 'system') {
+        return { command: platform === 'win32' ? agent.install.windows : agent.install.unix };
+    }
+
+    const powerShell = resolvePowerShell();
+    if (!powerShell) {
+        throw new Error('PowerShell is required to install AI agents on Windows.');
+    }
+
+    return {
+        command: powerShell,
+        args: ['-NoProfile', '-NonInteractive', '-Command', agent.install.windows],
+    };
 }
 
 function getBinaryVersion(binary: string): string | null {
@@ -358,7 +388,12 @@ async function stepAIAgents(): Promise<string[]> {
         console.log(chalk.yellow(`\n  Installing ${agent.name}...`));
         console.log(chalk.gray(`  $ ${installCmd}`));
         try {
-            execSync(installCmd, { stdio: 'inherit', timeout: 300_000 });
+            const invocation = createAgentInstallInvocation(agent, process.platform);
+            if (invocation.args) {
+                execFileSync(invocation.command, invocation.args, { stdio: 'inherit', timeout: 300_000 });
+            } else {
+                execSync(invocation.command, { stdio: 'inherit', timeout: 300_000 });
+            }
             console.log(chalk.green(`  ${agent.name} installed successfully.`));
             installedAgents.push(agent.name);
         } catch (error) {
