@@ -63,4 +63,25 @@ describe('MetadataSchema execution outcome', () => {
             },
         }).success).toBe(false);
     });
+
+    it('persists only official Antigravity reasoning efforts with the exact execution tuple', () => {
+        const metadata = {
+            path: '/tmp/project',
+            host: 'test-host',
+            antigravityExecution: {
+                model: 'antigravity-flash-medium',
+                reasoningEffort: 'medium',
+                catalogVersion: 'antigravity-catalog-v1',
+            },
+        };
+
+        expect(MetadataSchema.safeParse(metadata).success).toBe(true);
+        expect(MetadataSchema.safeParse({
+            ...metadata,
+            antigravityExecution: {
+                ...metadata.antigravityExecution,
+                reasoningEffort: 'deep',
+            },
+        }).success).toBe(false);
+    });
 });

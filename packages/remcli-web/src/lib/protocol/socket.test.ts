@@ -577,6 +577,128 @@ describe('socket reconnect lifecycle', () => {
         socketDisconnect();
     });
 
+    it('accepts Antigravity runtime model mappings from encrypted machine RPC', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-antigravity-capabilities' });
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const cipher = {
+            encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
+            decryptRaw: vi.fn().mockResolvedValue({
+                agent: 'antigravity',
+                status: 'ready',
+                fetchedAt: 1,
+                expiresAt: 2,
+                catalogVersion: 'antigravity-catalog-1',
+                models: [{
+                    id: 'antigravity-flash',
+                    displayName: 'Antigravity Flash',
+                    isDefault: true,
+                    supportedReasoningEfforts: ['low', 'high'],
+                    runtimeModels: { low: 'antigravity-flash-low', high: 'antigravity-flash-high' },
+                    defaultReasoningEffort: 'high',
+                }],
+                executionModes: ['default', 'accept-edits', 'plan'],
+                supportsDangerouslySkipPermissions: true,
+                supportsSandbox: true,
+            }),
+        } as unknown as Cipher;
+
+        const { machineGetAntigravityCapabilities, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+        fakeSocket.trigger('connect');
+
+        await expect(machineGetAntigravityCapabilities('machine-1')).resolves.toMatchObject({
+            models: [{ runtimeModels: { low: 'antigravity-flash-low', high: 'antigravity-flash-high' } }],
+        });
+
+        socketDisconnect();
+    });
+
+    it('rejects a ready Antigravity capability without exact runtime mappings', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-malformed-antigravity-capabilities' });
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const cipher = {
+            encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
+            decryptRaw: vi.fn().mockResolvedValue({
+                agent: 'antigravity',
+                status: 'ready',
+                fetchedAt: 1,
+                expiresAt: 2,
+                catalogVersion: 'antigravity-catalog-1',
+                models: [{
+                    id: 'antigravity-flash',
+                    displayName: 'Antigravity Flash',
+                    isDefault: true,
+                    supportedReasoningEfforts: ['high'],
+                    runtimeModels: {},
+                    defaultReasoningEffort: 'high',
+                }],
+                executionModes: ['default'],
+                supportsDangerouslySkipPermissions: false,
+                supportsSandbox: false,
+            }),
+        } as unknown as Cipher;
+
+        const { machineGetAntigravityCapabilities, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+        fakeSocket.trigger('connect');
+
+        await expect(machineGetAntigravityCapabilities('machine-1')).rejects.toThrow('Antigravity capability RPC returned invalid response');
+
+        socketDisconnect();
+    });
+
+    it('rejects unofficial Antigravity efforts even when a runtime slug is present', async () => {
+        const fakeSocket = createFakeSocket();
+        const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-unofficial-antigravity-capabilities' });
+        (fakeSocket.socket as unknown as { emitWithAck: typeof emitWithAck }).emitWithAck = emitWithAck;
+        const io = vi.fn(() => fakeSocket.socket);
+        vi.doMock('socket.io-client', () => ({ io }));
+        const cipher = {
+            encryptRaw: vi.fn().mockResolvedValue('encrypted-params'),
+            decryptRaw: vi.fn().mockResolvedValue({
+                agent: 'antigravity',
+                status: 'ready',
+                fetchedAt: 1,
+                expiresAt: 2,
+                catalogVersion: 'antigravity-catalog-1',
+                models: [{
+                    id: 'antigravity-flash',
+                    displayName: 'Antigravity Flash',
+                    isDefault: true,
+                    supportedReasoningEfforts: ['deep'],
+                    runtimeModels: { deep: 'antigravity-flash-deep' },
+                    defaultReasoningEffort: 'deep',
+                }],
+                executionModes: ['default'],
+                supportsDangerouslySkipPermissions: false,
+                supportsSandbox: false,
+            }),
+        } as unknown as Cipher;
+
+        const { machineGetAntigravityCapabilities, socketConnect, socketDisconnect } = await import('@/lib/protocol/socket');
+        socketConnect(
+            { endpoint: 'http://127.0.0.1:12345', token: 'test-token' },
+            { getSessionCipher: () => null, getMachineCipher: () => cipher },
+        );
+        fakeSocket.trigger('connect');
+
+        await expect(machineGetAntigravityCapabilities('machine-1')).rejects.toThrow('Antigravity capability RPC returned invalid response');
+
+        socketDisconnect();
+    });
+
     it('returns validated machine-scoped directory projects', async () => {
         const fakeSocket = createFakeSocket();
         const emitWithAck = vi.fn().mockResolvedValue({ ok: true, result: 'encrypted-directory-projects' });

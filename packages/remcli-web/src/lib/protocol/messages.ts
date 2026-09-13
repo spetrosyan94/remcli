@@ -1,7 +1,7 @@
 /**
  * Message content schema + normalization for daemon message payloads.
  *
- * Decrypted message payloads (RawRecord) come from Claude/Codex/Gemini/Cursor
+ * Decrypted message payloads (RawRecord) come from Claude/Codex/Antigravity/Cursor
  * via the daemon; normalizeRawMessage() converts them to a uniform shape for
  * rendering: user text / agent content blocks (text, thinking, tool-call,
  * tool-result with permissions) / lifecycle events.
@@ -38,9 +38,9 @@ export const MessageMetaSchema = z.object({
 
 export type MessageMeta = z.infer<typeof MessageMetaSchema>;
 
-export type TrustedSessionFlavor = 'claude' | 'codex' | 'cursor' | 'gemini';
+export type TrustedSessionFlavor = 'claude' | 'codex' | 'cursor' | 'antigravity';
 
-const trustedSessionFlavors = new Set<TrustedSessionFlavor>(['claude', 'codex', 'cursor', 'gemini']);
+const trustedSessionFlavors = new Set<TrustedSessionFlavor>(['claude', 'codex', 'cursor', 'antigravity']);
 
 const harmlessMessageMetaFields = ['sentFrom', 'displayText'] as const;
 
@@ -54,14 +54,13 @@ const legacyNativeMessageMetaFields: Record<TrustedSessionFlavor, readonly (keyo
         'allowedTools',
         'disallowedTools',
     ],
-    gemini: ['permissionMode', 'model', 'appendSystemPrompt'],
+    antigravity: [],
     codex: [],
     cursor: [],
 };
 
 const nativePermissionModes: Partial<Record<TrustedSessionFlavor, ReadonlySet<string>>> = {
     claude: new Set(['manual', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk']),
-    gemini: new Set(['manual', 'auto_edit', 'plan']),
 };
 
 /**
@@ -168,7 +167,7 @@ const rawThinkingContentSchema = z.object({
     thinking: z.string(),
 }).passthrough();
 
-// Hyphenated formats (Codex/Gemini) — normalized to canonical in preprocess
+// Hyphenated formats (Codex/Antigravity) — normalized to canonical in preprocess
 const rawHyphenatedToolCallSchema = z.object({
     type: z.literal('tool-call'),
     callId: z.string(),
@@ -257,7 +256,7 @@ const rawAgentRecordSchema = z.discriminatedUnion('type', [z.object({
 }), z.object({
     // ACP (Agent Communication Protocol) — unified format for all agent providers
     type: z.literal('acp'),
-    provider: z.enum(['gemini', 'codex', 'cursor', 'claude', 'opencode']),
+    provider: z.enum(['antigravity', 'codex', 'cursor', 'claude', 'opencode']),
     data: z.discriminatedUnion('type', [
         z.object({ type: z.literal('reasoning'), message: z.string() }),
         z.object({

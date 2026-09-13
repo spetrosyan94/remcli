@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CodexCapabilitiesSnapshot, CursorCapabilitiesSnapshot } from '@/lib/protocol';
+import type { AntigravityCapabilitiesSnapshot, CodexCapabilitiesSnapshot, CursorCapabilitiesSnapshot } from '@/lib/protocol';
 
 const componentHooks = vi.hoisted(() => {
     const values: unknown[] = [];
@@ -74,6 +74,7 @@ const componentHooks = vi.hoisted(() => {
 const machineSpawnNewSessionMock = vi.hoisted(() => vi.fn());
 const machineGetCodexCapabilitiesMock = vi.hoisted(() => vi.fn());
 const machineGetCursorCapabilitiesMock = vi.hoisted(() => vi.fn());
+const machineGetAntigravityCapabilitiesMock = vi.hoisted(() => vi.fn());
 const machineListDirectoryProjectsMock = vi.hoisted(() => vi.fn());
 const machineSetDirectoryProjectPinMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -143,6 +144,7 @@ vi.mock('@/lib/protocol', () => ({
     machineSetDirectoryProjectPin: machineSetDirectoryProjectPinMock,
     machineGetCodexCapabilities: machineGetCodexCapabilitiesMock,
     machineGetCursorCapabilities: machineGetCursorCapabilitiesMock,
+    machineGetAntigravityCapabilities: machineGetAntigravityCapabilitiesMock,
     machineSpawnNewSession: machineSpawnNewSessionMock,
     DEFAULT_CURSOR_LAUNCH_CONTROLS: {
         executionMode: 'agent',
@@ -180,6 +182,7 @@ interface TestElement {
         'aria-describedby'?: string;
         'aria-pressed'?: boolean;
         'aria-busy'?: boolean;
+        'data-capability-control'?: string;
         'data-provider-availability'?: string;
         title?: string;
         showSelectionIndicator?: boolean;
@@ -262,6 +265,13 @@ let createCursorExecutionForModel: typeof import('@/pages/NewSessionPage').creat
 ) => {
     throw new Error('NewSessionPage module was not loaded');
 };
+let createAntigravityExecutionForModel: typeof import('@/pages/NewSessionPage').createAntigravityExecutionForModel = (
+    _capabilities,
+    _modelId,
+    _reasoningEffort,
+) => {
+    throw new Error('NewSessionPage module was not loaded');
+};
 let parseNewSessionNavigationState: typeof import('@/pages/NewSessionPage').parseNewSessionNavigationState = (_state) => ({});
 let isCursorResumePresetCompatible: typeof import('@/pages/NewSessionPage').isCursorResumePresetCompatible = (_preset, _machineId, _directory) => true;
 let getPrimarySelectorLabelKey: typeof import('@/pages/NewSessionPage').getPrimarySelectorLabelKey = (_agent) => 'new.accessLevel';
@@ -274,6 +284,7 @@ let buildNewSessionSpawnOptions: typeof import('@/pages/NewSessionPage').buildNe
 };
 let isCodexCapabilityRejection: typeof import('@/pages/NewSessionPage').isCodexCapabilityRejection = (_result, _agent) => false;
 let isCursorCapabilityRejection: typeof import('@/pages/NewSessionPage').isCursorCapabilityRejection = (_result, _agent) => false;
+let isAntigravityCapabilityRejection: typeof import('@/pages/NewSessionPage').isAntigravityCapabilityRejection = (_result, _agent) => false;
 let resolveSheetOpenChange: typeof import('@/pages/NewSessionPage').resolveSheetOpenChange = (_renderedSheet, currentSheet) => currentSheet;
 let isCurrentDirectoryProjectsRequest: typeof import('@/pages/NewSessionPage').isCurrentDirectoryProjectsRequest = () => false;
 let NewSessionPage: typeof import('@/pages/NewSessionPage').NewSessionPage;
@@ -305,6 +316,7 @@ beforeAll(async () => {
     createCodexExecutionForModel = pageModule.createCodexExecutionForModel;
     getDefaultCursorExecution = pageModule.getDefaultCursorExecution;
     createCursorExecutionForModel = pageModule.createCursorExecutionForModel;
+    createAntigravityExecutionForModel = pageModule.createAntigravityExecutionForModel;
     parseNewSessionNavigationState = pageModule.parseNewSessionNavigationState;
     isCursorResumePresetCompatible = pageModule.isCursorResumePresetCompatible;
     getPrimarySelectorLabelKey = pageModule.getPrimarySelectorLabelKey;
@@ -313,6 +325,7 @@ beforeAll(async () => {
     buildNewSessionSpawnOptions = pageModule.buildNewSessionSpawnOptions;
     isCodexCapabilityRejection = pageModule.isCodexCapabilityRejection;
     isCursorCapabilityRejection = pageModule.isCursorCapabilityRejection;
+    isAntigravityCapabilityRejection = pageModule.isAntigravityCapabilityRejection;
     resolveSheetOpenChange = pageModule.resolveSheetOpenChange;
     isCurrentDirectoryProjectsRequest = pageModule.isCurrentDirectoryProjectsRequest;
     NewSessionPage = pageModule.NewSessionPage;
@@ -339,6 +352,15 @@ beforeEach(() => {
         models: [],
     });
     machineGetCursorCapabilitiesMock.mockReset();
+    machineGetAntigravityCapabilitiesMock.mockReset();
+    machineGetAntigravityCapabilitiesMock.mockResolvedValue({
+        agent: 'antigravity', status: 'ready', fetchedAt: 1, expiresAt: 2,
+        catalogVersion: 'antigravity-test-v1',
+        models: [{ id: 'antigravity-flash', displayName: 'Antigravity Flash', isDefault: true, supportedReasoningEfforts: ['low', 'medium', 'high'], runtimeModels: { low: 'antigravity-flash-low', medium: 'antigravity-flash-medium', high: 'antigravity-flash-high' }, defaultReasoningEffort: 'medium' }],
+        executionModes: ['default', 'accept-edits', 'plan'],
+        supportsDangerouslySkipPermissions: true,
+        supportsSandbox: true,
+    });
     machineListDirectoryProjectsMock.mockReset();
     machineListDirectoryProjectsMock.mockResolvedValue([]);
     machineSetDirectoryProjectPinMock.mockReset();
@@ -352,15 +374,15 @@ beforeEach(() => {
 });
 
 describe('NewSessionPage navigation state and shared access-level label', () => {
-    it('keeps Claude and Gemini visible but unavailable until their capability contracts are accepted', () => {
+    it('keeps Claude deferred and gates Antigravity by its ready capability contract', () => {
         expect(isNewSessionAgentAvailable('codex')).toBe(true);
         expect(isNewSessionAgentAvailable('cursor')).toBe(true);
         expect(isNewSessionAgentAvailable('claude')).toBe(false);
-        expect(isNewSessionAgentAvailable('gemini')).toBe(false);
+        expect(isNewSessionAgentAvailable('antigravity')).toBe(true);
         expect(agentOptions.find((option) => option.id === 'claude')?.isAvailable).toBe(false);
-        expect(agentOptions.find((option) => option.id === 'gemini')?.isAvailable).toBe(false);
+        expect(agentOptions.find((option) => option.id === 'antigravity')?.isAvailable).toBe(true);
         expect(agentOptions.find((option) => option.id === 'claude')?.models).toEqual([]);
-        expect(agentOptions.find((option) => option.id === 'gemini')?.models).toEqual([]);
+        expect(agentOptions.find((option) => option.id === 'antigravity')?.models).toEqual([]);
     });
 
     it('restores only a strict Cursor resume preset and ignores reload or malformed state', () => {
@@ -408,14 +430,14 @@ describe('NewSessionPage navigation state and shared access-level label', () => 
         expect(getPrimarySelectorLabelKey('claude')).toBe('new.accessLevel');
         expect(getPrimarySelectorLabelKey('codex')).toBe('new.accessLevel');
         expect(getPrimarySelectorLabelKey('cursor')).toBe('new.accessLevel');
-        expect(getPrimarySelectorLabelKey('gemini')).toBe('new.accessLevel');
+        expect(getPrimarySelectorLabelKey('antigravity')).toBe('new.accessLevel');
     });
 
-    it('defaults to Codex and renders deferred providers as disabled choices', () => {
+    it('defaults to Codex, keeps Claude disabled, and leaves Antigravity selectable for recovery', () => {
         const page = renderNewSessionPage();
         const codex = findElement(page, (element) => element.type === 'button' && elementText(element) === 'Codexcli');
         const claude = findElement(page, (element) => element.type === 'button' && elementText(element) === 'Claudecode');
-        const gemini = findElement(page, (element) => element.type === 'button' && elementText(element) === 'Geminicli');
+        const antigravity = findElement(page, (element) => element.type === 'button' && elementText(element) === 'Antigravitycli');
 
         expect(codex.props.disabled).toBe(false);
         expect(codex.props.className).toContain('border-accent');
@@ -423,9 +445,30 @@ describe('NewSessionPage navigation state and shared access-level label', () => 
         expect(claude.props.disabled).toBe(true);
         expect(claude.props['aria-describedby']).toBe('deferred-provider-note');
         expect(claude.props['data-provider-availability']).toBe('deferred');
-        expect(gemini.props.disabled).toBe(true);
-        expect(gemini.props['aria-describedby']).toBe('deferred-provider-note');
-        expect(gemini.props['data-provider-availability']).toBe('deferred');
+        expect(antigravity.props.disabled).toBe(false);
+        expect(antigravity.props['aria-describedby']).toBeUndefined();
+        expect(antigravity.props['data-provider-availability']).toBe('capability-unavailable');
+    });
+
+    it('renders the Antigravity ready effort from its exact execution in text and accessible name', async () => {
+        componentHooks.enableEffects();
+        renderNewSessionPage();
+        await flushPendingEffects();
+
+        const initialPage = renderNewSessionPage();
+        const antigravity = findElement(initialPage, (element) => element.type === 'button'
+            && elementText(element) === 'Antigravitycli');
+        antigravity.props.onClick?.();
+
+        const page = renderNewSessionPage();
+        const reasoningControl = findElement(page, (element) => element.props['data-capability-control'] === 'reasoning');
+        const reasoningButton = findElement(reasoningControl, (element) => element.type === 'button');
+        const startButton = findElement(page, (element) => element.type === 'button'
+            && elementText(element) === 'start:antigravity');
+
+        expect(reasoningButton.props['aria-label']).toBe('new.reasoning: medium');
+        expect(elementText(reasoningButton)).toContain('medium');
+        expect(startButton.props.disabled).toBe(false);
     });
 
     it('warns about an unavailable terminal and still navigates after creating a session', async () => {
@@ -539,6 +582,96 @@ describe('NewSessionPage navigation state and shared access-level label', () => 
         expect(toastWarningMock).toHaveBeenCalledWith('new.terminalUnavailable');
         expect(navigateMock).toHaveBeenCalledWith('/session/session-1', expect.objectContaining({ replace: true }));
         expect(toastWarningMock.mock.invocationCallOrder[0]).toBeLessThan(navigateMock.mock.invocationCallOrder[0]);
+    });
+
+});
+
+describe('NewSessionPage Antigravity capability selection', () => {
+    const capabilities: AntigravityCapabilitiesSnapshot = {
+        agent: 'antigravity',
+        status: 'ready',
+        fetchedAt: 1,
+        expiresAt: 2,
+        catalogVersion: 'antigravity-catalog-1',
+        executionModes: ['default', 'accept-edits', 'plan'],
+        supportsDangerouslySkipPermissions: true,
+        supportsSandbox: true,
+        models: [{
+            id: 'antigravity-flash',
+            displayName: 'Antigravity Flash',
+            isDefault: true,
+            supportedReasoningEfforts: ['low', 'medium', 'high'],
+            runtimeModels: {
+                low: 'antigravity-flash-low',
+                medium: 'antigravity-flash-medium',
+                high: 'antigravity-flash-high',
+            },
+            defaultReasoningEffort: 'medium',
+        }, {
+            id: 'standalone-model',
+            displayName: 'Standalone model',
+            isDefault: false,
+            supportedReasoningEfforts: [],
+            runtimeModels: {},
+        }],
+    };
+
+    it('maps a model family and selected effort to the exact runtime slug', () => {
+        expect(createAntigravityExecutionForModel(capabilities, 'antigravity-flash')).toEqual({
+            model: 'antigravity-flash-medium',
+            reasoningEffort: 'medium',
+            catalogVersion: 'antigravity-catalog-1',
+        });
+        expect(createAntigravityExecutionForModel(capabilities, 'antigravity-flash', 'high')).toEqual({
+            model: 'antigravity-flash-high',
+            reasoningEffort: 'high',
+            catalogVersion: 'antigravity-catalog-1',
+        });
+    });
+
+    it('uses the standalone id only when the model has no effort mapping', () => {
+        expect(createAntigravityExecutionForModel(capabilities, 'standalone-model')).toEqual({
+            model: 'standalone-model',
+            catalogVersion: 'antigravity-catalog-1',
+        });
+    });
+
+    it('builds one exact Antigravity launch tuple without generic permission overrides', () => {
+        const execution = createAntigravityExecutionForModel(capabilities, 'antigravity-flash', 'high');
+        const launchControls = {
+            mode: 'accept-edits' as const,
+            dangerouslySkipPermissions: false,
+            sandbox: true,
+        };
+
+        expect(buildNewSessionSpawnOptions({
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            agent: 'antigravity',
+            permissionMode: 'workspace-write',
+            codexExecution: null,
+            codexReasoningEfforts: [],
+            antigravityExecution: execution,
+            antigravityLaunchControls: launchControls,
+        })).toEqual({
+            machineId: 'machine-1',
+            directory: '/workspace/remcli',
+            agent: 'antigravity',
+            resumeSessionId: undefined,
+            resumeSessionName: undefined,
+            antigravityExecution: execution,
+            antigravityLaunchControls: launchControls,
+        });
+    });
+
+    it.each([
+        { id: 'antigravity-flash', effort: 'low' as const, runtimeModels: { medium: 'antigravity-flash-medium', high: 'antigravity-flash-high' } },
+        { id: 'antigravity-flash', effort: 'medium' as const, runtimeModels: { low: 'antigravity-flash-low', high: 'antigravity-flash-high' } },
+    ])('fails closed when the selected effort has no exact runtime mapping', ({ id, effort, runtimeModels }) => {
+        expect(createAntigravityExecutionForModel({
+            ...capabilities,
+            models: [{ ...capabilities.models[0], runtimeModels }],
+        }, id, effort)).toBeNull();
     });
 
 });
@@ -671,7 +804,7 @@ describe('NewSessionPage Codex capability selection', () => {
         })).toThrow('Codex requires a capability-validated execution selection.');
     });
 
-    it.each(['claude', 'gemini'] as const)('fails closed when unavailable %s is passed to the spawn boundary', (agent) => {
+    it.each(['claude', 'antigravity'] as const)('fails closed when unavailable %s is passed to the spawn boundary', (agent) => {
         expect(() => buildNewSessionSpawnOptions({
             machineId: 'machine-1',
             directory: '/workspace/remcli',
@@ -679,10 +812,12 @@ describe('NewSessionPage Codex capability selection', () => {
             permissionMode: 'workspace-write',
             codexExecution: null,
             codexReasoningEfforts: [],
-        })).toThrow(`${agent} is not available in New Session.`);
+        })).toThrow(agent === 'antigravity'
+            ? 'Antigravity requires a capability-validated execution selection.'
+            : `${agent} is not available in New Session.`);
     });
 
-    it.each(['claude', 'gemini'] as const)('fails closed when unavailable %s overrides the active provider through resume', (agent) => {
+    it.each(['claude', 'antigravity'] as const)('fails closed when unavailable %s overrides the active provider through resume', (agent) => {
         expect(() => buildNewSessionSpawnOptions({
             machineId: 'machine-1',
             directory: '/workspace/remcli',
@@ -696,7 +831,9 @@ describe('NewSessionPage Codex capability selection', () => {
                 sessionId: `${agent}-native-session`,
                 sessionName: null,
             },
-        })).toThrow(`${agent} is not available in New Session.`);
+        })).toThrow(agent === 'antigravity'
+            ? 'Antigravity requires a capability-validated execution selection.'
+            : `${agent} is not available in New Session.`);
     });
 
     it('fails closed when a reasoning selection is required and accepts zero-options execution', () => {
@@ -801,6 +938,27 @@ describe('NewSessionPage Codex capability selection', () => {
         expect(isCursorCapabilityRejection({
             type: 'error',
             errorMessage: 'Cursor capability selection rejected: expired.',
+        }, 'codex')).toBe(false);
+    });
+
+    it('recognizes only canonical Antigravity capability rejections', () => {
+        for (const reason of ['expired', 'unsupported_selection', 'unavailable']) {
+            expect(isAntigravityCapabilityRejection({
+                type: 'error',
+                errorMessage: `Antigravity capability selection rejected: ${reason}.`,
+            }, 'antigravity')).toBe(true);
+        }
+        expect(isAntigravityCapabilityRejection({
+            type: 'error',
+            errorMessage: 'Antigravity capability selection rejected: unknown.',
+        }, 'antigravity')).toBe(false);
+        expect(isAntigravityCapabilityRejection({
+            type: 'error',
+            errorMessage: 'Antigravity capability selection rejected: policy_denied.',
+        }, 'antigravity')).toBe(false);
+        expect(isAntigravityCapabilityRejection({
+            type: 'error',
+            errorMessage: 'Antigravity capability selection rejected: expired.',
         }, 'codex')).toBe(false);
     });
 

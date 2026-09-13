@@ -84,25 +84,25 @@ afterAll(() => {
 describe('ChatPage ended-session resume availability', () => {
     it.each([
         ['claude', 'deferred'],
-        ['gemini', 'deferred'],
+        ['antigravity', 'capability-gated'],
         ['codex', 'machine-spawn'],
         ['cursor', 'cursor-navigation'],
     ] as const)('maps %s to the %s resume action', (agent, expectedAction) => {
         expect(getChatResumeAction(agent)).toBe(expectedAction);
     });
 
-    it.each(['claude', 'gemini'] as const)('renders %s Resume as deferred and disabled', (agent) => {
+    it('renders Antigravity Resume as capability-gated and disabled', () => {
         const markup = renderToStaticMarkup(React.createElement(EndedSessionResume, {
-            agent,
+            agent: 'antigravity',
             isResuming: false,
             onResume: () => undefined,
             onBackToList: () => undefined,
         }));
-        const resumeButton = markup.match(/<button[^>]*data-resume-availability="deferred"[^>]*>/)?.[0];
+        const resumeButton = markup.match(/<button[^>]*data-resume-availability="capability-gated"[^>]*>/)?.[0];
 
         expect(resumeButton).toBeDefined();
         expect(resumeButton).toContain('disabled=""');
-        expect(resumeButton).toContain('aria-describedby="chat-deferred-resume-note"');
+        expect(resumeButton).not.toContain('aria-describedby="chat-deferred-resume-note"');
     });
 
     it.each(['codex', 'cursor'] as const)('keeps %s Resume available', (agent) => {
@@ -530,14 +530,14 @@ describe('ChatPage feed mapping', () => {
                 agentSessionId: 'agent-session-id',
                 codexSessionId: 'codex-thread-id',
                 claudeSessionId: 'claude-session-id',
-                geminiSessionId: 'gemini-session-id',
+                antigravitySessionId: 'antigravity-session-id',
                 cursorSessionId: 'cursor-session-id',
             },
         } as Session;
 
         expect(agentSessionIdOf(baseSession, 'codex')).toBe('codex-thread-id');
         expect(agentSessionIdOf(baseSession, 'claude')).toBe('claude-session-id');
-        expect(agentSessionIdOf(baseSession, 'gemini')).toBe('gemini-session-id');
+        expect(agentSessionIdOf(baseSession, 'antigravity')).toBe('antigravity-session-id');
         expect(agentSessionIdOf(baseSession, 'cursor')).toBe('cursor-session-id');
     });
 
@@ -572,7 +572,7 @@ describe('ChatPage feed mapping', () => {
 
         expect(agentSessionIdOf(session, 'codex')).toBe('native-agent-session-id');
         expect(agentSessionIdOf(session, 'claude')).toBe('native-agent-session-id');
-        expect(agentSessionIdOf(session, 'gemini')).toBe('native-agent-session-id');
+        expect(agentSessionIdOf(session, 'antigravity')).toBe('native-agent-session-id');
         expect(agentSessionIdOf(session, 'cursor')).toBe('native-agent-session-id');
     });
 
@@ -695,7 +695,7 @@ describe('ChatPage feed mapping', () => {
         });
     });
 
-    it('closes a Gemini permission tool card when a matching tool-result arrives', () => {
+    it('closes a Antigravity permission tool card when a matching tool-result arrives', () => {
         const messages: NormalizedMessage[] = [
             {
                 id: 'permission-1',
@@ -732,7 +732,7 @@ describe('ChatPage feed mapping', () => {
             }
         ];
 
-        const feed = buildFeed(messages, 'gemini');
+        const feed = buildFeed(messages, 'antigravity');
 
         expect(feed).toHaveLength(1);
         expect(feed[0]).toMatchObject({

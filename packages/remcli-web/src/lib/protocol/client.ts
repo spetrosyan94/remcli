@@ -9,6 +9,7 @@
 import {
     fixtureAnswerPermission,
     fixtureGetCodexCapabilities,
+    fixtureGetAntigravityCapabilities,
     fixtureGetCursorCapabilities,
     fixtureGetSessionExecution,
     fixtureListAgentSessions,
@@ -58,6 +59,7 @@ import {
 import {
     machineListAgentSessions as socketMachineListAgentSessions,
     machineGetCodexCapabilities as socketMachineGetCodexCapabilities,
+    machineGetAntigravityCapabilities as socketMachineGetAntigravityCapabilities,
     machineGetCursorCapabilities as socketMachineGetCursorCapabilities,
     machineGetSessionExecution as socketMachineGetSessionExecution,
     machineListDirectory as socketMachineListDirectory,
@@ -82,6 +84,7 @@ import {
     type DirectoryListing,
     type DirectoryProject,
     type CodexCapabilitiesSnapshot,
+    type AntigravityCapabilitiesSnapshot,
     type CursorCapabilitiesSnapshot,
     type SessionExecutionSelection,
     type SessionExecutionSnapshot,
@@ -451,6 +454,15 @@ export async function machineGetCursorCapabilities(
         return fixtureGetCursorCapabilities();
     }
     return await socketMachineGetCursorCapabilities(machineId, forceRefresh);
+}
+
+/** Read the normalized Antigravity model/reasoning/permission catalog. */
+export async function machineGetAntigravityCapabilities(
+    machineId: string,
+    forceRefresh: boolean = false,
+): Promise<AntigravityCapabilitiesSnapshot> {
+    if (isFixturesActive) return fixtureGetAntigravityCapabilities(forceRefresh);
+    return socketMachineGetAntigravityCapabilities(machineId, forceRefresh);
 }
 
 /** Read active session execution controls; fixture mode mirrors daemon ownership rules. */
@@ -896,10 +908,10 @@ export async function sendSessionMessage(
 ): Promise<void> {
     const localId = randomUUID();
     const sessionFlavor = getTrustedSessionFlavor(useProtocolStore.getState().sessions[sessionId]?.metadata?.flavor);
-    const keepsLegacyTurnControls = sessionFlavor === 'claude' || sessionFlavor === 'gemini';
+    const keepsLegacyTurnControls = sessionFlavor === 'claude';
     const permissionMode = keepsLegacyTurnControls
         && isNativeTurnPermissionMode(sessionFlavor, options?.permissionMode)
-        ? options?.permissionMode
+        ? options?.permissionMode as Exclude<PermissionMode, 'default' | 'accept-edits'>
         : undefined;
     const meta: NonNullable<RawRecord['meta']> = {
         sentFrom: 'web',

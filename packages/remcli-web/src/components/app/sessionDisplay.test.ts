@@ -78,10 +78,19 @@ describe('sessionDisplay native session dedupe', () => {
             metadata: {
                 path: '/tmp/project',
                 host: 'test-host',
-                flavor: 'gemini',
-                agentSessionId: 'gemini-session',
+                flavor: 'antigravity',
+                agentSessionId: 'antigravity-session',
             },
-        }))).toBe('gemini:gemini-session');
+        }))).toBe('antigravity:antigravity-session');
+
+        expect(nativeAgentSessionKey(session({
+            metadata: {
+                path: '/tmp/project',
+                host: 'test-host',
+                flavor: 'claude',
+                claudeSessionId: 'claude-session',
+            },
+        }))).toBe('claude:claude-session');
     });
 
     it('keeps the active wrapper when multiple Remcli sessions point to the same Codex thread', () => {

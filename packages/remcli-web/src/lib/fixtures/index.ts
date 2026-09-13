@@ -37,6 +37,7 @@ import {
 } from '@/lib/fixtures/data';
 import type { NormalizedMessage } from '@/lib/protocol/messages';
 import type {
+    AntigravityCapabilitiesSnapshot,
     CodexCapabilitiesSnapshot,
     CursorCapabilitiesSnapshot,
     DirectoryListing,
@@ -116,6 +117,8 @@ let spawnedSessionCounter = 0;
 let fixtureSpawnCallCount = 0;
 let fixtureResumeRetryAttempts = 0;
 let fixtureCodexCapabilityRejectionAttempts = 0;
+let fixtureAntigravityCapabilityRejectionAttempts = 0;
+let fixtureAntigravityCapabilityRefreshes = 0;
 let fixtureCursorResumeSpawnAttempts = 0;
 let fixtureSessionExecutionConflictAttempts = 0;
 let fixturePermissionResponseFailureAttempts = 0;
@@ -145,6 +148,17 @@ const FIXTURE_CURSOR_RESUME_SESSION: AgentSessionInfo = {
     messageCount: 8,
     createdAt: FIXTURE_BASE_TIME - 6 * 60_000,
     sessionName: 'Cursor lifecycle review',
+};
+const FIXTURE_ANTIGRAVITY_RESUME_NATIVE_SESSION_ID = 'fixture-antigravity-native-lifecycle';
+const FIXTURE_ANTIGRAVITY_RESUME_SESSION: AgentSessionInfo = {
+    sessionId: FIXTURE_ANTIGRAVITY_RESUME_NATIVE_SESSION_ID,
+    agent: 'antigravity',
+    projectPath: '/Users/dev/projects/remcli',
+    lastModified: FIXTURE_BASE_TIME - 20_000,
+    firstMessage: 'Проверить Antigravity runtime mapping и продолжить с тем же контекстом',
+    messageCount: 6,
+    createdAt: FIXTURE_BASE_TIME - 5 * 60_000,
+    sessionName: 'Antigravity lifecycle review',
 };
 const FIXTURE_CURSOR_OPAQUE_RESUME_SESSIONS: AgentSessionInfo[] = [
     {
@@ -550,7 +564,7 @@ function normalizeFixtureDirectoryPath(path: string | undefined, homePath: strin
 }
 
 function isAgentKind(value: string | null | undefined): value is AgentKind {
-    return value === 'claude' || value === 'codex' || value === 'cursor' || value === 'gemini';
+    return value === 'claude' || value === 'codex' || value === 'cursor' || value === 'antigravity';
 }
 
 function fixtureSessionAgent(session: Session): AgentKind {
@@ -571,7 +585,7 @@ function fixtureNativeSessionId(agent: AgentKind, sessionId: string): string {
 function providerSessionMetadata(agent: AgentKind, nativeSessionId: string): Partial<SessionMetadata> {
     if (agent === 'codex') return { codexSessionId: nativeSessionId };
     if (agent === 'cursor') return { cursorSessionId: nativeSessionId };
-    if (agent === 'gemini') return { geminiSessionId: nativeSessionId };
+    if (agent === 'antigravity') return { antigravitySessionId: nativeSessionId };
     return { claudeSessionId: nativeSessionId };
 }
 
@@ -584,8 +598,8 @@ function fixtureSessionResumeIds(session: Session): string[] {
         ? metadata.codexSessionId
         : agent === 'cursor'
             ? metadata.cursorSessionId
-            : agent === 'gemini'
-                ? metadata.geminiSessionId
+            : agent === 'antigravity'
+                ? metadata.antigravitySessionId
                 : metadata.claudeSessionId;
 
     return [
@@ -722,6 +736,8 @@ export function initFixturesIfEnabled(): boolean {
     installFetchInterceptor();
     fixtureResumeRetryAttempts = 0;
     fixtureCodexCapabilityRejectionAttempts = 0;
+    fixtureAntigravityCapabilityRejectionAttempts = 0;
+    fixtureAntigravityCapabilityRefreshes = 0;
     fixtureCursorResumeSpawnAttempts = 0;
     fixtureSessionExecutionConflictAttempts = 0;
     fixtureSessionExecutionBySessionId.clear();
@@ -1166,6 +1182,77 @@ export async function fixtureGetCursorCapabilities(): Promise<CursorCapabilities
     };
 }
 
+/** Deterministic Antigravity capability contract for web fixtures. */
+export async function fixtureGetAntigravityCapabilities(forceRefresh = false): Promise<AntigravityCapabilitiesSnapshot> {
+    const scenario = fixtureQueryParameter('antigravityCapabilities');
+    if (scenario === 'transient-unavailable' && forceRefresh) {
+        fixtureAntigravityCapabilityRefreshes += 1;
+    }
+    if (scenario === 'capability-rejection' && fixtureAntigravityCapabilityRejectionAttempts > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return {
+            agent: 'antigravity',
+            status: 'ready',
+            fetchedAt: FIXTURE_BASE_TIME + 1_000,
+            expiresAt: FIXTURE_BASE_TIME + (5 * 60 * 1_000),
+            catalogVersion: 'fixture-antigravity-refreshed-v2',
+            models: [{
+                id: 'antigravity-pro',
+                displayName: 'Antigravity Pro',
+                isDefault: true,
+                supportedReasoningEfforts: ['low', 'high'],
+                runtimeModels: {
+                    low: 'antigravity-pro-low',
+                    high: 'antigravity-pro-high',
+                },
+                defaultReasoningEffort: 'high',
+            }],
+            executionModes: ['default', 'plan'],
+            supportsDangerouslySkipPermissions: false,
+            supportsSandbox: false,
+        };
+    }
+    if (scenario === 'unavailable'
+        || (scenario === 'transient-unavailable' && fixtureAntigravityCapabilityRefreshes === 0)) {
+        return {
+            agent: 'antigravity',
+            status: 'unavailable',
+            fetchedAt: null,
+            expiresAt: null,
+            catalogVersion: null,
+            models: [],
+            executionModes: [],
+            supportsDangerouslySkipPermissions: false,
+            supportsSandbox: false,
+            errorCode: 'unavailable',
+        };
+    }
+    return {
+        agent: 'antigravity',
+        status: 'ready',
+        fetchedAt: FIXTURE_BASE_TIME,
+        expiresAt: FIXTURE_BASE_TIME + (5 * 60 * 1_000),
+        catalogVersion: scenario === 'capability-rejection'
+            ? 'fixture-antigravity-stale-v1'
+            : 'fixture-antigravity-v1',
+        models: [{
+            id: 'antigravity-flash',
+            displayName: 'Antigravity Flash',
+            isDefault: true,
+            supportedReasoningEfforts: ['low', 'medium', 'high'],
+            runtimeModels: {
+                low: 'antigravity-flash-low',
+                medium: 'antigravity-flash-medium',
+                high: 'antigravity-flash-high',
+            },
+            defaultReasoningEffort: 'medium',
+        }],
+        executionModes: ['default', 'accept-edits', 'plan'],
+        supportsDangerouslySkipPermissions: true,
+        supportsSandbox: true,
+    };
+}
+
 export function isFixtureRestEndpoint(endpoint: string): boolean {
     return endpoint === FIXTURE_ENDPOINT;
 }
@@ -1319,6 +1406,12 @@ export async function fixtureListAgentSessions(
     directory?: string,
     limit = 20
 ): Promise<AgentSessionInfo[]> {
+    if (fixtureQueryParameter('resumeFixture') === 'antigravity-lifecycle') {
+        return machineId === 'fx-machine-online' && agent === 'antigravity'
+            ? [FIXTURE_ANTIGRAVITY_RESUME_SESSION].slice(0, limit)
+            : [];
+    }
+
     if (fixtureQueryParameter('resumeFixture') === 'cursor-lifecycle') {
         await waitForFixtureResumeResponse();
         return agent === 'cursor' ? [FIXTURE_CURSOR_RESUME_SESSION].slice(0, limit) : [];
@@ -1426,6 +1519,44 @@ export async function fixtureSpawnNewSession(options: SpawnSessionOptions): Prom
     const codexValidationError = await validateCodexLifecycleSpawn(options);
     if (codexValidationError) return codexValidationError;
 
+    if (options.agent === 'antigravity') {
+        const capabilities = await fixtureGetAntigravityCapabilities();
+        const execution = options.antigravityExecution;
+        const launchControls = options.antigravityLaunchControls;
+        const model = execution && capabilities.models.find((item) => item.supportedReasoningEfforts.length === 0
+            ? execution.reasoningEffort === undefined && item.id === execution.model
+            : execution.reasoningEffort !== undefined
+                && item.supportedReasoningEfforts.includes(execution.reasoningEffort)
+                && item.runtimeModels[execution.reasoningEffort] === execution.model);
+        const valid = capabilities.status === 'ready'
+            && capabilities.catalogVersion !== null
+            && execution?.catalogVersion === capabilities.catalogVersion
+            && Boolean(model)
+            && launchControls !== undefined
+            && typeof launchControls.dangerouslySkipPermissions === 'boolean'
+            && typeof launchControls.sandbox === 'boolean'
+            && capabilities.executionModes.includes(launchControls.mode)
+            && (!launchControls.dangerouslySkipPermissions || capabilities.supportsDangerouslySkipPermissions)
+            && (!launchControls.sandbox || capabilities.supportsSandbox);
+        if (!valid) {
+            return {
+                type: 'error',
+                errorMessage: 'Antigravity capability selection rejected: unsupported_selection.',
+            };
+        }
+    }
+
+    const antigravityCapabilityScenario = fixtureQueryParameter('antigravityCapabilities');
+    if (antigravityCapabilityScenario === 'capability-rejection'
+        && options.agent === 'antigravity'
+        && fixtureAntigravityCapabilityRejectionAttempts === 0) {
+        fixtureAntigravityCapabilityRejectionAttempts += 1;
+        return {
+            type: 'error',
+            errorMessage: 'Antigravity capability selection rejected: expired.',
+        };
+    }
+
     const capabilityScenario = fixtureQueryParameter('codexCapabilities');
     if (capabilityScenario === 'capability-rejection'
         && options.agent === 'codex'
@@ -1505,6 +1636,17 @@ export async function fixtureSpawnNewSession(options: SpawnSessionOptions): Prom
             : {}),
         ...(agent === 'cursor' && options.cursorExecution
             ? { cursorExecution: { model: options.cursorExecution.model } }
+            : {}),
+        ...(agent === 'antigravity' && options.antigravityExecution
+            ? {
+                antigravityExecution: {
+                    model: options.antigravityExecution.model,
+                    ...(options.antigravityExecution.reasoningEffort
+                        ? { reasoningEffort: options.antigravityExecution.reasoningEffort }
+                        : {}),
+                    catalogVersion: options.antigravityExecution.catalogVersion,
+                },
+            }
             : {}),
     };
     const session: Session = {

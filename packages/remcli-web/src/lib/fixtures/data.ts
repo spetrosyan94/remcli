@@ -243,7 +243,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         id: 'fx-thinking',
         seq: 12,
         path: '/Users/dev/projects/api-server',
-        flavor: 'gemini',
+        flavor: 'antigravity',
         startedBy: 'daemon',
         machineId: 'fx-machine-online',
         host: 'macbook-pro.local',

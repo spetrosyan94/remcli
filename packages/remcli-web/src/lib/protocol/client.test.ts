@@ -281,24 +281,21 @@ describe('protocol client message meta', () => {
         expect(lastMessage?.meta).not.toHaveProperty('permissionMode');
     });
 
-    it('sends explicit null model as a deliberate reset', async () => {
+    it('does not send per-turn model or permission overrides for Antigravity', async () => {
         vi.resetModules();
         installFixtureGlobals();
 
         const { sendSessionMessage } = await import('@/lib/protocol/client');
         const { useProtocolStore } = await import('@/lib/protocol/store');
 
-        await sendSessionMessage('fx-thinking', 'Сбрось модель', {
+        await sendSessionMessage('fx-thinking', 'Сохрани session selection', {
             permissionMode: 'workspace-write',
             model: null,
         });
 
         const messages = useProtocolStore.getState().sessionMessages['fx-thinking']?.messages ?? [];
         const lastMessage = messages.at(-1);
-        expect(lastMessage?.meta).toMatchObject({
-            sentFrom: 'web',
-            model: null,
-        });
+        expect(lastMessage?.meta).toEqual({ sentFrom: 'web' });
         expect(lastMessage?.meta).not.toHaveProperty('permissionMode');
     });
 
@@ -363,7 +360,7 @@ describe('protocol client message meta', () => {
 
     it.each([
         ['claude', 'workspace-write'],
-        ['gemini', 'danger-full-access'],
+        ['antigravity', 'danger-full-access'],
     ] as const)('drops a foreign %s permission mode without dropping the prompt', async (flavor, permissionMode) => {
         const session = createTestSession(`session-${flavor}`);
         const encryptRaw = vi.fn(async () => 'encrypted-message');
@@ -389,10 +386,9 @@ describe('protocol client message meta', () => {
         stopProtocolClient();
     });
 
-    it.each([
-        ['claude', 'acceptEdits'],
-        ['gemini', 'auto_edit'],
-    ] as const)('keeps a native %s permission mode on the encrypted prompt', async (flavor, permissionMode) => {
+    it('keeps Claude native permission mode on the encrypted prompt', async () => {
+        const flavor = 'claude' as const;
+        const permissionMode = 'acceptEdits' as const;
         const session = createTestSession(`session-${flavor}`);
         const encryptRaw = vi.fn(async () => 'encrypted-message');
         installReconnectMocks({

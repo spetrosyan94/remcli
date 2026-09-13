@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+    fixtureGetAntigravityCapabilities,
     fixtureListAgentSessions,
     fixtureListDirectoryProjects,
     fixtureSetDirectoryProjectPin,
@@ -168,6 +169,83 @@ describe('fixture resume history', () => {
                 texts: ['Контекст fixture-сессии недоступен. Продолжаю с чистого шага.'],
             }),
         ]));
+    });
+
+    it('validates the exact Antigravity runtime slug and resumes its native fixture session', async () => {
+        vi.stubGlobal('window', { location: { search: '?resumeFixture=antigravity-lifecycle' } });
+
+        try {
+            const capabilities = await fixtureGetAntigravityCapabilities();
+            expect(capabilities.status).toBe('ready');
+            if (capabilities.status !== 'ready') throw new Error('Antigravity fixture capabilities are unavailable');
+            const family = capabilities.models[0];
+            const effort = family.defaultReasoningEffort;
+            const runtimeModel = effort ? family.runtimeModels[effort] : undefined;
+            expect(effort).toBe('medium');
+            expect(runtimeModel).toBe('antigravity-flash-medium');
+
+            const [resume] = await fixtureListAgentSessions('fx-machine-online', 'antigravity');
+            expect(resume).toMatchObject({
+                agent: 'antigravity',
+                sessionName: 'Antigravity lifecycle review',
+            });
+            if (!resume || !effort || !runtimeModel || !capabilities.catalogVersion) {
+                throw new Error('Antigravity resume fixture is incomplete');
+            }
+
+            const rejectedAlias = await fixtureSpawnNewSession({
+                machineId: 'fx-machine-online',
+                directory: FIXTURE_DIRECTORY,
+                agent: 'antigravity',
+                antigravityExecution: {
+                    model: family.id,
+                    reasoningEffort: effort,
+                    catalogVersion: capabilities.catalogVersion,
+                },
+                antigravityLaunchControls: {
+                    mode: 'default',
+                    dangerouslySkipPermissions: false,
+                    sandbox: false,
+                },
+            });
+            expect(rejectedAlias).toEqual({
+                type: 'error',
+                errorMessage: 'Antigravity capability selection rejected: unsupported_selection.',
+            });
+
+            const resumedSessionId = getSpawnedSessionId(await fixtureSpawnNewSession({
+                machineId: 'fx-machine-online',
+                directory: FIXTURE_DIRECTORY,
+                agent: 'antigravity',
+                resumeSessionId: resume.sessionId,
+                resumeSessionName: resume.sessionName ?? undefined,
+                antigravityExecution: {
+                    model: runtimeModel,
+                    reasoningEffort: effort,
+                    catalogVersion: capabilities.catalogVersion,
+                },
+                antigravityLaunchControls: {
+                    mode: 'default',
+                    dangerouslySkipPermissions: false,
+                    sandbox: false,
+                },
+            }));
+            const resumed = useProtocolStore.getState().sessions[resumedSessionId];
+
+            expect(resumedSessionId).toMatch(/^fx-resume-antigravity-/);
+            expect(resumed?.metadata).toMatchObject({
+                flavor: 'antigravity',
+                agentSessionId: resume.sessionId,
+                antigravitySessionId: resume.sessionId,
+                antigravityExecution: {
+                    model: 'antigravity-flash-medium',
+                    reasoningEffort: 'medium',
+                    catalogVersion: 'fixture-antigravity-v1',
+                },
+            });
+        } finally {
+            vi.stubGlobal('window', { location: { search: '' } });
+        }
     });
 
     it('keeps fixture directory projects isolated by machine after a successful spawn', async () => {

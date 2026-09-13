@@ -10,24 +10,24 @@ describe('agent permission modes', () => {
     it('exposes backend-native permission modes for each agent', () => {
         expect(getAgentPermissionModes('claude')).toEqual(['manual', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions']);
         expect(getAgentPermissionModes('codex')).toEqual(['read-only', 'workspace-write', 'danger-full-access']);
-        expect(getAgentPermissionModes('gemini')).toEqual(['manual', 'auto_edit', 'plan']);
+        expect(getAgentPermissionModes('antigravity')).toEqual([]);
         expect(getAgentPermissionModes('cursor')).toEqual([]);
     });
 
     it('uses the agent-specific initial permission mode', () => {
         expect(getDefaultPermissionMode('claude')).toBe('manual');
         expect(getDefaultPermissionMode('codex')).toBe('workspace-write');
-        expect(getDefaultPermissionMode('gemini')).toBe('manual');
+        expect(getDefaultPermissionMode('antigravity')).toBe('default');
     });
 
     it('keeps supported modes unchanged', () => {
         expect(normalizeAgentPermissionMode('codex', 'danger-full-access')).toBe('danger-full-access');
         expect(normalizeAgentPermissionMode('claude', 'acceptEdits')).toBe('acceptEdits');
-        expect(normalizeAgentPermissionMode('gemini', 'auto_edit')).toBe('auto_edit');
+        expect(normalizeAgentPermissionMode('antigravity', 'auto_edit')).toBe('default');
     });
 
     it('falls back instead of sending unsupported modes to an agent', () => {
-        expect(normalizeAgentPermissionMode('gemini', 'workspace-write')).toBe('manual');
+        expect(normalizeAgentPermissionMode('antigravity', 'workspace-write')).toBe('default');
         expect(normalizeAgentPermissionMode('claude', 'read-only')).toBe('manual');
     });
 
@@ -42,7 +42,7 @@ describe('agent permission modes', () => {
     });
 
     it('keeps non-Codex labels as backend-native permission values', () => {
-        expect(getAgentPermissionLabel('gemini', 'auto_edit')).toBe('auto_edit');
+        expect(getAgentPermissionLabel('antigravity', 'auto_edit')).toBe('auto_edit');
         expect(getAgentPermissionLabel('claude', 'acceptEdits')).toBe('acceptEdits');
     });
 });

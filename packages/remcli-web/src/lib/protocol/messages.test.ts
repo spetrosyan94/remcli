@@ -48,16 +48,13 @@ describe('normalizeRawMessage', () => {
         };
 
         const claude = normalizeRawMessage('claude-history', null, 1, 1_000, raw, 'claude');
-        const gemini = normalizeRawMessage('gemini-history', null, 1, 1_000, raw, 'gemini');
+        const antigravity = normalizeRawMessage('antigravity-history', null, 1, 1_000, raw, 'antigravity');
         const codex = normalizeRawMessage('codex-history', null, 1, 1_000, raw, 'codex');
         const cursor = normalizeRawMessage('cursor-history', null, 1, 1_000, raw, 'cursor');
 
         expect(claude?.meta).toEqual(historicalMeta);
-        expect(gemini?.meta).toEqual({
+        expect(antigravity?.meta).toEqual({
             sentFrom: 'terminal',
-            permissionMode: 'manual',
-            model: 'legacy-model',
-            appendSystemPrompt: 'legacy append prompt',
             displayText: 'Visible historical prompt',
         });
         expect(codex?.meta).toEqual({ sentFrom: 'terminal', displayText: 'Visible historical prompt' });
@@ -109,16 +106,16 @@ describe('normalizeRawMessage', () => {
         expect(result?.meta).not.toHaveProperty('model');
     });
 
-    it('discards a foreign but otherwise valid permission value from Gemini history', () => {
-        const result = normalizeRawMessage('gemini-history', null, 1, 1_000, {
+    it('discards a foreign but otherwise valid permission value from Antigravity history', () => {
+        const result = normalizeRawMessage('antigravity-history', null, 1, 1_000, {
             role: 'user',
-            content: { type: 'text', text: 'Keep this Gemini history prompt readable' },
+            content: { type: 'text', text: 'Keep this Antigravity history prompt readable' },
             meta: { sentFrom: 'terminal', permissionMode: 'workspace-write' },
-        }, 'gemini');
+        }, 'antigravity');
 
         expect(result).toMatchObject({
             role: 'user',
-            content: { type: 'text', text: 'Keep this Gemini history prompt readable' },
+            content: { type: 'text', text: 'Keep this Antigravity history prompt readable' },
             meta: { sentFrom: 'terminal' },
         });
         expect(result?.meta).not.toHaveProperty('permissionMode');
@@ -202,7 +199,7 @@ describe('normalizeRawMessage', () => {
         });
     });
 
-    it('normalizes hyphenated tool-call content (Codex/Gemini) to tool-call', () => {
+    it('normalizes hyphenated tool-call content (Codex/Antigravity) to tool-call', () => {
         const result = normalizeRawMessage('m4', null, 8, 4000, {
             role: 'agent',
             content: {
@@ -227,7 +224,7 @@ describe('normalizeRawMessage', () => {
             role: 'agent',
             content: {
                 type: 'acp',
-                provider: 'gemini',
+                provider: 'antigravity',
                 data: {
                     type: 'permission-request',
                     permissionId: 'perm-1',
@@ -245,7 +242,7 @@ describe('normalizeRawMessage', () => {
             role: 'agent',
             content: {
                 type: 'acp',
-                provider: 'gemini',
+                provider: 'antigravity',
                 data: {
                     type: 'tool-result',
                     callId: 'perm-1',
@@ -278,7 +275,7 @@ describe('normalizeRawMessage', () => {
             role: 'agent',
             content: {
                 type: 'acp',
-                provider: 'gemini',
+                provider: 'antigravity',
                 data: {
                     type: 'message',
                     message: 'Provider rejected the selected model.',

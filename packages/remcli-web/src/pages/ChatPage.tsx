@@ -72,8 +72,9 @@ function isSessionExecutionEqual(
     if (!left || !right || left.provider !== right.provider) return left === right;
     return left.model === right.model
         && left.catalogVersion === right.catalogVersion
-        && (left.provider === "cursor"
-            || left.reasoningEffort === (right.provider === "codex" ? right.reasoningEffort : undefined));
+        && (!("reasoningEffort" in left) || !("reasoningEffort" in right)
+            ? !("reasoningEffort" in left) && !("reasoningEffort" in right)
+            : left.reasoningEffort === right.reasoningEffort);
 }
 
 function compactExecutionModelLabel(displayName: string, modelId: string): string {
@@ -421,7 +422,7 @@ function formatSeconds(total: number): string {
 /** Агент сессии из metadata.flavor (протокол); неизвестный flavor — claude. */
 function agentOf(session: Session | null): AgentId {
     const flavor = session?.metadata?.flavor;
-    return flavor === "codex" || flavor === "gemini" || flavor === "cursor" ? flavor : "claude";
+    return flavor === "claude" || flavor === "codex" || flavor === "antigravity" || flavor === "cursor" ? flavor : "unknown";
 }
 
 interface ChatNavState {
@@ -468,7 +469,9 @@ export function EndedSessionResume({
     onResume,
     onBackToList,
 }: EndedSessionResumeProps) {
-    const isDeferred = getProviderResumeAction(agent) === "deferred";
+    const resumeAction = getProviderResumeAction(agent);
+    const isDeferred = resumeAction === "deferred";
+    const isCapabilityGated = resumeAction === "capability-gated";
 
     return (
         <div className="flex flex-col items-center gap-2.5 rounded-xl border border-dashed border-border bg-card/50 px-4 py-4">
@@ -482,9 +485,9 @@ export function EndedSessionResume({
                 <button
                     type="button"
                     onClick={onResume}
-                    disabled={isResuming || isDeferred}
+                    disabled={isResuming || isDeferred || isCapabilityGated}
                     aria-describedby={isDeferred ? "chat-deferred-resume-note" : undefined}
-                    data-resume-availability={isDeferred ? "deferred" : "available"}
+                    data-resume-availability={isDeferred ? "deferred" : isCapabilityGated ? "capability-gated" : "available"}
                     className="flex h-11 items-center gap-1.5 rounded-[9px] bg-primary px-3.5 text-[13px] font-semibold text-primary-foreground transition-transform active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100 lg:h-9"
                 >
                     {isResuming && <Loader2 className="size-3.5 animate-spin" />}
@@ -1095,7 +1098,7 @@ export function ChatPage() {
         && !hasVisibleErrorMessage;
     const isCursorSession = agent === "cursor";
     const permissionModes = React.useMemo(() => getAgentPermissionModes(agent), [agent]);
-    const activePermissionMode = agent === "cursor"
+    const activePermissionMode = agent === "cursor" || agent === "unknown"
         ? null
         : normalizeAgentPermissionMode(agent, uiMode ?? undefined);
     const formatPermissionMode = React.useCallback(
@@ -1121,7 +1124,7 @@ export function ChatPage() {
 
     React.useEffect(() => {
         if (!session) return;
-        if (agent === "cursor") {
+        if (agent === "cursor" || agent === "unknown") {
             setUiMode(null);
             return;
         }
@@ -1696,7 +1699,7 @@ export function ChatPage() {
         ? codexCapabilities?.models ?? []
         : agent === "cursor"
             ? cursorCapabilities?.models ?? []
-            : [];
+        : [];
     const selectedCodexExecutionModel = draftExecution?.provider === "codex"
         ? codexCapabilities?.models.find((model) => model.id === draftExecution.model) ?? null
         : null;
@@ -1715,6 +1718,7 @@ export function ChatPage() {
                 model: modelId,
                 catalogVersion: cursorCapabilities.catalogVersion,
             });
+            return;
         }
     };
 

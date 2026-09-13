@@ -34,9 +34,10 @@ export function buildCursorResumeNavigationState(input: {
     };
 }
 
-export type ResumeAction = "deferred" | "cursor-navigation" | "machine-spawn";
+export type ResumeAction = "deferred" | "capability-gated" | "cursor-navigation" | "machine-spawn";
 
 export function getProviderResumeAction(agent: AgentId): ResumeAction {
+    if (agent === "antigravity") return "capability-gated";
     if (!isProviderAvailable(agent)) return "deferred";
     return agent === "cursor" ? "cursor-navigation" : "machine-spawn";
 }

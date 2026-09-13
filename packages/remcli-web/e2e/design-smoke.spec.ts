@@ -561,7 +561,7 @@ test("new session groups pinned projects and keeps their controls overflow-safe"
     expect(pageIssues).toEqual([]);
 });
 
-test("new session keeps deferred providers visible but non-interactive", async ({ page }, testInfo) => {
+test("new session keeps Claude deferred and gates Antigravity by capabilities", async ({ page }, testInfo) => {
     const pageIssues = collectPageIssues(page);
 
     await assertRequiredViewport(page, testInfo);
@@ -570,23 +570,132 @@ test("new session keeps deferred providers visible but non-interactive", async (
     const codex = page.getByRole("button", { name: /codex cli/i });
     const cursor = page.getByRole("button", { name: /cursor agent/i });
     const claude = page.getByRole("button", { name: /claude code/i });
-    const gemini = page.getByRole("button", { name: /gemini cli/i });
+    const antigravity = page.getByRole("button", { name: /antigravity cli/i });
 
     await expect(codex).toHaveAttribute("aria-pressed", "true");
     await expect(claude).toBeDisabled();
     await expect(claude).toHaveAttribute("data-provider-availability", "deferred");
     await expect(claude).toHaveAttribute("aria-describedby", "deferred-provider-note");
-    await expect(gemini).toBeDisabled();
-    await expect(gemini).toHaveAttribute("data-provider-availability", "deferred");
-    await expect(gemini).toHaveAttribute("aria-describedby", "deferred-provider-note");
-    await expect(page.locator("#deferred-provider-note")).toHaveText("Claude and Gemini will be added in a separate integration.");
+    await expect(antigravity).toBeEnabled();
+    await expect(antigravity).toHaveAttribute("data-provider-availability", "available");
+    await expect(antigravity).not.toHaveAttribute("aria-describedby");
+    await expect(page.locator("#deferred-provider-note")).toHaveText("Claude will be added in a separate integration.");
+
+    await antigravity.click();
+    await expect(page.getByRole("button", { name: /model: Antigravity Flash/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /reasoning level: medium/i })).toContainText("medium");
+    await capabilityControl(page, "reasoning").locator("button").click();
+    const reasoningSheet = page.locator('[data-slot="drawer-content"]');
+    await expect(reasoningSheet.getByRole("button", { name: "low", exact: true })).toBeVisible();
+    await expect(reasoningSheet.getByRole("button", { name: "medium", exact: true })).toBeVisible();
+    await expect(reasoningSheet.getByRole("button", { name: "high", exact: true })).toBeVisible();
+    await expect(reasoningSheet.getByRole("button")).toHaveCount(3);
+    await page.keyboard.press("Escape");
+    const antigravityAccess = page.getByRole("button", { name: /access level: default/i });
+    await antigravityAccess.click();
+    await expect(page.getByRole("button", { name: "default", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "accept-edits", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "plan", exact: true })).toBeVisible();
+    await expect(page.getByRole("checkbox", { name: "Force sandbox", exact: true })).toBeVisible();
+    await expect(page.getByRole("alert")).toBeVisible();
+    await page.keyboard.press("Escape");
 
     await cursor.click();
     await expect(cursor).toHaveAttribute("aria-pressed", "true");
     await expect(claude).toBeDisabled();
-    await expect(gemini).toBeDisabled();
+    await expect(antigravity).toBeEnabled();
 
     await assertNoHorizontalOverflow(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("Antigravity transient capability failure stays selectable and recovers through Retry", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/new?fixtures=1&antigravityCapabilities=transient-unavailable");
+
+    const antigravity = page.getByRole("button", { name: /antigravity cli/i });
+    await expect(antigravity).toBeEnabled();
+    await expect(antigravity).toHaveAttribute("data-provider-availability", "capability-unavailable");
+    await antigravity.click();
+
+    const startButton = page.getByRole("button", { name: /Start antigravity/i });
+    await expect(startButton).toBeDisabled();
+    const retry = capabilityControl(page, "model").getByRole("button", { name: "Retry", exact: true });
+    await expect(retry).toBeVisible();
+    await retry.click();
+
+    await expect(capabilityControl(page, "model").locator("button")).toContainText("Antigravity Flash");
+    await expect(capabilityControl(page, "reasoning").getByRole("button", { name: /reasoning level: medium/i })).toBeVisible();
+    await expect(antigravity).toHaveAttribute("data-provider-availability", "available");
+    await expect(startButton).toBeEnabled();
+
+    await assertNoHorizontalOverflow(page);
+    if (isMobileProject(testInfo)) await assertMobileTouchTargets(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("Antigravity rejection invalidates stale controls and never auto-retries spawn", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/new?fixtures=1&antigravityCapabilities=capability-rejection");
+    await page.getByRole("button", { name: /antigravity cli/i }).click();
+    await expect(capabilityControl(page, "model").locator("button")).toContainText("Antigravity Flash");
+
+    const access = capabilityControl(page, "permission").locator("button");
+    await access.click();
+    await page.getByRole("button", { name: "accept-edits", exact: true }).click();
+    await access.click();
+    await page.getByRole("checkbox", { name: "dangerouslySkipPermissions", exact: true }).check();
+    await page.getByRole("checkbox", { name: "Force sandbox", exact: true }).check();
+    await page.keyboard.press("Escape");
+
+    const startButton = page.getByRole("button", { name: /Start antigravity/i });
+    await startButton.click();
+    await expect(page.getByText("Antigravity capability selection rejected: expired.", { exact: true })).toBeVisible();
+    await expect(capabilityControl(page, "model").locator("button")).toContainText("Antigravity Pro");
+    await expect(capabilityControl(page, "reasoning").getByRole("button", { name: /reasoning level: high/i })).toBeVisible();
+    await expect(access).toContainText("default");
+    expect(await readFixtureSpawnNewSessionCallCount(page)).toBe(1);
+
+    await access.click();
+    const refreshedAccessSheet = page.locator('[data-slot="drawer-content"]');
+    await expect(refreshedAccessSheet.getByRole("checkbox")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    expect(await readFixtureSpawnNewSessionCallCount(page)).toBe(1);
+
+    await Promise.all([
+        page.waitForURL(/\/session\/fx-spawn-antigravity-/),
+        startButton.click(),
+    ]);
+    expect(await readFixtureSpawnNewSessionCallCount(page)).toBe(2);
+    await assertNoHorizontalOverflow(page);
+    if (isMobileProject(testInfo)) await assertMobileTouchTargets(page);
+    expect(pageIssues).toEqual([]);
+});
+
+test("Antigravity native resume keeps exact capability execution through spawn", async ({ page }, testInfo) => {
+    const pageIssues = collectPageIssues(page);
+
+    await assertRequiredViewport(page, testInfo);
+    await openFixtureRoute(page, "/new?fixtures=1&resumeFixture=antigravity-lifecycle");
+    await page.getByRole("button", { name: /antigravity cli/i }).click();
+    await expect(capabilityControl(page, "reasoning").getByRole("button", { name: /reasoning level: medium/i })).toBeVisible();
+    await page.getByRole("button", { name: /resume a previous antigravity session/i }).click();
+
+    const resumeRegion = page.getByRole("region", { name: "Resume session", exact: true });
+    const lifecycleSession = resumeRegion.getByRole("button", { name: /^Antigravity lifecycle review/ });
+    await expect(lifecycleSession).toBeVisible();
+    await Promise.all([
+        page.waitForURL(/\/session\/fx-resume-antigravity-/),
+        lifecycleSession.click(),
+    ]);
+    await expect(page.locator("header")).toContainText("antigravity");
+
+    await assertNoHorizontalOverflow(page);
+    if (isMobileProject(testInfo)) await assertMobileTouchTargets(page);
     expect(pageIssues).toEqual([]);
 });
 

@@ -1,10 +1,10 @@
 import type { AgentId } from "@/components/kit";
 import type { PermissionMode } from "@/lib/protocol";
 
-export const PERMISSIONS_BY_AGENT: Record<Exclude<AgentId, "cursor">, PermissionMode[]> = {
+export const PERMISSIONS_BY_AGENT: Record<Exclude<AgentId, "cursor" | "unknown">, PermissionMode[]> = {
     claude: ["manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"],
     codex: ["read-only", "workspace-write", "danger-full-access"],
-    gemini: ["manual", "auto_edit", "plan"],
+    antigravity: [],
 };
 
 const PERMISSION_LABELS: Partial<Record<PermissionMode, string>> = {
@@ -16,7 +16,7 @@ const PERMISSION_LABELS: Partial<Record<PermissionMode, string>> = {
 };
 
 export function getAgentPermissionModes(agent: AgentId): PermissionMode[] {
-    return agent === "cursor" ? [] : PERMISSIONS_BY_AGENT[agent];
+    return agent === "cursor" || agent === "unknown" ? [] : PERMISSIONS_BY_AGENT[agent];
 }
 
 export function getAgentPermissionLabel(_agent: AgentId, mode: PermissionMode): string {
@@ -26,6 +26,7 @@ export function getAgentPermissionLabel(_agent: AgentId, mode: PermissionMode): 
 export function getDefaultPermissionMode(agent: Exclude<AgentId, "cursor">): PermissionMode {
     if (agent === "codex") return "workspace-write";
     if (agent === "claude") return "manual";
+    if (agent === "antigravity") return "default";
     const modes = getAgentPermissionModes(agent);
     return modes[0];
 }
@@ -35,7 +36,7 @@ export function isAgentPermissionMode(agent: AgentId, mode: PermissionMode): boo
 }
 
 export function normalizeAgentPermissionMode(
-    agent: Exclude<AgentId, "cursor">,
+    agent: Exclude<AgentId, "cursor" | "unknown">,
     mode: PermissionMode | undefined,
 ): PermissionMode {
     if (mode && isAgentPermissionMode(agent, mode)) return mode;

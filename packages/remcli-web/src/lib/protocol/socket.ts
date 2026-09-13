@@ -317,6 +317,44 @@ export interface CodexModelCapability {
     isDefault: boolean;
 }
 
+export type AntigravityExecutionMode = 'default' | 'accept-edits' | 'plan';
+export type AntigravityReasoningEffort = 'low' | 'medium' | 'high';
+
+export interface AntigravityExecutionConfig {
+    model: string;
+    reasoningEffort?: AntigravityReasoningEffort;
+    catalogVersion: string;
+}
+
+export interface AntigravityLaunchControls {
+    mode: AntigravityExecutionMode;
+    dangerouslySkipPermissions: boolean;
+    sandbox: boolean;
+}
+
+export interface AntigravityModelCapability {
+    id: string;
+    displayName: string;
+    isDefault: boolean;
+    supportedReasoningEfforts: AntigravityReasoningEffort[];
+    /** Exact account-visible runtime slug for each advertised reasoning effort. */
+    runtimeModels: Partial<Record<AntigravityReasoningEffort, string>>;
+    defaultReasoningEffort?: AntigravityReasoningEffort;
+}
+
+export interface AntigravityCapabilitiesSnapshot {
+    agent: 'antigravity';
+    status: 'ready' | 'unavailable';
+    fetchedAt: number | null;
+    expiresAt: number | null;
+    catalogVersion: string | null;
+    models: AntigravityModelCapability[];
+    executionModes: AntigravityExecutionMode[];
+    supportsDangerouslySkipPermissions: boolean;
+    supportsSandbox: boolean;
+    errorCode?: 'unavailable' | 'expired' | 'unsupported_selection';
+}
+
 export interface CodexCapabilitiesSnapshot {
     agent: 'codex';
     status: 'ready' | 'unavailable';
@@ -395,6 +433,8 @@ export interface SpawnSessionOptions {
     permissionMode?: PermissionMode;
     codexExecution?: CodexExecutionConfig;
     cursorExecution?: CursorExecutionConfig;
+    antigravityExecution?: AntigravityExecutionConfig;
+    antigravityLaunchControls?: AntigravityLaunchControls;
     cursorLaunchControls?: CursorLaunchControls;
     resumeSessionId?: string;
     resumeSessionName?: string;
@@ -578,7 +618,7 @@ function isDirectoryProjectsErrorResponse(value: unknown): value is DirectoryPro
 }
 
 function isAgentKind(value: unknown): value is AgentKind {
-    return value === 'claude' || value === 'codex' || value === 'cursor' || value === 'gemini';
+    return value === 'claude' || value === 'codex' || value === 'cursor' || value === 'antigravity';
 }
 
 function isAgentSessionInfo(value: unknown): value is AgentSessionInfo {
@@ -601,6 +641,81 @@ function isAgentSessionListResponse(value: unknown): value is AgentSessionListRe
 
 function isCursorCapabilityErrorCode(value: unknown): value is NonNullable<CursorCapabilitiesSnapshot['errorCode']> {
     return value === 'unavailable' || value === 'expired' || value === 'unsupported_selection';
+}
+
+function isAntigravityCapabilityErrorCode(value: unknown): value is NonNullable<AntigravityCapabilitiesSnapshot['errorCode']> {
+    return value === 'unavailable'
+        || value === 'expired'
+        || value === 'unsupported_selection';
+}
+
+function isAntigravityReasoningEffort(value: unknown): value is AntigravityReasoningEffort {
+    return value === 'low' || value === 'medium' || value === 'high';
+}
+
+function isAntigravityModelCapability(value: unknown): value is AntigravityModelCapability {
+    if (!isRecord(value)
+        || typeof value.id !== 'string'
+        || value.id.trim().length === 0
+        || typeof value.displayName !== 'string'
+        || value.displayName.trim().length === 0
+        || typeof value.isDefault !== 'boolean'
+        || !Array.isArray(value.supportedReasoningEfforts)
+        || !value.supportedReasoningEfforts.every(isAntigravityReasoningEffort)
+        || new Set(value.supportedReasoningEfforts).size !== value.supportedReasoningEfforts.length
+        || !isRecord(value.runtimeModels)) {
+        return false;
+    }
+
+    const efforts = value.supportedReasoningEfforts;
+    const runtimeEntries = Object.entries(value.runtimeModels);
+    const hasExactRuntimeMappings = runtimeEntries.length === efforts.length
+        && runtimeEntries.every(([effort, runtimeModel]) => isAntigravityReasoningEffort(effort)
+            && efforts.includes(effort)
+            && typeof runtimeModel === 'string'
+            && runtimeModel.trim().length > 0);
+    const hasValidDefault = value.defaultReasoningEffort === undefined
+        || isAntigravityReasoningEffort(value.defaultReasoningEffort)
+            && efforts.includes(value.defaultReasoningEffort);
+    return hasExactRuntimeMappings && hasValidDefault;
+}
+
+function isAntigravityCapabilitiesSnapshot(value: unknown): value is AntigravityCapabilitiesSnapshot {
+    if (!isRecord(value)
+        || value.agent !== 'antigravity'
+        || (value.status !== 'ready' && value.status !== 'unavailable')
+        || !Array.isArray(value.models)
+        || !value.models.every(isAntigravityModelCapability)
+        || !Array.isArray(value.executionModes)
+        || !value.executionModes.every((mode) => mode === 'default' || mode === 'accept-edits' || mode === 'plan')
+        || new Set(value.executionModes).size !== value.executionModes.length
+        || typeof value.supportsDangerouslySkipPermissions !== 'boolean'
+        || typeof value.supportsSandbox !== 'boolean'
+        || (value.errorCode !== undefined && !isAntigravityCapabilityErrorCode(value.errorCode))) {
+        return false;
+    }
+
+    if (value.status === 'ready') {
+        return typeof value.fetchedAt === 'number'
+            && Number.isFinite(value.fetchedAt)
+            && typeof value.expiresAt === 'number'
+            && Number.isFinite(value.expiresAt)
+            && value.expiresAt > value.fetchedAt
+            && typeof value.catalogVersion === 'string'
+            && value.catalogVersion.trim().length > 0
+            && value.models.length > 0
+            && value.models.filter((model) => model.isDefault).length === 1
+            && value.executionModes.length > 0
+            && value.errorCode === undefined;
+    }
+
+    return value.fetchedAt === null
+        && value.expiresAt === null
+        && value.catalogVersion === null
+        && value.models.length === 0
+        && value.executionModes.length === 0
+        && value.supportsDangerouslySkipPermissions === false
+        && value.supportsSandbox === false;
 }
 
 function isCursorModelCapability(value: unknown): value is CursorModelCapability {
@@ -755,6 +870,8 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
         permissionMode,
         codexExecution,
         cursorExecution,
+        antigravityExecution,
+        antigravityLaunchControls,
         cursorLaunchControls,
     } = options;
     try {
@@ -770,6 +887,8 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
             permissionMode?: PermissionMode;
             codexExecution?: CodexExecutionConfig;
             cursorExecution?: CursorExecutionConfig;
+            antigravityExecution?: AntigravityExecutionConfig;
+            antigravityLaunchControls?: AntigravityLaunchControls;
             cursorLaunchControls?: CursorLaunchControls;
         }>(
             machineId,
@@ -786,6 +905,8 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
                 permissionMode,
                 codexExecution,
                 cursorExecution,
+                antigravityExecution,
+                antigravityLaunchControls,
                 cursorLaunchControls,
             }
         );
@@ -831,6 +952,25 @@ export async function machineGetCursorCapabilities(
     }
     if (!isCursorCapabilitiesSnapshot(result)) {
         throw new Error('Cursor capability RPC returned invalid response');
+    }
+    return result;
+}
+
+/** Read the daemon-normalized Antigravity capability catalog. */
+export async function machineGetAntigravityCapabilities(
+    machineId: string,
+    forceRefresh: boolean = false,
+): Promise<AntigravityCapabilitiesSnapshot> {
+    const result = await machineRpc<unknown, { forceRefresh?: boolean }>(
+        machineId,
+        'get-antigravity-capabilities',
+        forceRefresh ? { forceRefresh: true } : {},
+    );
+    if (isRpcErrorEnvelope(result)) {
+        throw new Error(result.error || 'Antigravity capability RPC failed');
+    }
+    if (!isAntigravityCapabilitiesSnapshot(result)) {
+        throw new Error('Antigravity capability RPC returned invalid response');
     }
     return result;
 }

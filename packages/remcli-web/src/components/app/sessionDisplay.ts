@@ -4,19 +4,20 @@ import type { AgentId, Status } from "@/components/kit";
 import { getIntlLocale, t } from "@/lib/i18n";
 import type { Machine, Session } from "@/lib/protocol";
 
-/** flavor из метаданных сессии → id агента UI-кита (неизвестный флейвор → claude). */
+/** flavor из метаданных сессии → id агента UI-кита; неизвестное значение закрывается в neutral state. */
 export function sessionAgent(session: Session): AgentId {
     const flavor = session.metadata?.flavor;
-    if (flavor === "codex" || flavor === "gemini" || flavor === "cursor") return flavor;
-    return "claude";
+    if (flavor === "claude" || flavor === "codex" || flavor === "antigravity" || flavor === "cursor") return flavor;
+    return "unknown";
 }
 
 export function nativeAgentSessionKey(session: Session): string | null {
     const agent = sessionAgent(session);
     const meta = session.metadata;
     if (!meta) return null;
+    if (agent === "unknown") return null;
     const nativeId = agent === "codex" ? meta.codexSessionId ?? meta.agentSessionId
-        : agent === "gemini" ? meta.geminiSessionId ?? meta.agentSessionId
+        : agent === "antigravity" ? meta.antigravitySessionId ?? meta.agentSessionId
             : agent === "cursor" ? meta.cursorSessionId ?? meta.agentSessionId
                 : meta.claudeSessionId ?? meta.agentSessionId;
     return nativeId ? `${agent}:${nativeId}` : null;

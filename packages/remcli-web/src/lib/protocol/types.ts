@@ -176,6 +176,14 @@ export const CursorSessionExecutionSchema = z.object({
 
 export type CursorSessionExecution = z.infer<typeof CursorSessionExecutionSchema>;
 
+export const AntigravitySessionExecutionSchema = z.object({
+    model: z.string().min(1),
+    reasoningEffort: z.enum(['low', 'medium', 'high']).optional(),
+    catalogVersion: z.string().min(1),
+});
+
+export type AntigravitySessionExecution = z.infer<typeof AntigravitySessionExecutionSchema>;
+
 export const MetadataSchema = z.object({
     path: z.string(),
     host: z.string(),
@@ -197,7 +205,8 @@ export const MetadataSchema = z.object({
     codexExecution: CodexSessionExecutionSchema.optional(),
     cursorSessionId: z.string().optional(),
     cursorExecution: CursorSessionExecutionSchema.optional(),
-    geminiSessionId: z.string().optional(),
+    antigravityExecution: AntigravitySessionExecutionSchema.optional(),
+    antigravitySessionId: z.string().optional(),
     resumedFromRemcliSessionId: z.string().min(1).optional(),
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),
@@ -299,7 +308,9 @@ export type PermissionMode =
     | 'read-only'
     | 'workspace-write'
     | 'danger-full-access'
-    | 'auto_edit';
+    | 'auto_edit'
+    | 'default'
+    | 'accept-edits';
 
 export interface Session {
     id: string;
@@ -376,7 +387,7 @@ export interface ConciergeChatResponse {
 
 // ─── Agent session listing (resume feature) ──────────────────────
 
-export type AgentKind = 'claude' | 'codex' | 'cursor' | 'gemini';
+export type AgentKind = 'claude' | 'codex' | 'cursor' | 'antigravity';
 
 export interface AgentSessionInfo {
     sessionId: string;

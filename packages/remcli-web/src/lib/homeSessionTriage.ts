@@ -25,7 +25,7 @@ export interface HomeQuickResumeCandidate {
 
 function explicitSessionAgent(session: Session): AgentId | null {
     const agent = session.metadata?.flavor;
-    return agent === "claude" || agent === "codex" || agent === "cursor" || agent === "gemini"
+    return agent === "claude" || agent === "codex" || agent === "cursor" || agent === "antigravity"
         ? agent
         : null;
 }
@@ -33,8 +33,9 @@ function explicitSessionAgent(session: Session): AgentId | null {
 export function agentSessionIdOf(session: Session | null, agent: AgentId): string | undefined {
     const meta = session?.metadata;
     if (!meta) return undefined;
+    if (agent === "unknown") return undefined;
     if (agent === "codex") return meta.codexSessionId ?? meta.agentSessionId;
-    if (agent === "gemini") return meta.geminiSessionId ?? meta.agentSessionId;
+    if (agent === "antigravity") return meta.antigravitySessionId ?? meta.agentSessionId;
     if (agent === "cursor") return meta.cursorSessionId ?? meta.agentSessionId;
     return meta.claudeSessionId ?? meta.agentSessionId;
 }

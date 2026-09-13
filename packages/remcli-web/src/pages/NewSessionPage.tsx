@@ -23,6 +23,7 @@ import {
     machineListDirectory,
     machineListAgentSessions,
     machineGetCodexCapabilities,
+    machineGetAntigravityCapabilities,
     machineGetCursorCapabilities,
     machineListDirectoryProjects,
     machineSetDirectoryProjectPin,
@@ -33,6 +34,12 @@ import {
     useProtocolStore,
     type AgentSessionInfo,
     type CodexCapabilitiesSnapshot,
+    type AntigravityCapabilitiesSnapshot,
+    type AntigravityExecutionConfig,
+    type AntigravityExecutionMode,
+    type AntigravityLaunchControls,
+    type AntigravityModelCapability,
+    type AntigravityReasoningEffort,
     type CodexExecutionConfig,
     type CodexModelCapability,
     DEFAULT_CURSOR_LAUNCH_CONTROLS,
@@ -88,11 +95,16 @@ interface AgentOption {
 
 const DEFAULT_MODEL_ID = "default";
 const DEFAULT_NEW_SESSION_AGENT = "codex";
+const DEFAULT_ANTIGRAVITY_LAUNCH_CONTROLS: AntigravityLaunchControls = {
+    mode: "default",
+    dangerouslySkipPermissions: false,
+    sandbox: false,
+};
 
 export const AGENT_OPTIONS: AgentOption[] = [
     { id: "claude", name: "Claude", kind: "code", models: [], isAvailable: isProviderAvailable("claude") },
     { id: "codex", name: "Codex", kind: "cli", models: [], isAvailable: isProviderAvailable("codex") },
-    { id: "gemini", name: "Gemini", kind: "cli", models: [], isAvailable: isProviderAvailable("gemini") },
+    { id: "antigravity", name: "Antigravity", kind: "cli", models: [], isAvailable: isProviderAvailable("antigravity") },
     { id: "cursor", name: "Cursor", kind: "agent", models: [], isAvailable: isProviderAvailable("cursor") },
 ];
 
@@ -254,6 +266,31 @@ export function createCursorExecutionForModel(
     return model ? { model: model.id, catalogVersion: capabilities.catalogVersion } : null;
 }
 
+export function createAntigravityExecutionForModel(
+    capabilities: AntigravityCapabilitiesSnapshot,
+    modelId: string,
+    reasoningEffort?: AntigravityReasoningEffort,
+): AntigravityExecutionConfig | null {
+    if (capabilities.status !== "ready" || !capabilities.catalogVersion) return null;
+    const model = capabilities.models.find((item) => item.id === modelId);
+    if (!model) return null;
+    const selectedReasoning = reasoningEffort ?? model.defaultReasoningEffort;
+    if (selectedReasoning !== undefined) {
+        if (!model.supportedReasoningEfforts.includes(selectedReasoning)) return null;
+        const runtimeModel = model.runtimeModels[selectedReasoning];
+        if (!runtimeModel) return null;
+        return { model: runtimeModel, reasoningEffort: selectedReasoning, catalogVersion: capabilities.catalogVersion };
+    }
+    return model.supportedReasoningEfforts.length === 0
+        ? { model: model.id, catalogVersion: capabilities.catalogVersion }
+        : null;
+}
+
+function findAntigravityModel(capabilities: AntigravityCapabilitiesSnapshot | null, modelId: string | null): AntigravityModelCapability | null {
+    if (capabilities?.status !== "ready" || !modelId) return null;
+    return capabilities.models.find((item) => item.id === modelId) ?? null;
+}
+
 function findCursorModel(
     capabilities: CursorCapabilitiesSnapshot | null,
     modelId: string | null,
@@ -279,6 +316,18 @@ export function getReasoningControlState(input: {
     return "ready";
 }
 
+function getAntigravityReasoningControlState(
+    isLoading: boolean,
+    capabilities: AntigravityCapabilitiesSnapshot | null,
+    selectedModel: AntigravityModelCapability | null,
+    hasSelection: boolean,
+): ReasoningControlState {
+    if (isLoading) return "loading";
+    if (capabilities?.status !== "ready" || !selectedModel) return "unavailable";
+    if (selectedModel.supportedReasoningEfforts.length === 0) return "no-options";
+    return hasSelection ? "ready" : "choose-required";
+}
+
 function cursorExecutionModeLabel(mode: CursorLaunchControls["executionMode"]): string {
     switch (mode) {
         case "plan":
@@ -299,9 +348,12 @@ export function buildNewSessionSpawnOptions(input: {
     codexReasoningEfforts: readonly CodexModelCapability["supportedReasoningEfforts"][number][];
     cursorExecution?: CursorExecutionConfig | null;
     cursorLaunchControls?: CursorLaunchControls;
+    antigravityExecution?: AntigravityExecutionConfig | null;
+    antigravityLaunchControls?: AntigravityLaunchControls;
     resume?: ResumeTarget;
 }): SpawnSessionOptions {
     const spawnAgent = input.resume?.agent ?? input.agent;
+    if (spawnAgent === "unknown") throw new Error("Unknown provider cannot spawn a session.");
     if (!isNewSessionAgentAvailable(spawnAgent)) {
         throw new Error(`${spawnAgent} is not available in New Session.`);
     }
@@ -317,7 +369,13 @@ export function buildNewSessionSpawnOptions(input: {
     if (spawnAgent === "cursor" && !input.cursorLaunchControls) {
         throw new Error("Cursor requires validated launch controls.");
     }
-    if (spawnAgent !== "cursor" && !input.permissionMode) {
+    if (spawnAgent === "antigravity" && (!input.antigravityExecution || !input.antigravityLaunchControls)) {
+        throw new Error("Antigravity requires a capability-validated execution selection.");
+    }
+    if (spawnAgent === "antigravity" && input.antigravityLaunchControls && !["default", "accept-edits", "plan"].includes(input.antigravityLaunchControls.mode)) {
+        throw new Error("Antigravity requires a valid native execution mode.");
+    }
+    if (spawnAgent !== "cursor" && spawnAgent !== "antigravity" && !input.permissionMode) {
         throw new Error(`${spawnAgent} requires a permission selection.`);
     }
     return {
@@ -326,15 +384,18 @@ export function buildNewSessionSpawnOptions(input: {
         agent: spawnAgent,
         resumeSessionId: input.resume?.sessionId,
         resumeSessionName: input.resume?.sessionName ?? undefined,
-        ...(spawnAgent !== "cursor" && input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+        ...(spawnAgent !== "cursor" && spawnAgent !== "antigravity" && input.permissionMode ? { permissionMode: input.permissionMode } : {}),
         ...(spawnAgent === "codex" && input.codexExecution ? { codexExecution: input.codexExecution } : {}),
         ...(spawnAgent === "cursor" && input.cursorExecution ? { cursorExecution: input.cursorExecution } : {}),
         ...(spawnAgent === "cursor" && input.cursorLaunchControls ? { cursorLaunchControls: input.cursorLaunchControls } : {}),
+        ...(spawnAgent === "antigravity" && input.antigravityExecution ? { antigravityExecution: input.antigravityExecution } : {}),
+        ...(spawnAgent === "antigravity" && input.antigravityLaunchControls ? { antigravityLaunchControls: input.antigravityLaunchControls } : {}),
     };
 }
 
 const CODEX_CAPABILITY_REJECTION_PATTERN = /^Codex capability selection rejected: (?:expired|unsupported_selection|policy_denied)\.$/;
 const CURSOR_CAPABILITY_REJECTION_PATTERN = /^Cursor capability selection rejected: (?:expired|unsupported_selection|unavailable)\.$/;
+const ANTIGRAVITY_CAPABILITY_REJECTION_PATTERN = /^Antigravity capability selection rejected: (?:expired|unsupported_selection|unavailable)\.$/;
 
 /** Match only the daemon's typed Codex capability rejection envelope. */
 export function isCodexCapabilityRejection(result: SpawnSessionResult, agent: AgentId): boolean {
@@ -348,6 +409,13 @@ export function isCursorCapabilityRejection(result: SpawnSessionResult, agent: A
     return agent === "cursor"
         && result.type === "error"
         && CURSOR_CAPABILITY_REJECTION_PATTERN.test(result.errorMessage.trim());
+}
+
+/** Match only the daemon's typed Antigravity capability rejection envelope. */
+export function isAntigravityCapabilityRejection(result: SpawnSessionResult, agent: AgentId): boolean {
+    return agent === "antigravity"
+        && result.type === "error"
+        && ANTIGRAVITY_CAPABILITY_REJECTION_PATTERN.test(result.errorMessage.trim());
 }
 
 /* ---------- Хелперы ---------- */
@@ -765,6 +833,12 @@ export function NewSessionPage() {
     const [codexExecution, setCodexExecution] = React.useState<CodexExecutionConfig | null>(null);
     const [isCodexCapabilitiesLoading, setIsCodexCapabilitiesLoading] = React.useState(false);
     const [codexCapabilitiesReloadKey, setCodexCapabilitiesReloadKey] = React.useState(0);
+    const [antigravityCapabilities, setAntigravityCapabilities] = React.useState<AntigravityCapabilitiesSnapshot | null>(null);
+    const [antigravityModelId, setAntigravityModelId] = React.useState<string | null>(null);
+    const [antigravityExecution, setAntigravityExecution] = React.useState<AntigravityExecutionConfig | null>(null);
+    const [antigravityLaunchControls, setAntigravityLaunchControls] = React.useState<AntigravityLaunchControls>({ ...DEFAULT_ANTIGRAVITY_LAUNCH_CONTROLS });
+    const [isAntigravityCapabilitiesLoading, setIsAntigravityCapabilitiesLoading] = React.useState(false);
+    const [antigravityCapabilitiesReloadKey, setAntigravityCapabilitiesReloadKey] = React.useState(0);
     const [cursorCapabilities, setCursorCapabilities] = React.useState<CursorCapabilitiesSnapshot | null>(null);
     const [cursorModelId, setCursorModelId] = React.useState<string | null>(null);
     const [cursorExecution, setCursorExecution] = React.useState<CursorExecutionConfig | null>(null);
@@ -819,18 +893,25 @@ export function NewSessionPage() {
     const agentModels = AGENT_OPTIONS.find((a) => a.id === agent)?.models ?? [];
     const agentPermissionModes = agent === "codex" && codexCapabilities?.status === "ready"
         ? codexCapabilities.permissionModes
+        : agent === "antigravity" && antigravityCapabilities?.status === "ready"
+            ? antigravityCapabilities.executionModes
         : agent === "codex"
             ? []
             : getAgentPermissionModes(agent);
     const activeModeLabel = agent === "cursor"
         ? cursorExecutionModeLabel(cursorLaunchControls.executionMode)
-        : getAgentPermissionLabel(agent, mode);
+        : agent === "antigravity"
+            ? antigravityLaunchControls.mode
+            : getAgentPermissionLabel(agent, mode);
     const selectedCodexModel = findCodexModel(codexCapabilities, codexModelId);
     const selectedCursorModel = findCursorModel(cursorCapabilities, cursorModelId);
+    const selectedAntigravityModel = findAntigravityModel(antigravityCapabilities, antigravityModelId);
     const activeModelLabel = agent === "codex"
         ? selectedCodexModel?.displayName ?? t("new.capabilitiesLoading")
         : agent === "cursor"
             ? selectedCursorModel?.displayName ?? t("new.capabilitiesLoading")
+            : agent === "antigravity"
+                ? selectedAntigravityModel?.displayName ?? t("new.capabilitiesLoading")
             : model;
     const hasCodexReasoningSelection = selectedCodexModel
         ? selectedCodexModel.supportedReasoningEfforts.length === 0
@@ -863,21 +944,45 @@ export function NewSessionPage() {
     const isCursorCapabilityUnavailable = agent === "cursor"
         && !isCursorCapabilitiesLoading
         && (!cursorCapabilities || cursorCapabilities.status === "unavailable" || selectedCursorModel === null);
-    const isCapabilityDrivenAgent = agent === "codex" || agent === "cursor";
+    const isAntigravityCatalogReady = antigravityCapabilities?.status === "ready"
+        && selectedAntigravityModel !== null;
+    const isAntigravityCapabilityReady = isAntigravityCatalogReady
+        && antigravityExecution !== null
+        && antigravityExecution.catalogVersion === antigravityCapabilities.catalogVersion
+        && (() => {
+            const expected = selectedAntigravityModel
+                ? createAntigravityExecutionForModel(antigravityCapabilities, selectedAntigravityModel.id, antigravityExecution.reasoningEffort)
+                : null;
+            return expected?.model === antigravityExecution.model
+                && expected?.reasoningEffort === antigravityExecution.reasoningEffort;
+        })()
+        && antigravityCapabilities.executionModes.includes(antigravityLaunchControls.mode)
+        && (!antigravityLaunchControls.dangerouslySkipPermissions || antigravityCapabilities.supportsDangerouslySkipPermissions)
+        && (!antigravityLaunchControls.sandbox || antigravityCapabilities.supportsSandbox);
+    const isAntigravityCapabilityUnavailable = agent === "antigravity"
+        && !isAntigravityCapabilitiesLoading
+        && (!antigravityCapabilities || antigravityCapabilities.status === "unavailable" || selectedAntigravityModel === null);
+    const isCapabilityDrivenAgent = agent === "codex" || agent === "cursor" || agent === "antigravity";
     const isActiveCapabilitiesLoading = agent === "codex"
         ? isCodexCapabilitiesLoading
         : agent === "cursor"
             ? isCursorCapabilitiesLoading
+            : agent === "antigravity"
+                ? isAntigravityCapabilitiesLoading
             : false;
     const isActiveCapabilityUnavailable = agent === "codex"
         ? isCodexCapabilityUnavailable
         : agent === "cursor"
             ? isCursorCapabilityUnavailable
+            : agent === "antigravity"
+                ? isAntigravityCapabilityUnavailable
             : false;
     const isActiveCapabilityCatalogReady = agent === "codex"
         ? isCodexCatalogReady
         : agent === "cursor"
             ? isCursorCatalogReady
+            : agent === "antigravity"
+                ? isAntigravityCatalogReady
             : true;
     const reasoningControlState = getReasoningControlState({
         agent,
@@ -886,6 +991,17 @@ export function NewSessionPage() {
         selectedModel: selectedCodexModel,
         hasReasoningSelection: hasCodexReasoningSelection,
     });
+    const activeReasoningControlState = agent === "antigravity"
+        ? getAntigravityReasoningControlState(
+            isAntigravityCapabilitiesLoading,
+            antigravityCapabilities,
+            selectedAntigravityModel,
+            Boolean(antigravityExecution?.reasoningEffort),
+        )
+        : reasoningControlState;
+    const activeReasoningEffort = agent === "antigravity"
+        ? antigravityExecution?.reasoningEffort
+        : codexExecution?.reasoningEffort;
 
     const mostRecentDirectoryProject = directoryProjects?.reduce<DirectoryProject | null>((mostRecent, project) => {
         if (mostRecent === null || project.lastUsedAt > mostRecent.lastUsedAt) return project;
@@ -1020,6 +1136,63 @@ export function NewSessionPage() {
         return () => { isStale = true; };
     }, [activeMachineId, agent, cursorCapabilitiesReloadKey, cursorResumePreset]);
 
+    // Antigravity stays selectable when discovery is unavailable so the user
+    // can explicitly retry. Spawn remains closed until an exact selection is ready.
+    React.useEffect(() => {
+        if (!activeMachineId) {
+            setAntigravityCapabilities(null);
+            setAntigravityModelId(null);
+            setAntigravityExecution(null);
+            setAntigravityLaunchControls({ ...DEFAULT_ANTIGRAVITY_LAUNCH_CONTROLS });
+            setIsAntigravityCapabilitiesLoading(false);
+            return;
+        }
+        let isStale = false;
+        setIsAntigravityCapabilitiesLoading(true);
+        setAntigravityCapabilities(null);
+        setAntigravityModelId(null);
+        setAntigravityExecution(null);
+        void machineGetAntigravityCapabilities(activeMachineId, antigravityCapabilitiesReloadKey > 0)
+            .then((capabilities) => {
+                if (isStale) return;
+                setAntigravityCapabilities(capabilities);
+                if (capabilities.status !== "ready") {
+                    setAntigravityModelId(null);
+                    setAntigravityExecution(null);
+                    setAntigravityLaunchControls({ ...DEFAULT_ANTIGRAVITY_LAUNCH_CONTROLS });
+                    return;
+                }
+                const model = capabilities.models.find((item) => item.isDefault) ?? capabilities.models[0] ?? null;
+                setAntigravityModelId(model?.id ?? null);
+                setAntigravityLaunchControls((current) => {
+                    const mode = capabilities.executionModes.includes(current.mode)
+                        ? current.mode
+                        : capabilities.executionModes[0] ?? "default";
+                    return {
+                        mode,
+                        dangerouslySkipPermissions: capabilities.supportsDangerouslySkipPermissions
+                            ? current.dangerouslySkipPermissions
+                            : false,
+                        sandbox: capabilities.supportsSandbox ? current.sandbox : false,
+                    };
+                });
+                setAntigravityExecution(model
+                    ? createAntigravityExecutionForModel(capabilities, model.id)
+                    : null);
+            })
+            .catch(() => {
+                if (isStale) return;
+                setAntigravityCapabilities(null);
+                setAntigravityModelId(null);
+                setAntigravityExecution(null);
+                setAntigravityLaunchControls({ ...DEFAULT_ANTIGRAVITY_LAUNCH_CONTROLS });
+            })
+            .finally(() => {
+                if (!isStale) setIsAntigravityCapabilitiesLoading(false);
+            });
+        return () => { isStale = true; };
+    }, [activeMachineId, antigravityCapabilitiesReloadKey]);
+
     // Project rows are daemon-owned machine state, never session metadata.
     React.useEffect(() => {
         if (!activeMachineId) {
@@ -1097,6 +1270,20 @@ export function NewSessionPage() {
         if (id !== "cursor") {
             setMode(getDefaultPermissionMode(id));
         }
+        if (id === "antigravity" && antigravityCapabilities?.status === "ready") {
+            setAntigravityLaunchControls((current) => ({
+                mode: antigravityCapabilities.executionModes.includes(current.mode)
+                    ? current.mode
+                    : antigravityCapabilities.executionModes[0] ?? "default",
+                dangerouslySkipPermissions: antigravityCapabilities.supportsDangerouslySkipPermissions
+                    ? current.dangerouslySkipPermissions
+                    : false,
+                sandbox: antigravityCapabilities.supportsSandbox ? current.sandbox : false,
+            }));
+            setAntigravityExecution(antigravityModelId
+                ? createAntigravityExecutionForModel(antigravityCapabilities, antigravityModelId)
+                : null);
+        }
     };
 
     const selectDir = (path: string, displayPath?: string) => {
@@ -1159,6 +1346,10 @@ export function NewSessionPage() {
         }
         if (agent === "cursor") {
             setCursorCapabilitiesReloadKey((value) => value + 1);
+            return;
+        }
+        if (agent === "antigravity") {
+            setAntigravityCapabilitiesReloadKey((value) => value + 1);
         }
     };
 
@@ -1191,10 +1382,12 @@ export function NewSessionPage() {
         }
 
         if (navigationState.zenTaskId) linkZenTaskSession(navigationState.zenTaskId, sessionId);
+        if (agent === "unknown") return;
         const permissionMode = agent === "cursor"
+            || agent === "antigravity"
             ? undefined
             : normalizeAgentPermissionMode(agent, mode);
-        const modelState = agent === "codex" || agent === "cursor"
+        const modelState = agent === "codex" || agent === "cursor" || agent === "antigravity"
             ? {}
             : modelOverrideState(model, hasExplicitModelSelection);
         if (navigationState.zenTaskTitle && !resume) {
@@ -1242,6 +1435,14 @@ export function NewSessionPage() {
                 setIsCursorCapabilitiesLoading(true);
                 setCursorCapabilitiesReloadKey((value) => value + 1);
             }
+            if (isAntigravityCapabilityRejection(result, options.agent ?? "claude")) {
+                setAntigravityCapabilities(null);
+                setAntigravityModelId(null);
+                setAntigravityExecution(null);
+                setAntigravityLaunchControls({ ...DEFAULT_ANTIGRAVITY_LAUNCH_CONTROLS });
+                setIsAntigravityCapabilitiesLoading(true);
+                setAntigravityCapabilitiesReloadKey((value) => value + 1);
+            }
             if (resume && !isNavigationResume) {
                 setResumeError(result.errorMessage);
                 setResumeRetryItem(resume);
@@ -1278,7 +1479,8 @@ export function NewSessionPage() {
             toast.error(t("new.capabilitiesUnavailable"));
             return;
         }
-        const permissionMode = spawnAgent === "cursor"
+        if (spawnAgent === "unknown") return;
+        const permissionMode = spawnAgent === "cursor" || spawnAgent === "antigravity"
             ? undefined
             : normalizeAgentPermissionMode(spawnAgent, mode);
         if (spawnAgent === "codex" && !isCodexCapabilityReady) {
@@ -1286,6 +1488,10 @@ export function NewSessionPage() {
             return;
         }
         if (spawnAgent === "cursor" && !isCursorCapabilityReady) {
+            toast.error(t("new.capabilitiesUnavailable"));
+            return;
+        }
+        if (spawnAgent === "antigravity" && !isAntigravityCapabilityReady) {
             toast.error(t("new.capabilitiesUnavailable"));
             return;
         }
@@ -1306,6 +1512,8 @@ export function NewSessionPage() {
                     : [],
                 cursorExecution,
                 cursorLaunchControls,
+                antigravityExecution,
+                antigravityLaunchControls,
                 resume: selectedResume,
             });
             const result = await machineSpawnNewSession(options);
@@ -1372,8 +1580,14 @@ export function NewSessionPage() {
                         {AGENT_OPTIONS.map((a) => (
                             <button key={a.id} onClick={() => selectAgent(a.id)} disabled={!a.isAvailable}
                                 aria-pressed={agent === a.id}
-                                aria-describedby={!a.isAvailable ? "deferred-provider-note" : undefined}
-                                data-provider-availability={a.isAvailable ? "available" : "deferred"}
+                                aria-describedby={a.id === "claude" ? "deferred-provider-note" : undefined}
+                                data-provider-availability={a.id === "antigravity"
+                                    ? isAntigravityCapabilitiesLoading
+                                        ? "capability-loading"
+                                        : isAntigravityCapabilityReady
+                                            ? "available"
+                                            : "capability-unavailable"
+                                    : a.isAvailable ? "available" : "deferred"}
                                 className={`flex items-center gap-2.5 rounded-xl border bg-card p-3 text-left transition-[border-color,box-shadow,opacity,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100 ${agent === a.id ? "border-accent ring-[3px] ring-accent/10" : "border-border"}`}>
                                 <AgentIcon agent={a.id} className="size-[30px] rounded-lg text-[11px]" />
                                 <span className="flex flex-col">
@@ -1426,7 +1640,7 @@ export function NewSessionPage() {
                             <button
                                 type="button"
                                 onClick={(event) => openSheet("permission", event?.currentTarget ?? null)}
-                                disabled={(agent === "codex" && codexCapabilities?.status !== "ready") || (agent === "cursor" && cursorCapabilities?.status !== "ready")}
+                                disabled={(agent === "codex" && codexCapabilities?.status !== "ready") || (agent === "cursor" && cursorCapabilities?.status !== "ready") || (agent === "antigravity" && antigravityCapabilities?.status !== "ready")}
                                 aria-label={`${t(getPrimarySelectorLabelKey(agent))}: ${activeModeLabel}`}
                                 aria-haspopup="dialog"
                                 aria-expanded={sheetKind === "permission"}
@@ -1441,25 +1655,25 @@ export function NewSessionPage() {
                                 <span>{t("new.reasoningShort")}</span>
                                 <span>{t("new.reasoningLong")}</span>
                             </span>
-                            {reasoningControlState === "unsupported" ? (
+                            {activeReasoningControlState === "unsupported" ? (
                                 <div role="status" className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-dashed border-border bg-card px-2.5 font-mono text-[11px] text-muted-foreground">
                                     <span className="min-w-0 truncate">{t("new.reasoningUnsupported")}</span>
                                 </div>
-                            ) : reasoningControlState === "loading" ? (
+                            ) : activeReasoningControlState === "loading" ? (
                                 <div aria-busy="true" className="flex min-h-11 min-w-0 items-center gap-1.5 rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] text-muted-foreground">
                                     <Loader2 className="size-3 shrink-0 animate-spin" />
                                     <span className="min-w-0 truncate">{t("new.capabilitiesLoading")}</span>
                                 </div>
-                            ) : reasoningControlState === "unavailable" ? (
+                            ) : activeReasoningControlState === "unavailable" ? (
                                 <button type="button" onClick={retryActiveCapabilities}
                                     className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-destructive/40 bg-destructive/[0.06] px-2.5 font-mono text-[11px] text-destructive transition-[border-color,background-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]">
                                     <span className="min-w-0 truncate">{t("new.capabilitiesRetry")}</span>
                                 </button>
-                            ) : reasoningControlState === "no-options" ? (
+                            ) : activeReasoningControlState === "no-options" ? (
                                 <div role="status" className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-dashed border-border bg-card px-2.5 font-mono text-[11px] text-muted-foreground">
                                     <span className="min-w-0 truncate">{t("new.reasoningNoOptions")}</span>
                                 </div>
-                            ) : reasoningControlState === "choose-required" ? (
+                            ) : activeReasoningControlState === "choose-required" ? (
                                 <button
                                     type="button"
                                     onClick={(event) => openSheet("reasoning", event?.currentTarget ?? null)}
@@ -1475,13 +1689,13 @@ export function NewSessionPage() {
                                 <button
                                     type="button"
                                     onClick={(event) => openSheet("reasoning", event?.currentTarget ?? null)}
-                                    disabled={reasoningControlState !== "ready"}
-                                    aria-label={`${t("new.reasoning")}: ${codexExecution?.reasoningEffort ?? ""}`}
+                                    disabled={activeReasoningControlState !== "ready"}
+                                    aria-label={`${t("new.reasoning")}: ${activeReasoningEffort ?? ""}`}
                                     aria-haspopup="dialog"
                                     aria-expanded={sheetKind === "reasoning"}
                                     aria-controls="new-session-sheet"
                                     className="flex min-h-11 min-w-0 items-center rounded-[10px] border border-input bg-muted px-2.5 font-mono text-[11px] transition-[background-color,border-color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96] disabled:opacity-50">
-                                    <span className="min-w-0 truncate">{codexExecution?.reasoningEffort}</span>
+                                    <span className="min-w-0 truncate">{activeReasoningEffort}</span>
                                     <ChevronDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
                                 </button>
                             )}
@@ -1535,14 +1749,14 @@ export function NewSessionPage() {
                 )}
 
                 {/* resume: bottom-sheet со списком прошлых сессий агента (RPC list-agent-sessions) */}
-                <button onClick={(event) => openSheet("resume", event?.currentTarget ?? null)} disabled={!machine || (agent === "codex" && !isCodexCapabilityReady) || (agent === "cursor" && !isCursorCapabilityReady)}
+                <button onClick={(event) => openSheet("resume", event?.currentTarget ?? null)} disabled={!machine || (agent === "codex" && !isCodexCapabilityReady) || (agent === "cursor" && !isCursorCapabilityReady) || (agent === "antigravity" && !isAntigravityCapabilityReady)}
                     className="flex h-11 items-center justify-center gap-2 rounded-[10px] border border-dashed border-border font-mono text-[11.5px] text-muted-foreground transition-[background-color,border-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.96]">
                     <RotateCcw className="size-3" /> {t("new.resume", { agent })}
                 </button>
             </main>
 
             <footer className="px-5 pb-[max(14px,env(safe-area-inset-bottom))] pt-3">
-                <button onClick={() => void spawn()} disabled={!machine || activeDir === "" || isSpawning || !isResumePresetCompatible || (agent === "codex" && !isCodexCapabilityReady) || (agent === "cursor" && !isCursorCapabilityReady)}
+                <button onClick={() => void spawn()} disabled={!machine || activeDir === "" || isSpawning || !isResumePresetCompatible || (agent === "codex" && !isCodexCapabilityReady) || (agent === "cursor" && !isCursorCapabilityReady) || (agent === "antigravity" && !isAntigravityCapabilityReady)}
                     className="h-[52px] w-full overflow-hidden rounded-xl bg-accent px-3 text-base font-semibold text-accent-foreground disabled:opacity-50">
                     {isSpawning
                         ? t("new.spawning")
@@ -1635,6 +1849,15 @@ export function NewSessionPage() {
                                                     setCursorModelId(item.id);
                                                     setCursorExecution(createCursorExecutionForModel(cursorCapabilities, item.id));
                                                     setSheet(null);
+                                            }} />
+                                        ))
+                                    : agent === "antigravity" && antigravityCapabilities?.status === "ready" && antigravityCapabilities.catalogVersion
+                                        ? antigravityCapabilities.models.map((item) => (
+                                            <SheetRow key={item.id} isActive={item.id === antigravityModelId} label={item.displayName} showSelectionIndicator singleLine
+                                                onClick={() => {
+                                                    setAntigravityModelId(item.id);
+                                                    setAntigravityExecution(createAntigravityExecutionForModel(antigravityCapabilities, item.id));
+                                                    setSheet(null);
                                                 }} />
                                         ))
                                     : agentModels.map((item) => (
@@ -1647,7 +1870,7 @@ export function NewSessionPage() {
                                     ))}
                             </div>
                             <div id="model-sheet-note" className="shrink-0 border-t border-border bg-card px-[18px] py-3 font-mono text-[9.5px] leading-[1.4] text-muted-foreground">
-                                {t("new.modelDrawerNote", { count: agent === "codex" ? codexCapabilities?.models.length ?? 0 : agent === "cursor" ? cursorCapabilities?.models.length ?? 0 : agentModels.length })}
+                                {t("new.modelDrawerNote", { count: agent === "codex" ? codexCapabilities?.models.length ?? 0 : agent === "cursor" ? cursorCapabilities?.models.length ?? 0 : agent === "antigravity" ? antigravityCapabilities?.models.length ?? 0 : agentModels.length })}
                             </div>
                         </>
                     )}
@@ -1670,6 +1893,48 @@ export function NewSessionPage() {
                                         }}
                                     />
                                 ))
+                            ) : agent === "antigravity" ? (
+                                <>
+                                    {agentPermissionModes.map((permission) => (
+                                        <SheetRow key={permission} isActive={permission === antigravityLaunchControls.mode} label={permission} showSelectionIndicator
+                                            onClick={() => {
+                                                setAntigravityLaunchControls((current) => ({ ...current, mode: permission as AntigravityExecutionMode }));
+                                                setSheet(null);
+                                            }} />
+                                    ))}
+                                    {(antigravityCapabilities?.supportsDangerouslySkipPermissions || antigravityCapabilities?.supportsSandbox) && (
+                                        <div className="border-t border-border px-[18px] py-3">
+                                            {antigravityCapabilities.supportsDangerouslySkipPermissions && (
+                                                <label className="flex min-h-11 items-center gap-3 font-mono text-[11px] text-foreground">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={antigravityLaunchControls.dangerouslySkipPermissions}
+                                                        onChange={(event) => setAntigravityLaunchControls((current) => ({ ...current, dangerouslySkipPermissions: event.target.checked }))}
+                                                        className="size-4 accent-accent"
+                                                    />
+                                                    <span className="min-w-0 flex-1">dangerouslySkipPermissions</span>
+                                                </label>
+                                            )}
+                                            {antigravityCapabilities.supportsSandbox && (
+                                                <>
+                                                <label className="flex min-h-11 items-center gap-3 font-mono text-[11px] text-foreground">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={antigravityLaunchControls.sandbox}
+                                                        onChange={(event) => setAntigravityLaunchControls((current) => ({ ...current, sandbox: event.target.checked }))}
+                                                        className="size-4 accent-accent"
+                                                    />
+                                                    <span className="min-w-0 flex-1">{t("new.sandbox")}</span>
+                                                </label>
+                                                <p className="pl-7 font-mono text-[10px] leading-snug text-muted-foreground">{t("new.sandboxHint")}</p>
+                                                </>
+                                            )}
+                                            {antigravityCapabilities.supportsDangerouslySkipPermissions && (
+                                                <p role="alert" className="mt-1 pl-7 font-mono text-[10px] leading-snug text-destructive">{t("permission.danger")}</p>
+                                            )}
+                                        </div>
+                                    )}
+                                </>
                             ) : agentPermissionModes.map((permission) => (
                                 <SheetRow key={permission} isActive={permission === mode} label={getAgentPermissionLabel(agent, permission)} showSelectionIndicator
                                     onClick={() => { setMode(permission); setSheet(null); }} />
@@ -1685,6 +1950,20 @@ export function NewSessionPage() {
                                         const nextExecution = createCodexExecutionForModel(codexCapabilities, selectedCodexModel.id, reasoningEffort);
                                         if (!nextExecution) return;
                                         setCodexExecution(nextExecution);
+                                        setSheet(null);
+                                    }} />
+                            ))}
+                        </>
+                    )}
+                    {sheetKind === "reasoning" && agent === "antigravity" && selectedAntigravityModel && selectedAntigravityModel.supportedReasoningEfforts.length > 0 && antigravityCapabilities?.catalogVersion && (
+                        <>
+                            <SheetHeader title={t("new.reasoningTitle")} tag={selectedAntigravityModel.displayName} />
+                            {selectedAntigravityModel.supportedReasoningEfforts.map((reasoningEffort) => (
+                                <SheetRow key={reasoningEffort} isActive={reasoningEffort === antigravityExecution?.reasoningEffort} label={reasoningEffort} showSelectionIndicator
+                                    onClick={() => {
+                                        const nextExecution = createAntigravityExecutionForModel(antigravityCapabilities, selectedAntigravityModel.id, reasoningEffort);
+                                        if (!nextExecution) return;
+                                        setAntigravityExecution(nextExecution);
                                         setSheet(null);
                                     }} />
                             ))}
