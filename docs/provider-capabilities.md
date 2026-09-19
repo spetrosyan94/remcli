@@ -9,6 +9,7 @@
 - ✅ официальный provider-контракт интегрирован и принят в Remcli;
 - 🟡 работает частично или требует повторной реальной приёмки;
 - 🛠 находится в текущей реализации;
+- 📋 спроектировано и запланировано, но ещё не реализовано;
 - ⏸ отложено до отдельной provider-specific wave;
 - ❌ нет публичного provider-контракта или функция не поддерживается.
 
@@ -21,8 +22,8 @@
 | **Resume того же native context** | ✅ `thread/resume` | ✅ `session/load` | 🟡 exact `--conversation`, без свежего real gate | 🟡 только существующие wrapper/SDK paths |
 | **История диалога в Remcli** | 🟡 user/assistant text | 🟡 Remcli transcript или ACP chunks | 🟡 encrypted Remcli transcript; официальный hook `transcriptPath` ещё не интегрирован | 🟡 user/assistant text, UI выключен |
 | **Stop и cleanup** | ✅ | ✅ | ✅ deterministic/product gates | 🟡 без real provider gate |
-| **Один live chat в terminal и Remcli** | ✅ общий daemon-owned thread и remote TUI | ❌ Cursor не публикует attach/fanout API | 🟡 официальный sidecar/hooks bridge возможен, но не реализован | ⏸ |
-| **Ввод и с terminal, и с телефона** | ✅ | ❌ нет официального concurrent writer contract | 🟡 `agentapi send-message` существует; ordering/event flow ещё не принят | ⏸ |
+| **Один live chat в terminal и Remcli** | ✅ общий daemon-owned thread и remote TUI | 📋 terminal UI Remcli над одним ACP writer | 📋 сначала third-party Remote Control API check, затем terminal UI Remcli fallback | ⏸ |
+| **Ввод и с terminal, и с телефона** | ✅ | 📋 один daemon-owned ACP writer | 📋 один provider writer; transport выбирается после official API check | ⏸ |
 | **Актуальные модели** | ✅ dynamic app-server catalog | ✅ dynamic ACP catalog | ✅ account-visible `agy models` | ⏸ нет принятого dynamic catalog |
 | **Reasoning выбранной модели** | ✅ provider-advertised efforts | ❌ ACP не публикует selector | ✅ provider-advertised efforts | ⏸ |
 | **Уровень доступа** | ✅ native sandbox/approval policy | ✅ `Agent / Plan / Ask` | ✅ native launch modes | 🟡 static modes, UI выключен |
@@ -43,12 +44,14 @@
   `rejected` / `cancelled`. Provider `toolCallId` и исходный payload не
   публикуются в зашифрованное session state.
 - Terminal/phone continuity добавляется только через официальный structured
-  transport. Remcli не использует ANSI scraping или два writer-процесса ради
-  формального совпадения функций.
+  transport либо через [общий daemon-owned live chat](agent-architecture/shared-live-chat-architecture.md).
+  Remcli не использует ANSI scraping или два writer-процесса ради формального
+  совпадения функций.
 - Antigravity Remote Control синхронизирует native TUI только с web-интерфейсом
-  Google. Для Remcli исследуется официальный extension path: sidecar отправляет
-  prompt через `agentapi`, а hooks предоставляют `conversationId` и
-  `transcriptPath`. Документированного API для streamed deltas и ответов на
+  Google. Sidecars/`agentapi` документированы для Antigravity 2.0 и не считаются
+  transport установленного `agy` CLI. CLI hooks могут предоставить
+  `conversationId` и `transcriptPath`, но не заменяют prompt/event channel.
+  Документированного third-party API для streamed deltas, prompts и ответов на
   approvals/questions пока нет.
 
 ## Проверки

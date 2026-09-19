@@ -24,6 +24,7 @@ state или UX-контракт, обновлять соответствующ�
 | Документ | Что описывает |
 |----------|---------------|
 | [provider-capabilities.md](provider-capabilities.md) | Сводный статус provider integrations: lifecycle, resume, terminal/phone continuity, models, approvals, forms и acceptance gates |
+| [agent-architecture/shared-live-chat-architecture.md](agent-architecture/shared-live-chat-architecture.md) | Общий daemon-owned live chat для providers без официального multi-client TUI attach |
 | [agent-architecture/codex-chatgpt-architecture.md](agent-architecture/codex-chatgpt-architecture.md) | Codex app-server, native resume/TUI и capability-driven model/reasoning contract |
 | [agent-architecture/cursor-cli-architecture.md](agent-architecture/cursor-cli-architecture.md) | Cursor ACP: session lifecycle, exact models, resume, permissions и ownership |
 | [agent-architecture/antigravity-cli-architecture.md](agent-architecture/antigravity-cli-architecture.md) | Antigravity `agy`: stream-json, dynamic account catalog, exact conversation resume и controls |

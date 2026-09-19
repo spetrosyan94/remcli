@@ -85,6 +85,17 @@ Remcli поэтому хранит завершённые Antigravity turns от
 replay не создаёт дубликаты. Historical assistant messages не меняют
 `executionOutcome` новой сессии.
 
+## Terminal/phone continuity
+
+Перед реализацией Remcli повторно проверит официальный third-party Remote
+Control attach/event API. Штатный Remote Control работает только с Google UI и
+не считается transport для Remcli. Если third-party event stream будет
+недоступен, local terminal frontend и phone/web будут работать поверх одного
+daemon-owned `agy stream-json` по
+[общему single-writer контракту](shared-live-chat-architecture.md). Штатный TUI
+не будет зеркалироваться через ANSI/PTY, а второй writer для той же conversation
+не будет запускаться.
+
 ## Матрица поддержки
 
 | Provider | Статус |
