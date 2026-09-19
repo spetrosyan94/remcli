@@ -87,6 +87,51 @@
         0% { opacity: 0; }
         100% { opacity: 1; }
     }
+    @keyframes rcEcho {
+        0% { opacity: 0; transform: translateX(-8px); }
+        27.15% { opacity: 0.26; transform: translateX(0); }
+        100% { opacity: 0.26; transform: translateX(0); }
+    }
+    @keyframes rcMain {
+        0% { opacity: 0; transform: translateX(7px); }
+        27.15% { opacity: 1; transform: translateX(0); }
+        100% { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes rcCur {
+        0%, 28.57%, 42.86%, 57.14%, 71.43% { opacity: 0; }
+        35.71%, 50%, 64.29%, 78.57%, 100% { opacity: 1; }
+    }
+}
+
+.empty-state-logo path:first-of-type {
+    animation: rcEcho 1400ms var(--ease-out) both;
+}
+
+.empty-state-logo path:nth-of-type(2) {
+    animation: rcMain 1400ms var(--ease-out) both;
+}
+
+.empty-state-logo rect {
+    animation: rcCur 1400ms steps(1) both, blink 1200ms steps(2) 1400ms infinite;
+}
+
+[data-home-content][aria-hidden="true"] .empty-state-logo path,
+[data-home-content][aria-hidden="true"] .empty-state-logo rect {
+    animation-play-state: paused;
+}
+
+[data-home-loading],
+[data-home-content] {
+    transition-property: opacity, visibility;
+    transition-duration: var(--dur-std), 0s;
+    transition-timing-function: var(--ease-out), linear;
+    transition-delay: 0s, 0s;
+}
+
+[data-home-loading][aria-hidden="true"],
+[data-home-content][aria-hidden="true"] {
+    visibility: hidden;
+    transition-delay: 0s, var(--dur-std);
 }
 
 @layer base {
@@ -170,6 +215,16 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
+    [data-home-loading],
+    [data-home-content] {
+        transition-duration: var(--dur-micro), 0s !important;
+    }
+
+    [data-home-loading][aria-hidden="true"],
+    [data-home-content][aria-hidden="true"] {
+        transition-delay: 0s, var(--dur-micro) !important;
+    }
+
     [data-permission-entry] {
         animation: remcli-reduced-fade-in var(--dur-micro) var(--ease-out) both !important;
         transform: none !important;
@@ -260,6 +315,16 @@ button {
 
     [data-slot="skeleton"]::before {
         background-image: none !important;
+    }
+
+    .empty-state-logo path:first-of-type,
+    .empty-state-logo path:nth-of-type(2) {
+        animation: none !important;
+        transform: none !important;
+    }
+
+    .empty-state-logo rect {
+        animation: none !important;
     }
 
     .animate-blink,

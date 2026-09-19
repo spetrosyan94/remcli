@@ -60,6 +60,42 @@ test("reduced motion keeps Command Palette and Zen menu animations opacity-only"
     expectOpacityOnly(await readAnimationReport(page, '[data-slot="dropdown-menu-content"]'));
 });
 
+test("reduced motion keeps Home crossfade opacity-only and the empty logo static", async ({ page }, testInfo) => {
+    test.skip(!testInfo.project.name.includes("mobile"), "The Home loading surface exists only in MobileHome.");
+    await openReducedMotionFixture(page, "/?fixtures=1");
+    await page.evaluate(async () => {
+        const { useProtocolStore } = await import("/src/lib/protocol/store.ts");
+        const state = useProtocolStore.getState();
+        state.replaceSessions([]);
+        state.replaceMachines([]);
+        state.setConnectionStatus("connecting");
+    });
+
+    const content = page.locator("[data-home-content]");
+    await expect(content).toHaveAttribute("aria-hidden", "true");
+    await page.evaluate(async () => {
+        const { useProtocolStore } = await import("/src/lib/protocol/store.ts");
+        useProtocolStore.getState().setConnectionStatus("connected");
+    });
+    await expect(content).toHaveAttribute("aria-hidden", "false", { timeout: 2_000 });
+
+    const report = await content.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const logoPath = element.querySelector(".empty-state-logo path");
+        const logoStyle = logoPath ? getComputedStyle(logoPath) : null;
+        return {
+            transitionDuration: style.transitionDuration,
+            transitionProperty: style.transitionProperty,
+            logoAnimationName: logoStyle?.animationName ?? null,
+            logoTransform: logoStyle?.transform ?? null,
+        };
+    });
+    expect(report.transitionDuration).toContain("0.12s");
+    expect(report.transitionProperty).toContain("opacity");
+    expect(report.logoAnimationName).toBe("none");
+    expect(report.logoTransform).toMatch(/^(none|matrix\(1, 0, 0, 1, 0, 0\))$/);
+});
+
 test("reduced motion keeps chat permission entry opacity-only", async ({ page }) => {
     await openReducedMotionFixture(page, "/session/fx-chat?fixtures=1");
 

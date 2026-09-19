@@ -267,46 +267,58 @@ function MobileHome({ groups, allSessionCount, controls, triage, conciergeState 
             <main className="flex flex-1 flex-col gap-2 overflow-y-auto px-4">
                 {banner && <ConnectionBanner state={banner} />}
                 <ConciergeCard state={conciergeState} />
-                {showSkeleton ? (
-                    <div className="flex flex-col gap-2 pt-1.5">
+                <div className="relative min-h-0">
+                    <div
+                        data-home-loading
+                        aria-hidden={!showSkeleton}
+                        className={`flex flex-col gap-2 pt-1.5 transition-opacity duration-[var(--dur-std)] ease-[var(--ease-out)] motion-reduce:duration-[var(--dur-micro)] ${showSkeleton ? "relative opacity-100" : "pointer-events-none absolute inset-x-0 top-0 opacity-0"}`}
+                    >
                         <Skeleton className="h-4 w-40 bg-muted" />
                         {[0, 1, 2].map((index) => (
                             <Skeleton key={index} className="h-[66px] rounded-xl bg-muted" />
                         ))}
                     </div>
-                ) : isEmpty ? (
-                    <div className="mt-10 flex flex-col gap-4">
-                        <EmptyState
-                            title={t("home.empty.title")}
-                            hint={t("home.empty.hint")}
-                            action={
-                                <button
-                                    onClick={() => navigate("/new")}
-                                    className="h-11 rounded-[9px] bg-primary px-4 text-[13px] font-semibold text-primary-foreground transition-transform active:scale-[0.96]"
-                                >
-                                    {t("home.newSession")}
-                                </button>
-                            }
-                        />
-                    </div>
-                ) : (
-                    <>
-                        <HomeSessionTriageControls
-                            filter={triage.filter}
-                            onFilterChange={triage.onFilterChange}
-                            quickResumeCandidate={triage.quickResumeCandidate}
-                            isResuming={triage.isResuming}
-                            onQuickResume={triage.onQuickResume}
-                        />
-                        {isFilterEmpty ? (
-                            <div className="py-10 text-center" role="status">
-                                <p className="font-mono text-[11px] text-muted-foreground">{t("home.filter.empty")}</p>
+                    <div
+                        data-home-content
+                        aria-hidden={showSkeleton}
+                        inert={showSkeleton || undefined}
+                        className={`transition-opacity duration-[var(--dur-std)] ease-[var(--ease-out)] motion-reduce:duration-[var(--dur-micro)] ${showSkeleton ? "pointer-events-none absolute inset-x-0 top-0 opacity-0" : "relative opacity-100"}`}
+                    >
+                        {isEmpty ? (
+                            <div className="mt-10 flex flex-col gap-4">
+                                <EmptyState
+                                    title={t("home.empty.title")}
+                                    hint={t("home.empty.hint")}
+                                    action={
+                                        <button
+                                            onClick={() => navigate("/new")}
+                                            className="h-11 rounded-[9px] bg-primary px-4 text-[13px] font-semibold text-primary-foreground transition-transform active:scale-[0.96]"
+                                        >
+                                            {t("home.newSession")}
+                                        </button>
+                                    }
+                                />
                             </div>
-                        ) : groups.map((group, index) => (
-                            <MachineSection key={group.key} group={group} controls={controls} isFirst={index === 0} />
-                        ))}
-                    </>
-                )}
+                        ) : (
+                            <>
+                                <HomeSessionTriageControls
+                                    filter={triage.filter}
+                                    onFilterChange={triage.onFilterChange}
+                                    quickResumeCandidate={triage.quickResumeCandidate}
+                                    isResuming={triage.isResuming}
+                                    onQuickResume={triage.onQuickResume}
+                                />
+                                {isFilterEmpty ? (
+                                    <div className="py-10 text-center" role="status">
+                                        <p className="font-mono text-[11px] text-muted-foreground">{t("home.filter.empty")}</p>
+                                    </div>
+                                ) : groups.map((group, index) => (
+                                    <MachineSection key={group.key} group={group} controls={controls} isFirst={index === 0} />
+                                ))}
+                            </>
+                        )}
+                    </div>
+                </div>
             </main>
 
             {/* FAB */}
