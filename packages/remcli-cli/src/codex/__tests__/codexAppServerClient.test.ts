@@ -1069,6 +1069,117 @@ describe('CodexAppServerClient websocket transport', () => {
         await client.disconnect();
     });
 
+    it('normalizes agent message deltas and completion with one stable message id', async () => {
+        const { client, ws } = await connectFakeClient();
+        const handler = vi.fn();
+        client.setHandler(handler);
+
+        const startedTurnPromise = client.beginTurn({
+            threadId: 'thread-1',
+            prompt: 'Тест',
+            sandbox: 'workspace-write',
+            approvalPolicy: 'on-request',
+        });
+        await waitForSent(ws, 3);
+        const startTurn = JSON.parse(ws.sent[2]) as { id: number };
+        ws.message(JSON.stringify({ id: startTurn.id, result: { turn: { id: 'turn-1' } } }));
+        const startedTurn = await startedTurnPromise;
+        await vi.waitFor(() => expect(client.getActiveTurnId()).toBe('turn-1'));
+
+        ws.message(JSON.stringify({
+            method: 'item/agentMessage/delta',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                itemId: 'agent-item-1',
+                delta: 'Ответ',
+            },
+        }));
+        ws.message(JSON.stringify({
+            method: 'item/completed',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                item: { id: 'agent-item-1', type: 'agentMessage', text: 'Ответ' },
+            },
+        }));
+        ws.message(JSON.stringify({
+            method: 'turn/completed',
+            params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+        }));
+
+        await expect(startedTurn.completion).resolves.toEqual({ content: [], isError: false });
+        expect(handler.mock.calls.filter(([event]) => event.type === 'agent_message')).toEqual([
+            [{
+                type: 'agent_message',
+                message: 'Ответ',
+                origin: 'live',
+                messageId: 'agent-item-1',
+                streamState: 'delta',
+            }],
+            [{
+                type: 'agent_message',
+                message: 'Ответ',
+                origin: 'live',
+                messageId: 'agent-item-1',
+                streamState: 'final',
+            }],
+        ]);
+
+        await client.disconnect();
+    });
+
+    it('ignores agent message deltas from a late or foreign turn', async () => {
+        const { client, ws } = await connectFakeClient();
+        const handler = vi.fn();
+        client.setHandler(handler);
+
+        ws.message(JSON.stringify({ method: 'thread/started', params: { thread: { id: 'thread-1' } } }));
+        ws.message(JSON.stringify({ method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-2' } } }));
+        ws.message(JSON.stringify({
+            method: 'item/agentMessage/delta',
+            params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'item-1', delta: 'stale' },
+        }));
+        ws.message(JSON.stringify({
+            method: 'item/agentMessage/delta',
+            params: { threadId: 'thread-1', turnId: 'turn-2', itemId: 'item-1', delta: 'active' },
+        }));
+        ws.message(JSON.stringify({
+            method: 'item/completed',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                item: { id: 'stale-item', type: 'agentMessage', text: 'stale' },
+            },
+        }));
+        ws.message(JSON.stringify({
+            method: 'item/completed',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'turn-2',
+                item: { id: 'active-item', type: 'agentMessage', text: 'active' },
+            },
+        }));
+
+        expect(handler.mock.calls.filter(([event]) => event.type === 'agent_message')).toEqual([
+            [{
+                type: 'agent_message',
+                message: 'active',
+                origin: 'live',
+                messageId: 'item-1',
+                streamState: 'delta',
+            }],
+            [{
+                type: 'agent_message',
+                message: 'active',
+                origin: 'live',
+                messageId: 'active-item',
+                streamState: 'final',
+            }],
+        ]);
+        await client.disconnect();
+    });
+
     it('times out a lost thread/start response on a live websocket without real delay', async () => {
         const { client, ws } = await connectFakeClient();
         const threadIds = vi.fn();
@@ -1786,6 +1897,8 @@ describe('CodexAppServerClient websocket transport', () => {
             type: 'agent_message',
             message: replayedAgentItem.text,
             origin: 'live',
+            messageId: replayedAgentItem.id,
+            streamState: 'final',
         });
 
         ws.close();
@@ -1898,6 +2011,8 @@ describe('CodexAppServerClient websocket transport', () => {
             type: 'agent_message',
             message: replayedAgentItem.text,
             origin: 'live',
+            messageId: replayedAgentItem.id,
+            streamState: 'final',
         });
 
         ws.readyState = 0;
@@ -2021,6 +2136,40 @@ describe('CodexAppServerClient websocket transport', () => {
             type: 'agent_message',
             message: 'Уже выполняю',
             origin: 'replay',
+            messageId: 'active-agent-item',
+            streamState: 'delta',
+        });
+
+        ws.message(JSON.stringify({
+            method: 'item/agentMessage/delta',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'active-turn-1',
+                itemId: 'active-agent-item',
+                delta: ' продолжение',
+            },
+        }));
+        ws.message(JSON.stringify({
+            method: 'item/completed',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'active-turn-1',
+                item: { id: 'active-agent-item', type: 'agentMessage', text: 'Авторитетный финал' },
+            },
+        }));
+        expect(handler).toHaveBeenCalledWith({
+            type: 'agent_message',
+            message: ' продолжение',
+            origin: 'live',
+            messageId: 'active-agent-item',
+            streamState: 'delta',
+        });
+        expect(handler).toHaveBeenCalledWith({
+            type: 'agent_message',
+            message: 'Авторитетный финал',
+            origin: 'live',
+            messageId: 'active-agent-item',
+            streamState: 'final',
         });
 
         await client.disconnect();
@@ -2754,6 +2903,8 @@ describe('CodexAppServerClient websocket transport', () => {
             type: 'agent_message',
             message: 'Ответ после attach',
             origin: 'live',
+            messageId: 'native-agent-item-1',
+            streamState: 'final',
         });
         expect(replayHandler).toHaveBeenCalledWith({ type: 'task_complete' });
 
@@ -2818,6 +2969,8 @@ describe('CodexAppServerClient websocket transport', () => {
             type: 'agent_message',
             message: 'Восстановленный ответ',
             origin: 'replay',
+            messageId: 'native-agent-item-3',
+            streamState: 'final',
         });
         const agentMessageCall = handler.mock.invocationCallOrder.find((_, index) => (
             handler.mock.calls[index][0].type === 'agent_message'

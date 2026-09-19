@@ -1,5 +1,6 @@
 export interface BufferedMessage {
     id: string
+    messageId?: string
     timestamp: Date
     content: string
     type: 'user' | 'assistant' | 'system' | 'tool' | 'result' | 'status'
@@ -10,14 +11,38 @@ export class MessageBuffer {
     private listeners: Array<(messages: BufferedMessage[]) => void> = []
     private nextId = 1
 
-    addMessage(content: string, type: BufferedMessage['type'] = 'assistant'): void {
+    addMessage(content: string, type: BufferedMessage['type'] = 'assistant', messageId?: string): void {
         const message: BufferedMessage = {
             id: `msg-${this.nextId++}`,
+            ...(messageId ? { messageId } : {}),
             timestamp: new Date(),
             content,
             type
         }
         this.messages.push(message)
+        this.notifyListeners()
+    }
+
+    updateMessage(messageId: string, contentDelta: string, type: BufferedMessage['type'] = 'assistant'): void {
+        const index = this.messages.findIndex((message) => message.messageId === messageId)
+        if (index === -1) {
+            this.addMessage(contentDelta, type, messageId)
+            return
+        }
+
+        const message = this.messages[index]
+        this.messages[index] = { ...message, content: message.content + contentDelta }
+        this.notifyListeners()
+    }
+
+    replaceMessage(messageId: string, content: string, type: BufferedMessage['type'] = 'assistant'): void {
+        const index = this.messages.findIndex((message) => message.messageId === messageId)
+        if (index === -1) {
+            this.addMessage(content, type, messageId)
+            return
+        }
+
+        this.messages[index] = { ...this.messages[index], content, type }
         this.notifyListeners()
     }
 
@@ -44,6 +69,17 @@ export class MessageBuffer {
         // If no message of this type exists, create a new one
         // This can happen if updateLastMessage is called before the first message is added
         this.addMessage(contentDelta, type)
+    }
+
+    replaceLastMessage(content: string, type: BufferedMessage['type'] = 'assistant'): void {
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+            if (this.messages[i].type === type) {
+                this.messages[i] = { ...this.messages[i], content }
+                this.notifyListeners()
+                return
+            }
+        }
+        this.addMessage(content, type)
     }
 
     /**

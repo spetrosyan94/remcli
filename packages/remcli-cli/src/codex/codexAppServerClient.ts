@@ -170,6 +170,8 @@ export interface CodexAgentMessageEvent {
     type: 'agent_message';
     message: string;
     origin: CodexAgentMessageOrigin;
+    messageId?: string;
+    streamState?: 'delta' | 'final';
 }
 
 export interface CodexUserMessageEvent {
@@ -1687,7 +1689,7 @@ export class CodexAppServerClient {
 
         for (const item of turn.turn.items) {
             if (!isRecord(item)) continue;
-            this.handleItemCompleted(item, turn.id, 'replay');
+            this.handleItemCompleted(item, turn.id, 'replay', turn.status === 'inProgress');
         }
     }
 
@@ -2266,7 +2268,35 @@ export class CodexAppServerClient {
                 return;
             case 'item/completed':
                 if (!this.shouldHandleThreadScopedNotification(method, params, false)) return;
+                if (
+                    isRecord(params?.item)
+                    && params.item.type === 'agentMessage'
+                    && (!isRecord(params) || params.turnId !== this.activeTurnId)
+                ) {
+                    logger.debug(`[CodexAppServer] ignoring ${method} for non-active turn`);
+                    return;
+                }
                 this.handleItemCompleted(params?.item, getNotificationTurnId(params));
+                return;
+            case 'item/agentMessage/delta':
+                if (!this.shouldHandleThreadScopedNotification(method, params, false)) return;
+                if (!isRecord(params) || typeof params.turnId !== 'string' || params.turnId !== this.activeTurnId) {
+                    logger.debug(`[CodexAppServer] ignoring ${method} for non-active turn`);
+                    return;
+                }
+                if (
+                    typeof params?.itemId === 'string'
+                    && typeof params?.delta === 'string'
+                    && params.delta.length > 0
+                ) {
+                    this.handler?.({
+                        type: 'agent_message',
+                        message: params.delta,
+                        origin: 'live',
+                        messageId: params.itemId,
+                        streamState: 'delta',
+                    });
+                }
                 return;
             case 'turn/diff/updated':
                 if (!this.shouldHandleThreadScopedNotification(method, params, false)) return;
@@ -2396,20 +2426,32 @@ export class CodexAppServerClient {
         item: any,
         notificationTurnId: unknown,
         origin: CodexAgentMessageOrigin = 'live',
+        isInProgressSnapshot = false,
     ): void {
         if (!item || typeof item !== 'object') return;
         if (item.type === 'userMessage') {
             this.emitUserMessage(item, notificationTurnId, 'completed');
             return;
         }
-        if (typeof item.id === 'string') {
+        if (isInProgressSnapshot && typeof item.id === 'string' && this.recentCompletedItemIds.has(item.id)) {
+            return;
+        }
+        if (typeof item.id === 'string' && !isInProgressSnapshot) {
             if (this.recentCompletedItemIds.has(item.id)) {
                 return;
             }
             this.recentCompletedItemIds.add(item.id);
         }
         if (item.type === 'agentMessage' && typeof item.text === 'string' && item.text.length > 0) {
-            this.handler?.({ type: 'agent_message', message: item.text, origin });
+            this.handler?.({
+                type: 'agent_message',
+                message: item.text,
+                origin,
+                ...(typeof item.id === 'string' ? { messageId: item.id } : {}),
+                ...(typeof item.id === 'string'
+                    ? { streamState: isInProgressSnapshot ? 'delta' as const : 'final' as const }
+                    : {}),
+            });
         }
         if (item.type === 'reasoning') {
             const text = [

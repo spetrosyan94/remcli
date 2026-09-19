@@ -871,6 +871,7 @@ export async function runCodex(opts: {
         if (message.type === 'tool-call' || message.type === 'tool-call-result') return;
         session.sendCodexMessage(message);
     });
+    let activeAgentMessageId: string | null = null;
     const diffProcessor = new DiffProcessor((message) => {
         // Filter out tool-call/tool-call-result — only forward diff info to mobile
         if (message.type === 'tool-call' || message.type === 'tool-call-result') return;
@@ -889,7 +890,29 @@ export async function runCodex(opts: {
 
         // Add messages to the ink UI buffer based on message type
         if (msg.type === 'agent_message') {
-            messageBuffer.addMessage(msg.message, 'assistant');
+            if (msg.messageId && msg.streamState === 'delta') {
+                if (msg.origin === 'replay') {
+                    messageBuffer.replaceMessage(msg.messageId, msg.message, 'assistant');
+                } else {
+                    messageBuffer.updateMessage(msg.messageId, msg.message, 'assistant');
+                }
+                activeAgentMessageId = msg.messageId;
+            } else if (msg.messageId && msg.streamState === 'final') {
+                messageBuffer.replaceMessage(msg.messageId, msg.message, 'assistant');
+                if (activeAgentMessageId === msg.messageId) activeAgentMessageId = null;
+            } else if (msg.streamState === 'delta') {
+                if (msg.origin === 'replay') {
+                    messageBuffer.replaceLastMessage(msg.message, 'assistant');
+                } else if (activeAgentMessageId === msg.messageId) {
+                    messageBuffer.updateLastMessage(msg.message, 'assistant');
+                } else {
+                    messageBuffer.addMessage(msg.message, 'assistant');
+                }
+                activeAgentMessageId = msg.messageId ?? null;
+            } else {
+                messageBuffer.addMessage(msg.message, 'assistant');
+                activeAgentMessageId = null;
+            }
         } else if (msg.type === 'agent_reasoning_delta') {
             // Skip reasoning deltas in the UI to reduce noise
         } else if (msg.type === 'agent_reasoning') {
@@ -920,6 +943,7 @@ export async function runCodex(opts: {
         }
 
         if (msg.type === 'task_started') {
+            activeAgentMessageId = null;
             if (!thinking) {
                 logger.debug('thinking started');
                 thinking = true;
@@ -948,14 +972,14 @@ export async function runCodex(opts: {
             reasoningProcessor.complete(msg.text);
         }
         if (msg.type === 'agent_message') {
-            session.sendCodexMessage({
+            session.sendAgentMessage('codex', {
                 type: 'message',
                 message: msg.message,
-                id: randomUUID()
+                isError: false,
+                ...(msg.messageId ? { messageId: msg.messageId } : {}),
+                ...(msg.streamState ? { streamState: msg.streamState } : {}),
+                ...(msg.origin === 'replay' ? { historical: true } : {}),
             });
-            if (msg.origin === 'live' && msg.message.trim()) {
-                session.recordSuccessfulAgentOutput();
-            }
         }
         if (msg.type === 'exec_approval_request') {
             // Permission request — must be forwarded to mobile for approve/deny

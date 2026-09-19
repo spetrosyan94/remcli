@@ -77,7 +77,14 @@ type TestAppServerEvent =
     | { type: 'task_complete' }
     | { type: 'agent_error'; message?: string }
     | { type: 'agent_warning'; message: string }
-    | { type: 'agent_message'; message: string; origin: 'live' | 'replay' }
+    | {
+        type: 'agent_message';
+        message: string;
+        origin: 'live' | 'replay';
+        messageId?: string;
+        streamState?: 'delta' | 'final';
+        historical?: boolean;
+    }
     | { type: 'exec_command_begin'; command: string };
 
 interface TestCapabilityModel {
@@ -107,6 +114,7 @@ interface TestState {
     steeredTurns: CapturedSteer[];
     sentUserMessages: Array<{ text: string; sentFrom?: string }>;
     sentCodexMessages: Array<{ type: string; message?: string }>;
+    sentAgentMessages: Array<{ provider: string; body: { type: string; message?: string; messageId?: string; streamState?: 'delta' | 'final'; historical?: boolean } }>;
     sessionEvents: Array<{ type: string; message?: string; isError?: boolean }>;
     executionOutcome: { kind: 'error' | 'success'; occurredAt: number } | null;
     successfulAgentOutputCalls: number;
@@ -231,6 +239,7 @@ const testState = vi.hoisted(() => {
         steeredTurns: [],
         sentUserMessages: [],
         sentCodexMessages: [],
+        sentAgentMessages: [],
         sessionEvents: [],
         executionOutcome: null,
         successfulAgentOutputCalls: 0,
@@ -326,6 +335,7 @@ const testState = vi.hoisted(() => {
             state.steeredTurns = [];
             state.sentUserMessages = [];
             state.sentCodexMessages = [];
+            state.sentAgentMessages = [];
             state.sessionEvents = [];
             state.executionOutcome = null;
             state.successfulAgentOutputCalls = 0;
@@ -455,7 +465,24 @@ vi.mock('@/api/api', () => ({
                 sendCodexMessage(message: { type: string; message?: string }): void {
                     testState.state.sentCodexMessages.push(message);
                 },
-                sendAgentMessage: vi.fn(),
+                sendAgentMessage(provider: string, body: {
+                    type: string;
+                    message?: string;
+                    messageId?: string;
+                    streamState?: 'delta' | 'final';
+                    historical?: boolean;
+                }): void {
+                    testState.state.sentAgentMessages.push({ provider, body });
+                    if (
+                        body.type === 'message'
+                        && body.streamState !== 'delta'
+                        && body.historical !== true
+                        && body.message?.trim()
+                    ) {
+                        testState.state.successfulAgentOutputCalls += 1;
+                        testState.state.executionOutcome = { kind: 'success', occurredAt: 200 };
+                    }
+                },
                 sendClaudeSessionMessage: vi.fn(),
                 sendSessionEvent(event: { type: string; message?: string; isError?: boolean }): void {
                     testState.state.sessionEvents.push(event);
@@ -1478,9 +1505,9 @@ describe('runCodex app-server integration', () => {
 
         await runTestCodex({ resumeSessionId: 'native-resume-thread' });
 
-        expect(testState.state.sentCodexMessages).toContainEqual(expect.objectContaining({
-            type: 'message',
-            message: 'Historical Codex response',
+        expect(testState.state.sentAgentMessages).toContainEqual(expect.objectContaining({
+            provider: 'codex',
+            body: expect.objectContaining({ type: 'message', message: 'Historical Codex response' }),
         }));
         expect(testState.state.successfulAgentOutputCalls).toBe(0);
         expect(testState.state.executionOutcome).toEqual(existingError);
@@ -1497,15 +1524,61 @@ describe('runCodex app-server integration', () => {
 
         await runTestCodex();
 
-        expect(testState.state.sentCodexMessages).toContainEqual(expect.objectContaining({
-            type: 'message',
-            message: 'Live Codex response',
+        expect(testState.state.sentAgentMessages).toContainEqual(expect.objectContaining({
+            provider: 'codex',
+            body: expect.objectContaining({ type: 'message', message: 'Live Codex response' }),
         }));
         expect(testState.state.successfulAgentOutputCalls).toBe(1);
         expect(testState.state.executionOutcome).toEqual({
             kind: 'success',
             occurredAt: 200,
         });
+    });
+
+    it('publishes Codex deltas and final output through the shared stream contract', async () => {
+        testState.state.incomingMessages = [createIncomingMessage()];
+        testState.state.appServerEvents = [
+            {
+                type: 'agent_message',
+                message: 'Ответ',
+                origin: 'live',
+                messageId: 'agent-item-1',
+                streamState: 'delta',
+            },
+            {
+                type: 'agent_message',
+                message: 'Ответ',
+                origin: 'live',
+                messageId: 'agent-item-1',
+                streamState: 'final',
+            },
+        ];
+
+        await runTestCodex();
+
+        expect(testState.state.sentAgentMessages).toEqual([
+            {
+                provider: 'codex',
+                body: {
+                    type: 'message',
+                    message: 'Ответ',
+                    isError: false,
+                    messageId: 'agent-item-1',
+                    streamState: 'delta',
+                },
+            },
+            {
+                provider: 'codex',
+                body: {
+                    type: 'message',
+                    message: 'Ответ',
+                    isError: false,
+                    messageId: 'agent-item-1',
+                    streamState: 'final',
+                },
+            },
+        ]);
+        expect(testState.state.successfulAgentOutputCalls).toBe(1);
     });
 
     it('caches the daemon runner credential before creating its session consumer and resuming a turn', async () => {

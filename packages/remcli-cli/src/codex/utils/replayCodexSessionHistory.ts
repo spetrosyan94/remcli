@@ -9,6 +9,10 @@ interface CodexReplayMessage {
     text: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object';
+}
+
 function walkJsonlFiles(dir: string): string[] {
     if (!existsSync(dir)) return [];
 
@@ -80,12 +84,39 @@ function extractCodexReplayMessage(record: Record<string, unknown>): CodexReplay
 
 export function parseCodexReplayMessages(lines: readonly string[]): CodexReplayMessage[] {
     const messages: CodexReplayMessage[] = [];
+    let pendingTurnMessages: CodexReplayMessage[] = [];
+
+    const flushCompletedTurn = (): void => {
+        messages.push(...pendingTurnMessages);
+        pendingTurnMessages = [];
+    };
+
     for (const line of lines) {
         const record = safeJsonParse(line);
-        if (!record) continue;
+        if (!record) {
+            pendingTurnMessages = [];
+            continue;
+        }
+
+        if (record.type === 'event_msg' && isRecord(record.payload)) {
+            if (record.payload.type === 'task_complete') {
+                flushCompletedTurn();
+                continue;
+            }
+            if (record.payload.type === 'turn_aborted' || record.payload.type === 'task_started') {
+                pendingTurnMessages = [];
+                continue;
+            }
+            if (record.payload.type === 'user_message') {
+                pendingTurnMessages = [];
+                const message = extractCodexReplayMessage(record);
+                if (message) pendingTurnMessages.push(message);
+                continue;
+            }
+        }
 
         const message = extractCodexReplayMessage(record);
-        if (message) messages.push(message);
+        if (message) pendingTurnMessages.push(message);
     }
     return messages;
 }
