@@ -22,8 +22,8 @@
 | **Resume того же native context** | ✅ `thread/resume` | ✅ `session/load` | 🟡 exact `--conversation`, без свежего real gate | 🟡 только существующие wrapper/SDK paths |
 | **История диалога в Remcli** | 🟡 user/assistant text | 🟡 Remcli transcript или ACP chunks | 🟡 encrypted Remcli transcript; официальный hook `transcriptPath` ещё не интегрирован | 🟡 user/assistant text, UI выключен |
 | **Stop и cleanup** | ✅ | ✅ | ✅ deterministic/product gates | 🟡 без real provider gate |
-| **Один live chat в terminal и Remcli** | ✅ общий daemon-owned thread и remote TUI | 📋 terminal UI Remcli над одним ACP writer | 📋 сначала third-party Remote Control API check, затем terminal UI Remcli fallback | ⏸ |
-| **Ввод и с terminal, и с телефона** | ✅ | 📋 один daemon-owned ACP writer | 📋 один provider writer; transport выбирается после official API check | ⏸ |
+| **Один live chat в terminal и Remcli** | ✅ общий daemon-owned thread и remote TUI | 📋 terminal UI Remcli над одним ACP writer | 📋 terminal UI Remcli над одним `agy stream-json` writer | ⏸ |
+| **Ввод и с terminal, и с телефона** | ✅ | 📋 один daemon-owned ACP writer | 📋 один daemon-owned `agy` writer | ⏸ |
 | **Актуальные модели** | ✅ dynamic app-server catalog | ✅ dynamic ACP catalog | ✅ account-visible `agy models` | ⏸ нет принятого dynamic catalog |
 | **Reasoning выбранной модели** | ✅ provider-advertised efforts | ❌ ACP не публикует selector | ✅ provider-advertised efforts | ⏸ |
 | **Уровень доступа** | ✅ native sandbox/approval policy | ✅ `Agent / Plan / Ask` | ✅ native launch modes | 🟡 static modes, UI выключен |
@@ -48,11 +48,14 @@
   Remcli не использует ANSI scraping или два writer-процесса ради формального
   совпадения функций.
 - Antigravity Remote Control синхронизирует native TUI только с web-интерфейсом
-  Google. Sidecars/`agentapi` документированы для Antigravity 2.0 и не считаются
-  transport установленного `agy` CLI. CLI hooks могут предоставить
-  `conversationId` и `transcriptPath`, но не заменяют prompt/event channel.
-  Документированного third-party API для streamed deltas, prompts и ответов на
-  approvals/questions пока нет.
+  Google и не входит в пользовательский flow Remcli. Headless `stream-json`
+  документирует prompts, streamed deltas, tools и `subagent_info`, но не
+  интерактивное сообщение ответа на native approvals/questions. Sidecars,
+  `agentapi` и CLI hooks не заменяют этот prompt/event channel.
+- Общий Cursor/Antigravity terminal frontend использует
+  `@earendil-works/pi-tui` только как rendering/input library. Pi agent runtime,
+  Pi sessions, Pi tools и Pi provider в Remcli не подключаются; Codex сохраняет
+  официальный `codex --remote` + app-server path.
 
 ## Проверки
 

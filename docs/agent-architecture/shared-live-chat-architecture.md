@@ -16,10 +16,28 @@ Local terminal ──┘
 
 - daemon является единственным writer к provider;
 - phone/web и локальный terminal UI Remcli работают с одной Remcli-сессией;
-- сообщения, streaming, tools, approvals и lifecycle публикуются обоим клиентам
-  через общий ordered event stream;
+- сообщения, streaming, tools, lifecycle и только поддержанные provider events
+  публикуются обоим клиентам через общий ordered event stream; недоступные
+  approvals/questions получают явный unsupported outcome;
 - resume восстанавливает exact native session ID, а не создаёт новый context;
 - terminal UI Remcli не является ANSI-копией штатного provider TUI.
+
+## Terminal frontend
+
+Общий terminal frontend Cursor и Antigravity строится на
+`@earendil-works/pi-tui`. Remcli использует библиотеку только для rendering и
+input: Markdown, multiline editor, focus, keyboard navigation, dialogs, resize
+и корректную ширину Unicode. Pi agent runtime, Pi sessions, Pi tools и Pi как
+provider в Remcli не подключаются.
+
+Terminal frontend является обычным клиентом Remcli session broker и не владеет
+provider process. Версия `pi-tui` фиксируется в lockfile; до product rollout
+отдельно проверяются license/dependency boundary, macOS/Linux/Windows, tmux,
+resize, длинный streaming chat и limited-color terminal.
+
+Codex не переводится на этот frontend. Его официальный live path остаётся
+`codex --remote` + shared Codex app-server и native thread: общий broker может
+нормализовать события для web, но не заменяет Codex transport или TUI.
 
 ## Общий и provider-specific слои
 
@@ -55,11 +73,9 @@ prompt источника пойдут через один ACP writer. Resume в
 
 ## Antigravity
 
-Перед реализацией будет повторно проверен официальный third-party Remote
-Control attach/event API. Штатный Remote Control синхронизирует CLI только с
-Google UI и сам по себе не является transport для Remcli. Если third-party API
-отсутствует, будет использоваться один daemon-owned `agy stream-json`, а
-phone/web и local terminal UI Remcli будут работать поверх него. Resume обязан
+Официальный Remote Control синхронизирует CLI с Google UI, поэтому не входит в
+пользовательский flow Remcli. Используется один daemon-owned `agy stream-json`,
+а phone/web и local terminal UI Remcli работают поверх него. Resume обязан
 сохранять exact `conversationId` и workspace.
 
 До появления structured approvals/questions Antigravity не получает ложную

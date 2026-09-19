@@ -199,7 +199,9 @@ ACP SDK `1.4.0` это ограничение не меняет: SDK умеет 
 generic transports, но установленный Cursor `agent acp` публикует только
 отдельный stdio server process без multi-client attach к уже открытому TUI.
 Запланированный local terminal frontend следует
-[общему single-writer контракту Remcli](shared-live-chat-architecture.md).
+[общему single-writer контракту Remcli](shared-live-chat-architecture.md) и
+использует `@earendil-works/pi-tui` только как UI-библиотеку. Pi agent runtime
+и Pi provider в Cursor flow не участвуют.
 
 ## Проверки
 
