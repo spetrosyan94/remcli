@@ -4,6 +4,7 @@
 import type { NormalizedMessage } from '@/lib/protocol/messages';
 import type {
     CodexStructuredRequest,
+    CursorStructuredRequest,
     ConciergeChatResponse,
     ConciergeStatus,
     Machine,
@@ -151,6 +152,62 @@ export const FIXTURE_STRUCTURED_REQUESTS: Record<string, CodexStructuredRequest>
         displayUrl: 'https://docs.example.com/remcli/approval',
         isBlocking: true,
         createdAt: T - 30_000,
+        deadlineAt: T + 5 * MINUTE,
+    },
+};
+
+export const FIXTURE_CURSOR_STRUCTURED_REQUESTS: Record<string, CursorStructuredRequest> = {
+    'fx-cursor-question': {
+        requestKey: 'fx-cursor-question',
+        kind: 'cursor-question',
+        message: 'Choose the review scope before Cursor continues.',
+        fields: [
+            {
+                id: 'scope',
+                type: 'select',
+                label: 'Which area should Cursor review first?',
+                required: true,
+                options: [
+                    { value: 'frontend', label: 'Frontend' },
+                    { value: 'daemon', label: 'Daemon' },
+                    { value: 'both', label: 'Both' },
+                ],
+            },
+            {
+                id: 'checks',
+                type: 'multiselect',
+                label: 'Which checks should be included?',
+                required: true,
+                minItems: 1,
+                options: [
+                    { value: 'tests', label: 'Tests' },
+                    { value: 'types', label: 'Typecheck' },
+                    { value: 'browser', label: 'Browser path' },
+                ],
+            },
+        ],
+        isBlocking: true,
+        createdAt: T - 45_000,
+        deadlineAt: T + 5 * MINUTE,
+    },
+    'fx-cursor-plan': {
+        requestKey: 'fx-cursor-plan',
+        kind: 'cursor-plan',
+        message: 'Keep native resume intact while adding phone approvals.',
+        fields: [],
+        plan: {
+            name: 'Cursor structured forms',
+            overview: 'Keep native resume intact while adding phone approvals.',
+            markdown: '1. Validate the ACP payload.\n2. Publish a safe encrypted projection.\n3. Return the selected native outcome.',
+            todos: [
+                { id: 'contract', content: 'Validate ACP question and plan payloads', status: 'completed' },
+                { id: 'bridge', content: 'Bridge the response through session RPC', status: 'in_progress' },
+                { id: 'verify', content: 'Verify the mobile and desktop paths', status: 'pending' },
+            ],
+            isProject: true,
+        },
+        isBlocking: true,
+        createdAt: T - 45_000,
         deadlineAt: T + 5 * MINUTE,
     },
 };

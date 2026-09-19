@@ -62,6 +62,7 @@ import {
     type SessionUpdate as CursorAcpUpdate,
 } from './cursorAcpClient';
 import { CursorPermissionHandler } from './cursorPermissionHandler';
+import { CursorStructuredInputBroker, type CursorStructuredMethod } from './cursorStructuredInputBroker';
 import type { CursorMode } from './types';
 
 const LIFECYCLE_METADATA_UPDATE_OPTIONS = {
@@ -264,6 +265,7 @@ export async function runCursor(opts: {
     let bindSessionHandlers: ((target: ApiSessionClient) => void) | null = null;
     let scheduleParentRelationRollbackForSession: ((target: ApiSessionClient) => Promise<void>) | null = null;
     let cursorPermissionHandler: CursorPermissionHandler | null = null;
+    let cursorStructuredInputBroker: CursorStructuredInputBroker | null = null;
     let canBindSessionHandlers = !opts.resumeSessionId;
 
     const { session: initialSession, reconnectionHandle } = setupOfflineReconnection({
@@ -282,6 +284,7 @@ export async function runCursor(opts: {
         onSessionSwap: (newSession) => {
             session = newSession;
             cursorPermissionHandler?.updateSession(newSession);
+            cursorStructuredInputBroker?.updateSession(newSession);
             if (canBindSessionHandlers) bindSessionHandlers?.(newSession);
             // A reconnect may have begun before the local metadata template was
             // sanitized. Queue a bounded cleanup for that replacement session.
@@ -292,6 +295,12 @@ export async function runCursor(opts: {
     });
     session = initialSession;
     cursorPermissionHandler = new CursorPermissionHandler(session);
+    cursorStructuredInputBroker = new CursorStructuredInputBroker(session, {
+        onWarning: (message) => {
+            logger.debug('[Cursor] Structured input warning:', message);
+            session.sendAgentMessage('cursor', { type: 'message', message, isError: true });
+        },
+    });
 
     const messageQueue = new MessageQueue2<CursorMode>((mode) => hashObject({
         launchControls: mode.launchControls,
@@ -418,6 +427,8 @@ export async function runCursor(opts: {
     let activeAcpTurn: ActiveCursorAcpTurn | null = null;
     let cursorAcpClient: CursorAcpClient | null = null;
     let cursorAcpSession: CursorAcpSession | null = null;
+    let cursorTurnGeneration = 0;
+    let activeStructuredTurnScope: { nativeSessionId: string; turnGeneration: number } | null = null;
     let cursorWriterLease: CursorNativeWriterLease | undefined;
     let doesNativeMetadataNeedReconciliation = false;
     let didReportNativeTerminalSession = false;
@@ -742,13 +753,19 @@ export async function runCursor(opts: {
             handleCursorAcpUpdate(notification.update);
         },
         onPermission: (request) => cursorPermissionHandler!.handleRequest(request),
-        onExtensionWarning: (method) => {
-            const message = method === 'cursor/ask_question'
-                ? 'Cursor requested structured input, but this Remcli version cannot answer that form yet. The question was skipped.'
-                : 'Cursor requested plan approval, but this Remcli version cannot answer that form yet. The plan was rejected.';
-            messageBuffer.addMessage(message, 'status');
-            session.sendAgentMessage('cursor', { type: 'message', message, isError: true });
+        onExtension: async (method, params) => {
+            const scope = activeStructuredTurnScope;
+            if (!scope || (method !== 'cursor/ask_question' && method !== 'cursor/create_plan')) {
+                return { outcome: { outcome: 'cancelled' } };
+            }
+            return await cursorStructuredInputBroker!.handleRequest({
+                method: method as CursorStructuredMethod,
+                params,
+                nativeSessionId: scope.nativeSessionId,
+                turnGeneration: scope.turnGeneration,
+            });
         },
+        onError: () => cursorStructuredInputBroker?.clearAll(),
     });
 
     const ensureCursorAcpSession = async (
@@ -850,8 +867,10 @@ export async function runCursor(opts: {
         logger.debug('[Cursor] Abort requested');
         const parentRelationRollback = abandonUnverifiedResume();
         try {
-            abortController.abort();
+            activeStructuredTurnScope = null;
             cursorPermissionHandler?.reset();
+            cursorStructuredInputBroker?.clearAll();
+            abortController.abort();
         } catch (error) {
             logger.debug('[Cursor] Error during abort:', error);
         } finally {
@@ -902,6 +921,7 @@ export async function runCursor(opts: {
             }
 
             const activeAcpClient = cursorAcpClient;
+            cursorStructuredInputBroker?.clearAll();
             cursorAcpClient = null;
             cursorAcpSession = null;
             activeAcpTurn = null;
@@ -1153,6 +1173,11 @@ export async function runCursor(opts: {
                         acknowledgeQueuedDelivery();
                     },
                 };
+                const turnGeneration = ++cursorTurnGeneration;
+                activeStructuredTurnScope = {
+                    nativeSessionId: nativeSession.sessionId,
+                    turnGeneration,
+                };
                 const runningTurn = cursorAcpClient!.prompt(prompt, abortController.signal);
                 activeTurn = runningTurn;
                 const turn = await runningTurn;
@@ -1217,6 +1242,13 @@ export async function runCursor(opts: {
                     });
                 }
             } finally {
+                if (activeStructuredTurnScope) {
+                    cursorStructuredInputBroker?.clearForTurn(
+                        activeStructuredTurnScope.nativeSessionId,
+                        activeStructuredTurnScope.turnGeneration,
+                    );
+                    activeStructuredTurnScope = null;
+                }
                 activeTurn = null;
                 activeAcpTurn = null;
                 thinking = false;

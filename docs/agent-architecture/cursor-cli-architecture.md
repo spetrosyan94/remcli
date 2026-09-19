@@ -8,7 +8,7 @@
 - Agent Client Protocol: https://agentclientprotocol.com/protocol/v1/overview
 - Локальная приёмка: `agent --help`, `agent acp --help`,
   `agent 2026.09.10-fd3934a`
-- Проверено: 2026-09-12.
+- Проверено: 2026-09-20.
 
 ## Назначение
 
@@ -142,10 +142,24 @@ Remcli не генерирует option ID и не одобряет запрос
 reconnect reset или отсутствующей поддерживаемой опции request завершается как
 `cancelled`.
 
-Cursor extensions `cursor/ask_question` и `cursor/create_plan` требуют
-отдельного structured UI/P2P contract. Пока Remcli возвращает официальный
-fail-closed outcome и показывает пользователю видимое предупреждение; запрос
-не зависает и не скрывается.
+Cursor extensions `cursor/ask_question` и `cursor/create_plan` обслуживает
+отдельный `CursorStructuredInputBroker`. Он валидирует bounded provider schema,
+публикует только безопасную проекцию в `agentState.cursorStructuredRequests` и
+ждёт typed RPC `cursor-structured-input-response`:
+
+- `ask_question` отображается inline как один или несколько single/multi-select
+  вопросов и возвращает только provider option IDs;
+- `create_plan` отображает read-only план и возвращает native
+  `accepted` / `rejected` / `cancelled`;
+- формы блокируют composer до ответа, отмены, timeout или завершения turn;
+- reconnect повторно публикует живой request, stale session RPC и поздний ответ
+  получают `already-resolved`;
+- повтор одного native extension key возвращает уже вычисленный outcome без
+  второй формы;
+- `toolCallId` и исходный ACP payload остаются только внутри процесса runner.
+
+Unknown или oversized extension payload завершается `cancelled` с видимым
+предупреждением и не попадает в session state.
 
 ## Ошибки и данные
 
@@ -172,8 +186,8 @@ ANSI screen mirror.
 ## Проверки
 
 - `D`: deterministic ACP protocol tests для initialize/auth, new/load,
-  mode/model validation, streaming, permission options, extensions, cancel,
-  crash, shutdown и redaction.
+  mode/model validation, streaming, permission options, structured extensions,
+  duplicate/stale/timeout outcomes, cancel, crash, shutdown и redaction.
 - `I`: encrypted machine RPC, real SessionManager/tmux и controlled `agent acp`;
   проверяются create, same-ID resume, active duplicate guard, ACK replay,
   workspace mismatch, stop и cleanup.
@@ -182,7 +196,8 @@ ANSI screen mirror.
   proof -> stop.
 - `UI-F`: встроенный Browser проверяет New Session и lifecycle state на
   `390x844` и `1280x800`: real ACP models, `Agent / Plan / Ask`, отсутствие
-  неисполняемых controls, start, chat, stop и resume.
+  неисполняемых controls, start, chat, stop и resume. Cursor question/plan
+  дополнительно проверяются как inline blocking states без horizontal overflow.
 
 Команды:
 

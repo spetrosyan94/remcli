@@ -23,6 +23,24 @@ describe('diagnostic redaction', () => {
         });
     });
 
+    it('redacts provider structured request state from diagnostics', () => {
+        const output = redactDiagnosticData({
+            controlledByUser: true,
+            cursorStructuredRequests: {
+                request: { message: 'private question', plan: 'private plan' },
+            },
+            codexStructuredRequests: {
+                request: { fields: [{ label: 'private field' }] },
+            },
+        });
+
+        expect(output).toEqual({
+            controlledByUser: true,
+            cursorStructuredRequests: '[REDACTED]',
+            codexStructuredRequests: '[REDACTED]',
+        });
+    });
+
     it('redacts sensitive environment assignments and command flags', () => {
         const command = [
             'REMCLI_DAEMON_RUNNER_TOKEN=runner-token',

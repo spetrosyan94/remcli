@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CursorLaunchControls } from './cursorLaunchControls';
+import type { AgentState } from '@/api/types';
 
 const TEST_RUNNER = {
     executable: 'agent' as const,
@@ -23,12 +24,14 @@ interface TestSession {
     sessionId: string;
     metadata: Record<string, unknown>;
     metadataUpdates: Array<Record<string, unknown>>;
+    agentState: AgentState;
     sendAgentMessage: ReturnType<typeof vi.fn>;
     sendUserTextMessage: ReturnType<typeof vi.fn>;
     sendSessionEvent: ReturnType<typeof vi.fn>;
     keepAlive: ReturnType<typeof vi.fn>;
     cancelPendingUserMessageDelivery: ReturnType<typeof vi.fn>;
     updateMetadata: ReturnType<typeof vi.fn>;
+    updateAgentState: ReturnType<typeof vi.fn>;
     sendSessionDeath: ReturnType<typeof vi.fn>;
     flush: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
@@ -59,7 +62,7 @@ interface FakeAcpOptions {
         sessionId: string;
         update: Record<string, unknown>;
     }) => void | Promise<void>;
-    onExtensionWarning?: (method: string) => void;
+    onExtension?: (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 
 const testState = vi.hoisted(() => {
@@ -233,6 +236,7 @@ function createSession(): TestSession {
         sessionId: 'remcli-session',
         metadata: {},
         metadataUpdates: [],
+        agentState: {},
         sendAgentMessage: vi.fn(),
         sendUserTextMessage: vi.fn(),
         sendSessionEvent: vi.fn(),
@@ -246,6 +250,9 @@ function createSession(): TestSession {
         updateMetadata: vi.fn(async (update: (metadata: Record<string, unknown>) => Record<string, unknown>) => {
             session.metadata = update(session.metadata);
             session.metadataUpdates.push({ ...session.metadata });
+        }),
+        updateAgentState: vi.fn((update: (state: AgentState) => AgentState) => {
+            session.agentState = update(session.agentState);
         }),
     };
     return session;
@@ -580,11 +587,96 @@ describe('runCursor ACP lifecycle', () => {
             ([name]) => name === 'abort',
         )?.[1] as (() => Promise<void>) | undefined;
         await abortHandler?.();
+        await expect(client.options.onExtension?.('cursor/ask_question', {
+            toolCallId: 'late-question',
+            questions: [{
+                id: 'scope',
+                prompt: 'Should this appear?',
+                options: [{ id: 'no', label: 'No' }],
+            }],
+        })).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
+        expect(testState.session!.agentState.cursorStructuredRequests).toBeUndefined();
         await vi.waitFor(() => expect(client.cancel).toHaveBeenCalledOnce());
         await vi.waitFor(() => expect(testState.session!.sendAgentMessage).toHaveBeenCalledWith('cursor', expect.objectContaining({
             type: 'turn_aborted',
         })));
         resolvePrompt({ stopReason: 'cancelled' });
+
+        await stopAndWait(run);
+    });
+
+    it('keeps a Cursor question blocking until the encrypted session RPC answers it', async () => {
+        let nativeOutcome: Record<string, unknown> | undefined;
+        testState.promptImplementation = async (client) => {
+            nativeOutcome = await client.options.onExtension?.('cursor/ask_question', {
+                toolCallId: 'question-tool',
+                title: 'Choose scope',
+                questions: [{
+                    id: 'scope',
+                    prompt: 'What should be reviewed?',
+                    options: [{ id: 'web', label: 'Web' }, { id: 'daemon', label: 'Daemon' }],
+                }],
+            });
+            return { stopReason: 'end_turn' };
+        };
+        const run = runCursor({
+            credentials: { token: 'test', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+            startedBy: 'terminal',
+        });
+        const queue = await waitForQueue();
+        queue.resolve(createQueuedMessage('review'));
+
+        await vi.waitFor(() => expect(Object.values(testState.session!.agentState.cursorStructuredRequests ?? {})).toHaveLength(1));
+        const request = Object.values(testState.session!.agentState.cursorStructuredRequests ?? {})[0]!;
+        const responseHandler = testState.session!.rpcHandlerManager.registerHandler.mock.calls.find(
+            ([name]) => name === 'cursor-structured-input-response',
+        )?.[1] as ((response: Record<string, unknown>) => Promise<unknown>) | undefined;
+        await expect(responseHandler?.({
+            requestKey: request.requestKey,
+            submissionId: 'submission-1',
+            action: 'submit',
+            answers: { scope: ['web'] },
+        })).resolves.toEqual({ status: 'submitted' });
+        await vi.waitFor(() => expect(nativeOutcome).toEqual({
+            outcome: { outcome: 'answered', answers: [{ questionId: 'scope', selectedOptionIds: ['web'] }] },
+        }));
+        expect(testState.session!.agentState.cursorStructuredRequests).toBeUndefined();
+
+        await stopAndWait(run);
+    });
+
+    it('keeps a Cursor plan blocking until the encrypted session RPC rejects it', async () => {
+        let nativeOutcome: Record<string, unknown> | undefined;
+        testState.promptImplementation = async (client) => {
+            nativeOutcome = await client.options.onExtension?.('cursor/create_plan', {
+                toolCallId: 'plan-tool',
+                name: 'Ship structured forms',
+                overview: 'Validate the full runner bridge.',
+                plan: '1. Validate ACP.\n2. Bridge the response.',
+                todos: [{ id: 'validate', content: 'Validate ACP', status: 'completed' }],
+            });
+            return { stopReason: 'end_turn' };
+        };
+        const run = runCursor({
+            credentials: { token: 'test', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+            startedBy: 'terminal',
+        });
+        const queue = await waitForQueue();
+        queue.resolve(createQueuedMessage('plan'));
+
+        await vi.waitFor(() => expect(Object.values(testState.session!.agentState.cursorStructuredRequests ?? {})).toHaveLength(1));
+        const request = Object.values(testState.session!.agentState.cursorStructuredRequests ?? {})[0]!;
+        expect(request.kind).toBe('cursor-plan');
+        const responseHandler = testState.session!.rpcHandlerManager.registerHandler.mock.calls.find(
+            ([name]) => name === 'cursor-structured-input-response',
+        )?.[1] as ((response: Record<string, unknown>) => Promise<unknown>) | undefined;
+        await expect(responseHandler?.({
+            requestKey: request.requestKey,
+            submissionId: 'submission-plan-1',
+            action: 'decline',
+        })).resolves.toEqual({ status: 'submitted' });
+        await vi.waitFor(() => expect(nativeOutcome).toEqual({ outcome: { outcome: 'rejected' } }));
+        expect(testState.session!.agentState.cursorStructuredRequests).toBeUndefined();
 
         await stopAndWait(run);
     });

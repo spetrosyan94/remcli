@@ -17,17 +17,19 @@ import {
     structuredFormContent,
     structuredToolAnswers,
 } from "@/components/kit/StructuredInputCard";
-import { FIXTURE_STRUCTURED_REQUESTS } from "@/lib/fixtures/data";
+import { FIXTURE_CURSOR_STRUCTURED_REQUESTS, FIXTURE_STRUCTURED_REQUESTS } from "@/lib/fixtures/data";
 import {
     CodexStructuredRequestSchema,
     CodexStructuredInputResponseResultSchema,
+    CursorStructuredRequestSchema,
     type CodexStructuredRequest,
+    type CursorStructuredRequest,
     type StructuredInputField,
 } from "@/lib/protocol/types";
 
 const onOpenUrl = async () => ({ url: "https://docs.example.com/remcli/approval?token=test#authorize" });
 
-function renderCard(request: CodexStructuredRequest): string {
+function renderCard(request: CodexStructuredRequest | CursorStructuredRequest): string {
     return renderToStaticMarkup(React.createElement(StructuredInputCard, {
         request,
         onResponse: async () => ({ status: "submitted" as const }),
@@ -36,6 +38,26 @@ function renderCard(request: CodexStructuredRequest): string {
 }
 
 describe("StructuredInputCard canonical contract", () => {
+    it("renders Cursor questions and plans through the shared structured surface", () => {
+        const question = FIXTURE_CURSOR_STRUCTURED_REQUESTS["fx-cursor-question"];
+        const plan = FIXTURE_CURSOR_STRUCTURED_REQUESTS["fx-cursor-plan"];
+        expect(CursorStructuredRequestSchema.safeParse(question).success).toBe(true);
+        expect(CursorStructuredRequestSchema.safeParse(plan).success).toBe(true);
+
+        const questionMarkup = renderCard(question);
+        expect(questionMarkup).toContain('data-structured-kind="cursor-question"');
+        expect(questionMarkup).toContain("Frontend");
+        expect(questionMarkup).toContain("Browser path");
+        expect(questionMarkup).not.toContain("Other");
+
+        const planMarkup = renderCard(plan);
+        expect(planMarkup).toContain('data-structured-kind="cursor-plan"');
+        expect(planMarkup).toContain("Cursor structured forms");
+        expect(planMarkup).toContain("Validate ACP question and plan payloads");
+        expect(planMarkup).toContain(">Accept<");
+        expect(planMarkup).toContain(">Reject<");
+    });
+
     it("accepts canonical request kinds and format metadata without an option-count UI cap", () => {
         const toolRequest = FIXTURE_STRUCTURED_REQUESTS["fx-structured-tool-input"];
         const manyOptions = Array.from({ length: 4 }, (_, index) => ({ value: `value-${index}`, label: `Option ${index}` }));
@@ -242,7 +264,7 @@ describe("StructuredInputCard canonical contract", () => {
         expect(markup).toContain('aria-live="polite"');
         expect(markup).toContain('aria-atomic="true"');
         expect(markup).toContain(`data-min-visible-ms="${STRUCTURED_ALREADY_RESOLVED_VISIBLE_MS}"`);
-        expect(markup).toContain("Request is already closed in Codex. Response was not sent.");
+        expect(markup).toContain("Request is already closed. Response was not sent.");
         expect(markup).toContain("text-status-permission");
         expect(markup).toContain("duration-[var(--dur-std)]");
         expect(markup).toContain("motion-reduce:animate-[remcli-reduced-fade-in_var(--dur-micro)_var(--ease-out)_both]");

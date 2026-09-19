@@ -31,6 +31,7 @@ import {
     FIXTURE_LINEAGE_SESSIONS,
     FIXTURE_HOME_TRIAGE_SESSIONS,
     FIXTURE_STRUCTURED_REQUESTS,
+    FIXTURE_CURSOR_STRUCTURED_REQUESTS,
     FIXTURE_MACHINES,
     FIXTURE_SESSIONS,
     FIXTURE_ZEN_TASKS,
@@ -56,6 +57,9 @@ import type {
     CodexStructuredInputResponse,
     CodexStructuredInputResponseResult,
     CodexStructuredInputUrlResult,
+    CursorStructuredInputResponse,
+    CursorStructuredInputResponseResult,
+    CursorStructuredRequest,
     ConciergeStatus,
     Machine,
     Session,
@@ -419,9 +423,13 @@ function fixtureSessions(): Session[] {
     return sessions.map((session) => {
         if (session.id !== FIXTURE_CHAT_SESSION_ID || !session.agentState) return session;
         const requests: NonNullable<NonNullable<Session['agentState']>['codexStructuredRequests']> = {};
+        const cursorRequests: NonNullable<NonNullable<Session['agentState']>['cursorStructuredRequests']> = {};
         if (structuredScenario === 'tool-input') requests['fx-structured-tool-input'] = FIXTURE_STRUCTURED_REQUESTS['fx-structured-tool-input'];
         if (structuredScenario === 'mcp-form') requests['fx-structured-mcp-form'] = FIXTURE_STRUCTURED_REQUESTS['fx-structured-mcp-form'];
         if (structuredScenario === 'mcp-url') requests['fx-structured-mcp-url'] = FIXTURE_STRUCTURED_REQUESTS['fx-structured-mcp-url'];
+        if (structuredScenario === 'cursor-question') cursorRequests['fx-cursor-question'] = FIXTURE_CURSOR_STRUCTURED_REQUESTS['fx-cursor-question'];
+        if (structuredScenario === 'cursor-plan') cursorRequests['fx-cursor-plan'] = FIXTURE_CURSOR_STRUCTURED_REQUESTS['fx-cursor-plan'];
+        const isCursorStructured = structuredScenario === 'cursor-question' || structuredScenario === 'cursor-plan';
         const permissionRequests = structuredScenario === 'mcp-url'
             ? {
                 ...session.agentState.requests,
@@ -434,10 +442,20 @@ function fixtureSessions(): Session[] {
             : session.agentState.requests;
         return {
             ...session,
+            metadata: isCursorStructured && session.metadata ? {
+                ...session.metadata,
+                flavor: 'cursor',
+                agentSessionId: 'fx-cursor-structured-agent',
+                cursorSessionId: 'fx-cursor-structured-agent',
+                cursorExecution: { model: 'auto' },
+                codexSessionId: undefined,
+                codexExecution: undefined,
+            } : session.metadata,
             agentState: {
                 ...session.agentState,
                 requests: permissionRequests,
                 codexStructuredRequests: requests,
+                cursorStructuredRequests: cursorRequests,
             },
         };
     });
@@ -1807,11 +1825,45 @@ export async function fixtureAnswerPermission(
     }]);
 }
 
-/** Fixture boundary for structured responses; answers are deliberately discarded. */
+function validateCursorFixtureResponse(
+    request: CursorStructuredRequest,
+    response: CursorStructuredInputResponse,
+): void {
+    if (response.action !== 'submit' && response.action !== 'decline' && response.action !== 'cancel') {
+        throw new Error('Invalid Cursor fixture response action.');
+    }
+    if (request.kind === 'cursor-plan') {
+        if (response.answers !== undefined) throw new Error('Invalid Cursor plan fixture response.');
+        return;
+    }
+    if (response.action !== 'submit') {
+        if (response.answers !== undefined) throw new Error('Invalid Cursor question fixture response.');
+        return;
+    }
+    if (!response.answers || typeof response.answers !== 'object' || Array.isArray(response.answers)) {
+        throw new Error('Invalid Cursor question fixture response.');
+    }
+    if (Object.keys(response.answers).length !== request.fields.length) {
+        throw new Error('Invalid Cursor question fixture response.');
+    }
+    for (const field of request.fields) {
+        const selected = response.answers[field.id];
+        const allowed = new Set((field.options ?? []).map((option) => option.value));
+        if (!Array.isArray(selected)
+            || selected.length === 0
+            || (field.type === 'select' && selected.length !== 1)
+            || new Set(selected).size !== selected.length
+            || selected.some((optionId) => !allowed.has(optionId))) {
+            throw new Error('Invalid Cursor question fixture response.');
+        }
+    }
+}
+
+/** Fixture boundary validates provider-specific response shape before discarding answers. */
 export async function fixtureAnswerStructuredInput(
     sessionId: string,
-    response: CodexStructuredInputResponse,
-): Promise<CodexStructuredInputResponseResult> {
+    response: CodexStructuredInputResponse | CursorStructuredInputResponse,
+): Promise<CodexStructuredInputResponseResult | CursorStructuredInputResponseResult> {
     const responseMode = getFixtureStructuredResponseMode();
     if (responseMode === "delayed") {
         await new Promise((resolve) => setTimeout(resolve, FIXTURE_PERMISSION_RESPONSE_DELAY_MS));
@@ -1823,10 +1875,15 @@ export async function fixtureAnswerStructuredInput(
 
     const store = useProtocolStore.getState();
     const session = store.sessions[sessionId];
-    const request = session?.agentState?.codexStructuredRequests?.[response.requestKey];
+    const codexRequest = session?.agentState?.codexStructuredRequests?.[response.requestKey];
+    const cursorRequest = session?.agentState?.cursorStructuredRequests?.[response.requestKey];
+    const request = codexRequest ?? cursorRequest;
     if (!session || !request) return { status: "already-resolved" };
-    const requests = { ...session.agentState?.codexStructuredRequests };
-    delete requests[response.requestKey];
+    if (cursorRequest) validateCursorFixtureResponse(cursorRequest, response as CursorStructuredInputResponse);
+    const codexRequests = { ...session.agentState?.codexStructuredRequests };
+    const cursorRequests = { ...session.agentState?.cursorStructuredRequests };
+    delete codexRequests[response.requestKey];
+    delete cursorRequests[response.requestKey];
     const permissionRequests = { ...session.agentState?.requests };
     if (request.kind === "mcp-url") delete permissionRequests[response.requestKey];
     store.applySessions([{
@@ -1834,7 +1891,8 @@ export async function fixtureAnswerStructuredInput(
         agentState: {
             ...session.agentState,
             requests: permissionRequests,
-            codexStructuredRequests: requests,
+            codexStructuredRequests: codexRequests,
+            cursorStructuredRequests: cursorRequests,
         },
     }]);
     return { status: responseMode === "already-resolved" ? "already-resolved" : "submitted" };

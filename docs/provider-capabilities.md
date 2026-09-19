@@ -1,6 +1,6 @@
 # Возможности AI-провайдеров
 
-Актуально на 2026-09-19. Этот документ фиксирует фактический контракт Remcli,
+Актуально на 2026-09-20. Этот документ фиксирует фактический контракт Remcli,
 а не общий список возможностей provider CLI. Возможность считается
 поддержанной только после реализации в Remcli и соответствующей проверки.
 
@@ -27,8 +27,8 @@
 | **Reasoning выбранной модели** | ✅ provider-advertised efforts | ❌ ACP не публикует selector | ✅ provider-advertised efforts | ⏸ |
 | **Уровень доступа** | ✅ native sandbox/approval policy | ✅ `Agent / Plan / Ask` | ✅ native launch modes | 🟡 static modes, UI выключен |
 | **Tool approval с телефона** | ✅ | ✅ только options из ACP request | ❌ headless interactive contract не найден | ⏸ |
-| **Несколько вопросов, A/B/C, Other** | ✅ `requestUserInput` | ⏸ следующий этап: `cursor/ask_question` | ❌ provider flow не найден | ❌ |
-| **Typed forms** | ✅ standard MCP form, bounded `openai/form` + URL elicitation | ⏸ следующий этап: Cursor extensions | ❌ provider flow не найден | ❌ |
+| **Несколько вопросов, A/B/C** | ✅ `requestUserInput` | ✅ `cursor/ask_question`, без выдуманного `Other` | ❌ provider flow не найден | ❌ |
+| **Typed forms и планы** | ✅ standard MCP form, bounded `openai/form` + URL elicitation | ✅ `cursor/ask_question` и `cursor/create_plan` | ❌ provider flow не найден | ❌ |
 
 ### Важные границы
 
@@ -38,8 +38,10 @@
   реализованы отдельным typed flow. MCP URL открывается только явным действием;
   raw URL не хранится в session state. Неизвестные `openai/form` controls и
   schema keywords отклоняются целиком fail-closed.
-  Cursor forms переиспользуют общий UI/P2P contract, но сохраняют нативный
-  ACP-адаптер.
+  Cursor forms переиспользуют общий UI/P2P lifecycle, но сохраняют нативный
+  ACP-адаптер и точные outcomes `answered` / `skipped` / `accepted` /
+  `rejected` / `cancelled`. Provider `toolCallId` и исходный payload не
+  публикуются в зашифрованное session state.
 - Terminal/phone continuity добавляется только через официальный structured
   transport. Remcli не использует ANSI scraping или два writer-процесса ради
   формального совпадения функций.
@@ -61,10 +63,11 @@
 `UI-F` не заменяет `L`. Skipped opt-in suite, fixture executable или одна
 документация provider не доказывают реальный lifecycle.
 
-Текущий evidence: Codex и Cursor имеют `D/I` и opt-in `L`; Antigravity имеет
-`D/I`, но повтор `L` заблокирован внешним eligibility gate; Claude Code не
-имеет принятого phone/web gate. Browser-проверки сейчас `UI-F` и не выдаются
-за реальные provider-запросы.
+Текущий evidence: Codex и Cursor lifecycle имеют `D/I` и opt-in `L`; Cursor
+structured forms имеют `D/I/UI-F`, а provider-triggered `L` фиксируется
+отдельно, потому что модель не предоставляет детерминированный способ вызвать
+extension. Antigravity имеет `D/I`, но повтор `L` заблокирован внешним
+eligibility gate. Browser-проверки не выдаются за реальные provider-запросы.
 
 ## Правило обновления
 

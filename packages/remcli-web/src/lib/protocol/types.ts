@@ -275,6 +275,47 @@ export const CodexStructuredRequestSchema = z.object({
     }
 });
 
+const CursorPlanTodoSchema = z.object({
+    id: z.string().min(1),
+    content: z.string().min(1),
+    status: z.enum(['pending', 'in_progress', 'completed', 'cancelled']),
+});
+
+const CursorPlanPhaseSchema = z.object({
+    name: z.string().min(1),
+    todos: z.array(CursorPlanTodoSchema),
+});
+
+const CursorPlanSchema = z.object({
+    name: z.string().optional(),
+    overview: z.string().optional(),
+    markdown: z.string(),
+    todos: z.array(CursorPlanTodoSchema),
+    phases: z.array(CursorPlanPhaseSchema).optional(),
+    isProject: z.boolean().optional(),
+});
+
+const CursorStructuredRequestBaseSchema = z.object({
+    requestKey: z.string().min(1),
+    message: z.string(),
+    fields: z.array(StructuredInputFieldSchema),
+    isBlocking: z.literal(true),
+    createdAt: z.number(),
+    deadlineAt: z.number(),
+});
+
+export const CursorStructuredRequestSchema = z.discriminatedUnion('kind', [
+    CursorStructuredRequestBaseSchema.extend({
+        kind: z.literal('cursor-question'),
+        fields: z.array(StructuredInputFieldSchema).min(1),
+        plan: z.never().optional(),
+    }),
+    CursorStructuredRequestBaseSchema.extend({
+        kind: z.literal('cursor-plan'),
+        plan: CursorPlanSchema,
+    }),
+]);
+
 export const AgentStateSchema = z.object({
     controlledByUser: z.boolean().nullish(),
     requests: z.record(z.string(), z.object({
@@ -283,6 +324,7 @@ export const AgentStateSchema = z.object({
         createdAt: z.number().nullish()
     })).nullish(),
     codexStructuredRequests: z.record(CodexStructuredRequestSchema).nullish(),
+    cursorStructuredRequests: z.record(CursorStructuredRequestSchema).nullish(),
     completedRequests: z.record(z.string(), z.object({
         tool: z.string(),
         arguments: z.any(),
@@ -306,6 +348,21 @@ export type CodexStructuredFieldType = StructuredInputField['type'];
 export type CodexStructuredStringFormat = z.infer<typeof StructuredInputStringFormatSchema>;
 export type CodexStructuredRequestOption = StructuredInputOption;
 export type CodexStructuredRequestField = StructuredInputField;
+export type CursorStructuredRequest = z.infer<typeof CursorStructuredRequestSchema>;
+export type CursorStructuredRequestState = CursorStructuredRequest;
+
+export interface CursorStructuredInputResponse {
+    requestKey: string;
+    submissionId: string;
+    action: 'submit' | 'decline' | 'cancel';
+    answers?: Record<string, string[]>;
+}
+
+export const CursorStructuredInputResponseResultSchema = z.object({
+    status: z.enum(['submitted', 'already-resolved']),
+});
+
+export type CursorStructuredInputResponseResult = z.infer<typeof CursorStructuredInputResponseResultSchema>;
 
 export interface CodexStructuredInputResponse {
     requestKey: string;

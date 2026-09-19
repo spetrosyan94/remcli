@@ -447,6 +447,8 @@ export type AgentState = {
    * answers, and provider payloads are intentionally excluded.
    */
   codexStructuredRequests?: Record<string, CodexStructuredRequestState>
+  /** Cursor ACP blocking requests projected for the encrypted Remcli UI. */
+  cursorStructuredRequests?: Record<string, CursorStructuredRequestState>
 }
 
 export type CodexStructuredRequestKind = 'tool-input' | 'mcp-form' | 'mcp-url'
@@ -494,4 +496,50 @@ export interface CodexStructuredRequestState {
   isBlocking: boolean
   createdAt: number
   deadlineAt: number
+}
+
+export interface CursorStructuredPlanTodo {
+  id: string
+  content: string
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled'
+}
+
+export interface CursorStructuredPlanPhase {
+  name: string
+  todos: CursorStructuredPlanTodo[]
+}
+
+export interface CursorStructuredPlan {
+  name?: string
+  overview?: string
+  markdown: string
+  todos: CursorStructuredPlanTodo[]
+  phases?: CursorStructuredPlanPhase[]
+  isProject?: boolean
+}
+
+/** Safe Cursor projection. Native toolCallId and raw ACP payload stay process-local. */
+interface CursorStructuredRequestBase {
+  requestKey: string
+  message: string
+  fields: CodexStructuredRequestField[]
+  isBlocking: true
+  createdAt: number
+  deadlineAt: number
+}
+
+export type CursorStructuredRequestState = CursorStructuredRequestBase & (
+  | { kind: 'cursor-question'; plan?: never }
+  | { kind: 'cursor-plan'; plan: CursorStructuredPlan }
+)
+
+export interface CursorStructuredInputResponse {
+  requestKey: string
+  submissionId: string
+  action: 'submit' | 'decline' | 'cancel'
+  answers?: Record<string, string[]>
+}
+
+export interface CursorStructuredInputResponseResult {
+  status: 'submitted' | 'already-resolved'
 }

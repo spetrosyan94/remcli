@@ -12,6 +12,8 @@ import type {
     CodexStructuredInputUrlResult,
     CodexStructuredRequest,
     CodexStructuredStringFormat,
+    CursorStructuredInputResponse,
+    CursorStructuredRequest,
     StructuredInputField,
 } from "@/lib/protocol/types";
 
@@ -36,8 +38,8 @@ export function isStructuredResponseLocked(state: StructuredResponseState): bool
 }
 
 interface StructuredInputCardProps {
-    request: CodexStructuredRequest;
-    onResponse: (response: CodexStructuredInputResponse) => Promise<CodexStructuredInputResponseResult>;
+    request: CodexStructuredRequest | CursorStructuredRequest;
+    onResponse: (response: CodexStructuredInputResponse | CursorStructuredInputResponse) => Promise<CodexStructuredInputResponseResult>;
     onOpenUrl: (requestKey: string) => Promise<CodexStructuredInputUrlResult>;
     terminalState?: Extract<StructuredResponseState, "expired">;
 }
@@ -268,11 +270,11 @@ export function StructuredResponseFeedback({ state, onRetry }: { state: Structur
     return null;
 }
 
-function ActionRow({ submitLabel, isLocked, isSubmitDisabled, onSubmit, onDecline, onCancel }: { submitLabel: string; isLocked: boolean; isSubmitDisabled: boolean; onSubmit: () => void; onDecline: () => void; onCancel: () => void }) {
+function ActionRow({ submitLabel, declineLabel = t("structured.decline"), cancelLabel = t("structured.cancel"), isLocked, isSubmitDisabled, onSubmit, onDecline, onCancel }: { submitLabel: string; declineLabel?: string; cancelLabel?: string; isLocked: boolean; isSubmitDisabled: boolean; onSubmit: () => void; onDecline: () => void; onCancel: () => void }) {
     return <div className="flex flex-wrap gap-2 border-t border-border px-3 py-3">
         <Button type="button" onClick={onSubmit} disabled={isLocked || isSubmitDisabled} className="min-h-11 min-w-[8rem] flex-1 rounded-[9px] bg-accent px-3 text-[13px] font-semibold text-accent-foreground duration-[var(--dur-micro)] ease-[var(--ease-out)] shadow-none hover:bg-accent/90 active:scale-[0.98] motion-reduce:active:scale-100">{submitLabel}</Button>
-        <Button type="button" variant="outline" onClick={onDecline} disabled={isLocked} className="min-h-11 rounded-[9px] border-border bg-transparent px-3 text-[12px] font-medium text-muted-foreground duration-[var(--dur-micro)] ease-[var(--ease-out)] shadow-none hover:bg-muted hover:text-foreground active:scale-[0.98] motion-reduce:active:scale-100">{t("structured.decline")}</Button>
-        <Button type="button" variant="ghost" onClick={onCancel} disabled={isLocked} className="min-h-11 rounded-[9px] px-3 text-[12px] font-medium text-muted-foreground duration-[var(--dur-micro)] ease-[var(--ease-out)] hover:bg-muted hover:text-foreground active:scale-[0.98] motion-reduce:active:scale-100">{t("structured.cancel")}</Button>
+        <Button type="button" variant="outline" onClick={onDecline} disabled={isLocked} className="min-h-11 rounded-[9px] border-border bg-transparent px-3 text-[12px] font-medium text-muted-foreground duration-[var(--dur-micro)] ease-[var(--ease-out)] shadow-none hover:bg-muted hover:text-foreground active:scale-[0.98] motion-reduce:active:scale-100">{declineLabel}</Button>
+        <Button type="button" variant="ghost" onClick={onCancel} disabled={isLocked} className="min-h-11 rounded-[9px] px-3 text-[12px] font-medium text-muted-foreground duration-[var(--dur-micro)] ease-[var(--ease-out)] hover:bg-muted hover:text-foreground active:scale-[0.98] motion-reduce:active:scale-100">{cancelLabel}</Button>
     </div>;
 }
 
@@ -383,7 +385,7 @@ function StructuredFieldsCard({ request, onResponse, terminalState }: Pick<Struc
             requestKey: request.requestKey,
             submissionId: submissionIdRef.current,
             action,
-            ...(action === "submit" && request.kind === "tool-input" ? { answers: structuredToolAnswers(request.fields, values, otherValues) } : {}),
+            ...(action === "submit" && (request.kind === "tool-input" || request.kind === "cursor-question") ? { answers: structuredToolAnswers(request.fields, values, otherValues) } : {}),
             ...(action === "submit" && request.kind === "mcp-form" ? { content: structuredFormContent(request.fields, values, otherValues) } : {}),
         };
         try {
@@ -402,7 +404,7 @@ function StructuredFieldsCard({ request, onResponse, terminalState }: Pick<Struc
     const updateOther = (fieldId: string, value: string | undefined) => setOtherValues((current) => { const next = { ...current }; if (value === undefined) delete next[fieldId]; else next[fieldId] = value; return next; });
 
     return <section aria-busy={responseState === "sending" || undefined} data-structured-input-card data-structured-request-key={request.requestKey} data-structured-kind={request.kind} data-structured-response-state={responseState} className={`overflow-hidden rounded-xl border shadow-lg shadow-black/5 transition-[background-color,border-color,box-shadow] duration-[var(--dur-std)] ease-[var(--ease-out)] motion-reduce:transition-opacity motion-reduce:duration-[var(--dur-micro)] ${responseState === "expired" ? "border-status-permission/40 bg-status-permission/[0.06]" : "border-status-thinking/35 bg-status-thinking/[0.05]"}`}>
-        <div className="flex items-start gap-2 border-b border-status-thinking/20 px-3 py-2.5"><span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-status-thinking" aria-hidden="true" /><div className="min-w-0 flex-1"><h2 className="break-words font-mono text-[11px] font-semibold text-status-thinking">{request.kind === "mcp-form" ? t("structured.formTitle") : t("structured.userInputTitle")}</h2><p className="mt-1 break-words text-[12px] leading-relaxed text-foreground/85">{request.message}</p></div>{request.isBlocking && <span className="shrink-0 font-mono text-[9px] text-status-thinking">{t("structured.blocking")}</span>}</div>
+        <div className="flex items-start gap-2 border-b border-status-thinking/20 px-3 py-2.5"><span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-status-thinking" aria-hidden="true" /><div className="min-w-0 flex-1"><h2 className="break-words font-mono text-[11px] font-semibold text-status-thinking">{request.kind === "mcp-form" ? t("structured.formTitle") : request.kind === "cursor-question" ? t("structured.cursorQuestionTitle") : t("structured.userInputTitle")}</h2><p className="mt-1 break-words text-[12px] leading-relaxed text-foreground/85">{request.message}</p></div>{request.isBlocking && <span className="shrink-0 font-mono text-[9px] text-status-thinking">{t("structured.blocking")}</span>}</div>
         <form onSubmit={(event) => { event.preventDefault(); void respond("submit"); }} className="space-y-3 px-3 py-3">
             {request.fields.map((field) => <FieldControl key={field.id} requestKey={request.requestKey} field={field} state={fieldState(field, values, otherValues)} disabled={isLocked} onChange={(value) => updateValue(field.id, value)} onOtherChange={(value) => updateOther(field.id, value)} />)}
             {!canSubmit && <p className="font-mono text-[10px] text-muted-foreground">{t("structured.questionRequired")}</p>}
@@ -412,7 +414,44 @@ function StructuredFieldsCard({ request, onResponse, terminalState }: Pick<Struc
     </section>;
 }
 
-function McpUrlCard({ request, onResponse, onOpenUrl, terminalState }: StructuredInputCardProps) {
+function CursorPlanCard({ request, onResponse, terminalState }: { request: CursorStructuredRequest & { kind: "cursor-plan" }; onResponse: StructuredInputCardProps["onResponse"]; terminalState?: "expired" }) {
+    const [state, setState] = React.useState<StructuredResponseState>("idle");
+    const submissionIdRef = React.useRef(createSubmissionId());
+    const submitGateRef = React.useRef(createStructuredResponseGate());
+    const lastActionRef = React.useRef<CursorStructuredInputResponse["action"]>("submit");
+    const responseState = terminalState ?? state;
+    const isLocked = isStructuredResponseLocked(responseState);
+    const plan = request.plan;
+
+    const respond = React.useCallback(async (action: CursorStructuredInputResponse["action"]) => {
+        if (isLocked || !submitGateRef.current.tryAcquire()) return;
+        lastActionRef.current = action;
+        setState("sending");
+        try {
+            const result = await onResponse({ requestKey: request.requestKey, submissionId: submissionIdRef.current, action });
+            setState(result.status === "already-resolved" ? "expired" : "resolved");
+        } catch {
+            setState("error");
+        } finally {
+            submitGateRef.current.release();
+        }
+    }, [isLocked, onResponse, request.requestKey]);
+
+    return <section aria-busy={responseState === "sending" || undefined} data-structured-input-card data-structured-request-key={request.requestKey} data-structured-kind="cursor-plan" data-structured-response-state={responseState} className={`overflow-hidden rounded-xl border shadow-lg shadow-black/5 transition-[background-color,border-color,box-shadow] duration-[var(--dur-std)] ease-[var(--ease-out)] motion-reduce:transition-opacity motion-reduce:duration-[var(--dur-micro)] ${responseState === "expired" ? "border-status-permission/40 bg-status-permission/[0.06]" : "border-status-thinking/35 bg-status-thinking/[0.05]"}`}>
+        <div className="flex items-start gap-2 border-b border-status-thinking/20 px-3 py-2.5"><span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-status-thinking" aria-hidden="true" /><div className="min-w-0 flex-1"><h2 className="break-words font-mono text-[11px] font-semibold text-status-thinking">{t("structured.cursorPlanTitle")}</h2><p className="mt-1 break-words text-[13px] font-medium leading-relaxed text-foreground">{plan?.name ?? request.message}</p>{plan?.overview && plan.overview !== request.message && <p className="mt-1 break-words text-[11px] leading-relaxed text-muted-foreground">{plan.overview}</p>}</div><span className="shrink-0 font-mono text-[9px] text-status-thinking">{t("structured.blocking")}</span></div>
+        <div className="min-w-0 space-y-3 px-3 py-3">
+            {plan?.markdown && <div className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-foreground/90 [overflow-wrap:anywhere]">{plan.markdown}</div>}
+            {plan && plan.todos.length > 0 && <ul className="space-y-1.5 border-t border-border pt-3" aria-label={t("structured.cursorPlanTodos")}>
+                {plan.todos.map((todo) => <li key={todo.id} className="flex min-w-0 items-start gap-2 text-[11px] leading-relaxed text-muted-foreground"><span className="mt-px shrink-0 font-mono text-status-thinking" aria-hidden="true">{todo.status === "completed" ? "✓" : todo.status === "in_progress" ? "→" : todo.status === "cancelled" ? "×" : "·"}</span><span className="min-w-0 break-words [overflow-wrap:anywhere]">{todo.content}</span></li>)}
+            </ul>}
+            {plan?.phases?.map((phase) => <section key={phase.name} className="border-t border-border pt-3"><h3 className="break-words font-mono text-[10px] font-semibold text-muted-foreground">{phase.name}</h3><ul className="mt-1.5 space-y-1">{phase.todos.map((todo) => <li key={todo.id} className="break-words text-[11px] text-muted-foreground [overflow-wrap:anywhere]">{todo.status === "completed" ? "✓" : "·"} {todo.content}</li>)}</ul></section>)}
+        </div>
+        <ActionRow submitLabel={t("structured.accept")} declineLabel={t("structured.reject")} isLocked={isLocked} isSubmitDisabled={false} onSubmit={() => void respond("submit")} onDecline={() => void respond("decline")} onCancel={() => void respond("cancel")} />
+        <StructuredResponseFeedback state={responseState} onRetry={() => void respond(lastActionRef.current)} />
+    </section>;
+}
+
+function McpUrlCard({ request, onResponse, onOpenUrl, terminalState }: Omit<StructuredInputCardProps, "request"> & { request: CodexStructuredRequest }) {
     const [state, setState] = React.useState<StructuredResponseState>("idle");
     const [urlOpenState, setUrlOpenState] = React.useState<McpUrlOpenState>("idle");
     const submissionIdRef = React.useRef(createSubmissionId());
@@ -475,6 +514,7 @@ function McpUrlCard({ request, onResponse, onOpenUrl, terminalState }: Structure
 
 export function StructuredInputCard({ request, onResponse, onOpenUrl, terminalState }: StructuredInputCardProps) {
     if (request.kind === "mcp-url") return <McpUrlCard request={request} onResponse={onResponse} onOpenUrl={onOpenUrl} terminalState={terminalState} />;
+    if (request.kind === "cursor-plan") return <CursorPlanCard request={request} onResponse={onResponse} terminalState={terminalState} />;
     return <StructuredFieldsCard request={request} onResponse={onResponse} terminalState={terminalState} />;
 }
 

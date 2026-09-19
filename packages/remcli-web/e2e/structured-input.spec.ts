@@ -112,6 +112,43 @@ test("tool-input renders A/B/C, mutually exclusive Other, free input, and passwo
     await assertNoHorizontalOverflow(page);
 });
 
+test("Cursor question supports single and multiple choice without invented options", async ({ page }) => {
+    await openStructuredFixture(page, "structured=cursor-question");
+
+    const card = page.locator('[data-structured-kind="cursor-question"]');
+    const submit = card.getByRole("button", { name: "Submit", exact: true });
+    await expect(card).toBeVisible();
+    await expect(card.getByText("Cursor needs your input", { exact: true })).toBeVisible();
+    await expect(card.getByRole("radio", { name: "Frontend", exact: true })).toBeVisible();
+    await expect(card.getByRole("checkbox", { name: "Browser path", exact: true })).toBeVisible();
+    await expect(card.getByText("Other", { exact: true })).toHaveCount(0);
+    await expect(submit).toBeDisabled();
+    await card.getByRole("radio", { name: "Frontend", exact: true }).click();
+    await card.getByRole("checkbox", { name: "Tests", exact: true }).click();
+    await expect(submit).toBeEnabled();
+    await assertBlockingComposer(page);
+    await assertNoHorizontalOverflow(page);
+    await submit.click();
+    await expect(card).toHaveCount(0);
+    await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Response sent." })).toBeVisible();
+});
+
+test("Cursor plan stays inline, scrollable, and sends an explicit decision", async ({ page }) => {
+    await openStructuredFixture(page, "structured=cursor-plan");
+
+    const card = page.locator('[data-structured-kind="cursor-plan"]');
+    await expect(card).toBeVisible();
+    await expect(card.getByText("Cursor structured forms", { exact: true })).toBeVisible();
+    await expect(card.getByText("Validate ACP question and plan payloads", { exact: true })).toBeVisible();
+    await expect(card.getByRole("button", { name: "Accept", exact: true })).toBeVisible();
+    await expect(card.getByRole("button", { name: "Reject", exact: true })).toBeVisible();
+    await assertBlockingComposer(page);
+    await assertNoHorizontalOverflow(page);
+    await card.getByRole("button", { name: "Reject", exact: true }).click();
+    await expect(card).toHaveCount(0);
+    await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Response sent." })).toBeVisible();
+});
+
 test("mixed MCP form uses native formats, explicit boolean radios, defaults, and invalid submit gate", async ({ page }) => {
     await openStructuredFixture(page, "structured=mcp-form");
 

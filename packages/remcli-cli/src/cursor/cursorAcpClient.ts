@@ -31,7 +31,7 @@ export interface CursorAcpCallbacks {
     onSessionUpdate?: (notification: SessionNotification) => void | Promise<void>;
     onNotification?: (method: string, params: unknown) => void;
     onPermission?: (request: RequestPermissionRequest) => Promise<CursorPermissionDecision>;
-    onExtensionWarning?: (method: string) => void;
+    onExtension?: (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>;
     onError?: (error: Error) => void;
 }
 
@@ -349,12 +349,15 @@ export class CursorAcpClient {
         return { outcome: { outcome: 'selected', optionId: option.optionId } };
     }
 
-    private async handleExtension(method: string, _params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    private async handleExtension(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
         if (method === 'cursor/ask_question' || method === 'cursor/create_plan') {
-            this.options.onExtensionWarning?.(method);
-            return method === 'cursor/ask_question'
-                ? { outcome: { outcome: 'skipped', reason: 'Remcli does not support structured Cursor questions yet.' } }
-                : { outcome: { outcome: 'rejected', reason: 'Remcli does not support Cursor plan approval yet.' } };
+            if (!this.options.onExtension) return { outcome: { outcome: 'cancelled' } };
+            try {
+                return await this.options.onExtension(method, params);
+            } catch (error) {
+                logger.debug('[Cursor ACP] extension delegate failed', { method, hasProviderMessage: Boolean(error) });
+                return { outcome: { outcome: 'cancelled' } };
+            }
         }
         return { outcome: { outcome: 'cancelled' } };
     }

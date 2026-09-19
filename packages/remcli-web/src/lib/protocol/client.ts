@@ -79,6 +79,7 @@ import {
     sendEncryptedMessage,
     sessionAllow as socketSessionAllow,
     sessionCodexStructuredInputResponse as socketSessionCodexStructuredInputResponse,
+    sessionCursorStructuredInputResponse as socketSessionCursorStructuredInputResponse,
     sessionCodexStructuredInputUrl as socketSessionCodexStructuredInputUrl,
     sessionDeny as socketSessionDeny,
     socketConnect,
@@ -119,6 +120,8 @@ import {
     type CodexStructuredInputResponse,
     type CodexStructuredInputResponseResult,
     type CodexStructuredInputUrlResult,
+    type CursorStructuredInputResponse,
+    type CursorStructuredInputResponseResult,
 } from '@/lib/protocol/types';
 
 // ─── UUID (secure-context independent) ───────────────────────────
@@ -1010,6 +1013,17 @@ export async function sessionCodexStructuredInputResponse(
         return fixtureAnswerStructuredInput(sessionId, response);
     }
     return socketSessionCodexStructuredInputResponse(sessionId, response);
+}
+
+/** Respond to one Cursor ACP question or plan without echoing answers locally. */
+export async function sessionCursorStructuredInputResponse(
+    sessionId: string,
+    response: CursorStructuredInputResponse,
+): Promise<CursorStructuredInputResponseResult> {
+    if (isFixturesActive) {
+        return fixtureAnswerStructuredInput(sessionId, response);
+    }
+    return socketSessionCursorStructuredInputResponse(sessionId, response);
 }
 
 /** Fetch a pending MCP URL only after the user explicitly chooses to open it. */

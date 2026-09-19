@@ -39,10 +39,11 @@ import {
     fetchWhisperStatus, getRestConfig, isClientStarted, loadSessionMessages,
     machineGetAntigravityCapabilities, machineGetCodexCapabilities, machineGetCursorCapabilities, machineGetSessionExecution,
     machineSetSessionExecution, machineSpawnNewSession, refreshSessions, restoreProtocolClient, sendSessionMessage,
-    sessionAllow, sessionCodexStructuredInputResponse, sessionCodexStructuredInputUrl, sessionDeny, useConnectionStatus, useMachines, useProtocolStore,
+    sessionAllow, sessionCodexStructuredInputResponse, sessionCodexStructuredInputUrl, sessionCursorStructuredInputResponse, sessionDeny, useConnectionStatus, useMachines, useProtocolStore,
     useSession, useSessionMessages, useSessionMessagesLoaded, useSessions,
     type CodexCapabilitiesSnapshot, type CursorCapabilitiesSnapshot, type NormalizedMessage,
-    type CodexStructuredRequest, type CodexStructuredInputResponse, type CodexStructuredInputResponseResult, type PermissionMode, type Session, type SessionExecutionSelection, type SessionExecutionSnapshot,
+    type CodexStructuredRequest, type CodexStructuredInputResponse, type CodexStructuredInputResponseResult,
+    type CursorStructuredRequest, type CursorStructuredInputResponse, type PermissionMode, type Session, type SessionExecutionSelection, type SessionExecutionSnapshot,
 } from "@/lib/protocol";
 import { onProtocolReconnected, type SessionMessagesPage } from "@/lib/protocol/client";
 import { useVoiceRecorder } from "@/lib/voice/recorder";
@@ -69,7 +70,7 @@ interface PermissionResponseState {
 }
 
 interface StructuredRequestRetention {
-    request: CodexStructuredRequest;
+    request: CodexStructuredRequest | CursorStructuredRequest;
     terminalState?: "expired";
     restoreComposerFocus?: boolean;
 }
@@ -1046,8 +1047,11 @@ export function pendingPermissionsOf(session: Session | null): PendingPermission
         .sort((a, b) => a.createdAt - b.createdAt);
 }
 
-export function pendingStructuredRequestsOf(session: Session | null): CodexStructuredRequest[] {
-    return Object.values(session?.agentState?.codexStructuredRequests ?? {})
+export function pendingStructuredRequestsOf(session: Session | null): Array<CodexStructuredRequest | CursorStructuredRequest> {
+    return [
+        ...Object.values(session?.agentState?.codexStructuredRequests ?? {}),
+        ...Object.values(session?.agentState?.cursorStructuredRequests ?? {}),
+    ]
         .sort((left, right) => left.createdAt - right.createdAt);
 }
 
@@ -2017,7 +2021,7 @@ export function ChatPage() {
             });
     };
 
-    const respondToStructuredRequest = React.useCallback(async (response: CodexStructuredInputResponse): Promise<CodexStructuredInputResponseResult> => {
+    const respondToStructuredRequest = React.useCallback(async (response: CodexStructuredInputResponse | CursorStructuredInputResponse): Promise<CodexStructuredInputResponseResult> => {
         const request = pendingStructuredRequests.find((candidate) => candidate.requestKey === response.requestKey);
         if (!request) return { status: "already-resolved" };
         const focusedCard = document.activeElement instanceof Element
@@ -2025,7 +2029,9 @@ export function ChatPage() {
             : null;
         const restoreComposerFocus = focusedCard?.getAttribute("data-structured-request-key") === response.requestKey;
         setStructuredRequestRetentions((current) => ({ ...current, [response.requestKey]: { request } }));
-        const result = await sessionCodexStructuredInputResponse(sessionId, response);
+        const result = request.kind === "cursor-question" || request.kind === "cursor-plan"
+            ? await sessionCursorStructuredInputResponse(sessionId, response as CursorStructuredInputResponse)
+            : await sessionCodexStructuredInputResponse(sessionId, response as CodexStructuredInputResponse);
         if (result.status === "already-resolved") {
             setLocallyClosedStructuredRequestKeys((current) => new Set(current).add(response.requestKey));
             setStructuredRequestRetentions((current) => ({

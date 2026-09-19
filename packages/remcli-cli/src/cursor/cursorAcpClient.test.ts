@@ -187,18 +187,17 @@ describe('CursorAcpClient', () => {
         await expect(h.protocolClient.requestPermission!({ sessionId: 'new-session', toolCall: {} as never, options: [{ optionId: 'reject', kind: 'reject_once', name: 'reject' }] })).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
     });
 
-    it('fails closed for Cursor blocking extensions and warns visibly', async () => {
-        const warning = vi.fn();
+    it('delegates supported Cursor blocking extensions and fails unknown methods closed', async () => {
+        const extension = vi.fn(async (method: string) => method === 'cursor/ask_question'
+            ? { outcome: { outcome: 'answered', answers: [] } }
+            : { outcome: { outcome: 'accepted' } });
         const h = setup();
-        const client = new CursorAcpClient({ cwd: '/workspace', mode: 'agent', model: 'cursor-model', onExtensionWarning: warning, spawn: vi.fn(() => h.fake.child), connectionFactory: vi.fn((_child, callbacks) => { h.setProtocolClient(callbacks); return h.connection; }) });
+        const client = new CursorAcpClient({ cwd: '/workspace', mode: 'agent', model: 'cursor-model', onExtension: extension, spawn: vi.fn(() => h.fake.child), connectionFactory: vi.fn((_child, callbacks) => { h.setProtocolClient(callbacks); return h.connection; }) });
         await client.start();
-        await expect(h.protocolClient.extMethod!('cursor/ask_question', { question: 'private' })).resolves.toEqual({
-            outcome: { outcome: 'skipped', reason: 'Remcli does not support structured Cursor questions yet.' },
-        });
-        await expect(h.protocolClient.extMethod!('cursor/create_plan', {})).resolves.toEqual({
-            outcome: { outcome: 'rejected', reason: 'Remcli does not support Cursor plan approval yet.' },
-        });
-        expect(warning).toHaveBeenCalledTimes(2);
+        await expect(h.protocolClient.extMethod!('cursor/ask_question', { toolCallId: 'question' })).resolves.toEqual({ outcome: { outcome: 'answered', answers: [] } });
+        await expect(h.protocolClient.extMethod!('cursor/create_plan', { toolCallId: 'plan' })).resolves.toEqual({ outcome: { outcome: 'accepted' } });
+        await expect(h.protocolClient.extMethod!('cursor/unknown', { private: true })).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
+        expect(extension).toHaveBeenCalledTimes(2);
     });
 
     it('cancels the active prompt and handles child crash without raw details', async () => {

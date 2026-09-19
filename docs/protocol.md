@@ -296,11 +296,23 @@ auth: {
     HTTPS URL только для живого MCP URL request. В `agentState` хранится только
     URL без credentials, query и fragment; web запрашивает raw URL после явного
     действия пользователя.
+  - Session-scoped `cursor-structured-input-response` принимает
+    `{ requestKey, submissionId, action, answers? }`. Question submit
+    валидируется против provider option IDs. Wire action всегда
+    `submit` / `decline` / `cancel`; для plan broker переводит его в native ACP
+    outcome `accepted` / `rejected` / `cancelled`. Ответ —
+    `{ status: "submitted" | "already-resolved" }`.
 
 `agentState.codexStructuredRequests` — зашифрованная безопасная проекция живых
 Codex structured requests. Native JSON-RPC id и provider payload остаются
 private в runner. Запись удаляется при ответе, provider resolution, timeout,
 turn completion/interruption, transport loss или cleanup.
+
+`agentState.cursorStructuredRequests` — отдельная зашифрованная проекция живых
+`cursor/ask_question` и `cursor/create_plan`. Provider `toolCallId`, исходный
+ACP payload и ответы не сохраняются в state или историю. Запись удаляется при
+ответе, timeout, turn completion/interruption, transport loss или cleanup;
+reconnect повторно публикует только ещё живой request.
 
 ## HTTP-endpoint'ы по областям
 

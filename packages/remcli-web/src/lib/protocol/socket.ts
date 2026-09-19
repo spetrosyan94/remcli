@@ -16,6 +16,9 @@ import {
     type CodexStructuredInputResponseResult,
     type CodexStructuredInputResponse,
     type CodexStructuredInputUrlResult,
+    CursorStructuredInputResponseResultSchema,
+    type CursorStructuredInputResponse,
+    type CursorStructuredInputResponseResult,
     type AgentKind,
     type AgentSessionInfo,
     type PermissionMode,
@@ -1195,6 +1198,15 @@ export async function sessionCodexStructuredInputResponse(
 ): Promise<CodexStructuredInputResponseResult> {
     const result = await sessionRpc(sessionId, 'codex-structured-input-response', response);
     return CodexStructuredInputResponseResultSchema.parse(result);
+}
+
+/** Respond to one Cursor ACP question or plan decision. */
+export async function sessionCursorStructuredInputResponse(
+    sessionId: string,
+    response: CursorStructuredInputResponse,
+): Promise<CursorStructuredInputResponseResult> {
+    const result = await sessionRpc(sessionId, 'cursor-structured-input-response', response);
+    return CursorStructuredInputResponseResultSchema.parse(result);
 }
 
 function parseStructuredInputUrlResult(value: unknown): CodexStructuredInputUrlResult {

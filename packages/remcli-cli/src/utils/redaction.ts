@@ -1,4 +1,5 @@
 const SENSITIVE_FIELD_NAME = /(token|secret|password|passphrase|credential|authorization|auth|key|cookie)/i;
+const PRIVATE_STRUCTURED_STATE = /^(?:codex|cursor)StructuredRequests$/;
 const ENV_ASSIGNMENT = /\b([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/g;
 const SENSITIVE_FLAG_VALUE = /(--[A-Za-z0-9-]*(?:token|secret|password|passphrase|credential|auth|key)[A-Za-z0-9-]*)(?:=|\s+)("[^"]*"|'[^']*'|\S+)/gi;
 const URL_CREDENTIALS = /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/?#@]+)@/gi;
@@ -12,7 +13,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isSensitiveName(name: string): boolean {
-    return SENSITIVE_FIELD_NAME.test(name);
+    return SENSITIVE_FIELD_NAME.test(name) || PRIVATE_STRUCTURED_STATE.test(name);
 }
 
 export function redactSensitiveText(value: string): string {
