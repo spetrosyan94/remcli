@@ -9,14 +9,17 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
-import type { SessionModelState } from '@agentclientprotocol/sdk';
 import { logger } from '@/ui/logger';
 import {
     CURSOR_EXECUTABLE_CANDIDATES,
     isCursorExecutable,
     type CursorExecutable,
 } from './cursorCli';
-import { CursorAcpClient, type CursorAcpSession } from './cursorAcpClient';
+import {
+    CursorAcpClient,
+    type CursorAcpSession,
+    type CursorSessionModelState,
+} from './cursorAcpClient';
 
 const CAPABILITIES_TTL_MS = 60 * 1_000;
 const DISCOVERY_TIMEOUT_MS = 5_000;
@@ -51,7 +54,7 @@ export interface CursorCapabilitiesSnapshot {
 export interface CursorAcpCatalogResult {
     executable: CursorExecutable;
     version: string;
-    models: SessionModelState;
+    models: CursorSessionModelState;
 }
 
 export interface CursorAcpCatalogClient {
@@ -167,7 +170,7 @@ export function isCursorRunnerIdentity(value: unknown): value is CursorRunnerIde
  * ACP selection is the sole default; multiple defaults would make spawn
  * behavior ambiguous and are rejected instead of guessed.
  */
-export function normalizeCursorAcpModels(modelState: SessionModelState): CursorModelCapability[] {
+export function normalizeCursorAcpModels(modelState: CursorSessionModelState): CursorModelCapability[] {
     const availableModels = modelState?.availableModels;
     const currentModelId = modelState?.currentModelId;
     if (!Array.isArray(availableModels) || availableModels.length === 0
@@ -206,7 +209,7 @@ export function normalizeCursorAcpModels(modelState: SessionModelState): CursorM
 }
 
 export function createCursorCapabilitiesSnapshot(
-    modelState: SessionModelState,
+    modelState: CursorSessionModelState,
     now: () => number = Date.now,
     cacheTtlMs: number = CAPABILITIES_TTL_MS,
     runner: CursorRunnerIdentity = createDefaultCursorRunnerIdentity(),

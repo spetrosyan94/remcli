@@ -12,7 +12,6 @@ import {
     type RequestPermissionResponse,
     type SessionNotification,
     type SessionModeState,
-    type SessionModelState,
     type SessionUpdate,
 } from '@agentclientprotocol/sdk';
 import { logger } from '@/ui/logger';
@@ -81,12 +80,23 @@ export interface CursorConnection {
     readonly closed?: Promise<void>;
 }
 
+export interface CursorSessionModel {
+    modelId: string;
+    name: string;
+}
+
+/** Cursor-specific model selector retained as an ACP extension. */
+export interface CursorSessionModelState {
+    availableModels: CursorSessionModel[];
+    currentModelId: string;
+}
+
 export type CursorConnectionFactory = (child: CursorChild, callbacks: Client) => CursorConnection;
 
 export interface CursorSessionResponse {
     sessionId: string;
     modes?: SessionModeState | null;
-    models?: SessionModelState | null;
+    models?: CursorSessionModelState | null;
 }
 
 export type CursorLoadedSessionResponse = Omit<CursorSessionResponse, 'sessionId'>;
@@ -94,7 +104,7 @@ export type CursorLoadedSessionResponse = Omit<CursorSessionResponse, 'sessionId
 export interface CursorAcpSession {
     sessionId: string;
     modes: SessionModeState;
-    models?: SessionModelState;
+    models?: CursorSessionModelState;
 }
 
 function safeError(error: unknown): Error {
@@ -121,7 +131,7 @@ function fallbackModeState(mode: CursorMode): SessionModeState {
     return { availableModes: [{ id: mode, name }], currentModeId: mode };
 }
 
-function fallbackModelState(model: string): SessionModelState {
+function fallbackModelState(model: string): CursorSessionModelState {
     return {
         availableModels: [{ modelId: model, name: model }],
         currentModelId: model,
@@ -152,7 +162,18 @@ function streamsToSdk(child: CursorChild): { writable: WritableStream<Uint8Array
 function defaultConnectionFactory(child: CursorChild, callbacks: Client): CursorConnection {
     const { writable, readable } = streamsToSdk(child);
     const stream = ndJsonStream(writable, readable);
-    return new ClientSideConnection((_agent: Agent) => callbacks, stream);
+    const connection = new ClientSideConnection((_agent: Agent) => callbacks, stream);
+    return {
+        initialize: (params) => connection.initialize(params),
+        authenticate: (params) => connection.authenticate(params),
+        newSession: (params) => connection.newSession(params) as Promise<CursorSessionResponse>,
+        loadSession: (params) => connection.loadSession(params) as Promise<CursorLoadedSessionResponse>,
+        setSessionMode: (params) => connection.setSessionMode(params),
+        setSessionModel: (params) => connection.extMethod('session/set_model', params),
+        prompt: (params) => connection.prompt(params),
+        cancel: (params) => connection.cancel(params),
+        closed: connection.closed,
+    };
 }
 
 export class CursorAcpClient {

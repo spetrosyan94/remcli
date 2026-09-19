@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { SessionModelState } from '@agentclientprotocol/sdk';
+
+import type { CursorSessionModelState } from './cursorAcpClient';
 
 import {
     CursorCapabilitiesError,
@@ -11,7 +12,7 @@ import {
     type CursorAcpCatalogResult,
 } from './cursorCapabilities';
 
-const ACP_MODELS: SessionModelState = {
+const ACP_MODELS: CursorSessionModelState = {
     availableModels: [
         { modelId: 'gpt-5.6-luna[reasoning=medium,fast=false]', name: 'GPT-5.6 Luna' },
         { modelId: 'claude-opus-5[thinking=true,effort=high]', name: 'Claude Opus 5' },
@@ -32,7 +33,7 @@ function createDeferred<T>(): Deferred<T> {
     return { promise, resolve: resolvePromise };
 }
 
-function createCatalogResult(models: SessionModelState = ACP_MODELS): CursorAcpCatalogResult {
+function createCatalogResult(models: CursorSessionModelState = ACP_MODELS): CursorAcpCatalogResult {
     return { executable: 'agent', version: 'controlled-cursor-agent 1.0.0', models };
 }
 
@@ -71,7 +72,7 @@ describe('normalizeCursorAcpModels', () => {
         ['a missing current model', { availableModels: [{ modelId: 'one', name: 'One' }], currentModelId: 'two' }],
         ['a current ID with surrounding whitespace', { availableModels: [{ modelId: 'one', name: 'One' }], currentModelId: ' one' }],
     ] as const)('fails closed for %s', (_caseName, modelState) => {
-        expect(() => normalizeCursorAcpModels(modelState as unknown as SessionModelState)).toThrow();
+        expect(() => normalizeCursorAcpModels(modelState as unknown as CursorSessionModelState)).toThrow();
     });
 });
 

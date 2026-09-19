@@ -7,7 +7,7 @@
 - Cursor models: https://cursor.com/docs/models
 - Agent Client Protocol: https://agentclientprotocol.com/protocol/v1/overview
 - Локальная приёмка: `agent --help`, `agent acp --help`,
-  `agent 2026.09.10-fd3934a`
+  `agent 2026.09.10-fd3934a`, `@agentclientprotocol/sdk 1.4.0`
 - Проверено: 2026-09-20.
 
 ## Назначение
@@ -35,7 +35,8 @@ servers могут быть переданы Cursor внутри `session/new` �
    использует уже существующую авторизацию локального Cursor CLI.
 4. Новая сессия создаётся через `session/new`; resume выполняется только через
    `session/load` с исходным native session ID.
-5. Выбранные модель и режим применяются через session methods до prompt.
+5. Выбранный режим применяется через стандартный `session/set_mode`, а модель
+   — через Cursor-specific `session/set_model` extension до prompt.
    Если `session/load` не повторяет optional capability state, daemon-runner
    использует только уже проверенные model/mode, а setter остаётся финальной
    provider-side проверкой. Прямой CLI-resume без явно выбранной модели
@@ -80,9 +81,10 @@ chat relation.
 
 ## Модели и режим
 
-Cursor capabilities получаются из реальной авторизованной ACP-сессии. Remcli
-использует точные `modelId`, которые вернул `SessionModelState`, и не парсит
-человекочитаемый вывод `agent models`.
+Cursor capabilities получаются из реальной авторизованной ACP-сессии. Model
+catalog и `session/set_model` являются Cursor-specific ACP extensions, а не
+частью стабильной общей ACP schema. Remcli использует точные `modelId`, которые
+вернул Cursor, и не парсит человекочитаемый вывод `agent models`.
 
 `get-cursor-capabilities` возвращает:
 
@@ -119,6 +121,8 @@ Remcli обрабатывает только типизированные ACP up
 - `tool_call` создаёт tool card с названием, kind и locations;
 - `tool_call_update` завершает карточку статусом `completed` или `failed`;
 - provider reasoning и raw tool result не копируются в публичный чат;
+- `session_info_update` принимается актуальной ACP schema без protocol error;
+  native title persistence остаётся отдельной задачей;
 - update другой native session игнорируется.
 
 Текстовые chunks отправляются в web-клиент сразу с одним logical message ID.

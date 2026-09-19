@@ -64,10 +64,11 @@
 документация provider не доказывают реальный lifecycle.
 
 Текущий evidence: Codex и Cursor lifecycle имеют `D/I` и opt-in `L`; Cursor
-structured forms имеют `D/I/UI-F`, а provider-triggered `L` фиксируется
-отдельно, потому что модель не предоставляет детерминированный способ вызвать
-extension. Antigravity имеет `D/I`, но повтор `L` заблокирован внешним
-eligibility gate. Browser-проверки не выдаются за реальные provider-запросы.
+structured forms имеют `D/I/UI-F`, а real Composer 2.5 Fast подтвердил
+provider-triggered `cursor/create_plan`. `cursor/ask_question` остаётся
+отдельным недетерминированным `L` gate. Antigravity имеет `D/I`, но повтор `L`
+заблокирован внешним eligibility gate. Browser-проверки не выдаются за реальные
+provider-запросы.
 
 ## Правило обновления
 
