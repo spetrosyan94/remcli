@@ -34,7 +34,6 @@ yarn-error.*
 # Local agent state
 .agents/
 .codex/
-.local-worktrees/
 AGENTS.md
 skills-lock.json
 plans/
