@@ -128,6 +128,7 @@ const testState = vi.hoisted(() => {
         reconnectCancel: vi.fn(),
         permissionUpdateSession: vi.fn(),
         permissionReset: vi.fn(),
+        autoSetTitle: vi.fn(),
         startImplementation: null as unknown as (client: FakeCursorAcpClient) => Promise<{
             sessionId: string;
             modes: { availableModes: Array<{ id: string; name: string }>; currentModeId: string };
@@ -210,7 +211,7 @@ vi.mock('@/utils/MessageQueue2', () => ({
 }));
 
 vi.mock('@/utils/autoSessionTitle', () => ({
-    createAutoTitleSetter: () => vi.fn(),
+    createAutoTitleSetter: () => testState.autoSetTitle,
 }));
 
 vi.mock('@/claude/registerKillSessionHandler', () => ({
@@ -347,6 +348,7 @@ describe('runCursor ACP lifecycle', () => {
         testState.reconnectCancel.mockReset();
         testState.permissionUpdateSession.mockReset();
         testState.permissionReset.mockReset();
+        testState.autoSetTitle.mockReset();
         testState.startImplementation = async (client) => ({
             sessionId: client.options.resumeSessionId ?? 'cursor-native-session',
             modes: {
@@ -425,6 +427,129 @@ describe('runCursor ACP lifecycle', () => {
         }));
     });
 
+    it('persists live native session info without letting the prompt fallback replace its title', async () => {
+        process.env.REMCLI_DAEMON_RUNNER_TOKEN = 'runner-token';
+        testState.promptImplementation = async (client) => {
+            await client.options.onSessionUpdate?.({
+                sessionId: 'cursor-native-session',
+                update: {
+                    sessionUpdate: 'session_info_update',
+                    title: 'Native Cursor title',
+                    updatedAt: '2026-09-20T02:00:00.000Z',
+                },
+            });
+            await client.options.onSessionUpdate?.({
+                sessionId: 'cursor-native-session',
+                update: {
+                    sessionUpdate: 'agent_message_chunk',
+                    content: { type: 'text', text: 'Cursor response' },
+                },
+            });
+            return { stopReason: 'end_turn' };
+        };
+        const run = runCursor({
+            credentials: { token: 'test', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+            startedBy: 'daemon',
+            execution: TEST_EXECUTION,
+            launchControls: TEST_CONTROLS,
+            runner: TEST_RUNNER,
+        });
+        const queue = await waitForQueue();
+        testState.session!.metadata.summary = {
+            text: 'Fallback prompt title',
+            updatedAt: Date.parse('2026-09-20T05:00:00.000Z'),
+        };
+        queue.resolve(createQueuedMessage('Fallback prompt title'));
+
+        await vi.waitFor(() => expect(testState.session!.sendAgentMessage).toHaveBeenCalledWith('cursor', expect.objectContaining({
+            type: 'task_complete',
+        })));
+        await vi.waitFor(() => expect(testState.session!.metadata).toMatchObject({
+            summary: {
+                text: 'Native Cursor title',
+                updatedAt: Date.parse('2026-09-20T02:00:00.000Z'),
+            },
+        }));
+
+        await stopAndWait(run);
+    });
+
+    it('ignores a delayed native session info update after a newer one', async () => {
+        process.env.REMCLI_DAEMON_RUNNER_TOKEN = 'runner-token';
+        testState.promptImplementation = async (client) => {
+            await client.options.onSessionUpdate?.({
+                sessionId: 'cursor-native-session',
+                update: {
+                    sessionUpdate: 'session_info_update',
+                    title: 'Current native title',
+                    updatedAt: '2026-09-20T04:00:00.000Z',
+                },
+            });
+            await client.options.onSessionUpdate?.({
+                sessionId: 'cursor-native-session',
+                update: {
+                    sessionUpdate: 'session_info_update',
+                    title: 'Delayed native title',
+                    updatedAt: '2026-09-20T03:00:00.000Z',
+                },
+            });
+            return { stopReason: 'end_turn' };
+        };
+        const run = runCursor({
+            credentials: { token: 'test', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+            startedBy: 'daemon',
+            execution: TEST_EXECUTION,
+            launchControls: TEST_CONTROLS,
+            runner: TEST_RUNNER,
+        });
+        const queue = await waitForQueue();
+        queue.resolve(createQueuedMessage('Fallback prompt title'));
+
+        await vi.waitFor(() => expect(testState.session!.metadata).toMatchObject({
+            summary: {
+                text: 'Current native title',
+                updatedAt: Date.parse('2026-09-20T04:00:00.000Z'),
+            },
+        }));
+        await stopAndWait(run);
+    });
+
+    it('uses the prompt fallback when native session info persistence fails', async () => {
+        process.env.REMCLI_DAEMON_RUNNER_TOKEN = 'runner-token';
+        const session = testState.session!;
+        session.updateMetadata.mockImplementation(async (update: (metadata: Record<string, unknown>) => Record<string, unknown>) => {
+            const next = update(session.metadata);
+            if ((next.summary as { text?: string } | undefined)?.text === 'Native Cursor title') {
+                throw new Error('metadata unavailable');
+            }
+            session.metadata = next;
+            session.metadataUpdates.push({ ...session.metadata });
+        });
+        testState.promptImplementation = async (client) => {
+            await client.options.onSessionUpdate?.({
+                sessionId: 'cursor-native-session',
+                update: {
+                    sessionUpdate: 'session_info_update',
+                    title: 'Native Cursor title',
+                    updatedAt: '2026-09-20T02:00:00.000Z',
+                },
+            });
+            return { stopReason: 'end_turn' };
+        };
+        const run = runCursor({
+            credentials: { token: 'test', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+            startedBy: 'daemon',
+            execution: TEST_EXECUTION,
+            launchControls: TEST_CONTROLS,
+            runner: TEST_RUNNER,
+        });
+        const queue = await waitForQueue();
+        queue.resolve(createQueuedMessage('Fallback prompt title'));
+
+        await vi.waitFor(() => expect(testState.autoSetTitle).toHaveBeenCalledWith('Fallback prompt title'));
+        await stopAndWait(run);
+    });
+
     it('strictly loads the requested native session and confirms ownership before prompting', async () => {
         process.env.REMCLI_DAEMON_RUNNER_TOKEN = 'runner-token';
         testState.preflight.mockResolvedValue({
@@ -494,6 +619,22 @@ describe('runCursor ACP lifecycle', () => {
         testState.startImplementation = async (client) => {
             await client.options.onSessionUpdate?.({
                 sessionId: 'cursor-native-session',
+                update: {
+                    sessionUpdate: 'session_info_update',
+                    title: 'Resumed native title',
+                    updatedAt: '2026-09-20T03:00:00.000Z',
+                },
+            });
+            await client.options.onSessionUpdate?.({
+                sessionId: 'foreign-cursor-session',
+                update: {
+                    sessionUpdate: 'session_info_update',
+                    title: 'Foreign Cursor title',
+                    updatedAt: '2026-09-20T04:00:00.000Z',
+                },
+            });
+            await client.options.onSessionUpdate?.({
+                sessionId: 'cursor-native-session',
                 update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'Earlier question' } },
             });
             await client.options.onSessionUpdate?.({
@@ -525,6 +666,12 @@ describe('runCursor ACP lifecycle', () => {
             isError: false,
             historical: true,
         });
+        await vi.waitFor(() => expect(testState.session!.metadata).toMatchObject({
+            summary: {
+                text: 'Resumed native title',
+                updatedAt: Date.parse('2026-09-20T03:00:00.000Z'),
+            },
+        }));
 
         await stopAndWait(run);
     });

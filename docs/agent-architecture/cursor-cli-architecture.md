@@ -122,8 +122,17 @@ Remcli обрабатывает только типизированные ACP up
 - `tool_call_update` завершает карточку статусом `completed` или `failed`;
 - provider reasoning и raw tool result не копируются в публичный чат;
 - `session_info_update` принимается актуальной ACP schema без protocol error;
-  native title persistence остаётся отдельной задачей;
+  native title и timestamp безопасно сохраняются при live turn и
+  `session/load`; title нормализуется, ограничивается 60 символами и имеет
+  приоритет над fallback-заголовком из первого prompt; порядок native updates
+  защищён их `updatedAt`, а не локальным временем fallback;
 - update другой native session игнорируется.
+
+ACP разрешает `title` и `updatedAt` очищать независимо через `null`. Текущая
+Remcli `summary` требует оба поля, поэтому projection намеренно lossless только
+для пары title/timestamp: `title:null` удаляет summary, а `updatedAt:null` при
+сохранённом title оставляет существующий timestamp или ставит локальный
+monotonic timestamp для нового title.
 
 Текстовые chunks отправляются в web-клиент сразу с одним logical message ID.
 Клиент собирает их в один ответ, а после завершения turn получает полную
@@ -186,6 +195,9 @@ ANSI screen mirror.
 Одновременный ввод из штатного Cursor TUI и телефона в одну native session не
 объявляется поддержанным: Cursor не публикует attach/fanout contract для двух
 конкурентных клиентов. Remcli не подменяет его screen scraping или общим PTY.
+ACP SDK `1.4.0` это ограничение не меняет: SDK умеет `session/load`/`resume` и
+generic transports, но установленный Cursor `agent acp` публикует только
+отдельный stdio server process без multi-client attach к уже открытому TUI.
 
 ## Проверки
 

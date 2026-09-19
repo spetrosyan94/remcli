@@ -63,6 +63,11 @@ import {
 } from './cursorAcpClient';
 import { CursorPermissionHandler } from './cursorPermissionHandler';
 import { CursorStructuredInputBroker, type CursorStructuredMethod } from './cursorStructuredInputBroker';
+import {
+    applyCursorSessionInfoUpdate,
+    hasCursorNativeTitleDirective,
+    parseCursorSessionUpdatedAt,
+} from './cursorSessionInfo';
 import type { CursorMode } from './types';
 
 const LIFECYCLE_METADATA_UPDATE_OPTIONS = {
@@ -71,6 +76,7 @@ const LIFECYCLE_METADATA_UPDATE_OPTIONS = {
 } as const;
 
 const MAX_PROVISIONAL_PARENT_ROLLBACK_UPDATES = 2;
+const MAX_PENDING_CURSOR_SESSION_INFO_UPDATES = 16;
 const DAEMON_EXECUTION_SELECTION_REQUIRED_ERROR = 'Cursor daemon runner requires a validated execution and control selection.';
 
 class CursorLifecycleError extends Error {
@@ -435,6 +441,10 @@ export async function runCursor(opts: {
     let isCollectingCursorHistory = false;
     let cursorHistoryRole: 'user' | 'assistant' | null = null;
     const cursorHistoryEntries: Array<{ role: 'user' | 'assistant'; text: string }> = [];
+    const pendingCursorSessionInfoUpdates: Array<{
+        sessionId: string;
+        update: Extract<CursorAcpUpdate, { sessionUpdate: 'session_info_update' }>;
+    }> = [];
     // The daemon-verified parent is visible immediately. Cursor still has to
     // confirm the requested native resume before its native ID is promoted.
     let cursorSessionId: string | null = null;
@@ -643,6 +653,37 @@ export async function runCursor(opts: {
         cursorHistoryRole = role;
     };
 
+    let hasPersistedNativeCursorTitle = false;
+    let latestPersistedNativeCursorUpdatedAt: number | null = null;
+    let cursorSessionInfoWriteQueue: Promise<void> = Promise.resolve();
+    const persistCursorSessionInfo = (
+        update: Extract<CursorAcpUpdate, { sessionUpdate: 'session_info_update' }>,
+    ): void => {
+        const hasNativeTitleDirective = hasCursorNativeTitleDirective(update);
+        const nativeUpdatedAt = parseCursorSessionUpdatedAt(update.updatedAt);
+        cursorSessionInfoWriteQueue = cursorSessionInfoWriteQueue
+            .then(async () => {
+                if (nativeUpdatedAt !== null
+                    && latestPersistedNativeCursorUpdatedAt !== null
+                    && nativeUpdatedAt < latestPersistedNativeCursorUpdatedAt) {
+                    return;
+                }
+                await session.updateMetadata(
+                    (metadata) => applyCursorSessionInfoUpdate(metadata, update),
+                    LIFECYCLE_METADATA_UPDATE_OPTIONS,
+                );
+                if (nativeUpdatedAt !== null) {
+                    latestPersistedNativeCursorUpdatedAt = nativeUpdatedAt;
+                }
+                if (hasNativeTitleDirective) {
+                    hasPersistedNativeCursorTitle = true;
+                }
+            })
+            .catch((error) => {
+                logger.debug('[Cursor] Native session info metadata update failed:', redactDiagnosticData(error));
+            });
+    };
+
     const flushCursorHistory = (): void => {
         for (const entry of cursorHistoryEntries) {
             const text = entry.text.trim();
@@ -663,6 +704,10 @@ export async function runCursor(opts: {
     };
 
     const handleCursorAcpUpdate = (update: CursorAcpUpdate): void => {
+        if (update.sessionUpdate === 'session_info_update') {
+            persistCursorSessionInfo(update);
+            return;
+        }
         const turn = activeAcpTurn;
         if (!turn) {
             if (!isCollectingCursorHistory) return;
@@ -749,7 +794,25 @@ export async function runCursor(opts: {
         resumeSessionId: requestedResumeSessionId,
         ...(opts.runner ? { command: opts.runner.executable } : {}),
         onSessionUpdate: (notification) => {
-            if (cursorSessionId && notification.sessionId !== cursorSessionId) return;
+            if (!cursorSessionId) {
+                if (requestedResumeSessionId) {
+                    if (notification.sessionId === requestedResumeSessionId) {
+                        handleCursorAcpUpdate(notification.update);
+                    }
+                    return;
+                }
+                if (notification.update.sessionUpdate === 'session_info_update') {
+                    if (pendingCursorSessionInfoUpdates.length >= MAX_PENDING_CURSOR_SESSION_INFO_UPDATES) {
+                        pendingCursorSessionInfoUpdates.shift();
+                    }
+                    pendingCursorSessionInfoUpdates.push({
+                        sessionId: notification.sessionId,
+                        update: notification.update,
+                    });
+                }
+                return;
+            }
+            if (notification.sessionId !== cursorSessionId) return;
             handleCursorAcpUpdate(notification.update);
         },
         onPermission: (request) => cursorPermissionHandler!.handleRequest(request),
@@ -821,9 +884,17 @@ export async function runCursor(opts: {
             cursorSessionId = nativeSession.sessionId;
             requestedResumeSessionId = undefined;
             doesNativeMetadataNeedReconciliation = true;
+            for (const notification of pendingCursorSessionInfoUpdates) {
+                if (notification.sessionId === cursorSessionId) {
+                    handleCursorAcpUpdate(notification.update);
+                }
+            }
+            pendingCursorSessionInfoUpdates.length = 0;
             flushCursorHistory();
+            await cursorSessionInfoWriteQueue;
             return nativeSession;
         } catch (error) {
+            pendingCursorSessionInfoUpdates.length = 0;
             if (attemptedResume) shouldExit = true;
             await candidate.dispose().catch(() => undefined);
             if (candidateLease) {
@@ -1210,7 +1281,10 @@ export async function runCursor(opts: {
                     id: randomUUID(),
                 });
 
-                autoSetTitle(message.message);
+                await cursorSessionInfoWriteQueue;
+                if (!hasPersistedNativeCursorTitle) {
+                    autoSetTitle(message.message);
+                }
 
             } catch (error) {
                 activeAcpTurn = null;
