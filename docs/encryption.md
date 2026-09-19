@@ -48,6 +48,11 @@ QR pairing v2 разделяет две 32-byte части:
   request proof изменяющих bearer-authenticated P2P-запросов; меняется при
   rekey.
 - `contentSecret` остаётся ключом legacy secretbox/RPC transport, поэтому активный session runner не теряет возможность дочитать или подтвердить сообщения во время rekey.
+- Локальный Antigravity transcript replay использует encryption key текущих
+  session credentials: legacy secretbox key либо `machineKey` для `dataKey`.
+  Turns лежат только в зашифрованных versioned-файлах Remcli, каталог имеет mode
+  `0700`, файлы — `0600`. Технический session registry не содержит prompt или
+  ответов. Обычный auth Rekey не меняет этот ключ и не прерывает replay.
 - Legacy QR v1 содержит один 32-byte secret и при загрузке сопоставляется с обоими полями; persistent pairing автоматически мигрируется в v2.
 
 Новый QR не передаётся как открытый JSON. Browser создаёт ephemeral `tweetnacl.box` keypair, а daemon возвращает bundle `[ephemeral public key (32) | nonce (24) | ciphertext]`, зашифрованный только для этого browser keypair. `daemon.state.json`, heartbeat, P2P update/event и logs не содержат pairing material.

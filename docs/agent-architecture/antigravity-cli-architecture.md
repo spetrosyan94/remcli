@@ -58,6 +58,33 @@ Native identity Antigravity это `conversation_id`. Новый и возобн
 без `--dangerously-skip-permissions`. Для provider-only истории выбранные в UI
 model и effort также повторно валидируются перед spawn.
 
+## Transcript replay
+
+Native resume и видимая история чата — разные контракты. `--conversation <id>`
+восстанавливает контекст модели, но headless `stream-json` возвращает только
+events текущего запуска. Upstream `history.jsonl` содержит picker metadata, а
+документированный `transcript_path` относится к активному TUI status-line и не
+является headless API.
+
+Remcli поэтому хранит завершённые Antigravity turns отдельно от session index:
+
+- один encrypted file на native conversation, filename — SHA-256 от
+  `conversation_id`, без prompt или native ID в имени;
+- ciphertext защищён существующим content encryption key Remcli; каталог имеет
+  mode `0700`, файлы — `0600`, запись выполняется atomic replace;
+- versioned strict schema ограничивает размер файла, число turns, сообщения и
+  tool payloads; при заполнении удаляются самые старые turns;
+- сохраняется только завершённый provider turn: user text, безопасная проекция
+  tool events и assistant/error result, если provider вернул видимый текст;
+- повреждённый, oversized, чужой workspace или нерасшифровываемый файл
+  игнорируется и не блокирует native resume.
+
+После daemon restart новый wrapper воспроизводит encrypted transcript только
+после exact native bind и до публикации `ready`. В рамках того же daemon
+существующий parent-wrapper остаётся источником lineage, поэтому повторный
+replay не создаёт дубликаты. Historical assistant messages не меняют
+`executionOutcome` новой сессии.
+
 ## Матрица поддержки
 
 | Provider | Статус |

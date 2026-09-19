@@ -36,6 +36,11 @@ import {
     type AntigravityStreamEvent,
     type AntigravityTurnResult,
 } from './antigravityStreamClient';
+import {
+    createAntigravityTranscriptStore,
+    type AntigravityTranscriptMessage,
+    type AntigravityTranscriptTurn,
+} from './antigravityTranscriptStore';
 
 const METADATA_UPDATE_OPTIONS = { maxAttempts: 2, timeoutMs: 1_000 } as const;
 const MAX_TOOL_INFO_BYTES = 8 * 1_024;
@@ -44,6 +49,7 @@ const MAX_TOOL_KEY_LENGTH = 128;
 const MAX_TOOL_COLLECTION_ITEMS = 64;
 const MAX_TOOL_DEPTH = 6;
 const MAX_VISIBLE_DIAGNOSTIC_BYTES = 2_000;
+const MAX_TRANSCRIPT_MESSAGE_BYTES = 256 * 1_024;
 const REDELIVERY_REQUEST_DELAYS_MS = [0, 25, 100] as const;
 const MAX_AUTOMATIC_REDELIVERIES_PER_DELIVERY = 1;
 const SENSITIVE_TOOL_KEY = /(token|cookie|authorization|auth|secret|password|passphrase|credential|key)/i;
@@ -84,7 +90,8 @@ interface ScheduledRedelivery {
 
 interface ActiveTurn {
     messageId: string;
-    turnNumber: number;
+    transcript: AntigravityTranscriptTurn;
+    streamedResponse: string;
     responseDeltaSeen: boolean;
     terminalEventSent: boolean;
     toolNames: Map<number, string>;
@@ -164,6 +171,23 @@ function errorText(error: unknown, fallback: string): string {
 
 function safeDiagnostic(error: unknown, fallback: string): { error: string } {
     return { error: errorText(error, fallback) };
+}
+
+function appendBoundedUtf8(current: string, delta: string, maxBytes: number): string {
+    const currentBytes = Buffer.byteLength(current, 'utf8');
+    if (currentBytes >= maxBytes) return current;
+    const remaining = maxBytes - currentBytes;
+    if (Buffer.byteLength(delta, 'utf8') <= remaining) return current + delta;
+
+    const suffix: string[] = [];
+    let suffixBytes = 0;
+    for (const character of delta) {
+        const characterBytes = Buffer.byteLength(character, 'utf8');
+        if (suffixBytes + characterBytes > remaining) break;
+        suffix.push(character);
+        suffixBytes += characterBytes;
+    }
+    return current + suffix.join('');
 }
 
 class AntigravityRunnerStoppingError extends Error {
@@ -392,6 +416,15 @@ export async function runAntigravity(opts: AntigravityRunOptions): Promise<void>
             : {}),
     };
     const reconnectMetadata = { ...initialMetadata };
+    let transcriptStore: ReturnType<typeof createAntigravityTranscriptStore> | null = null;
+    try {
+        transcriptStore = createAntigravityTranscriptStore(baseMetadata.remcliHomeDir, opts.credentials);
+    } catch (error) {
+        logger.debug(
+            '[Antigravity] Transcript store initialization failed; continuing without durable replay.',
+            safeDiagnostic(error, 'transcript store unavailable'),
+        );
+    }
 
     let api: ApiClient;
     let response: Awaited<ReturnType<ApiClient['getOrCreateSession']>>;
@@ -486,13 +519,76 @@ export async function runAntigravity(opts: AntigravityRunOptions): Promise<void>
     let activeTurn: ActiveTurn | null = null;
     let activeProviderTurn: Promise<AntigravityTurnResult> | null = null;
     let unconfirmedNativeCleanupError: unknown;
-    let turnNumber = 0;
     const waitAbortController = new AbortController();
     const automaticRedeliveries = new Map<string, number>();
     const scheduledRedeliveries = new Map<string, ScheduledRedelivery>();
 
     const sendError = (message: string): void => {
         session.sendAgentMessage('antigravity', { type: 'message', message, isError: true });
+    };
+
+    const sendHistoricalMessage = (message: AntigravityTranscriptMessage, turnId: string, index: number): void => {
+        if (message.type === 'user') {
+            session.sendUserTextMessage(message.text, { sentFrom: 'history' });
+            return;
+        }
+        if (message.type === 'assistant') {
+            session.sendAgentMessage('antigravity', {
+                type: 'message',
+                message: message.text,
+                isError: message.isError,
+                messageId: `history-${turnId}-${index}`,
+                streamState: 'final',
+                historical: true,
+            });
+            return;
+        }
+        if (message.type === 'tool-call') {
+            session.sendAgentMessage('antigravity', {
+                type: 'tool-call',
+                callId: message.callId,
+                name: message.name,
+                input: message.input,
+                id: randomUUID(),
+            });
+            return;
+        }
+        session.sendAgentMessage('antigravity', {
+            type: 'tool-result',
+            callId: message.callId,
+            output: message.output,
+            id: randomUUID(),
+            ...(message.isError ? { isError: true } : {}),
+        });
+    };
+
+    const replayDurableTranscript = (): number => {
+        if (!transcriptStore || !requestedResumeConversationId || verifiedParentRemcliSessionId) return 0;
+        try {
+            const turns = transcriptStore.load(requestedResumeConversationId, process.cwd());
+            for (const turn of turns) {
+                turn.messages.forEach((message, index) => sendHistoricalMessage(message, turn.id, index));
+            }
+            return turns.reduce((count, turn) => count + turn.messages.length, 0);
+        } catch (error) {
+            logger.debug(
+                '[Antigravity] Durable transcript replay failed; native resume remains active.',
+                safeDiagnostic(error, 'transcript replay unavailable'),
+            );
+            return 0;
+        }
+    };
+
+    const persistCompletedTurn = (): void => {
+        if (!transcriptStore || !nativeConversationId || !activeTurn) return;
+        try {
+            transcriptStore.record(nativeConversationId, process.cwd(), activeTurn.transcript);
+        } catch (error) {
+            logger.debug(
+                '[Antigravity] Durable transcript write failed; keeping the completed provider turn active.',
+                safeDiagnostic(error, 'transcript write unavailable'),
+            );
+        }
     };
 
     const cancelScheduledRedelivery = (deliveryId: string): void => {
@@ -577,6 +673,11 @@ export async function runAntigravity(opts: AntigravityRunOptions): Promise<void>
         const step = event.step_update;
         if (step.step_type === 'agent_response' && step.text_delta) {
             activeTurn.responseDeltaSeen = true;
+            activeTurn.streamedResponse = appendBoundedUtf8(
+                activeTurn.streamedResponse,
+                step.text_delta,
+                MAX_TRANSCRIPT_MESSAGE_BYTES,
+            );
             session.sendAgentMessage('antigravity', {
                 type: 'message',
                 message: step.text_delta,
@@ -588,26 +689,35 @@ export async function runAntigravity(opts: AntigravityRunOptions): Promise<void>
         }
         if (!step.tool_name && !step.tool_info) return;
 
-        const callId = `antigravity-${activeTurn.turnNumber}-${step.step_index}`;
+        const callId = `antigravity-${activeTurn.messageId}-${step.step_index}`;
         const name = step.tool_name
             ?? activeTurn.toolNames.get(step.step_index)
             ?? 'Antigravity tool';
         activeTurn.toolNames.set(step.step_index, name);
         if (step.state === 'ACTIVE') {
+            const input = safeToolInfo(step.tool_info) ?? { name, state: step.state };
             session.sendAgentMessage('antigravity', {
                 type: 'tool-call',
                 callId,
                 name,
-                input: safeToolInfo(step.tool_info),
+                input,
                 id: randomUUID(),
             });
+            activeTurn.transcript.messages.push({ type: 'tool-call', callId, name, input });
         } else if (step.state === 'DONE' || step.state === 'ERROR') {
+            const output = safeToolInfo(step.tool_info) ?? { name, state: step.state };
             session.sendAgentMessage('antigravity', {
                 type: 'tool-result',
                 callId,
-                output: safeToolInfo(step.tool_info) ?? { name, state: step.state },
+                output,
                 id: randomUUID(),
                 ...(step.state === 'ERROR' ? { isError: true } : {}),
+            });
+            activeTurn.transcript.messages.push({
+                type: 'tool-result',
+                callId,
+                output,
+                isError: step.state === 'ERROR',
             });
         }
     };
@@ -903,6 +1013,10 @@ export async function runAntigravity(opts: AntigravityRunOptions): Promise<void>
                 } catch (error) {
                     sendError(errorText(error, 'Antigravity native metadata update failed.'));
                 }
+                const replayedMessages = replayDurableTranscript();
+                if (replayedMessages > 0) {
+                    logger.debug(`[Antigravity] Replayed ${replayedMessages} encrypted historical message(s).`);
+                }
             } catch (error) {
                 if (!shouldExit) {
                     shouldExit = true;
@@ -957,9 +1071,15 @@ export async function runAntigravity(opts: AntigravityRunOptions): Promise<void>
                 }
                 if (shouldExit) throw new AntigravityRunnerStoppingError();
 
+                const messageId = randomUUID();
                 activeTurn = {
-                    messageId: randomUUID(),
-                    turnNumber: ++turnNumber,
+                    messageId,
+                    transcript: {
+                        id: messageId,
+                        createdAt: Date.now(),
+                        messages: [{ type: 'user', text: batch.message }],
+                    },
+                    streamedResponse: '',
                     responseDeltaSeen: false,
                     terminalEventSent: false,
                     toolNames: new Map(),
@@ -973,21 +1093,37 @@ export async function runAntigravity(opts: AntigravityRunOptions): Promise<void>
                 acceptDelivery();
 
                 if (result.status === 'SUCCESS') {
-                    if (result.response.trim() || activeTurn.responseDeltaSeen) {
+                    const response = result.response.trim()
+                        ? result.response
+                        : activeTurn.streamedResponse;
+                    if (response.trim() || activeTurn.responseDeltaSeen) {
                         session.sendAgentMessage('antigravity', {
                             type: 'message',
-                            message: result.response,
+                            message: response,
                             isError: false,
                             messageId: activeTurn.messageId,
                             streamState: 'final',
                         });
+                        activeTurn.transcript.messages.push({
+                            type: 'assistant',
+                            text: response,
+                            isError: false,
+                        });
                     }
+                    persistCompletedTurn();
                     emitTurnTerminal('complete');
                     autoSetTitle(batch.message);
                 } else {
-                    sendError(result.error
+                    const resultError = result.error
                         ? boundedRedacted(result.error, MAX_VISIBLE_DIAGNOSTIC_BYTES)
-                        : `Antigravity turn ended with status ${result.status}.`);
+                        : `Antigravity turn ended with status ${result.status}.`;
+                    sendError(resultError);
+                    activeTurn.transcript.messages.push({
+                        type: 'assistant',
+                        text: resultError,
+                        isError: true,
+                    });
+                    persistCompletedTurn();
                     emitTurnTerminal(result.status === 'CANCELED' || result.status === 'INTERRUPTED'
                         ? 'aborted'
                         : 'complete');

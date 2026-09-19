@@ -10,6 +10,7 @@ import type {
     AntigravityStreamEvent,
     AntigravityTurnResult,
 } from './antigravityStreamClient';
+import type { AntigravityTranscriptTurn } from './antigravityTranscriptStore';
 
 type UserMessageHandler = (message: DeliveredUserMessage) => Promise<void> | void;
 type RpcHandler = () => Promise<void> | void;
@@ -61,6 +62,7 @@ interface SessionHarness {
     userHandler: UserMessageHandler | null;
     rpcHandlers: Map<string, RpcHandler>;
     messages: SentAgentMessage[];
+    userMessages: Array<{ text: string; sentFrom?: string }>;
     events: SessionEvent[];
     cancelledDeliveries: string[];
     keepAliveCalls: Array<{ thinking: boolean; mode: 'local' | 'remote' }>;
@@ -79,6 +81,7 @@ interface SessionHarness {
     dispatchDurableMessage(message: DeliveredUserMessage): Promise<void>;
     requestPendingUserMessageRedelivery(): boolean;
     sendAgentMessage(provider: string, body: ACPMessageData): void;
+    sendUserTextMessage(text: string, meta?: { sentFrom?: string }): void;
     sendSessionEvent(event: SessionEvent): void;
     keepAlive(thinking: boolean, mode: 'local' | 'remote'): void;
     updateMetadata(handler: (metadata: Metadata) => Metadata): Promise<void>;
@@ -160,6 +163,15 @@ const testState = vi.hoisted(() => {
         killHandler: null as RpcHandler | null,
         titlePrompts: [] as string[],
         lifecycleOrder: [] as string[],
+        transcriptTurns: [] as AntigravityTranscriptTurn[],
+        transcriptLoads: [] as Array<{ conversationId: string; workspace: string }>,
+        transcriptRecords: [] as Array<{
+            conversationId: string;
+            workspace: string;
+            turn: AntigravityTranscriptTurn;
+        }>,
+        transcriptLoadError: null as Error | null,
+        transcriptRecordError: null as Error | null,
     };
 });
 
@@ -289,6 +301,22 @@ vi.mock('@/ui/logger', () => ({
         warn: vi.fn(),
         error: vi.fn(),
     },
+}));
+
+vi.mock('./antigravityTranscriptStore', () => ({
+    createAntigravityTranscriptStore: vi.fn(() => ({
+        load: (conversationId: string, workspace: string) => {
+            testState.lifecycleOrder.push('transcript-load');
+            testState.transcriptLoads.push({ conversationId, workspace });
+            if (testState.transcriptLoadError) throw testState.transcriptLoadError;
+            return structuredClone(testState.transcriptTurns);
+        },
+        record: (conversationId: string, workspace: string, turn: AntigravityTranscriptTurn) => {
+            testState.lifecycleOrder.push('transcript-record');
+            if (testState.transcriptRecordError) throw testState.transcriptRecordError;
+            testState.transcriptRecords.push({ conversationId, workspace, turn: structuredClone(turn) });
+        },
+    })),
 }));
 
 vi.mock('./antigravityStreamClient', () => ({
@@ -475,6 +503,7 @@ function createSession(): SessionHarness {
         userHandler: null,
         rpcHandlers: new Map(),
         messages: [],
+        userMessages: [],
         events: [],
         cancelledDeliveries: [],
         keepAliveCalls: [],
@@ -511,9 +540,15 @@ function createSession(): SessionHarness {
         },
         sendAgentMessage(provider, body) {
             session.messages.push({ provider, body });
+            if (body.type === 'message' && body.historical) testState.lifecycleOrder.push('history-agent');
+        },
+        sendUserTextMessage(text, meta) {
+            session.userMessages.push({ text, ...meta });
+            if (meta?.sentFrom === 'history') testState.lifecycleOrder.push('history-user');
         },
         sendSessionEvent(event) {
             session.events.push(event);
+            if (event.type === 'ready') testState.lifecycleOrder.push('session-ready');
         },
         keepAlive(thinking, mode) {
             session.keepAliveCalls.push({ thinking, mode });
@@ -684,6 +719,11 @@ describe('runAntigravity', () => {
         testState.killHandler = null;
         testState.titlePrompts.length = 0;
         testState.lifecycleOrder.length = 0;
+        testState.transcriptTurns.length = 0;
+        testState.transcriptLoads.length = 0;
+        testState.transcriptRecords.length = 0;
+        testState.transcriptLoadError = null;
+        testState.transcriptRecordError = null;
     });
 
     afterEach(async () => {
@@ -760,6 +800,28 @@ describe('runAntigravity', () => {
         expect(firstStreamMessages.map(({ streamState }) => streamState)).toEqual(['delta', 'final']);
         expect(firstStreamMessages[0].messageId).toBe(firstStreamMessages[1].messageId);
         expect(testState.titlePrompts).toEqual(['first prompt', 'second prompt']);
+        expect(testState.transcriptRecords).toEqual([
+            expect.objectContaining({
+                conversationId: 'conversation-1',
+                workspace: process.cwd(),
+                turn: expect.objectContaining({
+                    messages: [
+                        { type: 'user', text: 'first prompt' },
+                        { type: 'assistant', text: 'Hello world', isError: false },
+                    ],
+                }),
+            }),
+            expect.objectContaining({
+                conversationId: 'conversation-1',
+                workspace: process.cwd(),
+                turn: expect.objectContaining({
+                    messages: [
+                        { type: 'user', text: 'second prompt' },
+                        { type: 'assistant', text: 'Second answer', isError: false },
+                    ],
+                }),
+            }),
+        ]);
 
         await stopRunner(completion);
     });
@@ -782,6 +844,62 @@ describe('runAntigravity', () => {
         stream.finish(successfulResult('conversation-1', 'two'));
         await second;
         await waitForAgentMessages('task_complete', 2);
+
+        await stopRunner(completion);
+    });
+
+    it('keeps a bounded streamed transcript on a complete UTF-8 boundary', async () => {
+        const completion = launch();
+        const handler = await waitForUserHandler();
+        const delivery = deliver(handler, 'unicode boundary');
+        const stream = await waitForStream();
+        const delta = `${'a'.repeat(256 * 1024 - 1)}😀`;
+
+        stream.emitInit('conversation-1');
+        await waitForSentTurns(stream, 1);
+        stream.emitStep({
+            conversation_id: 'conversation-1',
+            step_index: 0,
+            state: 'ACTIVE',
+            step_type: 'agent_response',
+            text_delta: delta,
+        });
+        stream.finish(successfulResult('conversation-1', ''));
+        await delivery;
+        await waitForAgentMessages('task_complete', 1);
+
+        const storedAssistant = testState.transcriptRecords[0]?.turn.messages.find(
+            (message): message is Extract<AntigravityTranscriptTurn['messages'][number], { type: 'assistant' }> => (
+                message.type === 'assistant'
+            ),
+        );
+        expect(storedAssistant?.text).not.toContain('�');
+        expect(Buffer.byteLength(storedAssistant?.text ?? '', 'utf8')).toBe(256 * 1024 - 1);
+
+        await stopRunner(completion);
+    });
+
+    it('keeps a successful provider turn complete when transcript persistence fails', async () => {
+        testState.transcriptRecordError = new Error('private store unavailable');
+        const completion = launch();
+        const handler = await waitForUserHandler();
+        const delivery = deliver(handler, 'persist me');
+        const stream = await waitForStream();
+
+        stream.emitInit('conversation-1');
+        await waitForSentTurns(stream, 1);
+        stream.finish(successfulResult('conversation-1', 'provider answer'));
+        await delivery;
+        await waitForAgentMessages('task_complete', 1);
+
+        expect(session().messages).toContainEqual({
+            provider: 'antigravity',
+            body: expect.objectContaining({ type: 'message', message: 'provider answer', isError: false }),
+        });
+        expect(logger.debug).toHaveBeenCalledWith(
+            '[Antigravity] Durable transcript write failed; keeping the completed provider turn active.',
+            expect.objectContaining({ error: expect.any(String) }),
+        );
 
         await stopRunner(completion);
     });
@@ -835,6 +953,100 @@ describe('runAntigravity', () => {
             antigravitySessionId: 'native-conversation',
             resumedFromRemcliSessionId: 'parent-remcli-session',
         });
+
+        await stopRunner(completion);
+    });
+
+    it('replays an encrypted transcript after exact resume when the prior wrapper is unavailable', async () => {
+        testState.transcriptTurns.push({
+            id: 'turn-1',
+            createdAt: 10,
+            messages: [
+                { type: 'user', text: 'remember sapphire' },
+                { type: 'tool-call', callId: 'historical-call', name: 'read_file', input: { path: 'README.md' } },
+                { type: 'tool-result', callId: 'historical-call', output: { ok: true }, isError: false },
+                { type: 'assistant', text: 'remembered', isError: false },
+            ],
+        });
+        const completion = launch({
+            ...daemonRunOptions(false),
+            resumeSessionId: 'native-conversation',
+        });
+        const stream = await waitForStream();
+
+        stream.emitInit('native-conversation');
+        await waitForUserHandler();
+
+        expect(testState.transcriptLoads).toEqual([{
+            conversationId: 'native-conversation',
+            workspace: process.cwd(),
+        }]);
+        expect(session().userMessages).toEqual([{ text: 'remember sapphire', sentFrom: 'history' }]);
+        expect(session().messages.map(({ body }) => body)).toEqual(expect.arrayContaining([
+            expect.objectContaining({ type: 'tool-call', callId: 'historical-call', name: 'read_file' }),
+            expect.objectContaining({ type: 'tool-result', callId: 'historical-call' }),
+            expect.objectContaining({
+                type: 'message',
+                message: 'remembered',
+                isError: false,
+                historical: true,
+                streamState: 'final',
+            }),
+        ]));
+        expect(testState.lifecycleOrder.indexOf('native-bind'))
+            .toBeLessThan(testState.lifecycleOrder.indexOf('transcript-load'));
+        expect(testState.lifecycleOrder.indexOf('transcript-load'))
+            .toBeLessThan(testState.lifecycleOrder.indexOf('session-ready'));
+
+        await stopRunner(completion);
+    });
+
+    it('uses current-daemon lineage instead of replaying the durable transcript twice', async () => {
+        testState.preflightResult = {
+            ok: true,
+            data: { type: 'verified', parentRemcliSessionId: 'parent-remcli-session' },
+        };
+        testState.transcriptTurns.push({
+            id: 'turn-1',
+            createdAt: 10,
+            messages: [
+                { type: 'user', text: 'parent prompt' },
+                { type: 'assistant', text: 'parent answer', isError: false },
+            ],
+        });
+        const completion = launch({
+            ...daemonRunOptions(false),
+            resumeSessionId: 'native-conversation',
+        });
+        const stream = await waitForStream();
+
+        stream.emitInit('native-conversation');
+        await waitForUserHandler();
+
+        expect(testState.transcriptLoads).toEqual([]);
+        expect(session().userMessages).toEqual([]);
+        expect(session().messages.some(({ body }) => body.type === 'message' && body.historical)).toBe(false);
+
+        await stopRunner(completion);
+    });
+
+    it('keeps exact native resume ready when durable transcript replay is unavailable', async () => {
+        testState.transcriptLoadError = new Error('ciphertext is unreadable');
+        const completion = launch({
+            ...daemonRunOptions(false),
+            resumeSessionId: 'native-conversation',
+        });
+        const stream = await waitForStream();
+
+        stream.emitInit('native-conversation');
+        await waitForUserHandler();
+
+        expect(session().events).toContainEqual({ type: 'ready' });
+        expect(session().messages.some(({ body }) => body.type === 'message' && body.isError)).toBe(false);
+        expect(logger.debug).toHaveBeenCalledWith(
+            '[Antigravity] Durable transcript replay failed; native resume remains active.',
+            expect.objectContaining({ error: expect.any(String) }),
+        );
 
         await stopRunner(completion);
     });
@@ -1198,10 +1410,8 @@ describe('runAntigravity', () => {
                 body.type === 'tool-call' || body.type === 'tool-result'
             ));
         expect(toolMessages).toHaveLength(2);
-        expect(toolMessages.map(({ callId }) => callId)).toEqual([
-            'antigravity-1-3',
-            'antigravity-1-3',
-        ]);
+        expect(toolMessages[0].callId).toMatch(/^antigravity-.+-3$/);
+        expect(toolMessages[1].callId).toBe(toolMessages[0].callId);
         const input = toolMessages[0].type === 'tool-call' ? toolMessages[0].input : undefined;
         const output = toolMessages[1].type === 'tool-result' ? toolMessages[1].output : undefined;
         expect(input).not.toBe(toolInfo);
@@ -1216,6 +1426,12 @@ describe('runAntigravity', () => {
         expect(serialized).not.toContain('array-secret');
         expect(serialized).not.toContain('mutated-after-send');
         expect(serialized).not.toContain('x'.repeat(2_100));
+        expect(testState.transcriptRecords).toHaveLength(1);
+        const storedTranscript = JSON.stringify(testState.transcriptRecords[0]?.turn);
+        expect(storedTranscript).toContain(toolMessages[0].callId);
+        expect(storedTranscript).toContain('[REDACTED]');
+        expect(storedTranscript).not.toContain('query-secret');
+        expect(storedTranscript).not.toContain('mutated-after-send');
 
         await stopRunner(completion);
     });
