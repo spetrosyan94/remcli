@@ -2288,6 +2288,7 @@ export function ChatPage() {
                         <VoiceRecordBar
                             state={recorderState}
                             seconds={formatSeconds(recorder.elapsedSeconds)}
+                            level={recorder.level}
                             onStop={() => void stopDictation()}
                             onCancel={recorder.cancel}
                             onRetry={startDictation}

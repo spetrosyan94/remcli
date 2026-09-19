@@ -76,17 +76,17 @@ export function PermissionCard(props: {
                 </div>
                 <div className="flex gap-2 px-3 pb-3">
                     <button type="button" onClick={onAllow} disabled={isSubmitting}
-                        className={`h-12 flex-[1.4] cursor-pointer rounded-[11px] text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-55 ${allowClass}`}>
+                        className={`h-12 min-h-11 flex-[1.4] cursor-pointer rounded-[11px] text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-55 motion-reduce:active:scale-100 ${allowClass}`}>
                         {allowLabel ?? t("permission.allow")}
                     </button>
                     <button type="button" onClick={onDeny} disabled={isSubmitting}
-                        className="h-12 flex-1 cursor-pointer rounded-[11px] border border-destructive/35 text-sm font-medium text-destructive disabled:cursor-not-allowed disabled:opacity-55">
+                        className="h-12 min-h-11 flex-1 cursor-pointer rounded-[11px] border border-destructive/35 text-sm font-medium text-destructive disabled:cursor-not-allowed disabled:opacity-55 motion-reduce:active:scale-100">
                         {t("permission.deny")}
                     </button>
                 </div>
                 {!danger && alwaysLabel && (
                     <button type="button" onClick={onAlways} disabled={isSubmitting}
-                        className="flex h-12 w-full cursor-pointer items-center justify-center truncate px-3 text-center font-mono text-[11px] text-muted-foreground disabled:cursor-not-allowed disabled:opacity-55">
+                        className="flex h-12 min-h-11 w-full cursor-pointer items-center justify-center truncate px-3 text-center font-mono text-[11px] text-muted-foreground disabled:cursor-not-allowed disabled:opacity-55 motion-reduce:active:scale-100">
                         {alwaysLabel}
                     </button>
                 )}

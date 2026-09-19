@@ -4,9 +4,20 @@ import * as React from "react";
 import { Loader2, Square } from "lucide-react";
 import { t } from "@/lib/i18n";
 
-export function VoiceRecordBar({ state = "recording", seconds = "0:07", onStop, onCancel, onRetry }: {
+export const VOICE_STOP_FADE_MS = 150;
+
+const BAR_PROFILE = [0.9, 0.7, 1.1, 0.8, 1, 0.75, 0.95, 0.85, 1.05, 0.9];
+
+export function voiceBarScale(level: number, index: number): number {
+    const normalizedLevel = Math.min(1, Math.max(0, level));
+    const profile = BAR_PROFILE[index % BAR_PROFILE.length] ?? 1;
+    return 0.08 + normalizedLevel * (0.5 + profile * 0.42);
+}
+
+export function VoiceRecordBar({ state = "recording", seconds = "0:07", level = 0, onStop, onCancel, onRetry }: {
     state?: "recording" | "transcribing" | "error";
     seconds?: string;
+    level?: number;
     /** Стоп записи → распознавание (useVoiceRecorder.stopAndTranscribe). */
     onStop?: () => void;
     /** Отмена записи/распознавания (useVoiceRecorder.cancel). */
@@ -15,21 +26,35 @@ export function VoiceRecordBar({ state = "recording", seconds = "0:07", onStop, 
     onRetry?: () => void;
 }) {
     const [isStopping, setIsStopping] = React.useState(false);
+    const stopTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
     React.useEffect(() => {
-        if (state !== "recording") setIsStopping(false);
+        if (state !== "recording") {
+            setIsStopping(false);
+            if (stopTimeoutRef.current !== null) {
+                clearTimeout(stopTimeoutRef.current);
+                stopTimeoutRef.current = null;
+            }
+        }
     }, [state]);
+
+    React.useEffect(() => () => {
+        if (stopTimeoutRef.current !== null) clearTimeout(stopTimeoutRef.current);
+    }, []);
 
     const stopRecording = () => {
         if (isStopping) return;
         setIsStopping(true);
-        onStop?.();
+        stopTimeoutRef.current = setTimeout(() => {
+            stopTimeoutRef.current = null;
+            onStop?.();
+        }, VOICE_STOP_FADE_MS);
     };
 
     if (state === "transcribing")
         return (
             <div className="flex h-[52px] animate-voice-transcribe items-center gap-3 rounded-xl border border-border bg-card px-3.5">
-                <Loader2 className="size-3.5 animate-spin text-status-thinking" />
+                <Loader2 className="size-3.5 motion-safe:animate-spin motion-reduce:animate-none text-status-thinking" />
                 <span className="font-mono text-xs text-muted-foreground">{t("voice.transcribing")}</span>
                 <button type="button" onClick={onCancel}
                     className="ml-auto h-11 rounded-[7px] px-3 font-mono text-[11px] text-muted-foreground transition-[background-color,color,transform] duration-[120ms] hover:bg-muted hover:text-foreground active:scale-[0.96] lg:h-8">
@@ -55,10 +80,10 @@ export function VoiceRecordBar({ state = "recording", seconds = "0:07", onStop, 
         );
     return (
         <div className="flex h-[52px] items-center gap-3 rounded-xl border border-accent/35 bg-card px-3.5">
-            <span className="size-[9px] animate-pulse-run rounded-full bg-status-error" />
+            <span className="size-[9px] motion-safe:animate-pulse-run motion-reduce:animate-none rounded-full bg-status-error" />
             <span className="flex h-[22px] flex-1 items-center gap-[2.5px] transition-opacity duration-[150ms] ease-[var(--ease-out)]" style={{ opacity: isStopping ? 0 : 1 }}>
-                {[0.9, 0.7, 1.1, 0.8, 1, 0.75, 0.95, 0.85, 1.05, 0.9].map((d, i) => (
-                    <span key={i} className="w-[3px] origin-center animate-bar rounded-sm bg-accent transition-transform duration-[150ms] ease-[var(--ease-out)]" style={{ height: "100%", animationDuration: `${d}s`, animationDelay: `${-i * 0.1}s`, transform: isStopping ? "scaleY(0.05)" : undefined }} />
+                {BAR_PROFILE.map((_, i) => (
+                    <span key={i} className="w-[3px] origin-center rounded-sm bg-accent motion-reduce:transition-none transition-transform duration-[150ms] ease-[var(--ease-out)]" style={{ height: "100%", transform: `scaleY(${isStopping ? 0.05 : voiceBarScale(level, i)})` }} />
                 ))}
             </span>
             <span className="font-mono text-xs">{seconds}</span>

@@ -171,10 +171,11 @@ async function assertChatHeaderHasSpace(page: Page, minimumMetadataWidth = CHAT_
 
 async function assertPermissionLabelsAreFullyVisible(scope: Locator, labels: readonly string[]): Promise<void> {
     const reports = await Promise.all(labels.map(async (label) => {
-        const button = scope.getByRole("button", { name: label, exact: true });
-        await expect(button).toBeVisible();
+        const control = scope.getByRole("radio", { name: label, exact: true })
+            .or(scope.getByRole("button", { name: label, exact: true }));
+        await expect(control).toBeVisible();
 
-        const labelElement = button.locator("span").first();
+        const labelElement = control.locator("span").first();
         const metrics = await labelElement.evaluate((element) => ({
             clientWidth: element.clientWidth,
             scrollWidth: element.scrollWidth,

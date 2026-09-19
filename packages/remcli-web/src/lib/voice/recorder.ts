@@ -19,6 +19,56 @@ import { getRestConfig, transcribeAudio } from '@/lib/protocol';
 let mediaRecorder: MediaRecorder | null = null;
 let audioChunks: Blob[] = [];
 let isRecordingActive = false;
+let isRecordingStartPending = false;
+let recordingStartGeneration = 0;
+let audioContext: AudioContext | null = null;
+let analyser: AnalyserNode | null = null;
+let audioSource: MediaStreamAudioSourceNode | null = null;
+
+/** Converts analyser time-domain samples into a bounded RMS level. */
+export function normalizeAnalyserLevel(samples: Uint8Array): number {
+    if (samples.length === 0) return 0;
+
+    let squaredTotal = 0;
+    for (const sample of samples) {
+        const centered = (sample - 128) / 128;
+        squaredTotal += centered * centered;
+    }
+    return Math.min(1, Math.sqrt(squaredTotal / samples.length));
+}
+
+function disconnectAudioGraph(): void {
+    try { audioSource?.disconnect(); } catch { /* already disconnected */ }
+    try { analyser?.disconnect(); } catch { /* already disconnected */ }
+    const context = audioContext;
+    audioSource = null;
+    analyser = null;
+    audioContext = null;
+    if (context) void context.close().catch(() => undefined);
+}
+
+function readRecordingLevel(): number {
+    if (!analyser) return 0;
+    const samples = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(samples);
+    return normalizeAnalyserLevel(samples);
+}
+
+function connectAnalyser(stream: MediaStream): void {
+    const AudioContextConstructor = window.AudioContext
+        ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextConstructor) return;
+
+    try {
+        audioContext = new AudioContextConstructor();
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        audioSource = audioContext.createMediaStreamSource(stream);
+        audioSource.connect(analyser);
+    } catch {
+        disconnectAudioGraph();
+    }
+}
 
 function cleanupRecorder(): void {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
@@ -28,14 +78,23 @@ function cleanupRecorder(): void {
     mediaRecorder = null;
     audioChunks = [];
     isRecordingActive = false;
+    disconnectAudioGraph();
 }
 
 export async function startRecording(): Promise<boolean> {
-    if (isRecordingActive) return false;
+    if (isRecordingActive || isRecordingStartPending) return false;
     if (!navigator.mediaDevices?.getUserMedia) return false; // insecure context
 
+    const startGeneration = ++recordingStartGeneration;
+    isRecordingStartPending = true;
+    let stream: MediaStream | null = null;
+
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (startGeneration !== recordingStartGeneration) {
+            stream.getTracks().forEach((track) => track.stop());
+            return false;
+        }
         audioChunks = [];
 
         // Prefer webm/opus, fall back to whatever the browser supports
@@ -46,6 +105,7 @@ export async function startRecording(): Promise<boolean> {
                 : '';
 
         mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+        connectAnalyser(stream);
         mediaRecorder.ondataavailable = (event) => {
             if (event.data.size > 0) {
                 audioChunks.push(event.data);
@@ -55,8 +115,11 @@ export async function startRecording(): Promise<boolean> {
         isRecordingActive = true;
         return true;
     } catch {
-        cleanupRecorder();
+        if (!mediaRecorder) stream?.getTracks().forEach((track) => track.stop());
+        if (startGeneration === recordingStartGeneration) cleanupRecorder();
         return false;
+    } finally {
+        if (startGeneration === recordingStartGeneration) isRecordingStartPending = false;
     }
 }
 
@@ -81,6 +144,8 @@ export async function stopRecording(): Promise<Blob | null> {
 }
 
 export function cancelRecording(): void {
+    recordingStartGeneration += 1;
+    isRecordingStartPending = false;
     cleanupRecorder();
 }
 
@@ -102,6 +167,8 @@ export interface UseVoiceRecorderResult {
     recorderState: VoiceRecorderState;
     /** Секунды с начала записи (для таймера VoiceRecordBar). */
     elapsedSeconds: number;
+    /** Нормализованный RMS-уровень микрофона (0..1) во время записи. */
+    level: number;
     /** Запуск записи; 'error' если микрофон недоступен. */
     start: () => Promise<void>;
     /** Стоп + POST /v1/voice/transcribe; текст или null (тишина/ошибка → 'error'). */
@@ -115,8 +182,10 @@ export interface UseVoiceRecorderResult {
 export function useVoiceRecorder(): UseVoiceRecorderResult {
     const [recorderState, setRecorderState] = React.useState<VoiceRecorderState>('idle');
     const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
+    const [level, setLevel] = React.useState(0);
     const stateRef = React.useRef<VoiceRecorderState>('idle');
     const timerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+    const levelFrameRef = React.useRef<number | null>(null);
 
     const updateState = React.useCallback((state: VoiceRecorderState) => {
         stateRef.current = state;
@@ -145,6 +214,7 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
         }
         updateState('recording');
         setElapsedSeconds(0);
+        setLevel(0);
         timerRef.current = setInterval(() => {
             setElapsedSeconds((previous) => previous + 1);
         }, 1000);
@@ -154,6 +224,7 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
         if (stateRef.current !== 'recording') return null;
 
         clearTimer();
+        setLevel(0);
         updateState('transcribing');
 
         try {
@@ -183,6 +254,7 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
 
     const cancel = React.useCallback(() => {
         clearTimer();
+        setLevel(0);
         cancelRecording();
         updateState('idle');
     }, [updateState, clearTimer]);
@@ -191,13 +263,31 @@ export function useVoiceRecorder(): UseVoiceRecorderResult {
         if (stateRef.current === 'error') updateState('idle');
     }, [updateState]);
 
+    React.useEffect(() => {
+        if (recorderState !== 'recording' || typeof window === 'undefined') return;
+
+        const updateLevel = () => {
+            setLevel(readRecordingLevel());
+            levelFrameRef.current = window.requestAnimationFrame(updateLevel);
+        };
+        levelFrameRef.current = window.requestAnimationFrame(updateLevel);
+
+        return () => {
+            if (levelFrameRef.current !== null) {
+                window.cancelAnimationFrame(levelFrameRef.current);
+                levelFrameRef.current = null;
+            }
+        };
+    }, [recorderState]);
+
     // Cleanup on unmount
     React.useEffect(() => {
         return () => {
             if (timerRef.current !== null) clearInterval(timerRef.current);
+            if (levelFrameRef.current !== null) window.cancelAnimationFrame(levelFrameRef.current);
             cancelRecording();
         };
     }, []);
 
-    return { recorderState, elapsedSeconds, start, stopAndTranscribe, cancel, reset };
+    return { recorderState, elapsedSeconds, level, start, stopAndTranscribe, cancel, reset };
 }

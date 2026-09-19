@@ -36,24 +36,24 @@ test("Home triage keeps mobile and desktop filters, keyboard selection, and quic
     const jarvisBox = await jarvisCard.boundingBox();
     expect(jarvisBox?.height ?? 0).toBeGreaterThanOrEqual(44);
 
-    const active = page.getByRole("button", { name: "Active", exact: true });
-    const attention = page.getByRole("button", { name: "Attention", exact: true });
-    const completed = page.getByRole("button", { name: "Completed", exact: true });
+    const active = page.getByRole("radio", { name: "Active", exact: true });
+    const attention = page.getByRole("radio", { name: "Attention", exact: true });
+    const completed = page.getByRole("radio", { name: "Completed", exact: true });
 
-    await expect(active).toHaveAttribute("aria-pressed", "true");
+    await expect(active).toHaveAttribute("aria-checked", "true");
     await expect(page.getByRole("button", { name: /webapp/ })).toHaveCount(1);
     await expect(page.getByRole("button", { name: /mobile/ })).toHaveCount(0);
     await expectNoHorizontalOverflow(page);
 
     await attention.focus();
     await attention.press("Enter");
-    await expect(attention).toHaveAttribute("aria-pressed", "true");
+    await expect(attention).toHaveAttribute("aria-checked", "true");
     await expect(page.getByRole("button", { name: /mobile/ })).toHaveCount(1);
     await expect(page.getByRole("button", { name: /webapp/ })).toHaveCount(0);
     await expectNoHorizontalOverflow(page);
 
     await completed.click();
-    await expect(completed).toHaveAttribute("aria-pressed", "true");
+    await expect(completed).toHaveAttribute("aria-checked", "true");
     await expect(page.getByRole("button", { name: /release-notes/ })).toHaveCount(1);
     await expectNoHorizontalOverflow(page);
 

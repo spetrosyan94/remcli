@@ -137,7 +137,7 @@ button {
     -webkit-touch-callout: none; /* long-press по ссылкам/кнопкам не открывает меню Safari */
 }
 
-/* Vaul injects its default 500ms rule at runtime; design/MOTION.md owns the timing. */
+/* Vaul injects its default 500ms rule; design/04 Motion.dc.html owns the timing. */
 [data-vaul-drawer][data-vaul-snap-points="false"] {
     transition: transform var(--dur-sheet) var(--ease-sheet) !important;
     animation-duration: var(--dur-sheet) !important;
@@ -145,13 +145,18 @@ button {
 }
 
 [data-vaul-drawer][data-vaul-snap-points="false"][data-state="closed"] {
-    transition-duration: 260ms !important;
-    animation-duration: 260ms !important;
+    transition-duration: var(--dur-sheet) !important;
+    animation-duration: var(--dur-sheet) !important;
 }
 
 [data-vaul-overlay][data-vaul-snap-points="false"] {
     animation-duration: var(--dur-std) !important;
     animation-timing-function: var(--ease-out) !important;
+}
+
+[data-slot="dialog-content"][data-state],
+[data-slot="dialog-overlay"][data-state] {
+    animation-duration: var(--dur-std) !important;
 }
 
 @keyframes remcli-reduced-fade-in {
@@ -222,6 +227,18 @@ button {
         animation: remcli-reduced-fade-in var(--dur-micro) var(--ease-out) both !important;
     }
 
+    [data-slot="dialog-content"][data-state="closed"],
+    [data-slot="dialog-overlay"][data-state="closed"] {
+        animation: remcli-reduced-fade-out var(--dur-micro) var(--ease-out) both !important;
+        transform: none !important;
+    }
+
+    [data-slot="dialog-content"][data-state="open"],
+    [data-slot="dialog-overlay"][data-state="open"] {
+        animation: remcli-reduced-fade-in var(--dur-micro) var(--ease-out) both !important;
+        transform: none !important;
+    }
+
     *,
     ::before,
     ::after {
@@ -248,8 +265,8 @@ button {
     .animate-blink,
     .animate-blink-think,
     .animate-spin,
-    [data-slot="drawer-content"],
-    [data-slot="drawer-overlay"] {
+    [data-slot="drawer-content"]:not([data-state]),
+    [data-slot="drawer-overlay"]:not([data-state]) {
         animation: none !important;
     }
 }
