@@ -20,6 +20,7 @@ import { Drawer, DrawerContent, DrawerDescription, DrawerTitle } from "@/compone
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { getAgentPermissionLabel, getAgentPermissionModes, normalizeAgentPermissionMode } from "@/lib/agentPermissions";
 import { copyText } from "@/lib/clipboard";
+import { contentRevisionOf, preserveScrollPositionAfterPrepend, useChatViewport } from "@/lib/chatViewport";
 import { createCodexExecutionForModel } from "@/lib/codexCapabilities";
 import { canStopSession, type IStopMachineTarget } from "@/lib/sessionCapabilities";
 import {
@@ -145,11 +146,37 @@ interface AgentFeedGroup {
     id: string;
     timeLabel: string;
     tone: "normal" | "error";
+    isStreaming: boolean;
     texts: string[];
     items: (ToolFeedEntry | DiffFeedEntry)[];
 }
 
 type FeedItem = UserFeedItem | AgentFeedGroup;
+
+interface FeedCaretCandidate {
+    kind: FeedItem["kind"];
+    id: string;
+    isStreaming?: boolean;
+    items?: ReadonlyArray<{ kind: "tool" | "diff"; id: string; state?: ToolFeedEntry["state"] }>;
+}
+
+export type ActiveFeedCaret =
+    | { kind: "text"; groupId: string }
+    | { kind: "tool"; groupId: string; toolId: string }
+    | null;
+
+export function activeFeedCaretOf(feed: readonly FeedCaretCandidate[]): ActiveFeedCaret {
+    const streamingGroup = [...feed].reverse().find((item) => item.kind === "agent-group" && item.isStreaming);
+    if (streamingGroup) return { kind: "text", groupId: streamingGroup.id };
+
+    for (const item of [...feed].reverse()) {
+        if (item.kind !== "agent-group") continue;
+        const runningTool = [...(item.items ?? [])].reverse()
+            .find((entry) => entry.kind === "tool" && entry.state === "running");
+        if (runningTool) return { kind: "tool", groupId: item.id, toolId: runningTool.id };
+    }
+    return null;
+}
 
 interface InlineCodeToken {
     kind: "code";
@@ -630,6 +657,7 @@ export function buildFeed(messages: NormalizedMessage[], agent: AgentId): FeedIt
             id: `${message.id}:${suffix}`,
             timeLabel: `${agent} · ${formatTime(message.createdAt)}`,
             tone,
+            isStreaming: false,
             texts: [],
             items: [],
         };
@@ -667,10 +695,13 @@ export function buildFeed(messages: NormalizedMessage[], agent: AgentId): FeedIt
                     }
                     if (block.streamState === "final") {
                         streamGroup.texts = [block.text];
+                        streamGroup.isStreaming = false;
                     } else if (streamGroup.texts.length === 0) {
                         streamGroup.texts.push(block.text);
+                        streamGroup.isStreaming = true;
                     } else {
                         streamGroup.texts[streamGroup.texts.length - 1] += block.text;
+                        streamGroup.isStreaming = true;
                     }
                     group = streamGroup;
                     continue;
@@ -1033,7 +1064,7 @@ function ToolOutputLine({ line, hasCaret }: { line: string; hasCaret: boolean })
             ) : (
                 line
             )}
-            {hasCaret && <Caret />}
+            {hasCaret && <span data-streaming-caret aria-hidden="true"><Caret /></span>}
         </div>
     );
 }
@@ -1075,7 +1106,6 @@ export function ChatPage() {
     const [isWhisperAvailable, setIsWhisperAvailable] = React.useState(false);
     const [banner, setBanner] = React.useState<"ok" | "lost" | "restored">("ok");
     const [isResuming, setIsResuming] = React.useState(false);
-    const [hasDetachedAutoscroll, setHasDetachedAutoscroll] = React.useState(false);
     const [isPermissionSheetOpen, setIsPermissionSheetOpen] = React.useState(false);
     const [isExecutionSheetOpen, setIsExecutionSheetOpen] = React.useState(false);
     const [executionLoadState, setExecutionLoadState] = React.useState<SessionExecutionLoadState>("idle");
@@ -1094,7 +1124,6 @@ export function ChatPage() {
     const appliedExecutionRefreshKeyRef = React.useRef<string | null>(null);
     const executionRequestGenerationRef = React.useRef(0);
     const hadConnectedRef = React.useRef(false);
-    const hasDetachedAutoscrollRef = React.useRef(false);
     const permissionDecisionGateRef = React.useRef<ReturnType<typeof createPermissionDecisionGate> | null>(null);
 
     if (permissionDecisionGateRef.current === null) {
@@ -1127,6 +1156,21 @@ export function ChatPage() {
         }
         return [...entries.values()].sort((left, right) => left.request.createdAt - right.request.createdAt);
     }, [actionableStructuredRequests, structuredRequestRetentions]);
+    const viewportContentVersion = React.useMemo(
+        () => contentRevisionOf({
+            feed,
+            pendingPermissions,
+            renderedStructuredRequests,
+            thinking: session?.thinking ?? false,
+            expandedTools,
+        }),
+        [expandedTools, feed, pendingPermissions, renderedStructuredRequests, session?.thinking],
+    );
+    const structuredAnchorKey = React.useMemo(
+        () => [...renderedStructuredRequests]
+            .at(-1)?.request.requestKey ?? null,
+        [renderedStructuredRequests],
+    );
     const isBlockingStructuredRequest = renderedStructuredRequests.some(
         ({ request, terminalState }) => request.isBlocking && terminalState !== "expired",
     );
@@ -1199,7 +1243,6 @@ export function ChatPage() {
     /** Снимок скролла перед prepend старых сообщений — восстанавливаем позицию после рендера. */
     const scrollRestoreRef = React.useRef<ScrollRestore | null>(null);
     /** Автоскролл к низу — только если пользователь у низа ленты (не сбивать чтение истории). */
-    const isNearBottomRef = React.useRef(true);
     const paginationRef = React.useRef<MessagePaginationState>({ offset: 0, total: 0, hasMore: false });
     const lineagePaginationRef = React.useRef<MessagePaginationState>({ offset: 0, total: 0, hasMore: false });
     const [lineageParentHasMore, setLineageParentHasMore] = React.useState(false);
@@ -1269,9 +1312,6 @@ export function ChatPage() {
         loadingOlderRef.current = false;
         clearScrollRestore();
         paginationRef.current = { offset: 0, total: 0, hasMore: false };
-        isNearBottomRef.current = true;
-        hasDetachedAutoscrollRef.current = false;
-        setHasDetachedAutoscroll(false);
         setHasMore(false);
         setIsLoadingOlder(false);
         if (!sessionId) {
@@ -1478,32 +1518,22 @@ export function ChatPage() {
         if (node && node.scrollHeight !== restore.height) {
             const previousBehavior = node.style.scrollBehavior;
             node.style.scrollBehavior = "auto";
-            node.scrollTop = node.scrollHeight - restore.height + restore.top;
+            node.scrollTop = preserveScrollPositionAfterPrepend(restore.height, restore.top, node.scrollHeight);
             node.style.scrollBehavior = previousBehavior;
         }
         restore.onRestored?.();
     }, [messageLoadScope.generation, scrollRestoreVersion]);
 
+    const viewport = useChatViewport(feedRef, {
+        sessionId,
+        contentVersion: viewportContentVersion,
+        structuredAnchorKey,
+        onNearTop: () => {
+            if ((hasMore || lineageParentHasMore) && !loadingOlderRef.current) void loadOlder();
+        },
+    });
     const handleFeedScroll = () => {
-        const node = feedRef.current;
-        if (!node) return;
-        const isNearBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
-        const isDetached = !isNearBottom;
-        isNearBottomRef.current = isNearBottom;
-        if (hasDetachedAutoscrollRef.current !== isDetached) {
-            hasDetachedAutoscrollRef.current = isDetached;
-            setHasDetachedAutoscroll(isDetached);
-        }
-        if (node.scrollTop < 60 && (hasMore || lineageParentHasMore) && !loadingOlderRef.current) void loadOlder();
-    };
-
-    const scrollToBottom = () => {
-        const node = feedRef.current;
-        if (!node) return;
-        isNearBottomRef.current = true;
-        hasDetachedAutoscrollRef.current = false;
-        setHasDetachedAutoscroll(false);
-        node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
+        viewport.handleScroll();
     };
 
     // ── Доступность TTS/Whisper (P2P REST, хук useTtsAvailability из @/lib/voice) ──
@@ -1542,13 +1572,6 @@ export function ChatPage() {
         return () => window.clearTimeout(timer);
     }, [banner]);
 
-    // ── Автоскролл к концу ленты при новых сообщениях/стриминге (MOTION.md §2);
-    // при чтении истории (скролл вверх/пагинация) вниз не дёргаем ──
-    React.useEffect(() => {
-        const node = feedRef.current;
-        if (node && isNearBottomRef.current) node.scrollTop = node.scrollHeight;
-    }, [feed.length, lineageParentMessages.length, pendingPermissions.length, pendingStructuredRequests.length, session?.thinking, messagesLoaded]);
-
     // ── TTS: хук useTts (@/lib/voice) — generation counter, AbortController, lang, LRU-кэш ──
     const { ttsState, activeId: ttsActiveId, synthesize: ttsSynthesize, stop: stopTts } = useTts();
 
@@ -1569,6 +1592,8 @@ export function ChatPage() {
     const isLineageHistoryReady = Boolean(
         lineageParentId && (lineageParentMessagesLoaded || lineageHistoryState === "loaded"),
     );
+    const activeFeedCaret = activeFeedCaretOf(feed);
+    const activeStreamingGroupId = activeFeedCaret?.kind === "text" ? activeFeedCaret.groupId : null;
 
     const renderFeedItem = (item: FeedItem): React.ReactElement => {
         if (item.kind === "user") {
@@ -1582,17 +1607,23 @@ export function ChatPage() {
         }
 
         const groupText = item.texts.join("\n\n");
+        const isActiveStreamingGroup = item.id === activeStreamingGroupId;
         const listenState: "idle" | "synth" | "playing" =
             ttsActiveId === item.id && ttsState !== "idle"
                 ? (ttsState === "synthesizing" ? "synth" : "playing")
                 : "idle";
         return (
-            <div key={item.id} className="flex min-w-0 max-w-full flex-col gap-2">
+            <div key={item.id} data-streaming-state={item.isStreaming ? "streaming" : "complete"} className="flex min-w-0 max-w-full flex-col gap-2">
                 {item.texts.length > 0 && (
                     <>
                         <AgentMeta agent={agent}>{item.timeLabel}</AgentMeta>
                         {item.texts.map((text, index) => (
-                            <MarkdownMessage key={index} text={text} tone={item.tone} />
+                            <div key={index} data-streaming-render={isActiveStreamingGroup ? "active" : "complete"}>
+                                <MarkdownMessage text={text} tone={item.tone} />
+                                {isActiveStreamingGroup && index === item.texts.length - 1 && (
+                                    <span data-streaming-caret aria-hidden="true"><Caret /></span>
+                                )}
+                            </div>
                         ))}
                     </>
                 )}
@@ -1619,7 +1650,10 @@ export function ChatPage() {
                         >
                             {entry.outputLines.map((line, index) => (
                                 <ToolOutputLine key={index} line={line}
-                                    hasCaret={entry.state === "running" && index === entry.outputLines.length - 1} />
+                                    hasCaret={activeFeedCaret?.kind === "tool"
+                                        && activeFeedCaret.groupId === item.id
+                                        && activeFeedCaret.toolId === entry.id
+                                        && index === entry.outputLines.length - 1} />
                             ))}
                         </ToolCallCard>
                     );
@@ -2153,8 +2187,8 @@ export function ChatPage() {
 
             {/* лента */}
             <div className="relative min-h-0 min-w-0 flex-1">
-            <main ref={feedRef} onScroll={handleFeedScroll}
-                className="h-full min-w-0 overflow-x-hidden overflow-y-auto px-3.5 py-3.5 [scroll-behavior:smooth]">
+            <main ref={feedRef} onScroll={handleFeedScroll} data-streaming-follow={viewport.mode}
+                className="h-full min-w-0 overflow-x-hidden overflow-y-auto px-3.5 py-3.5 pb-[calc(0.875rem+var(--chat-viewport-extra-bottom,0px))] [scroll-behavior:smooth]">
                 <div className="mx-auto flex w-full min-w-0 max-w-[720px] flex-col gap-3">
                     {!messagesLoaded && (
                         <div className="flex justify-center py-4">
@@ -2226,7 +2260,7 @@ export function ChatPage() {
                     ))}
 
                     {/* индикатор «думает» — ephemeral activity (session.thinking) */}
-                    {session.thinking && <ThinkingRow agent={agent} />}
+                    {session.thinking && !activeStreamingGroupId && <ThinkingRow agent={agent} />}
 
                     {/* сессия завершена + есть агентская сессия в metadata → resume (design/screens/chat.tsx, ended) */}
                     {hasResumeTarget && (
@@ -2239,8 +2273,8 @@ export function ChatPage() {
                     )}
                 </div>
             </main>
-            {hasDetachedAutoscroll && (
-                <button type="button" onClick={scrollToBottom}
+            {viewport.isDetached && (
+                <button type="button" onClick={viewport.scrollToEnd}
                     className="absolute bottom-3 left-1/2 z-10 flex min-h-11 -translate-x-1/2 items-center rounded-full border border-border bg-card/95 px-4 font-mono text-[11px] text-muted-foreground shadow-lg shadow-black/10 backdrop-blur transition-[opacity,transform,border-color,color] duration-[var(--dur-std)] ease-[var(--ease-out)] hover:border-accent/40 hover:text-foreground">
                     ↓ к концу
                 </button>

@@ -5,6 +5,7 @@ import type { NormalizedMessage } from '@/lib/protocol/messages';
 import { mergeMessages } from '@/lib/protocol/store';
 import type { Session } from '@/lib/protocol/types';
 import { FIXTURE_STRUCTURED_REQUESTS } from '@/lib/fixtures/data';
+import { chatViewportModeForScroll, preserveScrollPositionAfterPrepend, scrollBehaviorForMotion } from '@/lib/chatViewport';
 
 let buildFeed: typeof import('@/pages/ChatPage').buildFeed;
 let MarkdownMessage: typeof import('@/pages/ChatPage').MarkdownMessage;
@@ -27,6 +28,7 @@ let getChatResumeAction: typeof import('@/pages/ChatPage').getChatResumeAction;
 let EndedSessionResume: typeof import('@/pages/ChatPage').EndedSessionResume;
 let pendingStructuredRequestsOf: typeof import('@/pages/ChatPage').pendingStructuredRequestsOf;
 let pendingPermissionsOf: typeof import('@/pages/ChatPage').pendingPermissionsOf;
+let activeFeedCaretOf: typeof import('@/pages/ChatPage').activeFeedCaretOf;
 
 interface Deferred<T> {
     promise: Promise<T>;
@@ -80,6 +82,7 @@ beforeAll(async () => {
     EndedSessionResume = pageModule.EndedSessionResume;
     pendingStructuredRequestsOf = pageModule.pendingStructuredRequestsOf;
     pendingPermissionsOf = pageModule.pendingPermissionsOf;
+    activeFeedCaretOf = pageModule.activeFeedCaretOf;
 });
 
 afterAll(() => {
@@ -815,6 +818,60 @@ describe('ChatPage feed mapping', () => {
                 state: 'success'
             }]
         });
+    });
+});
+
+describe('provider-neutral chat viewport', () => {
+    it('selects exactly one global caret when older tools and newer streaming text coexist', () => {
+        const feed = [{
+            kind: 'agent-group',
+            id: 'older-tool-group',
+            items: [{ kind: 'tool', id: 'tool-1', state: 'running' }],
+        }, {
+            kind: 'agent-group',
+            id: 'latest-text-group',
+            isStreaming: true,
+            items: [],
+        }] as const;
+
+        expect(activeFeedCaretOf(feed)).toEqual({ kind: 'text', groupId: 'latest-text-group' });
+        expect(activeFeedCaretOf(feed.slice(0, 1))).toEqual({
+            kind: 'tool',
+            groupId: 'older-tool-group',
+            toolId: 'tool-1',
+        });
+    });
+
+    it('keeps following same-group delta growth while attached', () => {
+        expect(chatViewportModeForScroll({ scrollTop: 500, scrollHeight: 1000, clientHeight: 500 })).toBe('follow-bottom');
+    });
+
+    it('detaches after the user scrolls upward and does not follow delta growth', () => {
+        expect(chatViewportModeForScroll({ scrollTop: 240, scrollHeight: 1000, clientHeight: 500 })).toBe('detached');
+    });
+
+    it('resumes follow with explicit to-end behavior and respects reduced motion', () => {
+        expect(scrollBehaviorForMotion(false)).toBe('smooth');
+        expect(scrollBehaviorForMotion(true)).toBe('auto');
+        expect(chatViewportModeForScroll({ scrollTop: 1000, scrollHeight: 1000, clientHeight: 500 })).toBe('follow-bottom');
+    });
+
+    it('preserves the viewport after history prepend', () => {
+        expect(preserveScrollPositionAfterPrepend(1200, 340, 1680)).toBe(820);
+    });
+
+    it.each(['codex', 'cursor', 'antigravity'] as const)('uses the same streaming state for %s', (agent) => {
+        const feed = buildFeed([{
+            id: `${agent}-delta`,
+            localId: null,
+            seq: 1,
+            createdAt: 1000,
+            isSidechain: false,
+            role: 'agent',
+            content: [{ type: 'text', text: 'chunk', uuid: 'shared-turn', parentUUID: null, streamState: 'delta' }],
+        }], agent);
+
+        expect(feed[0]).toMatchObject({ kind: 'agent-group', isStreaming: true, texts: ['chunk'] });
     });
 });
 
