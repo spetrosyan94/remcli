@@ -129,7 +129,7 @@ describe("StructuredInputCard canonical contract", () => {
         expect(markup).toContain(">Yes<");
         expect(markup).toContain(">No<");
         expect(markup).not.toContain('type="checkbox"');
-        expect(markup).toMatch(/<button type="button" disabled=""[^>]*>Submit<\/button>/);
+        expect(markup).toMatch(/<button[^>]*data-slot="button"[^>]*disabled=""[^>]*>Submit<\/button>/);
     });
 
     it("renders A/B/C, free and password inputs and sends one mutually exclusive single-select answer", () => {
@@ -253,7 +253,7 @@ describe("StructuredInputCard canonical contract", () => {
 
     it("keeps invalid submit and terminal controls inactive", () => {
         expect(renderCard(FIXTURE_STRUCTURED_REQUESTS["fx-structured-mcp-form"]))
-            .toMatch(/<button type="button" disabled=""[^>]*>Submit<\/button>/);
+            .toMatch(/<button[^>]*data-slot="button"[^>]*disabled=""[^>]*>Submit<\/button>/);
         expect(isStructuredResponseLocked("idle")).toBe(false);
         expect(isStructuredResponseLocked("error")).toBe(false);
         expect(isStructuredResponseLocked("sending")).toBe(true);

@@ -1,5 +1,10 @@
 import * as React from "react";
 import { ExternalLink, Loader2, LockKeyhole } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { t } from "@/lib/i18n";
 import type {
     CodexStructuredInputResponse,
@@ -252,7 +257,7 @@ export function StructuredResponseFeedback({ state, onRetry }: { state: Structur
         return <div role="status" aria-live="polite" className="flex min-h-10 animate-in fade-in items-center gap-2 border-t border-border px-3 py-2 font-mono text-[11px] text-muted-foreground duration-[var(--dur-std)] ease-[var(--ease-out)] motion-reduce:animate-[remcli-reduced-fade-in_var(--dur-micro)_var(--ease-out)_both] motion-reduce:transform-none"><Loader2 className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" /><span>{t("structured.sending")}</span></div>;
     }
     if (state === "error") {
-        return <div role="alert" aria-live="assertive" className="flex min-h-11 animate-in fade-in items-center gap-2 border-t border-status-error/25 px-3 py-2 font-mono text-[11px] text-status-error duration-[var(--dur-std)] ease-[var(--ease-out)] motion-reduce:animate-[remcli-reduced-fade-in_var(--dur-micro)_var(--ease-out)_both] motion-reduce:transform-none"><span className="min-w-0 flex-1 break-words">{t("structured.responseFailed")}</span><button type="button" onClick={onRetry} className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg border border-status-error/45 px-2.5 font-mono text-[10.5px] font-semibold transition-[background-color,border-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] hover:bg-status-error/10 active:scale-[0.96] motion-reduce:active:scale-100">{t("structured.retry")}</button></div>;
+        return <div role="alert" aria-live="assertive" className="flex min-h-11 animate-in fade-in items-center gap-2 border-t border-status-error/25 px-3 py-2 font-mono text-[11px] text-status-error duration-[var(--dur-std)] ease-[var(--ease-out)] motion-reduce:animate-[remcli-reduced-fade-in_var(--dur-micro)_var(--ease-out)_both] motion-reduce:transform-none"><span className="min-w-0 flex-1 break-words">{t("structured.responseFailed")}</span><Button type="button" variant="outline" onClick={onRetry} className="min-h-11 min-w-11 shrink-0 rounded-lg border-status-error/45 bg-transparent px-2.5 font-mono text-[10.5px] font-semibold text-status-error duration-[var(--dur-micro)] ease-[var(--ease-out)] shadow-none hover:bg-status-error/10 hover:text-status-error active:scale-[0.96] motion-reduce:active:scale-100">{t("structured.retry")}</Button></div>;
     }
     if (state === "resolved") {
         return <div role="status" aria-live="polite" data-min-visible-ms={STRUCTURED_SUCCESS_VISIBLE_MS} className="border-t border-border px-3 py-2 font-mono text-[11px] text-status-success animate-in fade-in duration-[var(--dur-std)] ease-[var(--ease-out)] motion-reduce:animate-[remcli-reduced-fade-in_var(--dur-micro)_var(--ease-out)_both] motion-reduce:transform-none">{t("structured.responseSent")}</div>;
@@ -265,9 +270,9 @@ export function StructuredResponseFeedback({ state, onRetry }: { state: Structur
 
 function ActionRow({ submitLabel, isLocked, isSubmitDisabled, onSubmit, onDecline, onCancel }: { submitLabel: string; isLocked: boolean; isSubmitDisabled: boolean; onSubmit: () => void; onDecline: () => void; onCancel: () => void }) {
     return <div className="flex flex-wrap gap-2 border-t border-border px-3 py-3">
-        <button type="button" onClick={onSubmit} disabled={isLocked || isSubmitDisabled} className="min-h-11 min-w-[8rem] flex-1 rounded-[9px] bg-accent px-3 text-[13px] font-semibold text-accent-foreground transition-[background-color,opacity,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:active:scale-100">{submitLabel}</button>
-        <button type="button" onClick={onDecline} disabled={isLocked} className="min-h-11 rounded-[9px] border border-border px-3 text-[12px] font-medium text-muted-foreground transition-[background-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] hover:bg-muted hover:text-foreground active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:active:scale-100">{t("structured.decline")}</button>
-        <button type="button" onClick={onCancel} disabled={isLocked} className="min-h-11 rounded-[9px] px-3 text-[12px] font-medium text-muted-foreground transition-[background-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] hover:bg-muted hover:text-foreground active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:active:scale-100">{t("structured.cancel")}</button>
+        <Button type="button" onClick={onSubmit} disabled={isLocked || isSubmitDisabled} className="min-h-11 min-w-[8rem] flex-1 rounded-[9px] bg-accent px-3 text-[13px] font-semibold text-accent-foreground duration-[var(--dur-micro)] ease-[var(--ease-out)] shadow-none hover:bg-accent/90 active:scale-[0.98] motion-reduce:active:scale-100">{submitLabel}</Button>
+        <Button type="button" variant="outline" onClick={onDecline} disabled={isLocked} className="min-h-11 rounded-[9px] border-border bg-transparent px-3 text-[12px] font-medium text-muted-foreground duration-[var(--dur-micro)] ease-[var(--ease-out)] shadow-none hover:bg-muted hover:text-foreground active:scale-[0.98] motion-reduce:active:scale-100">{t("structured.decline")}</Button>
+        <Button type="button" variant="ghost" onClick={onCancel} disabled={isLocked} className="min-h-11 rounded-[9px] px-3 text-[12px] font-medium text-muted-foreground duration-[var(--dur-micro)] ease-[var(--ease-out)] hover:bg-muted hover:text-foreground active:scale-[0.98] motion-reduce:active:scale-100">{t("structured.cancel")}</Button>
     </div>;
 }
 
@@ -281,11 +286,19 @@ function inputTypeForField(field: StructuredInputField): React.HTMLInputTypeAttr
     return "text";
 }
 
+function otherOptionControlValue(field: StructuredInputField): string {
+    let value = "__remcli-other";
+    const providerValues = new Set((field.options ?? []).map((option) => option.value));
+    while (providerValues.has(value)) value += "_";
+    return value;
+}
+
 function FieldControl({ requestKey, field, state, disabled, onChange, onOtherChange }: { requestKey: string; field: StructuredInputField; state: StructuredFieldValueState; disabled: boolean; onChange: (value: FieldValue | undefined) => void; onOtherChange: (value: string | undefined) => void }) {
     const fieldId = `structured-${requestKey}-${field.id}`;
     const descriptionId = field.description ? `${fieldId}-description` : undefined;
     const isValid = structuredFieldIsValid(field, state);
-    const inputClass = "min-h-11 w-full min-w-0 rounded-lg border border-input bg-background px-2.5 text-[12px] outline-none transition-[border-color,box-shadow] duration-[var(--dur-micro)] ease-[var(--ease-out)] placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15 disabled:cursor-not-allowed disabled:opacity-60 aria-invalid:border-status-error";
+    const inputClass = "h-11 min-h-11 w-full min-w-0 rounded-lg border-input bg-background px-2.5 text-[12px] shadow-none duration-[var(--dur-micro)] ease-[var(--ease-out)] focus-visible:border-accent focus-visible:ring-accent/15 disabled:opacity-60 aria-invalid:border-status-error";
+    const otherOptionValue = otherOptionControlValue(field);
     const currentValues = field.type === "multiselect" && Array.isArray(state.value) ? state.value : [];
     const isSelected = (optionValue: string) => field.type === "multiselect" ? currentValues.includes(optionValue) : !state.isOtherPresent && state.value === optionValue;
     const toggleOption = (optionValue: string) => {
@@ -299,32 +312,55 @@ function FieldControl({ requestKey, field, state, disabled, onChange, onOtherCha
 
         {field.type === "boolean" && <>
             <p data-boolean-state className="font-mono text-[10px] text-muted-foreground">{state.isPresent ? t(state.value === true ? "structured.yes" : "structured.no") : t("structured.notSelected")}</p>
-            <div className="grid min-w-0 grid-cols-2 gap-2">
-                {[true, false].map((option) => <label key={String(option)} className="flex min-h-11 min-w-0 cursor-pointer items-center justify-center gap-2 rounded-lg border border-border px-2.5 py-2 text-[12px] transition-[background-color,border-color] duration-[var(--dur-micro)] ease-[var(--ease-out)] has-[:focus-visible]:border-accent has-[:checked]:border-status-thinking/55 has-[:checked]:bg-status-thinking/[0.08]">
-                    <input type="radio" name={fieldId} value={String(option)} checked={state.isPresent && state.value === option} onChange={() => onChange(option)} required={field.required} aria-describedby={descriptionId} className="size-4 shrink-0 accent-[hsl(var(--status-thinking))]" />
-                    <span>{t(option ? "structured.yes" : "structured.no")}</span>
-                </label>)}
-            </div>
+            <RadioGroup name={fieldId} value={state.isPresent ? String(state.value) : ""} onValueChange={(value) => onChange(value === "true")} required={field.required} disabled={disabled} aria-label={field.label} aria-describedby={descriptionId} className="grid min-w-0 grid-cols-2 gap-2">
+                {[true, false].map((option) => {
+                    const optionId = `${fieldId}-${String(option)}`;
+                    const selected = state.isPresent && state.value === option;
+                    return <Label key={String(option)} htmlFor={optionId} className={`flex min-h-11 min-w-0 cursor-pointer justify-center rounded-lg border px-2.5 py-2 text-[12px] font-normal transition-[background-color,border-color,box-shadow] duration-[var(--dur-micro)] ease-[var(--ease-out)] has-[:focus-visible]:border-accent has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-accent/15 ${selected ? "border-status-thinking/55 bg-status-thinking/[0.08]" : "border-border"}`}>
+                        <RadioGroupItem id={optionId} value={String(option)} aria-describedby={descriptionId} className="border-input text-status-thinking focus-visible:border-accent focus-visible:ring-accent/15" />
+                        <span>{t(option ? "structured.yes" : "structured.no")}</span>
+                    </Label>;
+                })}
+            </RadioGroup>
         </>}
 
-        {(field.type === "select" || field.type === "multiselect") && <div className="space-y-1" role={field.type === "select" ? "radiogroup" : undefined} aria-label={field.label} aria-invalid={!isValid}>
-            {(field.options ?? []).map((option) => <label key={option.value} className="flex min-h-11 min-w-0 cursor-pointer items-start gap-2 rounded-lg border border-border px-2.5 py-2 text-left transition-[background-color,border-color] duration-[var(--dur-micro)] ease-[var(--ease-out)] has-[:focus-visible]:border-accent has-[:checked]:border-status-thinking/55 has-[:checked]:bg-status-thinking/[0.08]">
-                <input type={field.type === "select" ? "radio" : "checkbox"} name={field.type === "select" ? fieldId : `${fieldId}-${option.value}`} value={option.value} checked={isSelected(option.value)} onChange={() => toggleOption(option.value)} required={field.type === "select" && field.required} aria-describedby={descriptionId} className="mt-0.5 size-4 shrink-0 accent-[hsl(var(--status-thinking))]" />
-                <span className="min-w-0 flex-1"><span className="block break-words text-[12px] text-foreground">{option.label}</span>{option.description && <span className="mt-0.5 block break-words text-[10px] text-muted-foreground">{option.description}</span>}</span>
-            </label>)}
-            {field.allowOther && <label className="flex min-h-11 min-w-0 cursor-pointer items-center gap-2 rounded-lg border border-border px-2.5 py-2 text-[12px] transition-[background-color,border-color] duration-[var(--dur-micro)] ease-[var(--ease-out)] has-[:focus-visible]:border-accent has-[:checked]:border-status-thinking/55 has-[:checked]:bg-status-thinking/[0.08]">
-                <input type={field.type === "select" ? "radio" : "checkbox"} name={field.type === "select" ? fieldId : `${fieldId}-other-choice`} checked={Boolean(state.isOtherPresent)} onChange={(event) => { if (field.type === "select") onChange(undefined); onOtherChange(event.target.checked ? "" : undefined); }} required={field.type === "select" && field.required} className="size-4 shrink-0 accent-[hsl(var(--status-thinking))]" />
+        {field.type === "select" && <RadioGroup name={fieldId} value={state.isOtherPresent ? otherOptionValue : typeof state.value === "string" ? state.value : ""} onValueChange={(value) => { if (value === otherOptionValue) { onChange(undefined); onOtherChange(""); } else { onOtherChange(undefined); onChange(value); } }} required={field.required} disabled={disabled} aria-label={field.label} aria-invalid={!isValid} className="gap-1">
+            {(field.options ?? []).map((option) => {
+                const optionId = `${fieldId}-${option.value}`;
+                const selected = isSelected(option.value);
+                return <Label key={option.value} htmlFor={optionId} className={`flex min-h-11 min-w-0 cursor-pointer items-start rounded-lg border px-2.5 py-2 text-left text-[12px] font-normal transition-[background-color,border-color,box-shadow] duration-[var(--dur-micro)] ease-[var(--ease-out)] has-[:focus-visible]:border-accent has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-accent/15 ${selected ? "border-status-thinking/55 bg-status-thinking/[0.08]" : "border-border"}`}>
+                    <RadioGroupItem id={optionId} value={option.value} aria-describedby={descriptionId} className="mt-0.5 border-input text-status-thinking focus-visible:border-accent focus-visible:ring-accent/15" />
+                    <span className="min-w-0 flex-1"><span className="block break-words text-[12px] text-foreground">{option.label}</span>{option.description && <span className="mt-0.5 block break-words text-[10px] text-muted-foreground">{option.description}</span>}</span>
+                </Label>;
+            })}
+            {field.allowOther && <Label htmlFor={`${fieldId}-other-choice`} className={`flex min-h-11 min-w-0 cursor-pointer rounded-lg border px-2.5 py-2 text-[12px] font-normal transition-[background-color,border-color,box-shadow] duration-[var(--dur-micro)] ease-[var(--ease-out)] has-[:focus-visible]:border-accent has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-accent/15 ${state.isOtherPresent ? "border-status-thinking/55 bg-status-thinking/[0.08]" : "border-border"}`}>
+                <RadioGroupItem id={`${fieldId}-other-choice`} value={otherOptionValue} className="border-input text-status-thinking focus-visible:border-accent focus-visible:ring-accent/15" />
                 <span>{t("structured.other")}</span>
-            </label>}
+            </Label>}
+        </RadioGroup>}
+
+        {field.type === "multiselect" && <div className="space-y-1" aria-label={field.label} aria-invalid={!isValid}>
+            {(field.options ?? []).map((option) => {
+                const optionId = `${fieldId}-${option.value}`;
+                const selected = isSelected(option.value);
+                return <Label key={option.value} htmlFor={optionId} className={`flex min-h-11 min-w-0 cursor-pointer items-start rounded-lg border px-2.5 py-2 text-left text-[12px] font-normal transition-[background-color,border-color,box-shadow] duration-[var(--dur-micro)] ease-[var(--ease-out)] has-[:focus-visible]:border-accent has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-accent/15 ${selected ? "border-status-thinking/55 bg-status-thinking/[0.08]" : "border-border"}`}>
+                    <Checkbox id={optionId} checked={selected} onCheckedChange={() => toggleOption(option.value)} disabled={disabled} aria-describedby={descriptionId} className="mt-0.5 border-input data-[state=checked]:border-status-thinking data-[state=checked]:bg-status-thinking data-[state=checked]:text-background focus-visible:border-accent focus-visible:ring-accent/15" />
+                    <span className="min-w-0 flex-1"><span className="block break-words text-[12px] text-foreground">{option.label}</span>{option.description && <span className="mt-0.5 block break-words text-[10px] text-muted-foreground">{option.description}</span>}</span>
+                </Label>;
+            })}
+            {field.allowOther && <Label htmlFor={`${fieldId}-other-choice`} className={`flex min-h-11 min-w-0 cursor-pointer rounded-lg border px-2.5 py-2 text-[12px] font-normal transition-[background-color,border-color,box-shadow] duration-[var(--dur-micro)] ease-[var(--ease-out)] has-[:focus-visible]:border-accent has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-accent/15 ${state.isOtherPresent ? "border-status-thinking/55 bg-status-thinking/[0.08]" : "border-border"}`}>
+                <Checkbox id={`${fieldId}-other-choice`} checked={Boolean(state.isOtherPresent)} onCheckedChange={(checked) => onOtherChange(checked === true ? "" : undefined)} disabled={disabled} className="border-input data-[state=checked]:border-status-thinking data-[state=checked]:bg-status-thinking data-[state=checked]:text-background focus-visible:border-accent focus-visible:ring-accent/15" />
+                <span>{t("structured.other")}</span>
+            </Label>}
         </div>}
 
-        {(field.type === "select" || field.type === "multiselect") && field.allowOther && state.isOtherPresent && <label className="block min-w-0"><span className="sr-only">{t("structured.other")}</span><input id={`${fieldId}-other`} type="text" value={state.otherValue ?? ""} onChange={(event) => onOtherChange(event.target.value)} placeholder={t("structured.otherPlaceholder")} required aria-invalid={!state.otherValue?.trim()} aria-describedby={descriptionId} className={inputClass} /></label>}
+        {(field.type === "select" || field.type === "multiselect") && field.allowOther && state.isOtherPresent && <div className="min-w-0"><Label htmlFor={`${fieldId}-other`} className="sr-only">{t("structured.other")}</Label><Input id={`${fieldId}-other`} type="text" value={state.otherValue ?? ""} onChange={(event) => onOtherChange(event.target.value)} placeholder={t("structured.otherPlaceholder")} required aria-invalid={!state.otherValue?.trim()} aria-describedby={descriptionId} className={inputClass} /></div>}
 
-        {field.type !== "boolean" && field.type !== "select" && field.type !== "multiselect" && <label className="relative block min-w-0">
-            <span className="sr-only">{field.label}</span>
-            <input id={fieldId} type={inputTypeForField(field)} value={state.isPresent && (typeof state.value === "string" || typeof state.value === "number") ? String(state.value) : ""} onChange={(event) => onChange((field.type === "number" || field.type === "integer") && event.target.value === "" ? undefined : event.target.value)} autoComplete={field.isSecret ? "off" : field.format === "email" ? "email" : undefined} min={field.minimum} max={field.maximum} minLength={field.minLength} maxLength={field.maxLength} step={field.type === "integer" ? 1 : field.type === "number" ? "any" : undefined} required={field.required && (field.minLength ?? 0) > 0} aria-required={field.required} aria-invalid={!isValid} aria-describedby={descriptionId} className={`${inputClass}${field.isSecret ? " pr-9" : ""}`} />
+        {field.type !== "boolean" && field.type !== "select" && field.type !== "multiselect" && <div className="relative min-w-0">
+            <Label htmlFor={fieldId} className="sr-only">{field.label}</Label>
+            <Input id={fieldId} type={inputTypeForField(field)} value={state.isPresent && (typeof state.value === "string" || typeof state.value === "number") ? String(state.value) : ""} onChange={(event) => onChange((field.type === "number" || field.type === "integer") && event.target.value === "" ? undefined : event.target.value)} autoComplete={field.isSecret ? "off" : field.format === "email" ? "email" : undefined} min={field.minimum} max={field.maximum} minLength={field.minLength} maxLength={field.maxLength} step={field.type === "integer" ? 1 : field.type === "number" ? "any" : undefined} required={field.required && (field.minLength ?? 0) > 0} aria-required={field.required} aria-invalid={!isValid} aria-describedby={descriptionId} className={`${inputClass}${field.isSecret ? " pr-9" : ""}`} />
             {field.isSecret && <LockKeyhole className="pointer-events-none absolute right-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />}
-        </label>}
+        </div>}
     </fieldset>;
 }
 
@@ -429,7 +465,7 @@ function McpUrlCard({ request, onResponse, onOpenUrl, terminalState }: Structure
         <div className="space-y-2 px-3 py-3">
             <p className="text-[11px] text-muted-foreground">{t("structured.urlDestination")}</p>
             <code className="block min-w-0 break-all rounded-lg border border-border bg-background px-2.5 py-2 text-[11px] text-foreground">{request.displayUrl}</code>
-            <button type="button" onClick={openUrl} disabled={!canOpen || isLocked || urlOpenState === "loading"} className="inline-flex min-h-11 w-full min-w-0 items-center justify-center gap-2 rounded-[9px] border border-status-permission/40 px-3 text-[12px] font-medium text-status-permission transition-[background-color,border-color,color,transform] duration-[var(--dur-micro)] ease-[var(--ease-out)] hover:bg-status-permission/10 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:active:scale-100">{urlOpenState === "loading" ? <Loader2 className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <ExternalLink className="size-3.5 shrink-0" aria-hidden="true" />}{urlOpenState === "popup-blocked" || urlOpenState === "error" ? t("structured.urlRetry") : t("structured.urlOpen")}</button>
+            <Button type="button" variant="outline" onClick={openUrl} disabled={!canOpen || isLocked || urlOpenState === "loading"} className="min-h-11 w-full min-w-0 rounded-[9px] border-status-permission/40 bg-transparent px-3 text-[12px] font-medium text-status-permission duration-[var(--dur-micro)] ease-[var(--ease-out)] shadow-none hover:bg-status-permission/10 hover:text-status-permission active:scale-[0.98] motion-reduce:active:scale-100">{urlOpenState === "loading" ? <Loader2 className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <ExternalLink className="size-3.5 shrink-0" aria-hidden="true" />}{urlOpenState === "popup-blocked" || urlOpenState === "error" ? t("structured.urlRetry") : t("structured.urlOpen")}</Button>
             {openStatus && <p role={urlOpenState === "popup-blocked" || urlOpenState === "error" ? "alert" : "status"} aria-live={urlOpenState === "popup-blocked" || urlOpenState === "error" ? "assertive" : "polite"} data-mcp-url-open-state={urlOpenState} className="animate-in fade-in break-words font-mono text-[10px] text-muted-foreground duration-[var(--dur-micro)] ease-[var(--ease-out)] motion-reduce:animate-[remcli-reduced-fade-in_var(--dur-micro)_var(--ease-out)_both] motion-reduce:transform-none">{openStatus}</p>}
         </div>
         <ActionRow submitLabel={t("structured.accept")} isLocked={isLocked} isSubmitDisabled={urlOpenState !== "opened"} onSubmit={() => void respond("submit")} onDecline={() => void respond("decline")} onCancel={() => void respond("cancel")} />
