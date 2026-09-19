@@ -141,9 +141,34 @@ const MAX_SCHEMA_BYTES = 32 * 1024;
 const MAX_ANSWER_VALUES = 50;
 const MAX_RESOLVED_REQUESTS = 256;
 const STRING_FORMATS = new Set<CodexStructuredStringFormat>(['email', 'uri', 'date', 'date-time']);
+const UNSAFE_FIELD_IDS = new Set(['__proto__', 'constructor', 'prototype']);
 
 const STRUCTURED_WARNING = 'Codex requested structured input, but Remcli rejected the request.';
-const OPENAI_FORM_WARNING = 'Codex requested an unsupported OpenAI form elicitation; the request was canceled.';
+const MCP_ROOT_SCHEMA_KEYS = new Set(['type', 'properties', 'required']);
+const MCP_FIELD_SCHEMA_KEYS = new Set([
+    'type',
+    'title',
+    'description',
+    'default',
+    'enum',
+    'enumNames',
+    'oneOf',
+    'format',
+    'minLength',
+    'maxLength',
+    'minimum',
+    'maximum',
+    'items',
+    'minItems',
+    'maxItems',
+]);
+const MCP_ARRAY_ITEM_SCHEMA_KEYS = new Set(['type', 'enum', 'anyOf']);
+
+function assertAllowedKeys(record: Record<string, unknown>, allowed: ReadonlySet<string>): void {
+    for (const key of Object.keys(record)) {
+        if (!allowed.has(key)) throw new Error('Invalid structured input request.');
+    }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -404,6 +429,7 @@ function normalizeTimeout(params: Record<string, unknown>, defaultTimeoutMs: num
 function normalizeToolQuestion(question: unknown): NormalizedToolQuestion {
     if (!isRecord(question)) throw new Error('Invalid structured input request.');
     const id = readRequiredString(question, 'id', MAX_FIELD_ID_LENGTH);
+    if (UNSAFE_FIELD_IDS.has(id)) throw new Error('Invalid structured input request.');
     const header = readRequiredString(question, 'header', MAX_FIELD_LABEL_LENGTH);
     const prompt = readRequiredString(question, 'question', MAX_FIELD_DESCRIPTION_LENGTH);
     if (typeof question.isOther !== 'boolean' || typeof question.isSecret !== 'boolean') {
@@ -479,8 +505,15 @@ function normalizeToolRequest(
     };
 }
 
-function normalizeMcpField(id: string, rawSchema: unknown, required: boolean): CodexStructuredRequestField {
+function normalizeMcpField(
+    id: string,
+    rawSchema: unknown,
+    required: boolean,
+    strictSchema: boolean,
+): CodexStructuredRequestField {
     if (!isRecord(rawSchema)) throw new Error('Invalid structured input request.');
+    if (UNSAFE_FIELD_IDS.has(id)) throw new Error('Invalid structured input request.');
+    if (strictSchema) assertAllowedKeys(rawSchema, MCP_FIELD_SCHEMA_KEYS);
     const label = readOptionalString(rawSchema, 'title', MAX_FIELD_LABEL_LENGTH) ?? id;
     const description = readOptionalString(rawSchema, 'description', MAX_FIELD_DESCRIPTION_LENGTH);
     const rawType = rawSchema.type;
@@ -501,6 +534,7 @@ function normalizeMcpField(id: string, rawSchema: unknown, required: boolean): C
         if (!isRecord(rawSchema.items)) {
             throw new Error('Invalid structured input request.');
         }
+        if (strictSchema) assertAllowedKeys(rawSchema.items, MCP_ARRAY_ITEM_SCHEMA_KEYS);
         if (rawSchema.items.type !== undefined && rawSchema.items.type !== 'string') {
             throw new Error('Invalid structured input request.');
         }
@@ -564,6 +598,7 @@ function normalizeMcpField(id: string, rawSchema: unknown, required: boolean): C
 function normalizeMcpFormRequest(
     params: Record<string, unknown>,
     defaultTimeoutMs: number,
+    strictSchema = false,
 ): NormalizedStructuredRequest {
     const scope = readScope(params, false);
     const serverName = readRequiredString(params, 'serverName', MAX_FIELD_LABEL_LENGTH);
@@ -574,6 +609,7 @@ function normalizeMcpFormRequest(
         throw new Error('Invalid structured input request.');
     }
     const schema = params.requestedSchema;
+    if (strictSchema) assertAllowedKeys(schema, MCP_ROOT_SCHEMA_KEYS);
     if (schema.type !== 'object' || !isRecord(schema.properties)) throw new Error('Invalid structured input request.');
     const propertyEntries = Object.entries(schema.properties);
     if (propertyEntries.length > MAX_SCHEMA_FIELDS) throw new Error('Invalid structured input request.');
@@ -596,10 +632,12 @@ function normalizeMcpFormRequest(
         if (id.length === 0 || id.length > MAX_FIELD_ID_LENGTH || requiredSet.has(id) && schemaValue === undefined) {
             throw new Error('Invalid structured input request.');
         }
-        return normalizeMcpField(id, schemaValue, requiredSet.has(id));
+        return normalizeMcpField(id, schemaValue, requiredSet.has(id), strictSchema);
     });
     for (const requiredId of requiredSet) {
-        if (!schema.properties[requiredId]) throw new Error('Invalid structured input request.');
+        if (!Object.prototype.hasOwnProperty.call(schema.properties, requiredId)) {
+            throw new Error('Invalid structured input request.');
+        }
     }
     return {
         kind: 'mcp-form',
@@ -710,12 +748,7 @@ export class CodexStructuredInputBroker {
             if (!isRecord(context.params)) throw new Error('Invalid structured input request.');
             if (context.method === 'mcpServer/elicitation/request') {
                 const mode = context.params.mode;
-                if (mode === 'openai/form' || mode === 'openaiForm') {
-                    this.warn(OPENAI_FORM_WARNING);
-                    this.respondFailClosed(context);
-                    return;
-                }
-                if (mode !== 'form') {
+                if (mode !== 'form' && mode !== 'openai/form' && mode !== 'openaiForm') {
                     this.warn(STRUCTURED_WARNING);
                     this.respondFailClosed(context);
                     return;
@@ -724,7 +757,11 @@ export class CodexStructuredInputBroker {
 
             const normalized = context.method === 'item/tool/requestUserInput'
                 ? normalizeToolRequest(context.params, this.timeoutMs)
-                : normalizeMcpFormRequest(context.params, this.timeoutMs);
+                : normalizeMcpFormRequest(
+                    context.params,
+                    this.timeoutMs,
+                    context.params.mode === 'openai/form' || context.params.mode === 'openaiForm',
+                );
             this.addPending(context, normalized);
         } catch {
             this.warn(STRUCTURED_WARNING);
@@ -826,7 +863,10 @@ export class CodexStructuredInputBroker {
         }
 
         const nativeResult = this.createNativeResponse(pending, response);
-        this.resolvePending(pending, response.submissionId, 'client-response', true, nativeResult);
+        if (!pending.respond(pending.nativeRequestId, nativeResult, pending.transportGeneration)) {
+            throw new Error('Codex structured input response could not be delivered.');
+        }
+        this.resolvePending(pending, response.submissionId, 'client-response', false);
         return { status: 'submitted' };
     }
 

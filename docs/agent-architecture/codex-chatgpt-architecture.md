@@ -117,9 +117,11 @@ prompt ждёт следующего `turn/start`.
 
 `initialize` передаёт фактическую версию Remcli. `experimentalApi: true`
 объявляется намеренно: без этой capability app-server не отправляет
-`item/tool/requestUserInput` и MCP elicitation requests. Remcli принимает только
-реализованный ниже ограниченный typed contract; неизвестные experimental
-requests остаются fail-closed.
+`item/tool/requestUserInput` и MCP elicitation requests. `extensions` объявляет
+`openai/form` и client-only `openai/standard-form-input`; второй marker разрешает
+ручной ответ пользователя на standard form в режимах, где Codex иначе обязан
+отклонить elicitation. Remcli принимает только реализованный ниже ограниченный
+typed contract; неизвестные experimental requests остаются fail-closed.
 
 Уведомления преобразуются в события Remcli:
 
@@ -392,8 +394,9 @@ P2P session consumer. Повторный authenticated handoff того же own
 
 - `item/tool/requestUserInput`: 1-3 вопроса, provider options, `Other`, free
   text и secret input;
-- `mcpServer/elicitation/request`: standard `mode: form` с ограниченным typed
-  JSON Schema и `mode: url` с явным открытием HTTPS-ссылки.
+- `mcpServer/elicitation/request`: standard `mode: form`, расширенный
+  `mode: openai/form`/`openaiForm` в пределах того же bounded schema subset и
+  `mode: url` с явным открытием HTTPS-ссылки.
 
 Daemon нормализует только разрешённые поля и публикует безопасный display state
 в зашифрованном `agentState.codexStructuredRequests`. Native request id, ответы,
@@ -408,15 +411,16 @@ fail-closed. Повторный или поздний ответ возвращ�
 показывает его как успешную отправку. Blocking request временно блокирует новый
 chat prompt; после resolution composer разблокируется.
 
-Расширенный MCP `openai/form` не объявляется в initialize capabilities и
-отклоняется с видимым warning. Неподдержанная или oversized schema также
+`openai/form` объявляется через текущий extension map, но не превращается в
+универсальный renderer произвольной JSON Schema. Поддерживаются только те же
+primitive/select/multiselect поля, что и у standard form. Любой неизвестный
+keyword, nested object, composition или prototype-sensitive field id отклоняет
+request целиком с видимым warning. Неподдержанная или oversized schema
 завершается fail-closed без подмены пустым `accept`.
 
 ## Не реализовано
 
 - Полное отображение терминала/TUI внутри web.
-- Расширенный MCP `openai/form`; для него не объявляется capability до принятия
-  отдельного UI/P2P-контракта.
 - Межпроцессная блокировка двух одновременных writers одного Codex thread сверх
   текущего duplicate guard.
 - Полная матрица tmux версий: real ownership regression сейчас выполняется на
@@ -464,3 +468,10 @@ chat prompt; после resolution composer разблокируется.
   Default Remcli-created Codex gate — `GPT-5.6-Luna` (`gpt-5.6-luna`) с
   reasoning `xhigh`; override только через `REMCLI_REAL_CODEX_MODEL` и
   `REMCLI_REAL_CODEX_REASONING_EFFORT`.
+- Integration: `REMCLI_REAL_CODEX_MCP=1` поднимает изолированный `CODEX_HOME`,
+  настоящий `codex app-server` и отдельный stdio MCP child, затем проверяет
+  standard `form` и `openai/form` через `mcpServer/tool/call` без provider quota.
+- Live AI: `REMCLI_REAL_AI=1 REMCLI_REAL_CODEX_STRUCTURED=1` запускает настоящий
+  `turn/start`; модель вызывает test MCP tool, Remcli отвечает сначала на
+  provider approval form, затем на целевую form, после чего тот же turn обязан
+  завершиться успешно.

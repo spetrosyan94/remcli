@@ -47,7 +47,7 @@ function createContext(
     nativeRequestId: string | number,
     params: Record<string, unknown>,
     responses: Array<{ nativeRequestId: string | number; result: unknown; generation: number }>,
-    options: { generation?: number; current?: boolean } = {},
+    options: { generation?: number; current?: boolean; responseAccepted?: boolean } = {},
 ): CodexStructuredServerRequestContext {
     return {
         method,
@@ -57,7 +57,7 @@ function createContext(
         isCurrentScope: () => options.current ?? true,
         respond: (id, result, generation) => {
             responses.push({ nativeRequestId: id, result, generation });
-            return true;
+            return options.responseAccepted ?? true;
         },
     };
 }
@@ -125,7 +125,6 @@ describe('CodexStructuredInputBroker', () => {
             toolParams(),
             responses,
         ));
-
         const state = session.state.codexStructuredRequests;
         expect(state).toBeDefined();
         const request = Object.values(state ?? {})[0];
@@ -352,6 +351,67 @@ describe('CodexStructuredInputBroker', () => {
         });
     });
 
+    it.each(['openai/form', 'openaiForm'] as const)(
+        'accepts bounded %s schemas and returns typed MCP content',
+        async (mode) => {
+            const session = new FakeSession();
+            const responses: Array<{ nativeRequestId: string | number; result: unknown; generation: number }> = [];
+            const broker = new CodexStructuredInputBroker(session);
+
+            broker.handleServerRequest(createContext(
+                'mcpServer/elicitation/request',
+                `openai-${mode}`,
+                {
+                    threadId: 'thread-1',
+                    turnId: 'turn-1',
+                    serverName: 'example',
+                    mode,
+                    message: 'Choose release settings',
+                    requestedSchema: {
+                        type: 'object',
+                        properties: {
+                            channel: {
+                                type: 'string',
+                                title: 'Channel',
+                                enum: ['stable', 'preview'],
+                            },
+                            retries: {
+                                type: 'integer',
+                                title: 'Retries',
+                                minimum: 0,
+                                maximum: 3,
+                            },
+                        },
+                        required: ['channel'],
+                    },
+                },
+                responses,
+            ));
+
+            const request = Object.values(session.state.codexStructuredRequests ?? {})[0];
+            expect(request).toMatchObject({
+                kind: 'mcp-form',
+                message: 'Choose release settings',
+                serverName: 'example',
+            });
+            await expect(session.respond({
+                requestKey: request.requestKey,
+                submissionId: `submit-${mode}`,
+                action: 'submit',
+                content: { channel: 'stable', retries: 2 },
+            })).resolves.toEqual({ status: 'submitted' });
+            expect(responses).toEqual([{
+                nativeRequestId: `openai-${mode}`,
+                generation: 1,
+                result: {
+                    action: 'accept',
+                    content: { channel: 'stable', retries: 2 },
+                    _meta: null,
+                },
+            }]);
+        },
+    );
+
     it('rejects unsupported, invalid, oversized, and unsafe URL requests fail-closed', () => {
         const session = new FakeSession();
         const warnings: string[] = [];
@@ -366,8 +426,12 @@ describe('CodexStructuredInputBroker', () => {
                 turnId: 'turn-1',
                 serverName: 'example',
                 mode: 'openai/form',
-                message: 'unsupported',
-                requestedSchema: { type: 'object', properties: {} },
+                message: 'unsupported schema composition',
+                requestedSchema: {
+                    type: 'object',
+                    properties: {},
+                    allOf: [{ type: 'object' }],
+                },
             },
             responses,
         ));
@@ -460,6 +524,39 @@ describe('CodexStructuredInputBroker', () => {
             },
             responses,
         ));
+        broker.handleServerRequest(createContext(
+            'mcpServer/elicitation/request',
+            8,
+            {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                serverName: 'example',
+                mode: 'openai/form',
+                message: 'prototype-sensitive field',
+                requestedSchema: {
+                    type: 'object',
+                    properties: Object.fromEntries([['__proto__', { type: 'string' }]]),
+                },
+            },
+            responses,
+        ));
+        broker.handleServerRequest(createContext(
+            'mcpServer/elicitation/request',
+            9,
+            {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                serverName: 'example',
+                mode: 'openai/form',
+                message: 'prototype-sensitive required field',
+                requestedSchema: {
+                    type: 'object',
+                    properties: {},
+                    required: ['__proto__'],
+                },
+            },
+            responses,
+        ));
 
         expect(session.state.codexStructuredRequests).toBeUndefined();
         expect(responses).toEqual([
@@ -470,8 +567,42 @@ describe('CodexStructuredInputBroker', () => {
             { nativeRequestId: 5, generation: 1, result: { action: 'cancel', content: null, _meta: null } },
             { nativeRequestId: 6, generation: 1, result: { action: 'cancel', content: null, _meta: null } },
             { nativeRequestId: 7, generation: 1, result: { action: 'cancel', content: null, _meta: null } },
+            { nativeRequestId: 8, generation: 1, result: { action: 'cancel', content: null, _meta: null } },
+            { nativeRequestId: 9, generation: 1, result: { action: 'cancel', content: null, _meta: null } },
         ]);
-        expect(warnings).toHaveLength(7);
+        expect(warnings).toHaveLength(9);
+    });
+
+    it('keeps the request pending when the native response cannot be delivered', async () => {
+        const session = new FakeSession();
+        const responses: Array<{ nativeRequestId: string | number; result: unknown; generation: number }> = [];
+        const broker = new CodexStructuredInputBroker(session);
+        broker.handleServerRequest(createContext(
+            'item/tool/requestUserInput',
+            'delivery-race',
+            toolParams({
+                questions: [{
+                    id: 'free',
+                    header: 'Free answer',
+                    question: 'Enter a value',
+                    isOther: false,
+                    isSecret: false,
+                    options: null,
+                }],
+            }),
+            responses,
+            { responseAccepted: false },
+        ));
+        const request = Object.values(session.state.codexStructuredRequests ?? {})[0];
+        expect(request).toBeDefined();
+
+        await expect(session.respond({
+            requestKey: request.requestKey,
+            submissionId: 'delivery-race-submit',
+            action: 'submit',
+            answers: { free: ['value'] },
+        })).rejects.toThrow('could not be delivered');
+        expect(session.state.codexStructuredRequests?.[request.requestKey]).toBeDefined();
     });
 
     it('keeps exact scope and generation, resolves races idempotently, and cleans up on timeout', async () => {

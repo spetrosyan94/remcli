@@ -28,15 +28,16 @@
 | **Уровень доступа** | ✅ native sandbox/approval policy | ✅ `Agent / Plan / Ask` | ✅ native launch modes | 🟡 static modes, UI выключен |
 | **Tool approval с телефона** | ✅ | ✅ только options из ACP request | ❌ headless interactive contract не найден | ⏸ |
 | **Несколько вопросов, A/B/C, Other** | ✅ `requestUserInput` | ⏸ следующий этап: `cursor/ask_question` | ❌ provider flow не найден | ❌ |
-| **Typed forms** | ✅ standard MCP form + URL elicitation | ⏸ следующий этап: Cursor extensions | ❌ provider flow не найден | ❌ |
+| **Typed forms** | ✅ standard MCP form, bounded `openai/form` + URL elicitation | ⏸ следующий этап: Cursor extensions | ❌ provider flow не найден | ❌ |
 
 ### Важные границы
 
 - 🟡 История не равна полному снимку native UI: tool calls, reasoning и status
   могут не восстанавливаться.
-- Codex `requestUserInput` и standard MCP form реализованы отдельным typed
-  flow. MCP URL открывается только явным действием; raw URL не хранится в
-  session state. Расширенный `openai/form` не объявляется и fail-closed.
+- Codex `requestUserInput`, standard MCP form и bounded `openai/form`
+  реализованы отдельным typed flow. MCP URL открывается только явным действием;
+  raw URL не хранится в session state. Неизвестные `openai/form` controls и
+  schema keywords отклоняются целиком fail-closed.
   Cursor forms переиспользуют общий UI/P2P contract, но сохраняют нативный
   ACP-адаптер.
 - Terminal/phone continuity добавляется только через официальный structured
@@ -54,7 +55,7 @@
 |------|----------------|
 | `D` | Provider argv/IPC, parser, native ID, resume и mapping capabilities |
 | `I` | Зашифрованную границу daemon/P2P, lifecycle и typed handoff |
-| `L` | Реальный установленный и авторизованный provider CLI: create, prompt, stop, resume |
+| `L` | Реальный установленный и авторизованный provider CLI: create, prompt, stop, resume и provider-triggered interactive flow |
 | `UI-F` | Fixture-состояния и UX во встроенном Browser на mobile и desktop |
 
 `UI-F` не заменяет `L`. Skipped opt-in suite, fixture executable или одна

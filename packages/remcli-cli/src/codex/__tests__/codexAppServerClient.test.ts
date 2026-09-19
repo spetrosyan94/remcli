@@ -260,6 +260,11 @@ describe('CodexAppServerClient websocket transport', () => {
                     },
                     capabilities: {
                         experimentalApi: true,
+                        requestAttestation: false,
+                        extensions: {
+                            'openai/form': {},
+                            'openai/standard-form-input': {},
+                        },
                     },
                 },
             }),

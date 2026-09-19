@@ -114,6 +114,8 @@ class BoundedIdSet {
 export interface CodexAppServerClientOptions {
     endpoint?: string;
     webSocketFactory?: (endpoint: string) => WebSocketLike;
+    appServerArgs?: string[];
+    appServerEnv?: NodeJS.ProcessEnv;
 }
 
 export interface CodexAppServerReasoningEffort {
@@ -137,6 +139,14 @@ export interface CodexAppServerModelListPage {
 export interface CodexAppServerConfigRequirements {
     allowedApprovalPolicies?: string[];
     allowedSandboxModes?: string[];
+}
+
+export interface CodexMcpServerToolCallOptions {
+    threadId: string;
+    server: string;
+    tool: string;
+    arguments?: unknown;
+    signal?: AbortSignal;
 }
 
 export type CodexUserMessageSource = 'own' | 'external';
@@ -691,6 +701,8 @@ function getReconciledTurnResponse(turn: ReconciledTurn): CodexToolResponse {
 export class CodexAppServerClient {
     private readonly endpoint?: string;
     private readonly webSocketFactory: (endpoint: string) => WebSocketLike;
+    private readonly appServerArgs: string[];
+    private readonly appServerEnv?: NodeJS.ProcessEnv;
     private proc: ChildProcessWithoutNullStreams | null = null;
     private rl: readline.Interface | null = null;
     private ws: WebSocketLike | null = null;
@@ -727,6 +739,8 @@ export class CodexAppServerClient {
     constructor(options: CodexAppServerClientOptions = {}) {
         this.endpoint = options.endpoint;
         this.webSocketFactory = options.webSocketFactory ?? createGlobalWebSocket;
+        this.appServerArgs = [...(options.appServerArgs ?? [])];
+        this.appServerEnv = options.appServerEnv;
     }
 
     setHandler(handler: ((event: CodexAppServerEvent) => void) | null): void {
@@ -908,6 +922,11 @@ export class CodexAppServerClient {
                 },
                 capabilities: {
                     experimentalApi: true,
+                    requestAttestation: false,
+                    extensions: {
+                        'openai/form': {},
+                        'openai/standard-form-input': {},
+                    },
                 },
             }, undefined, CONNECTION_HANDSHAKE_TIMEOUT);
             this.notify('initialized', {});
@@ -936,10 +955,11 @@ export class CodexAppServerClient {
         logger.debug('[CodexAppServer] Starting codex app-server over stdio');
         const transportGeneration = ++this.transportGeneration;
         this.activeTransportGeneration = transportGeneration;
-        this.proc = spawn('codex', ['app-server'], {
+        this.proc = spawn('codex', ['app-server', ...this.appServerArgs], {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: Object.fromEntries(
-                Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+                Object.entries(this.appServerEnv ?? process.env)
+                    .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
             ),
         });
         this.rl = readline.createInterface({ input: this.proc.stdout });
@@ -1232,6 +1252,17 @@ export class CodexAppServerClient {
         } finally {
             this.isStartingThread = false;
         }
+    }
+
+    /** Calls a configured MCP tool through the native app-server transport. */
+    async callMcpServerTool(options: CodexMcpServerToolCallOptions): Promise<unknown> {
+        await this.connect();
+        return await this.request('mcpServer/tool/call', {
+            threadId: options.threadId,
+            server: options.server,
+            tool: options.tool,
+            ...(options.arguments === undefined ? {} : { arguments: options.arguments }),
+        }, options.signal);
     }
 
     /**

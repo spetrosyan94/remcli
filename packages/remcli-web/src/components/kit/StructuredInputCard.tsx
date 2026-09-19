@@ -212,7 +212,7 @@ export function structuredToolAnswers(fields: StructuredInputField[], values: Fi
 }
 
 export function structuredFormContent(fields: StructuredInputField[], values: FieldValues, otherValues: OtherValues): Record<string, unknown> {
-    const content: Record<string, unknown> = {};
+    const content = Object.create(null) as Record<string, unknown>;
     for (const field of fields) {
         const state = fieldState(field, values, otherValues);
         if (!state.isPresent && !state.isOtherPresent) continue;
