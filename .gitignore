@@ -31,14 +31,11 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
-# Claude Code / local agent state
-.claude/
+# Local agent state
 .agents/
 .codex/
-CLAUDE.md
-CLAUDE.local.md
+.local-worktrees/
 AGENTS.md
-HANDOFF_CLAUDE_TO_CODEX.md
 skills-lock.json
 plans/
 
