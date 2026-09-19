@@ -2,7 +2,13 @@
 // Все времена — константы от FIXTURE_BASE_TIME (никаких Date.now): скриншоты
 // визуальных тестов и ИИ-аудита должны быть воспроизводимыми.
 import type { NormalizedMessage } from '@/lib/protocol/messages';
-import type { ConciergeChatResponse, ConciergeStatus, Machine, Session } from '@/lib/protocol/types';
+import type {
+    CodexStructuredRequest,
+    ConciergeChatResponse,
+    ConciergeStatus,
+    Machine,
+    Session,
+} from '@/lib/protocol/types';
 import type { ZenTask } from '@/lib/zenTasks';
 
 /** 2026-06-15T10:00:00Z — базовая точка времени всех фикстур. */
@@ -17,6 +23,137 @@ export const FIXTURE_CHAT_SESSION_ID = 'fx-chat';
 
 export const FIXTURE_LINEAGE_PARENT_SESSION_ID = 'fx-lineage-parent';
 export const FIXTURE_LINEAGE_CHILD_SESSION_ID = 'fx-lineage-child';
+
+export const FIXTURE_STRUCTURED_REQUESTS: Record<string, CodexStructuredRequest> = {
+    'fx-structured-tool-input': {
+        requestKey: 'fx-structured-tool-input',
+        kind: 'tool-input',
+        message: 'Choose the target and provide the temporary verification details.',
+        fields: [
+            {
+                id: 'target',
+                type: 'select',
+                label: 'Where should the change be applied?',
+                required: true,
+                allowOther: true,
+                options: [
+                    { label: 'A · current package', value: 'current-package' },
+                    { label: 'B · all workspaces', value: 'all-workspaces' },
+                    { label: 'C · fixture only', value: 'fixture-only' },
+                ],
+            },
+            {
+                id: 'note',
+                type: 'text',
+                label: 'Anything else the agent should consider?',
+                required: false,
+                allowOther: true,
+                maxLength: 240,
+            },
+            {
+                id: 'secret',
+                type: 'text',
+                label: 'Temporary verification code',
+                required: true,
+                isSecret: true,
+            },
+        ],
+        isBlocking: true,
+        createdAt: T - 45_000,
+        deadlineAt: T + 5 * MINUTE,
+    },
+    'fx-structured-mcp-form': {
+        requestKey: 'fx-structured-mcp-form',
+        kind: 'mcp-form',
+        message: 'Set the deployment parameters for this MCP tool.',
+        serverName: 'release-tools',
+        fields: [
+            {
+                id: 'contactEmail',
+                type: 'text',
+                format: 'email',
+                label: 'Contact email',
+                required: false,
+            },
+            {
+                id: 'callbackUri',
+                type: 'text',
+                format: 'uri',
+                label: 'Callback URI',
+                required: false,
+            },
+            {
+                id: 'releaseDate',
+                type: 'text',
+                format: 'date',
+                label: 'Release date',
+                required: false,
+            },
+            {
+                id: 'scheduledAt',
+                type: 'text',
+                format: 'date-time',
+                label: 'Scheduled at',
+                required: false,
+                defaultValue: '2030-05-17T14:30:00Z',
+            },
+            {
+                id: 'environment',
+                type: 'select',
+                label: 'Environment',
+                required: true,
+                defaultValue: 'staging',
+                options: [
+                    { label: 'Staging', value: 'staging' },
+                    { label: 'Production', value: 'production' },
+                ],
+            },
+            {
+                id: 'replicas',
+                type: 'integer',
+                label: 'Replicas',
+                description: 'Between 1 and 10 instances.',
+                required: true,
+                defaultValue: 2,
+                minimum: 1,
+                maximum: 10,
+            },
+            {
+                id: 'dryRun',
+                type: 'boolean',
+                label: 'Dry run',
+                required: true,
+            },
+            {
+                id: 'components',
+                type: 'multiselect',
+                label: 'Components',
+                required: true,
+                allowOther: true,
+                minItems: 1,
+                options: [
+                    { label: 'Web', value: 'web' },
+                    { label: 'Daemon', value: 'daemon' },
+                    { label: 'Docs', value: 'docs' },
+                ],
+            },
+        ],
+        isBlocking: true,
+        createdAt: T - 38_000,
+        deadlineAt: T + 5 * MINUTE,
+    },
+    'fx-structured-mcp-url': {
+        requestKey: 'fx-structured-mcp-url',
+        kind: 'mcp-url',
+        message: 'Review the MCP approval details before continuing.',
+        serverName: 'approval-server',
+        fields: [],
+        displayUrl: 'https://docs.example.com/remcli/approval',
+        isBlocking: true,
+        createdAt: T - 30_000,
+        deadlineAt: T + 5 * MINUTE,
+    },
+};
 
 export interface FixtureConciergeFeedEntry {
     id: string;
@@ -141,6 +278,7 @@ interface SessionSeed {
     resumedFromRemcliSessionId?: string;
     executionOutcome?: NonNullable<Session['metadata']>['executionOutcome'];
     requests?: NonNullable<NonNullable<Session['agentState']>['requests']>;
+    structuredRequests?: NonNullable<NonNullable<Session['agentState']>['codexStructuredRequests']>;
 }
 
 function makeSession(seed: SessionSeed): Session {
@@ -187,6 +325,7 @@ function makeSession(seed: SessionSeed): Session {
         agentState: {
             controlledByUser: false,
             requests: seed.requests ?? {},
+            codexStructuredRequests: seed.structuredRequests ?? {},
             completedRequests: {}
         },
         agentStateVersion: 1,

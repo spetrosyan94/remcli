@@ -3,13 +3,14 @@ import React from "react";
 import { ApiClient } from '@/api/api';
 import {
     CodexAppServerClient,
+    CodexAppServerPermissionHandler,
     CodexAppServerJsonRpcError,
     CodexAppServerAmbiguousThreadStartError,
     isCodexAppServerActiveTurnHandoffError,
     isCodexAppServerRecoverableStateError,
     isCodexAppServerTransientTransportError,
 } from './codexAppServerClient';
-import { CodexPermissionHandler } from './utils/permissionHandler';
+import { CodexStructuredInputBroker } from './codexStructuredInputBroker';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
 import { DiffProcessor } from './utils/diffProcessor';
 import { randomUUID } from 'node:crypto';
@@ -465,7 +466,8 @@ export async function runCodex(opts: {
     let session: ApiSessionClient;
     // Permission handler declared here so it can be updated in onSessionSwap callback
     // (assigned later at line ~385 after client setup)
-    let permissionHandler: CodexPermissionHandler;
+    let permissionHandler: CodexAppServerPermissionHandler;
+    let structuredInputBroker: CodexStructuredInputBroker | null = null;
     let userMessageConsumer: ((message: DeliveredUserMessage) => Promise<void>) | null = null;
     const { session: initialSession, reconnectionHandle } = setupOfflineReconnection({
         api,
@@ -481,17 +483,21 @@ export async function runCodex(opts: {
             })
             : undefined,
         onSessionSwap: (newSession) => {
+            const previousSession = session;
+            previousSession?.rpcHandlerManager.registerHandler('permission', async () => undefined);
             session = newSession;
             // Update permission handler with new session to avoid stale reference
             if (permissionHandler) {
                 permissionHandler.updateSession(newSession);
             }
+            structuredInputBroker?.updateSession(newSession);
             if (userMessageConsumer) {
                 newSession.onUserMessage(userMessageConsumer);
             }
         }
     });
     session = initialSession;
+    structuredInputBroker = new CodexStructuredInputBroker(session);
 
     // A queued P2P delivery can be drained synchronously by onUserMessage().
     // Initialise the chat-error sink before registering any delivery handler.
@@ -709,7 +715,11 @@ export async function runCodex(opts: {
             for (const deliveryId of cancelledRecoveryDeliveryIds) {
                 session.cancelPendingUserMessageDelivery(deliveryId);
             }
+            const activeThreadId = activeClient?.getActiveThreadId();
             const activeTurnId = activeClient?.getActiveTurnId();
+            if (activeThreadId && activeTurnId) {
+                structuredInputBroker?.clearForTurn(activeThreadId, activeTurnId, 'turn-interrupted');
+            }
             const interruptRequest = activeClient?.interruptActiveTurn();
             const hasInterruptBarrier = Boolean(
                 activeTurnId && activeClient?.isTurnInterrupting(activeTurnId),
@@ -827,6 +837,7 @@ export async function runCodex(opts: {
     let usesSharedAppServer = appServerSelection.usesSharedEndpoint;
     let remoteTuiEndpoint = appServerSelection.remoteTuiEndpoint;
     activeClient = appServerClient;
+    appServerClient.setStructuredInputBroker(structuredInputBroker);
     let activeCodexThreadId = opts.resumeSessionId ?? appServerClient.getActiveThreadId();
 
     const handleThreadIdChange = (threadId: string) => {
@@ -854,7 +865,7 @@ export async function runCodex(opts: {
         logger.debug(`[RESUME] Replayed ${count} historical Codex messages for thread ${opts.resumeSessionId}`);
     }
 
-    permissionHandler = new CodexPermissionHandler(session);
+    permissionHandler = new CodexAppServerPermissionHandler(session);
     const reasoningProcessor = new ReasoningProcessor((message) => {
         // Filter out tool-call/tool-call-result — only forward reasoning text to mobile
         if (message.type === 'tool-call' || message.type === 'tool-call-result') return;
@@ -990,6 +1001,10 @@ export async function runCodex(opts: {
         }
     };
     appServerClient.setHandler(handleCodexClientMessage);
+    structuredInputBroker.setWarningSink((message) => handleCodexClientMessage({
+        type: 'agent_warning',
+        message,
+    }));
 
     const replaceAppServerClient = (selection: CodexAppServerClientSelection): void => {
         appServerClient = selection.client;
@@ -999,6 +1014,7 @@ export async function runCodex(opts: {
         activeCodexThreadId = opts.resumeSessionId ?? appServerClient.getActiveThreadId();
         appServerClient.setThreadIdChangeHandler(handleThreadIdChange);
         appServerClient.setPermissionHandler(permissionHandler);
+        appServerClient.setStructuredInputBroker(structuredInputBroker);
         appServerClient.setHandler(handleCodexClientMessage);
     };
 
@@ -1759,6 +1775,7 @@ export async function runCodex(opts: {
         // Clean up resources when main loop exits
         logger.debug('[codex]: Final cleanup start');
         logActiveHandles('cleanup-start');
+        structuredInputBroker?.clearAll('session-cleanup');
 
         // Cancel offline reconnection if still running
         if (reconnectionHandle) {

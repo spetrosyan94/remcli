@@ -9,7 +9,8 @@ import { ArrowLeft, Check, ChevronDown, Loader2, Mic, MonitorSmartphone, MoreHor
 import { useLocation, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import {
-    AgentMeta, Caret, ConnectionBanner, DiffView, ListenButton, PermissionCard,
+    AgentMeta, Caret, ConnectionBanner, DiffView, ListenButton, PermissionCard, StructuredInputCard,
+    STRUCTURED_ALREADY_RESOLVED_VISIBLE_MS, STRUCTURED_SUCCESS_VISIBLE_MS,
     Segmented, statusLabel, StatusDot, ThinkingRow, ToolCallCard, UserMessage, VoiceRecordBar,
     type AgentId, type DiffLine,
 } from "@/components/kit";
@@ -37,10 +38,10 @@ import {
     fetchWhisperStatus, getRestConfig, isClientStarted, loadSessionMessages,
     machineGetAntigravityCapabilities, machineGetCodexCapabilities, machineGetCursorCapabilities, machineGetSessionExecution,
     machineSetSessionExecution, machineSpawnNewSession, refreshSessions, restoreProtocolClient, sendSessionMessage,
-    sessionAllow, sessionDeny, useConnectionStatus, useMachines, useProtocolStore,
+    sessionAllow, sessionCodexStructuredInputResponse, sessionCodexStructuredInputUrl, sessionDeny, useConnectionStatus, useMachines, useProtocolStore,
     useSession, useSessionMessages, useSessionMessagesLoaded, useSessions,
     type CodexCapabilitiesSnapshot, type CursorCapabilitiesSnapshot, type NormalizedMessage,
-    type PermissionMode, type Session, type SessionExecutionSelection, type SessionExecutionSnapshot,
+    type CodexStructuredRequest, type CodexStructuredInputResponse, type CodexStructuredInputResponseResult, type PermissionMode, type Session, type SessionExecutionSelection, type SessionExecutionSnapshot,
 } from "@/lib/protocol";
 import { onProtocolReconnected, type SessionMessagesPage } from "@/lib/protocol/client";
 import { useVoiceRecorder } from "@/lib/voice/recorder";
@@ -64,6 +65,12 @@ type SessionExecutionLoadState = "idle" | "loading" | "ready" | "error";
 interface PermissionResponseState {
     action: PermissionDecisionAction;
     state: "sending" | "error";
+}
+
+interface StructuredRequestRetention {
+    request: CodexStructuredRequest;
+    terminalState?: "expired";
+    restoreComposerFocus?: boolean;
 }
 
 function isSessionExecutionEqual(
@@ -980,12 +987,16 @@ interface PendingPermission {
     createdAt: number;
 }
 
-function pendingPermissionsOf(session: Session | null): PendingPermission[] {
+export function pendingPermissionsOf(session: Session | null): PendingPermission[] {
     const requests = session?.agentState?.requests;
     if (!requests) return [];
     const completed = session?.agentState?.completedRequests ?? {};
+    const structuredUrlKeys = new Set(Object.values(session?.agentState?.codexStructuredRequests ?? {})
+        .filter((request) => request.kind === "mcp-url")
+        .map((request) => request.requestKey));
     return Object.entries(requests)
-        .filter(([id]) => !completed[id])
+        .filter(([id, request]) => !completed[id]
+            && !(request.tool === "CodexMcpElicitation" && structuredUrlKeys.has(id)))
         .map(([id, request]) => {
             const args: unknown = request.arguments;
             const argText = toolArgOf(args);
@@ -1002,6 +1013,11 @@ function pendingPermissionsOf(session: Session | null): PendingPermission[] {
             };
         })
         .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export function pendingStructuredRequestsOf(session: Session | null): CodexStructuredRequest[] {
+    return Object.values(session?.agentState?.codexStructuredRequests ?? {})
+        .sort((left, right) => left.createdAt - right.createdAt);
 }
 
 /** Строка вывода tool-call: подсветка «N passed» + стриминг-курсор в конце (референс chat.tsx). */
@@ -1053,6 +1069,8 @@ export function ChatPage() {
     const [uiMode, setUiMode] = React.useState<PermissionMode | null>(() => navState.permissionMode ?? null);
     const [busyPermissionIds, setBusyPermissionIds] = React.useState<readonly string[]>([]);
     const [permissionResponseStates, setPermissionResponseStates] = React.useState<Record<string, PermissionResponseState>>({});
+    const [structuredRequestRetentions, setStructuredRequestRetentions] = React.useState<Record<string, StructuredRequestRetention>>({});
+    const [locallyClosedStructuredRequestKeys, setLocallyClosedStructuredRequestKeys] = React.useState<ReadonlySet<string>>(() => new Set());
     const [expandedTools, setExpandedTools] = React.useState<Record<string, boolean>>({});
     const [isWhisperAvailable, setIsWhisperAvailable] = React.useState(false);
     const [banner, setBanner] = React.useState<"ok" | "lost" | "restored">("ok");
@@ -1070,6 +1088,8 @@ export function ChatPage() {
     const [stopTarget, setStopTarget] = React.useState<StopTarget | null>(null);
     const [lineageHistoryState, setLineageHistoryState] = React.useState<LineageHistoryState>("idle");
     const feedRef = React.useRef<HTMLElement>(null);
+    const composerRef = React.useRef<HTMLTextAreaElement>(null);
+    const structuredRetentionTimersRef = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
     const executionTriggerRef = React.useRef<HTMLButtonElement>(null);
     const appliedExecutionRefreshKeyRef = React.useRef<string | null>(null);
     const executionRequestGenerationRef = React.useRef(0);
@@ -1094,6 +1114,22 @@ export function ChatPage() {
         [agent, lineageMessageGroups.parentMessages],
     );
     const pendingPermissions = React.useMemo(() => pendingPermissionsOf(session), [session]);
+    const pendingStructuredRequests = React.useMemo(() => pendingStructuredRequestsOf(session), [session]);
+    const actionableStructuredRequests = React.useMemo(
+        () => pendingStructuredRequests.filter((request) => !locallyClosedStructuredRequestKeys.has(request.requestKey)),
+        [locallyClosedStructuredRequestKeys, pendingStructuredRequests],
+    );
+    const renderedStructuredRequests = React.useMemo(() => {
+        const entries = new Map<string, StructuredRequestRetention>();
+        for (const request of actionableStructuredRequests) entries.set(request.requestKey, { request });
+        for (const [requestKey, retention] of Object.entries(structuredRequestRetentions)) {
+            if (!entries.has(requestKey) || retention.terminalState) entries.set(requestKey, retention);
+        }
+        return [...entries.values()].sort((left, right) => left.request.createdAt - right.request.createdAt);
+    }, [actionableStructuredRequests, structuredRequestRetentions]);
+    const isBlockingStructuredRequest = renderedStructuredRequests.some(
+        ({ request, terminalState }) => request.isBlocking && terminalState !== "expired",
+    );
     const status = session ? sessionStatus(session) : "offline";
     const hasVisibleErrorMessage = feed.some((item) => item.kind === "agent-group" && item.tone === "error");
     const shouldShowExecutionErrorNotice = session?.metadata?.executionOutcome?.kind === "error"
@@ -1123,6 +1159,28 @@ export function ChatPage() {
             return hasRemovedState ? next : current;
         });
     }, [pendingPermissions]);
+
+    React.useEffect(() => {
+        const pendingKeys = new Set(pendingStructuredRequests.map((request) => request.requestKey));
+        setLocallyClosedStructuredRequestKeys((current) => {
+            let changed = false;
+            const next = new Set<string>();
+            for (const requestKey of current) {
+                if (pendingKeys.has(requestKey) || structuredRequestRetentions[requestKey]) next.add(requestKey);
+                else changed = true;
+            }
+            return changed ? next : current;
+        });
+    }, [pendingStructuredRequests, structuredRequestRetentions]);
+
+    React.useEffect(() => {
+        setStructuredRequestRetentions({});
+        setLocallyClosedStructuredRequestKeys(new Set());
+        return () => {
+            for (const timer of structuredRetentionTimersRef.current.values()) clearTimeout(timer);
+            structuredRetentionTimersRef.current.clear();
+        };
+    }, [sessionId]);
 
     React.useEffect(() => {
         if (!session) return;
@@ -1489,7 +1547,7 @@ export function ChatPage() {
     React.useEffect(() => {
         const node = feedRef.current;
         if (node && isNearBottomRef.current) node.scrollTop = node.scrollHeight;
-    }, [feed.length, lineageParentMessages.length, pendingPermissions.length, session?.thinking, messagesLoaded]);
+    }, [feed.length, lineageParentMessages.length, pendingPermissions.length, pendingStructuredRequests.length, session?.thinking, messagesLoaded]);
 
     // ── TTS: хук useTts (@/lib/voice) — generation counter, AbortController, lang, LRU-кэш ──
     const { ttsState, activeId: ttsActiveId, synthesize: ttsSynthesize, stop: stopTts } = useTts();
@@ -1910,6 +1968,7 @@ export function ChatPage() {
     };
 
     const sendDraft = () => {
+        if (isBlockingStructuredRequest) return;
         const text = draft.trim();
         if (!text) return;
         setDraft("");
@@ -1923,6 +1982,57 @@ export function ChatPage() {
                 console.error("[ChatPage] send failed:", error);
             });
     };
+
+    const respondToStructuredRequest = React.useCallback(async (response: CodexStructuredInputResponse): Promise<CodexStructuredInputResponseResult> => {
+        const request = pendingStructuredRequests.find((candidate) => candidate.requestKey === response.requestKey);
+        if (!request) return { status: "already-resolved" };
+        const focusedCard = document.activeElement instanceof Element
+            ? document.activeElement.closest("[data-structured-input-card]")
+            : null;
+        const restoreComposerFocus = focusedCard?.getAttribute("data-structured-request-key") === response.requestKey;
+        setStructuredRequestRetentions((current) => ({ ...current, [response.requestKey]: { request } }));
+        const result = await sessionCodexStructuredInputResponse(sessionId, response);
+        if (result.status === "already-resolved") {
+            setLocallyClosedStructuredRequestKeys((current) => new Set(current).add(response.requestKey));
+            setStructuredRequestRetentions((current) => ({
+                ...current,
+                [response.requestKey]: { request, terminalState: "expired", restoreComposerFocus },
+            }));
+            const existingTimer = structuredRetentionTimersRef.current.get(response.requestKey);
+            if (existingTimer) clearTimeout(existingTimer);
+            const timer = setTimeout(() => {
+                const activeCard = document.activeElement instanceof Element
+                    ? document.activeElement.closest("[data-structured-input-card]")
+                    : null;
+                const focusStayedWithRequest = document.activeElement === document.body
+                    || activeCard?.getAttribute("data-structured-request-key") === response.requestKey;
+                const shouldRestoreComposerFocus = restoreComposerFocus && focusStayedWithRequest;
+                setStructuredRequestRetentions((current) => {
+                    if (!Object.prototype.hasOwnProperty.call(current, response.requestKey)) return current;
+                    const next = { ...current };
+                    delete next[response.requestKey];
+                    return next;
+                });
+                structuredRetentionTimersRef.current.delete(response.requestKey);
+                if (shouldRestoreComposerFocus) requestAnimationFrame(() => composerRef.current?.focus());
+            }, STRUCTURED_ALREADY_RESOLVED_VISIBLE_MS);
+            structuredRetentionTimersRef.current.set(response.requestKey, timer);
+            return result;
+        }
+        setStructuredRequestRetentions((current) => {
+            if (!Object.prototype.hasOwnProperty.call(current, response.requestKey)) return current;
+            const next = { ...current };
+            delete next[response.requestKey];
+            return next;
+        });
+        toast.success(t("structured.responseSent"), { duration: STRUCTURED_SUCCESS_VISIBLE_MS });
+        return result;
+    }, [pendingStructuredRequests, sessionId]);
+
+    const openStructuredInputUrl = React.useCallback(
+        (requestKey: string) => sessionCodexStructuredInputUrl(sessionId, requestKey),
+        [sessionId],
+    );
 
     const toggleToolExpanded = (entryId: string, fallback: boolean) => {
         setExpandedTools((current) => ({ ...current, [entryId]: !(current[entryId] ?? fallback) }));
@@ -2109,6 +2219,12 @@ export function ChatPage() {
                         );
                     })}
 
+                    {renderedStructuredRequests.map(({ request, terminalState }) => (
+                        <div data-structured-entry key={request.requestKey} className="animate-in fade-in slide-in-from-bottom-2 zoom-in-[.99] duration-[var(--dur-enter)] ease-[var(--ease-out)] motion-reduce:animate-[remcli-reduced-fade-in_var(--dur-micro)_var(--ease-out)_both] motion-reduce:transform-none">
+                            <StructuredInputCard request={request} terminalState={terminalState} onResponse={respondToStructuredRequest} onOpenUrl={openStructuredInputUrl} />
+                        </div>
+                    ))}
+
                     {/* индикатор «думает» — ephemeral activity (session.thinking) */}
                     {session.thinking && <ThinkingRow agent={agent} />}
 
@@ -2153,10 +2269,11 @@ export function ChatPage() {
                                     onRetry={startDictation}
                                 />
                             )}
-                            <div className="flex items-end gap-2">
+                            <div className={`flex items-end gap-2 ${isBlockingStructuredRequest ? "opacity-55" : ""}`}>
                                 <div className="relative min-w-0 flex-1">
-                                    <textarea rows={1} placeholder={t("chat.placeholder")}
+                                    <textarea ref={composerRef} rows={1} placeholder={isBlockingStructuredRequest ? t("structured.composerBlocked") : t("chat.placeholder")}
                                         value={draft}
+                                        disabled={isBlockingStructuredRequest}
                                         onChange={(event) => setDraft(event.target.value)}
                                         onKeyDown={(event) => {
                                             if (event.key === "Enter" && !event.shiftKey) {
@@ -2164,23 +2281,25 @@ export function ChatPage() {
                                                 sendDraft();
                                             }
                                         }}
-                                        className="block min-h-11 w-full resize-none rounded-xl border border-input bg-muted px-3.5 py-3 text-sm outline-none transition-[border-color,box-shadow,opacity] duration-[120ms] placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15 lg:pr-40" />
+                                        aria-describedby={isBlockingStructuredRequest ? "structured-composer-blocked" : undefined}
+                                        className="block min-h-11 w-full resize-none rounded-xl border border-input bg-muted px-3.5 py-3 text-sm outline-none transition-[border-color,box-shadow,opacity] duration-[120ms] placeholder:text-muted-foreground focus:border-accent focus:ring-[3px] focus:ring-accent/15 disabled:cursor-not-allowed" />
                                     {/* десктоп: хинт горячих клавиш внутри поля (desktop.html) */}
                                     <span className="pointer-events-none absolute inset-y-0 right-3.5 hidden items-center font-mono text-[10px] text-muted-foreground lg:flex">
                                         {t("chat.inputHint")}
                                     </span>
                                 </div>
                                 {isWhisperAvailable && (
-                                    <button aria-label={t("chat.aria.dictate")} onClick={startDictation}
+                                    <button aria-label={t("chat.aria.dictate")} onClick={startDictation} disabled={isBlockingStructuredRequest}
                                         className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-border transition-[background-color,border-color,transform] duration-[120ms] active:scale-[0.96]">
                                         <Mic className="size-4 text-muted-foreground" />
                                     </button>
                                 )}
-                                <button aria-label={t("chat.aria.send")} onClick={sendDraft}
+                                <button aria-label={t("chat.aria.send")} onClick={sendDraft} disabled={isBlockingStructuredRequest}
                                     className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary transition-[background-color,opacity,transform] duration-[120ms] active:scale-[0.96]">
                                     <Send className="size-4 text-primary-foreground" />
                                 </button>
                             </div>
+                            {isBlockingStructuredRequest && <span id="structured-composer-blocked" className="sr-only">{t("structured.composerBlocked")}</span>}
                         </>
                     )}
                 </div>

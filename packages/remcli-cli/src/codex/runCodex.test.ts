@@ -607,6 +607,11 @@ vi.mock('./codexAppServerHost', () => ({
 vi.mock('./codexAppServerClient', () => ({
     CodexAppServerJsonRpcError: testAppServerErrors.JsonRpcError,
     CodexAppServerAmbiguousThreadStartError: testAppServerErrors.AmbiguousThreadStartError,
+    CodexAppServerPermissionHandler: class {
+        updateSession(): void {}
+
+        reset(): void {}
+    },
     isCodexAppServerActiveTurnHandoffError(error: unknown): boolean {
         return error instanceof testAppServerErrors.ActiveTurnHandoffError;
     },
@@ -711,6 +716,8 @@ vi.mock('./codexAppServerClient', () => ({
         }
 
         setPermissionHandler(): void {}
+
+        setStructuredInputBroker(): void {}
 
         async listModels(): Promise<{ data: TestCapabilityModel[] }> {
             return {

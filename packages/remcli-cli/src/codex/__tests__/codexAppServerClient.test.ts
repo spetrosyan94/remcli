@@ -1,15 +1,44 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { AgentState } from '@/api/types';
 import { logger } from '@/ui/logger';
 import {
     CodexAppServerClient,
     CodexAppServerActiveTurnHandoffError,
     CodexAppServerAmbiguousThreadStartError,
     CodexAppServerJsonRpcError,
+    CodexAppServerPermissionHandler,
     CodexAppServerThreadStateError,
     CodexAppServerTransportError,
     codexSandboxToAppServerPolicy,
 } from '../codexAppServerClient';
+import {
+    CodexStructuredInputBroker,
+    type CodexStructuredInputSession,
+} from '../codexStructuredInputBroker';
+
+class FakeStructuredSession implements CodexStructuredInputSession {
+    state: AgentState = {};
+    readonly handlers = new Map<string, (request: unknown) => Promise<unknown>>();
+    readonly rpcHandlerManager = {
+        registerHandler: <TRequest, TResponse>(
+            method: string,
+            handler: (request: TRequest) => Promise<TResponse>,
+        ): void => {
+            this.handlers.set(method, handler as unknown as (request: unknown) => Promise<unknown>);
+        },
+    };
+
+    updateAgentState(handler: (state: AgentState) => AgentState): void {
+        this.state = handler(this.state);
+    }
+
+    async call<T>(method: string, request: unknown): Promise<T> {
+        const handler = this.handlers.get(method);
+        if (!handler) throw new Error(`Missing RPC handler: ${method}`);
+        return handler(request) as Promise<T>;
+    }
+}
 
 class FakeWebSocket {
     static instances: FakeWebSocket[] = [];
@@ -70,6 +99,14 @@ async function waitForSent(ws: FakeWebSocket, count: number): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, 0));
     }
     expect(ws.sent.length).toBeGreaterThanOrEqual(count);
+}
+
+async function waitForCondition(condition: () => boolean): Promise<void> {
+    const deadline = Date.now() + 1000;
+    while (!condition() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(condition()).toBe(true);
 }
 
 function createFakeClient(): CodexAppServerClient {
@@ -221,6 +258,9 @@ describe('CodexAppServerClient websocket transport', () => {
                         title: 'Remcli',
                         version: '0.0.1',
                     },
+                    capabilities: {
+                        experimentalApi: true,
+                    },
                 },
             }),
             { method: 'initialized', params: {} },
@@ -258,7 +298,7 @@ describe('CodexAppServerClient websocket transport', () => {
         ['approved_for_session', 'accept'],
         ['denied', 'decline'],
         ['abort', 'cancel'],
-    ] as const)('maps MCP URL elicitation decision %s to %s', async (decision, action) => {
+    ] as const)('preserves MCP URL permission semantics without a broker: %s', async (decision, action) => {
         const { client, ws } = await connectFakeClient();
         const handleToolCall = vi.fn().mockResolvedValue({ decision });
         client.setPermissionHandler({ handleToolCall } as unknown as Parameters<CodexAppServerClient['setPermissionHandler']>[0]);
@@ -269,7 +309,7 @@ describe('CodexAppServerClient websocket transport', () => {
             mode: 'url',
             _meta: null,
             message: 'Open the authorization page',
-            url: 'https://example.test/authorize',
+            url: 'https://example.test/authorize?token=secret-query#secret-fragment',
             elicitationId: 'elicitation-1',
         };
 
@@ -283,14 +323,201 @@ describe('CodexAppServerClient websocket transport', () => {
         expect(handleToolCall).toHaveBeenCalledWith(
             'elicitation-request-1',
             'CodexMcpElicitation',
-            params,
+            expect.objectContaining({
+                kind: 'mcp-url',
+                requestKey: 'elicitation-request-1',
+                url: 'https://example.test/authorize',
+                displayUrl: 'https://example.test/authorize',
+            }),
         );
+        expect(JSON.stringify(handleToolCall.mock.calls)).not.toContain('secret-query');
+        expect(JSON.stringify(handleToolCall.mock.calls)).not.toContain('secret-fragment');
         expect(JSON.parse(ws.sent[2])).toEqual({
             id: 'elicitation-request-1',
             result: { action, content: null, _meta: null },
         });
 
         await client.disconnect();
+    });
+
+    it('integrates MCP URL permission, private URL RPC, and the original native RequestId', async () => {
+        const debug = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
+        const { client, ws } = await connectFakeClient();
+        const session = new FakeStructuredSession();
+        const broker = new CodexStructuredInputBroker(session);
+        const permissionHandler = new CodexAppServerPermissionHandler(session as never);
+        const pendingPermissionRequests = (permissionHandler as unknown as {
+            pendingRequests: Map<string, unknown>;
+        }).pendingRequests;
+        client.setStructuredInputBroker(broker);
+        client.setPermissionHandler(permissionHandler);
+        Object.assign(client as unknown as Record<string, unknown>, {
+            activeThreadId: 'thread-1',
+            activeTurnId: 'turn-1',
+        });
+
+        ws.message(JSON.stringify({
+            id: 913,
+            method: 'mcpServer/elicitation/request',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                serverName: 'example',
+                mode: 'url',
+                _meta: null,
+                message: 'Authorize',
+                url: 'https://example.test/authorize?token=native-secret#private-fragment',
+                elicitationId: 'elicitation-913',
+            },
+        }));
+        await waitForCondition(() => Object.keys(session.state.codexStructuredRequests ?? {}).length === 1);
+
+        const request = Object.values(session.state.codexStructuredRequests ?? {})[0];
+        expect(request.displayUrl).toBe('https://example.test/authorize');
+        expect(session.state.requests?.[request.requestKey]).toBeUndefined();
+        expect(pendingPermissionRequests.has(request.requestKey)).toBe(true);
+        expect(JSON.stringify(session.state)).not.toContain('native-secret');
+        expect(JSON.stringify(session.state)).not.toContain('private-fragment');
+        expect(JSON.stringify(debug.mock.calls)).not.toContain('native-secret');
+        await expect(session.call('codex-structured-input-url', { requestKey: request.requestKey })).resolves.toEqual({
+            url: 'https://example.test/authorize?token=native-secret#private-fragment',
+        });
+
+        await expect(session.call('codex-structured-input-response', {
+            requestKey: request.requestKey,
+            submissionId: 'url-submit',
+            action: 'submit',
+        })).resolves.toEqual({ status: 'submitted' });
+        await waitForSent(ws, 3);
+        expect(JSON.parse(ws.sent[2])).toEqual({
+            id: 913,
+            result: { action: 'accept', content: null, _meta: null },
+        });
+        expect(pendingPermissionRequests.has(request.requestKey)).toBe(false);
+        expect(session.state.codexStructuredRequests).toBeUndefined();
+        await expect(session.call('codex-structured-input-response', {
+            requestKey: request.requestKey,
+            submissionId: 'url-stale',
+            action: 'cancel',
+        })).resolves.toEqual({ status: 'already-resolved' });
+        expect(ws.sent).toHaveLength(3);
+        expect(JSON.stringify(session.state)).not.toContain('native-secret');
+        expect(JSON.stringify(session.state)).not.toContain('private-fragment');
+        await client.disconnect();
+        debug.mockRestore();
+    });
+
+    it('serverRequest/resolved clears broker state and the paired URL permission waiter', async () => {
+        const { client, ws } = await connectFakeClient();
+        const session = new FakeStructuredSession();
+        const broker = new CodexStructuredInputBroker(session);
+        const permissionHandler = new CodexAppServerPermissionHandler(session as never);
+        const pendingPermissionRequests = (permissionHandler as unknown as {
+            pendingRequests: Map<string, unknown>;
+        }).pendingRequests;
+        client.setStructuredInputBroker(broker);
+        client.setPermissionHandler(permissionHandler);
+        Object.assign(client as unknown as Record<string, unknown>, {
+            activeThreadId: 'thread-1',
+            activeTurnId: 'turn-1',
+        });
+
+        ws.message(JSON.stringify({
+            id: 'native-url-id',
+            method: 'mcpServer/elicitation/request',
+            params: {
+                threadId: 'thread-1',
+                turnId: null,
+                serverName: 'example',
+                mode: 'url',
+                _meta: null,
+                message: 'Authorize',
+                url: 'https://example.test/authorize?token=resolved-secret#resolved-fragment',
+                elicitationId: 'elicitation-race',
+            },
+        }));
+        await waitForCondition(() => Object.keys(session.state.codexStructuredRequests ?? {}).length === 1);
+        const requestKey = Object.keys(session.state.codexStructuredRequests ?? {})[0];
+        expect(pendingPermissionRequests.has(requestKey)).toBe(true);
+        expect(session.state.requests?.[requestKey]).toBeUndefined();
+        expect(JSON.stringify(session.state)).not.toContain('resolved-secret');
+
+        ws.message(JSON.stringify({
+            method: 'serverRequest/resolved',
+            params: { threadId: 'thread-1', requestId: 'native-url-id' },
+        }));
+        await waitForCondition(() => (
+            session.state.codexStructuredRequests === undefined
+            && !pendingPermissionRequests.has(requestKey)
+        ));
+
+        expect(ws.sent).toHaveLength(2);
+        expect(session.state.requests?.[requestKey]).toBeUndefined();
+        expect(session.state.completedRequests?.[requestKey]).toBeUndefined();
+        expect(JSON.stringify(session.state)).not.toContain('resolved-secret');
+        expect(JSON.stringify(session.state)).not.toContain('resolved-fragment');
+        await expect(session.call('codex-structured-input-response', {
+            requestKey,
+            submissionId: 'stale-server-resolved',
+            action: 'submit',
+        })).resolves.toEqual({ status: 'already-resolved' });
+        expect(ws.sent).toHaveLength(2);
+        await expect(session.call('codex-structured-input-url', { requestKey })).rejects.toThrow('Structured URL is not available.');
+        await client.disconnect();
+    });
+
+    it('clears pending input on provider disconnect and rejects stale socket messages before reconnect', async () => {
+        const { client, ws } = await connectFakeClient();
+        const session = new FakeStructuredSession();
+        const broker = new CodexStructuredInputBroker(session);
+        client.setStructuredInputBroker(broker);
+        Object.assign(client as unknown as Record<string, unknown>, {
+            activeThreadId: 'thread-1',
+            activeTurnId: 'turn-1',
+        });
+        const formRequest = {
+            id: 'reused-native-id',
+            method: 'mcpServer/elicitation/request',
+            params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                serverName: 'example',
+                mode: 'form',
+                _meta: null,
+                message: 'Enter a value',
+                requestedSchema: {
+                    type: 'object',
+                    properties: { value: { type: 'string' } },
+                },
+            },
+        };
+
+        ws.message(JSON.stringify(formRequest));
+        await waitForCondition(() => Object.keys(session.state.codexStructuredRequests ?? {}).length === 1);
+        const oldRequestKey = Object.keys(session.state.codexStructuredRequests ?? {})[0];
+        Object.assign(client as unknown as Record<string, unknown>, { activeTurnId: null });
+        ws.close();
+        await waitForCondition(() => session.state.codexStructuredRequests === undefined);
+
+        ws.message(JSON.stringify(formRequest));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(session.state.codexStructuredRequests).toBeUndefined();
+
+        const reconnecting = client.connect();
+        const reconnectedWs = FakeWebSocket.instances[1];
+        await initializeFakeWebSocket(reconnectedWs);
+        await reconnecting;
+        Object.assign(client as unknown as Record<string, unknown>, { activeTurnId: 'turn-1' });
+        reconnectedWs.message(JSON.stringify(formRequest));
+        await waitForCondition(() => Object.keys(session.state.codexStructuredRequests ?? {}).length === 1);
+        const newRequestKey = Object.keys(session.state.codexStructuredRequests ?? {})[0];
+        expect(newRequestKey).not.toBe(oldRequestKey);
+
+        await client.disconnect();
+        expect(JSON.parse(reconnectedWs.sent[2])).toEqual({
+            id: 'reused-native-id',
+            result: { action: 'cancel', content: null, _meta: null },
+        });
     });
 
     it.each([

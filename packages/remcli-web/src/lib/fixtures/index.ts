@@ -30,6 +30,7 @@ import {
     FIXTURE_LINEAGE_PARENT_SESSION_ID,
     FIXTURE_LINEAGE_SESSIONS,
     FIXTURE_HOME_TRIAGE_SESSIONS,
+    FIXTURE_STRUCTURED_REQUESTS,
     FIXTURE_MACHINES,
     FIXTURE_SESSIONS,
     FIXTURE_ZEN_TASKS,
@@ -49,12 +50,26 @@ import type {
 } from '@/lib/protocol/socket';
 import { DirectoryProjectsRpcError } from '@/lib/protocol/socket';
 import { useProtocolStore } from '@/lib/protocol/store';
-import type { AgentKind, AgentSessionInfo, ConciergeStatus, Machine, Session, SessionMetadata } from '@/lib/protocol/types';
+import type {
+    AgentKind,
+    AgentSessionInfo,
+    CodexStructuredInputResponse,
+    CodexStructuredInputResponseResult,
+    CodexStructuredInputUrlResult,
+    ConciergeStatus,
+    Machine,
+    Session,
+    SessionMetadata,
+} from '@/lib/protocol/types';
 
 export { FIXTURE_CHAT_SESSION_ID };
 
 /** Фиксированная латентность пилюли соединения в fixture-режиме («p2p · 12ms»). */
 export const FIXTURE_LATENCY_MS = 12;
+
+const FIXTURE_STRUCTURED_INPUT_URLS: Record<string, string> = {
+    'fx-structured-mcp-url': 'https://docs.example.com/remcli/approval?token=fixture-raw-secret#authorize',
+};
 
 const FIXTURE_FLAG_KEY = 'remcli-fixtures';
 
@@ -101,6 +116,12 @@ function getFixturePermissionResponseMode(): "delayed" | "error-once" | null {
     return value === "delayed" || value === "error-once" ? value : null;
 }
 
+function getFixtureStructuredResponseMode(): "delayed" | "error-once" | "already-resolved" | null {
+    if (typeof window === "undefined") return null;
+    const value = new URLSearchParams(window.location.search).get("structuredResponse");
+    return value === "delayed" || value === "error-once" || value === "already-resolved" ? value : null;
+}
+
 // ─── Локальный REST (fetch-перехват) ─────────────────────────────
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -122,6 +143,7 @@ let fixtureAntigravityCapabilityRefreshes = 0;
 let fixtureCursorResumeSpawnAttempts = 0;
 let fixtureSessionExecutionConflictAttempts = 0;
 let fixturePermissionResponseFailureAttempts = 0;
+let fixtureStructuredResponseFailureAttempts = 0;
 const fixtureSessionExecutionBySessionId = new Map<string, SessionExecutionSnapshot>();
 
 interface FixtureLineageMetricsState {
@@ -393,7 +415,32 @@ function fixtureSessions(): Session[] {
     if (chatResume === 'deferred') sessions.push(FIXTURE_ENDED_DEFERRED_CHAT_SESSION);
     if (fixtureQueryParameter('chatLifecycle') === 'codex') sessions.push(FIXTURE_CODEX_LIFECYCLE_CHAT_SESSION);
 
-    return sessions;
+    const structuredScenario = fixtureQueryParameter('structured');
+    return sessions.map((session) => {
+        if (session.id !== FIXTURE_CHAT_SESSION_ID || !session.agentState) return session;
+        const requests: NonNullable<NonNullable<Session['agentState']>['codexStructuredRequests']> = {};
+        if (structuredScenario === 'tool-input') requests['fx-structured-tool-input'] = FIXTURE_STRUCTURED_REQUESTS['fx-structured-tool-input'];
+        if (structuredScenario === 'mcp-form') requests['fx-structured-mcp-form'] = FIXTURE_STRUCTURED_REQUESTS['fx-structured-mcp-form'];
+        if (structuredScenario === 'mcp-url') requests['fx-structured-mcp-url'] = FIXTURE_STRUCTURED_REQUESTS['fx-structured-mcp-url'];
+        const permissionRequests = structuredScenario === 'mcp-url'
+            ? {
+                ...session.agentState.requests,
+                'fx-structured-mcp-url': {
+                    tool: 'CodexMcpElicitation',
+                    arguments: {},
+                    createdAt: FIXTURE_STRUCTURED_REQUESTS['fx-structured-mcp-url'].createdAt,
+                },
+            }
+            : session.agentState.requests;
+        return {
+            ...session,
+            agentState: {
+                ...session.agentState,
+                requests: permissionRequests,
+                codexStructuredRequests: requests,
+            },
+        };
+    });
 }
 
 type LineageFixtureScenario = 'recovery' | 'reconnect-callback' | 'stable-parent' | 'unavailable' | 'foreign-parent';
@@ -740,6 +787,7 @@ export function initFixturesIfEnabled(): boolean {
     fixtureAntigravityCapabilityRefreshes = 0;
     fixtureCursorResumeSpawnAttempts = 0;
     fixtureSessionExecutionConflictAttempts = 0;
+    fixtureStructuredResponseFailureAttempts = 0;
     fixtureSessionExecutionBySessionId.clear();
     fixtureSpawnCallCount = 0;
     fixtureDirectoryProjectsByMachine = createFixtureDirectoryProjectsByMachine();
@@ -1739,11 +1787,14 @@ export async function fixtureAnswerPermission(
     if (!session || !request) return;
     const requests = { ...session.agentState?.requests };
     delete requests[permissionId];
+    const structuredRequests = { ...session.agentState?.codexStructuredRequests };
+    if (structuredRequests[permissionId]?.kind === 'mcp-url') delete structuredRequests[permissionId];
     store.applySessions([{
         ...session,
         agentState: {
             ...session.agentState,
             requests,
+            codexStructuredRequests: structuredRequests,
             completedRequests: {
                 ...session.agentState?.completedRequests,
                 [permissionId]: {
@@ -1754,4 +1805,47 @@ export async function fixtureAnswerPermission(
             }
         }
     }]);
+}
+
+/** Fixture boundary for structured responses; answers are deliberately discarded. */
+export async function fixtureAnswerStructuredInput(
+    sessionId: string,
+    response: CodexStructuredInputResponse,
+): Promise<CodexStructuredInputResponseResult> {
+    const responseMode = getFixtureStructuredResponseMode();
+    if (responseMode === "delayed") {
+        await new Promise((resolve) => setTimeout(resolve, FIXTURE_PERMISSION_RESPONSE_DELAY_MS));
+    }
+    if (responseMode === "error-once" && fixtureStructuredResponseFailureAttempts === 0) {
+        fixtureStructuredResponseFailureAttempts += 1;
+        throw new Error("Fixture structured response failed");
+    }
+
+    const store = useProtocolStore.getState();
+    const session = store.sessions[sessionId];
+    const request = session?.agentState?.codexStructuredRequests?.[response.requestKey];
+    if (!session || !request) return { status: "already-resolved" };
+    const requests = { ...session.agentState?.codexStructuredRequests };
+    delete requests[response.requestKey];
+    const permissionRequests = { ...session.agentState?.requests };
+    if (request.kind === "mcp-url") delete permissionRequests[response.requestKey];
+    store.applySessions([{
+        ...session,
+        agentState: {
+            ...session.agentState,
+            requests: permissionRequests,
+            codexStructuredRequests: requests,
+        },
+    }]);
+    return { status: responseMode === "already-resolved" ? "already-resolved" : "submitted" };
+}
+
+/** Raw URL fixture stays outside AgentState and is returned only on explicit open. */
+export async function fixtureGetStructuredInputUrl(requestKey: string): Promise<CodexStructuredInputUrlResult> {
+    const mode = fixtureQueryParameter('structuredUrl');
+    if (mode === 'error') throw new Error('Fixture structured input URL failed');
+    if (mode === 'unsafe') return { url: 'https://user:secret@docs.example.com/remcli/approval' };
+    const url = FIXTURE_STRUCTURED_INPUT_URLS[requestKey];
+    if (!url) throw new Error('Fixture structured input URL not found');
+    return { url };
 }

@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { NormalizedMessage } from '@/lib/protocol/messages';
 import { mergeMessages } from '@/lib/protocol/store';
 import type { Session } from '@/lib/protocol/types';
+import { FIXTURE_STRUCTURED_REQUESTS } from '@/lib/fixtures/data';
 
 let buildFeed: typeof import('@/pages/ChatPage').buildFeed;
 let MarkdownMessage: typeof import('@/pages/ChatPage').MarkdownMessage;
@@ -24,6 +25,8 @@ let createChatMessageSender: typeof import('@/pages/ChatPage').createChatMessage
 let LineageHistoryNotice: typeof import('@/pages/ChatPage').LineageHistoryNotice;
 let getChatResumeAction: typeof import('@/pages/ChatPage').getChatResumeAction;
 let EndedSessionResume: typeof import('@/pages/ChatPage').EndedSessionResume;
+let pendingStructuredRequestsOf: typeof import('@/pages/ChatPage').pendingStructuredRequestsOf;
+let pendingPermissionsOf: typeof import('@/pages/ChatPage').pendingPermissionsOf;
 
 interface Deferred<T> {
     promise: Promise<T>;
@@ -75,6 +78,8 @@ beforeAll(async () => {
     LineageHistoryNotice = pageModule.LineageHistoryNotice;
     getChatResumeAction = pageModule.getChatResumeAction;
     EndedSessionResume = pageModule.EndedSessionResume;
+    pendingStructuredRequestsOf = pageModule.pendingStructuredRequestsOf;
+    pendingPermissionsOf = pageModule.pendingPermissionsOf;
 });
 
 afterAll(() => {
@@ -115,6 +120,52 @@ describe('ChatPage ended-session resume availability', () => {
 
         expect(resumeButton).toBeDefined();
         expect(resumeButton).not.toMatch(/\sdisabled(?:=|\s|>)/);
+    });
+});
+
+describe('ChatPage structured request state', () => {
+    it('sorts refreshed pending requests and renders no stale request after state closes', () => {
+        const session = {
+            agentState: {
+                codexStructuredRequests: {
+                    later: { ...FIXTURE_STRUCTURED_REQUESTS['fx-structured-mcp-url'], requestKey: 'later', createdAt: 20 },
+                    earlier: { ...FIXTURE_STRUCTURED_REQUESTS['fx-structured-mcp-form'], requestKey: 'earlier', createdAt: 10 },
+                },
+            },
+        } as unknown as Session;
+
+        expect(pendingStructuredRequestsOf(session).map((request) => request.requestKey)).toEqual(['earlier', 'later']);
+        expect(pendingStructuredRequestsOf({ agentState: { codexStructuredRequests: {} } } as Session)).toEqual([]);
+        expect(pendingStructuredRequestsOf(null)).toEqual([]);
+    });
+
+    it('deduplicates the canonical MCP URL permission from generic PermissionCard rendering', () => {
+        const request = FIXTURE_STRUCTURED_REQUESTS['fx-structured-mcp-url'];
+        const session = {
+            agentState: {
+                requests: {
+                    [request.requestKey]: {
+                        tool: 'CodexMcpElicitation',
+                        arguments: {},
+                        createdAt: request.createdAt,
+                    },
+                    'regular-permission': {
+                        tool: 'Bash',
+                        arguments: { command: 'npm test' },
+                        createdAt: request.createdAt + 1,
+                    },
+                },
+                codexStructuredRequests: { [request.requestKey]: request },
+            },
+        } as unknown as Session;
+
+        expect(pendingPermissionsOf(session).map((permission) => permission.id)).toEqual(['regular-permission']);
+        expect(pendingStructuredRequestsOf(session).map((candidate) => candidate.requestKey)).toEqual([request.requestKey]);
+    });
+
+    it('keeps canonical MCP form and URL fixtures blocking', () => {
+        expect(FIXTURE_STRUCTURED_REQUESTS['fx-structured-mcp-form'].isBlocking).toBe(true);
+        expect(FIXTURE_STRUCTURED_REQUESTS['fx-structured-mcp-url'].isBlocking).toBe(true);
     });
 });
 

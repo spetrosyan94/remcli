@@ -115,9 +115,11 @@ prompt ждёт следующего `turn/start`.
 - `turn/steer`;
 - `turn/interrupt`.
 
-`initialize` передаёт фактическую версию Remcli и остаётся на stable API
-surface. `experimentalApi` не объявляется: experimental server requests
-включаются только после реализации их полного P2P/UI-контракта.
+`initialize` передаёт фактическую версию Remcli. `experimentalApi: true`
+объявляется намеренно: без этой capability app-server не отправляет
+`item/tool/requestUserInput` и MCP elicitation requests. Remcli принимает только
+реализованный ниже ограниченный typed contract; неизвестные experimental
+requests остаются fail-closed.
 
 Уведомления преобразуются в события Remcli:
 
@@ -384,14 +386,37 @@ P2P session consumer. Повторный authenticated handoff того же own
 подключение к этой session, поэтому первый mobile prompt нельзя подтвердить
 или потерять через downgrade.
 
+## Structured input
+
+`CodexAppServerClient` принимает два официальных server-request flow:
+
+- `item/tool/requestUserInput`: 1-3 вопроса, provider options, `Other`, free
+  text и secret input;
+- `mcpServer/elicitation/request`: standard `mode: form` с ограниченным typed
+  JSON Schema и `mode: url` с явным открытием HTTPS-ссылки.
+
+Daemon нормализует только разрешённые поля и публикует безопасный display state
+в зашифрованном `agentState.codexStructuredRequests`. Native request id, ответы,
+secret values и raw URL остаются внутри runner. Ответ идёт через session RPC
+`codex-structured-input-response`; raw MCP URL выдаётся только по отдельному
+`codex-structured-input-url` после явного действия пользователя.
+
+Broker привязывает запрос к transport generation, `threadId` и `turnId`.
+`serverRequest/resolved`, timeout, turn completion/interruption, transport loss,
+session swap и cleanup удаляют UI state и завершают связанные waiters
+fail-closed. Повторный или поздний ответ возвращает `already-resolved`, а web не
+показывает его как успешную отправку. Blocking request временно блокирует новый
+chat prompt; после resolution composer разблокируется.
+
+Расширенный MCP `openai/form` не объявляется в initialize capabilities и
+отклоняется с видимым warning. Неподдержанная или oversized schema также
+завершается fail-closed без подмены пустым `accept`.
+
 ## Не реализовано
 
 - Полное отображение терминала/TUI внутри web.
-- Structured input для `item/tool/requestUserInput` и MCP form elicitation:
-  текущий transport отвечает schema-valid fail-closed и публикует warning, но
-  не подменяет ввод пользователя пустым `accept`. MCP `mode: url` остаётся
-  поддержан через обычный permission flow и возвращает `accept`, `decline` или
-  `cancel` без form content.
+- Расширенный MCP `openai/form`; для него не объявляется capability до принятия
+  отдельного UI/P2P-контракта.
 - Межпроцессная блокировка двух одновременных writers одного Codex thread сверх
   текущего duplicate guard.
 - Полная матрица tmux версий: real ownership regression сейчас выполняется на
@@ -428,6 +453,9 @@ P2P session consumer. Повторный authenticated handoff того же own
 - Unit: paginated `model/list` сохраняет все provider values, модель без
   reasoning selector не скрывается, stale/forged selection и raw per-message
   override fail closed.
+- Unit/UI: structured broker сохраняет exact native request id, проверяет scope,
+  schema, timeout и single-submit; MCP URL не попадает в state/logs, а stale
+  response отображается как закрытый, не как отправленный.
 - Unit/integration: spawn передаёт atomic `codexExecution` через daemon и
   повторно валидируется runner до первого native turn.
 - CLI: `npm -w remcli run typecheck`, `npm -w remcli run build`,

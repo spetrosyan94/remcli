@@ -7,6 +7,11 @@ import { redactDiagnosticData, redactSensitiveText } from '@/utils/redaction';
 import packageJson from '../../package.json';
 import type { CodexApprovalPolicy, CodexSandbox, CodexToolResponse } from './types';
 import { CodexPermissionHandler, type PermissionResult } from './utils/permissionHandler';
+import type {
+    CodexStructuredInputBroker,
+    CodexStructuredJsonRpcId,
+    CodexStructuredServerRequestContext,
+} from './codexStructuredInputBroker';
 
 const DEFAULT_TIMEOUT = 14 * 24 * 60 * 60 * 1000;
 const CONNECTION_HANDSHAKE_TIMEOUT = 10_000;
@@ -38,6 +43,7 @@ interface PendingRequest {
     resolve: (value: any) => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
+    transportGeneration: number;
     cleanup?: () => void;
 }
 
@@ -361,10 +367,71 @@ function permissionResultToCommandDecision(result: PermissionResult): string {
     return 'cancel';
 }
 
-function permissionResultToMcpAction(result: PermissionResult): 'accept' | 'decline' | 'cancel' {
-    if (result.decision === 'approved' || result.decision === 'approved_for_session') return 'accept';
-    if (result.decision === 'denied') return 'decline';
-    return 'cancel';
+function permissionResultToMcpElicitationResponse(result: PermissionResult): Record<string, unknown> {
+    const action = result.decision === 'approved' || result.decision === 'approved_for_session'
+        ? 'accept'
+        : result.decision === 'denied'
+            ? 'decline'
+            : 'cancel';
+    return { action, content: null, _meta: null };
+}
+
+function createSafeMcpUrlPermissionInput(params: unknown, requestKey: string): Record<string, unknown> {
+    if (!isRecord(params) || params.mode !== 'url' || typeof params.url !== 'string' || params.url.length > 4096) {
+        throw new Error('Invalid MCP URL elicitation request.');
+    }
+    const rawUrl = new URL(params.url);
+    if (rawUrl.protocol !== 'https:' || rawUrl.username !== '' || rawUrl.password !== '' || rawUrl.hostname === '') {
+        throw new Error('Invalid MCP URL elicitation request.');
+    }
+    rawUrl.search = '';
+    rawUrl.hash = '';
+    const displayUrl = rawUrl.toString();
+    const readString = (key: string, maximum: number): string => {
+        const value = params[key];
+        if (typeof value !== 'string' || value.length === 0 || value.length > maximum) {
+            throw new Error('Invalid MCP URL elicitation request.');
+        }
+        return value;
+    };
+    const threadId = readString('threadId', 128);
+    const turnId = params.turnId === null ? null : readString('turnId', 128);
+    return {
+        kind: 'mcp-url',
+        requestKey,
+        threadId,
+        turnId,
+        serverName: readString('serverName', 256),
+        mode: 'url',
+        message: readString('message', 4096).split(params.url).join(displayUrl),
+        url: displayUrl,
+        displayUrl,
+        elicitationId: readString('elicitationId', 128),
+    };
+}
+
+export class CodexAppServerPermissionHandler extends CodexPermissionHandler {
+    waitForMcpUrlDecision(requestKey: string, input: unknown): Promise<PermissionResult> {
+        if (this.pendingRequests.has(requestKey)) {
+            return Promise.reject(new Error('Codex MCP URL request is already pending.'));
+        }
+        return new Promise<PermissionResult>((resolve, reject) => {
+            this.pendingRequests.set(requestKey, {
+                resolve,
+                reject,
+                toolName: 'CodexMcpElicitation',
+                input,
+            });
+        });
+    }
+
+    cancelPendingRequest(requestKey: string): boolean {
+        const pending = this.pendingRequests.get(requestKey);
+        if (!pending) return false;
+        this.pendingRequests.delete(requestKey);
+        pending.reject(new Error('Codex MCP URL request was resolved before permission submission.'));
+        return true;
+    }
 }
 
 function errorFromJsonRpc(message: JsonRpcMessage): Error {
@@ -632,6 +699,8 @@ export class CodexAppServerClient {
     private recoveryPromise: Promise<void> | null = null;
     private isDisconnecting = false;
     private nextRequestId = 1;
+    private transportGeneration = 0;
+    private activeTransportGeneration = 0;
     private pendingRequests = new Map<JsonRpcId, PendingRequest>();
     private turnWaiters = new Map<string, TurnWaiter>();
     private completedTurns = new Map<string, CodexToolResponse>();
@@ -651,6 +720,7 @@ export class CodexAppServerClient {
     private handler: ((event: CodexAppServerEvent) => void) | null = null;
     private threadIdChangeHandler: ((threadId: string) => void) | null = null;
     private permissionHandler: CodexPermissionHandler | null = null;
+    private structuredInputBroker: CodexStructuredInputBroker | null = null;
     private activeThreadId: string | null = null;
     private activeTurnId: string | null = null;
 
@@ -669,6 +739,21 @@ export class CodexAppServerClient {
 
     setPermissionHandler(handler: CodexPermissionHandler): void {
         this.permissionHandler = handler;
+    }
+
+    setStructuredInputBroker(broker: CodexStructuredInputBroker | null): void {
+        if (this.structuredInputBroker && this.structuredInputBroker !== broker) {
+            this.structuredInputBroker.setPermissionWaiterCancelSink(undefined);
+        }
+        this.structuredInputBroker = broker;
+        broker?.setPermissionWaiterCancelSink((requestKey) => this.cancelPermissionWaiter(requestKey));
+    }
+
+    private cancelPermissionWaiter(requestKey: string): void {
+        const handler = this.permissionHandler as (CodexPermissionHandler & {
+            cancelPendingRequest?: (id: string) => boolean;
+        }) | null;
+        handler?.cancelPendingRequest?.(requestKey);
     }
 
     private setActiveThreadId(threadId: string): void {
@@ -821,6 +906,9 @@ export class CodexAppServerClient {
                     title: 'Remcli',
                     version: packageJson.version,
                 },
+                capabilities: {
+                    experimentalApi: true,
+                },
             }, undefined, CONNECTION_HANDSHAKE_TIMEOUT);
             this.notify('initialized', {});
             this.connected = true;
@@ -846,6 +934,8 @@ export class CodexAppServerClient {
 
     private connectStdio(): void {
         logger.debug('[CodexAppServer] Starting codex app-server over stdio');
+        const transportGeneration = ++this.transportGeneration;
+        this.activeTransportGeneration = transportGeneration;
         this.proc = spawn('codex', ['app-server'], {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: Object.fromEntries(
@@ -853,20 +943,26 @@ export class CodexAppServerClient {
             ),
         });
         this.rl = readline.createInterface({ input: this.proc.stdout });
-        this.rl.on('line', (line) => this.handleLine(line));
+        this.rl.on('line', (line) => this.handleLine(line, transportGeneration));
         this.proc.stderr.on('data', (chunk) => {
             const text = chunk.toString().trim();
             if (text) logger.debug('[CodexAppServer][stderr]', redactSensitiveText(text));
         });
         this.proc.on('exit', (code, signal) => {
+            if (this.activeTransportGeneration !== transportGeneration) return;
             logger.debug(`[CodexAppServer] exited code=${code ?? 'null'} signal=${signal ?? 'null'}`);
             this.connected = false;
+            this.structuredInputBroker?.clearForTransport(transportGeneration);
+            this.activeTransportGeneration = 0;
             const error = new Error('Codex app-server exited.');
             this.rejectAll(error);
         });
         this.proc.on('error', (error) => {
+            if (this.activeTransportGeneration !== transportGeneration) return;
             logger.debug('[CodexAppServer] process error:', redactDiagnosticData(error));
             this.connected = false;
+            this.structuredInputBroker?.clearForTransport(transportGeneration);
+            this.activeTransportGeneration = 0;
             this.rejectAll(error);
         });
     }
@@ -874,6 +970,8 @@ export class CodexAppServerClient {
     private async connectWebSocket(): Promise<void> {
         if (!this.endpoint) return;
         logger.debug(`[CodexAppServer] Connecting to shared app-server ${this.endpoint}`);
+        const transportGeneration = ++this.transportGeneration;
+        this.activeTransportGeneration = transportGeneration;
         const ws = this.webSocketFactory(this.endpoint);
         this.ws = ws;
 
@@ -926,7 +1024,7 @@ export class CodexAppServerClient {
                 logger.debug('[CodexAppServer] Ignoring websocket message with unsupported data type');
                 return;
             }
-            this.handleTransportText(text);
+            this.handleTransportText(text, transportGeneration);
         });
         ws.addEventListener('close', () => {
             if (this.ws !== ws) {
@@ -936,6 +1034,8 @@ export class CodexAppServerClient {
             this.connected = false;
             this.ws = null;
             const error = new CodexAppServerTransportError('Codex app-server websocket disconnected.');
+            this.structuredInputBroker?.clearForTransport(transportGeneration);
+            this.activeTransportGeneration = 0;
             this.rejectPendingRequests(error);
             if (this.isDisconnecting) {
                 return;
@@ -959,6 +1059,8 @@ export class CodexAppServerClient {
         } catch {
             // best effort
         }
+        this.structuredInputBroker?.clearForTransport(this.activeTransportGeneration);
+        this.activeTransportGeneration = 0;
         this.rejectPendingRequests(error);
         this.recoverActiveWebSocketTurn();
     }
@@ -1671,6 +1773,7 @@ export class CodexAppServerClient {
 
     async disconnect(): Promise<void> {
         this.isDisconnecting = true;
+        this.structuredInputBroker?.clearForTransport(this.activeTransportGeneration, true);
         this.clearUserMessageTracking();
         this.rl?.close();
         this.rl = null;
@@ -1713,6 +1816,7 @@ export class CodexAppServerClient {
     }
 
     clearSession(): void {
+        this.structuredInputBroker?.clearAll('session-cleanup');
         this.activeThreadId = null;
         this.activeTurnId = null;
         this.turnThreadIds.clear();
@@ -1796,7 +1900,12 @@ export class CodexAppServerClient {
                 }
                 reject(timeoutError);
             }, timeoutMs);
-            const pending: PendingRequest = { resolve, reject, timeout };
+            const pending: PendingRequest = {
+                resolve,
+                reject,
+                timeout,
+                transportGeneration: this.activeTransportGeneration,
+            };
             this.pendingRequests.set(id, pending);
             if (signal) {
                 const onAbort = () => {
@@ -1856,14 +1965,18 @@ export class CodexAppServerClient {
         throw new Error('Codex app-server is not running.');
     }
 
-    private handleTransportText(text: string): void {
+    private handleTransportText(text: string, transportGeneration: number = this.activeTransportGeneration): void {
         const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
         for (const line of lines) {
-            this.handleLine(line);
+            this.handleLine(line, transportGeneration);
         }
     }
 
-    private handleLine(line: string): void {
+    private handleLine(line: string, transportGeneration: number = this.activeTransportGeneration): void {
+        if (transportGeneration !== this.activeTransportGeneration) {
+            logger.debug('[CodexAppServer] Ignoring a stale transport message.');
+            return;
+        }
         let message: JsonRpcMessage;
         try {
             message = JSON.parse(line) as JsonRpcMessage;
@@ -1874,7 +1987,7 @@ export class CodexAppServerClient {
 
         if ((typeof message.id === 'number' || typeof message.id === 'string') && !message.method) {
             const pending = this.pendingRequests.get(message.id);
-            if (pending) {
+            if (pending && pending.transportGeneration === transportGeneration) {
                 this.pendingRequests.delete(message.id);
                 clearTimeout(pending.timeout);
                 pending.cleanup?.();
@@ -1888,22 +2001,77 @@ export class CodexAppServerClient {
         }
 
         if ((typeof message.id === 'number' || typeof message.id === 'string') && typeof message.method === 'string') {
-            void this.handleServerRequest(message);
+            void this.handleServerRequest(message, transportGeneration);
             return;
         }
 
         if (typeof message.method === 'string') {
-            this.handleNotification(message.method, message.params);
+            this.handleNotification(message.method, message.params, transportGeneration);
         }
     }
 
-    private async handleServerRequest(message: JsonRpcMessage): Promise<void> {
+    private async handleServerRequest(message: JsonRpcMessage, transportGeneration: number): Promise<void> {
         const id = message.id;
         if (typeof id !== 'number' && typeof id !== 'string') return;
         const method = message.method;
         const params = message.params ?? {};
 
         try {
+            if (method === 'item/tool/requestUserInput' || method === 'mcpServer/elicitation/request') {
+                const context: CodexStructuredServerRequestContext = {
+                    method,
+                    nativeRequestId: id,
+                    params,
+                    transportGeneration,
+                    isCurrentScope: (requestMethod, requestParams) => this.isCurrentStructuredRequestScope(requestMethod, requestParams),
+                    respond: (nativeRequestId, result, generation) => this.respondStructuredRequest(
+                        nativeRequestId,
+                        result,
+                        generation,
+                    ),
+                };
+                if (method === 'mcpServer/elicitation/request' && isRecord(params) && params.mode === 'url') {
+                    if (this.structuredInputBroker) {
+                        const urlRequest = this.structuredInputBroker.registerMcpUrlRequest(context);
+                        if (!urlRequest) return;
+                        try {
+                            const result = await this.requestBrokeredMcpUrlPermission(
+                                urlRequest.requestKey,
+                                urlRequest.permissionInput,
+                            );
+                            this.structuredInputBroker.resolveMcpUrlPermission(urlRequest.requestKey, result.decision);
+                        } catch {
+                            this.structuredInputBroker.resolveMcpUrlPermission(urlRequest.requestKey, 'abort');
+                        }
+                        return;
+                    }
+                    const requestKey = String(id);
+                    const result = await this.requestPermission(
+                        requestKey,
+                        'CodexMcpElicitation',
+                        createSafeMcpUrlPermissionInput(params, requestKey),
+                    );
+                    this.respond(id, permissionResultToMcpElicitationResponse(result));
+                    return;
+                }
+                if (!this.structuredInputBroker) {
+                    this.handler?.({
+                        type: 'agent_warning',
+                        message: method === 'item/tool/requestUserInput'
+                            ? 'Codex requested structured user input, which Remcli does not support yet.'
+                            : 'Codex requested structured MCP input, which Remcli does not support yet.',
+                    });
+                    this.respond(
+                        id,
+                        method === 'item/tool/requestUserInput'
+                            ? { answers: {} }
+                            : { action: 'cancel', content: null, _meta: null },
+                    );
+                    return;
+                }
+                this.structuredInputBroker.handleServerRequest(context);
+                return;
+            }
             if (method === 'item/commandExecution/requestApproval') {
                 const result = await this.requestPermission(params.itemId ?? params.approvalId ?? String(id), 'CodexBash', {
                     command: params.command,
@@ -1917,31 +2085,6 @@ export class CodexAppServerClient {
             if (method === 'item/fileChange/requestApproval') {
                 const result = await this.requestPermission(params.itemId ?? String(id), 'CodexFileChange', params);
                 this.respond(id, { decision: permissionResultToCommandDecision(result) });
-                return;
-            }
-            if (method === 'item/tool/requestUserInput') {
-                this.handler?.({
-                    type: 'agent_warning',
-                    message: 'Codex requested structured user input, which Remcli does not support yet.',
-                });
-                this.respond(id, { answers: {} });
-                return;
-            }
-            if (method === 'mcpServer/elicitation/request') {
-                if (params.mode === 'url') {
-                    const result = await this.requestPermission(String(id), 'CodexMcpElicitation', params);
-                    this.respond(id, {
-                        action: permissionResultToMcpAction(result),
-                        content: null,
-                        _meta: null,
-                    });
-                    return;
-                }
-                this.handler?.({
-                    type: 'agent_warning',
-                    message: 'Codex requested structured MCP input, which Remcli does not support yet.',
-                });
-                this.respond(id, { action: 'cancel', content: null, _meta: null });
                 return;
             }
             if (method === 'item/permissions/requestApproval') {
@@ -1986,8 +2129,57 @@ export class CodexAppServerClient {
         return this.permissionHandler.handleToolCall(id, toolName, input);
     }
 
-    private handleNotification(method: string, params: any): void {
-        logger.debug(`[CodexAppServer] notification ${method}:`, redactDiagnosticData(params));
+    private requestBrokeredMcpUrlPermission(id: string, input: unknown): Promise<PermissionResult> {
+        const handler = this.permissionHandler as (CodexPermissionHandler & {
+            waitForMcpUrlDecision?: (requestKey: string, safeInput: unknown) => Promise<PermissionResult>;
+        }) | null;
+        if (!handler?.waitForMcpUrlDecision) {
+            return Promise.resolve({ decision: 'denied' });
+        }
+        return handler.waitForMcpUrlDecision(id, input);
+    }
+
+    private isCurrentStructuredRequestScope(
+        method: CodexStructuredServerRequestContext['method'],
+        params: unknown,
+    ): boolean {
+        if (!isRecord(params) || typeof params.threadId !== 'string' || params.threadId !== this.activeThreadId) {
+            return false;
+        }
+        if (method === 'item/tool/requestUserInput') {
+            return typeof params.turnId === 'string'
+                && params.turnId === this.activeTurnId
+                && typeof params.itemId === 'string';
+        }
+        if (params.turnId !== null && typeof params.turnId !== 'string') {
+            return false;
+        }
+        return params.turnId === null || params.turnId === this.activeTurnId;
+    }
+
+    private respondStructuredRequest(
+        nativeRequestId: CodexStructuredJsonRpcId,
+        result: unknown,
+        transportGeneration: number,
+    ): boolean {
+        if (transportGeneration !== this.activeTransportGeneration) return false;
+        try {
+            this.respond(nativeRequestId, result);
+            return true;
+        } catch (error) {
+            logger.debug('[CodexAppServer] Failed to respond to structured input request:', redactDiagnosticData(error));
+            return false;
+        }
+    }
+
+    private handleNotification(method: string, params: any, transportGeneration: number = this.activeTransportGeneration): void {
+        if (transportGeneration !== this.activeTransportGeneration) return;
+        const safeParams = method === 'serverRequest/resolved'
+            ? { threadId: getNotificationThreadId(params), hasRequestId: isRecord(params) && params.requestId !== undefined }
+            : method === 'turn/completed'
+                ? { threadId: getNotificationThreadId(params), turnId: getNotificationTurnId(params) }
+                : redactDiagnosticData(params);
+        logger.debug(`[CodexAppServer] notification ${method}:`, safeParams);
         if (this.hasAmbiguousThreadStart && method !== 'error') {
             logger.debug(`[CodexAppServer] ignoring ${method} after an ambiguous thread/start result`);
             return;
@@ -2010,8 +2202,30 @@ export class CodexAppServerClient {
                 {
                     if (!this.shouldHandleThreadScopedNotification(method, params, true)) return;
                     const completionEvent = this.completeTurn(params);
+                    const threadId = getNotificationThreadId(params);
+                    const turnId = getNotificationTurnId(params);
+                    if (threadId && turnId) {
+                        this.structuredInputBroker?.clearForTurn(threadId, turnId, 'turn-completed');
+                    }
                     if (completionEvent) {
                         this.handler?.(completionEvent);
+                    }
+                }
+                return;
+            case 'serverRequest/resolved':
+                if (!this.shouldHandleThreadScopedNotification(method, params, false)) return;
+                if (
+                    this.structuredInputBroker
+                    && isRecord(params)
+                    && (typeof params.requestId === 'string' || typeof params.requestId === 'number')
+                ) {
+                    const threadId = getNotificationThreadId(params);
+                    if (threadId) {
+                        this.structuredInputBroker.handleServerRequestResolved({
+                            threadId,
+                            nativeRequestId: params.requestId,
+                            transportGeneration,
+                        });
                     }
                 }
                 return;

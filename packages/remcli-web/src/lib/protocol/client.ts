@@ -12,6 +12,8 @@ import {
     fixtureGetAntigravityCapabilities,
     fixtureGetCursorCapabilities,
     fixtureGetSessionExecution,
+    fixtureGetStructuredInputUrl,
+    fixtureAnswerStructuredInput,
     fixtureListAgentSessions,
     fixtureListDirectory,
     fixtureListDirectoryProjects,
@@ -76,6 +78,8 @@ import {
     onSocketStatusChange,
     sendEncryptedMessage,
     sessionAllow as socketSessionAllow,
+    sessionCodexStructuredInputResponse as socketSessionCodexStructuredInputResponse,
+    sessionCodexStructuredInputUrl as socketSessionCodexStructuredInputUrl,
     sessionDeny as socketSessionDeny,
     socketConnect,
     socketDisconnect,
@@ -111,7 +115,10 @@ import {
     type MachineMetadata,
     type PermissionMode,
     type Session,
-    type SessionMetadata
+    type SessionMetadata,
+    type CodexStructuredInputResponse,
+    type CodexStructuredInputResponseResult,
+    type CodexStructuredInputUrlResult,
 } from '@/lib/protocol/types';
 
 // ─── UUID (secure-context independent) ───────────────────────────
@@ -992,6 +999,26 @@ export async function sessionDeny(
         return;
     }
     await socketSessionDeny(sessionId, id, mode, allowedTools, decision);
+}
+
+/** Respond to one Codex structured request without echoing answers locally. */
+export async function sessionCodexStructuredInputResponse(
+    sessionId: string,
+    response: CodexStructuredInputResponse,
+): Promise<CodexStructuredInputResponseResult> {
+    if (isFixturesActive) {
+        return fixtureAnswerStructuredInput(sessionId, response);
+    }
+    return socketSessionCodexStructuredInputResponse(sessionId, response);
+}
+
+/** Fetch a pending MCP URL only after the user explicitly chooses to open it. */
+export async function sessionCodexStructuredInputUrl(
+    sessionId: string,
+    requestKey: string,
+): Promise<CodexStructuredInputUrlResult> {
+    if (isFixturesActive) return fixtureGetStructuredInputUrl(requestKey);
+    return socketSessionCodexStructuredInputUrl(sessionId, requestKey);
 }
 
 /**

@@ -218,6 +218,63 @@ export const MetadataSchema = z.object({
 
 export type SessionMetadata = z.infer<typeof MetadataSchema>;
 
+const StructuredInputOptionSchema = z.object({
+    value: z.string().min(1),
+    label: z.string().min(1),
+    description: z.string().optional(),
+});
+
+const StructuredInputStringFormatSchema = z.enum(['email', 'uri', 'date', 'date-time']);
+
+const StructuredInputFieldSchema = z.object({
+    id: z.string().min(1),
+    type: z.enum(['text', 'number', 'integer', 'boolean', 'select', 'multiselect']),
+    label: z.string().min(1),
+    description: z.string().optional(),
+    required: z.boolean(),
+    defaultValue: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]).optional(),
+    format: StructuredInputStringFormatSchema.optional(),
+    isSecret: z.boolean().optional(),
+    allowOther: z.boolean().optional(),
+    options: z.array(StructuredInputOptionSchema).optional(),
+    minLength: z.number().int().nonnegative().optional(),
+    maxLength: z.number().int().nonnegative().optional(),
+    minimum: z.number().optional(),
+    maximum: z.number().optional(),
+    minItems: z.number().int().nonnegative().optional(),
+    maxItems: z.number().int().nonnegative().optional(),
+});
+
+const SafeDisplayUrlSchema = z.string().url().refine((value) => {
+    try {
+        const url = new URL(value);
+        return url.protocol === 'https:'
+            && !url.username
+            && !url.password
+            && !url.search
+            && !url.hash;
+    } catch {
+        return false;
+    }
+}, 'Only projected https URLs without userinfo, query, or fragment are allowed');
+
+export const CodexStructuredRequestSchema = z.object({
+    requestKey: z.string().min(1),
+    kind: z.enum(['tool-input', 'mcp-form', 'mcp-url']),
+    message: z.string(),
+    fields: z.array(StructuredInputFieldSchema),
+    serverName: z.string().optional(),
+    displayUrl: SafeDisplayUrlSchema.optional(),
+    url: z.never().optional(),
+    isBlocking: z.boolean(),
+    createdAt: z.number(),
+    deadlineAt: z.number(),
+}).superRefine((request, context) => {
+    if (request.kind === 'mcp-url' && !request.displayUrl) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ['displayUrl'], message: 'mcp-url requests require displayUrl' });
+    }
+});
+
 export const AgentStateSchema = z.object({
     controlledByUser: z.boolean().nullish(),
     requests: z.record(z.string(), z.object({
@@ -225,6 +282,7 @@ export const AgentStateSchema = z.object({
         arguments: z.any(),
         createdAt: z.number().nullish()
     })).nullish(),
+    codexStructuredRequests: z.record(CodexStructuredRequestSchema).nullish(),
     completedRequests: z.record(z.string(), z.object({
         tool: z.string(),
         arguments: z.any(),
@@ -239,6 +297,33 @@ export const AgentStateSchema = z.object({
 });
 
 export type AgentState = z.infer<typeof AgentStateSchema>;
+export type StructuredInputOption = z.infer<typeof StructuredInputOptionSchema>;
+export type StructuredInputField = z.infer<typeof StructuredInputFieldSchema>;
+export type CodexStructuredRequest = z.infer<typeof CodexStructuredRequestSchema>;
+export type CodexStructuredRequestState = CodexStructuredRequest;
+export type CodexStructuredRequestKind = CodexStructuredRequest['kind'];
+export type CodexStructuredFieldType = StructuredInputField['type'];
+export type CodexStructuredStringFormat = z.infer<typeof StructuredInputStringFormatSchema>;
+export type CodexStructuredRequestOption = StructuredInputOption;
+export type CodexStructuredRequestField = StructuredInputField;
+
+export interface CodexStructuredInputResponse {
+    requestKey: string;
+    submissionId: string;
+    action: 'submit' | 'decline' | 'cancel';
+    answers?: Record<string, string[]>;
+    content?: Record<string, unknown>;
+}
+
+export const CodexStructuredInputResponseResultSchema = z.object({
+    status: z.enum(['submitted', 'already-resolved']),
+});
+
+export type CodexStructuredInputResponseResult = z.infer<typeof CodexStructuredInputResponseResultSchema>;
+
+export interface CodexStructuredInputUrlResult {
+    url: string;
+}
 
 // ─── Machine metadata (decrypted payload) ────────────────────────
 

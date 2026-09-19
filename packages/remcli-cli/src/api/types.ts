@@ -442,4 +442,56 @@ export type AgentState = {
       allowTools?: string[]
     }
   }
+  /**
+   * Codex-only pending structured input display state. Native request ids,
+   * answers, and provider payloads are intentionally excluded.
+   */
+  codexStructuredRequests?: Record<string, CodexStructuredRequestState>
+}
+
+export type CodexStructuredRequestKind = 'tool-input' | 'mcp-form' | 'mcp-url'
+
+export type CodexStructuredFieldType = 'text' | 'number' | 'integer' | 'boolean' | 'select' | 'multiselect'
+
+export type CodexStructuredStringFormat = 'email' | 'uri' | 'date' | 'date-time'
+
+export interface CodexStructuredRequestOption {
+  value: string
+  label: string
+  description?: string
+}
+
+export type CodexStructuredFieldDefault = string | number | boolean | string[]
+
+export interface CodexStructuredRequestField {
+  id: string
+  type: CodexStructuredFieldType
+  label: string
+  description?: string
+  required: boolean
+  defaultValue?: CodexStructuredFieldDefault
+  format?: CodexStructuredStringFormat
+  isSecret?: boolean
+  allowOther?: boolean
+  options?: CodexStructuredRequestOption[]
+  minLength?: number
+  maxLength?: number
+  minimum?: number
+  maximum?: number
+  minItems?: number
+  maxItems?: number
+}
+
+/** Safe, normalized display projection retained in encrypted session state. */
+export interface CodexStructuredRequestState {
+  requestKey: string
+  kind: CodexStructuredRequestKind
+  message: string
+  fields: CodexStructuredRequestField[]
+  serverName?: string
+  /** HTTPS display target with credentials, query, and fragment removed. */
+  displayUrl?: string
+  isBlocking: boolean
+  createdAt: number
+  deadlineAt: number
 }

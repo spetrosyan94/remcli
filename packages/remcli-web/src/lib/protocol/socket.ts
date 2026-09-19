@@ -11,7 +11,15 @@
 
 import { io, type Socket } from 'socket.io-client';
 import type { Cipher } from '@/lib/protocol/encryption';
-import type { AgentKind, AgentSessionInfo, PermissionMode } from '@/lib/protocol/types';
+import {
+    CodexStructuredInputResponseResultSchema,
+    type CodexStructuredInputResponseResult,
+    type CodexStructuredInputResponse,
+    type CodexStructuredInputUrlResult,
+    type AgentKind,
+    type AgentSessionInfo,
+    type PermissionMode,
+} from '@/lib/protocol/types';
 import { attachRequestProof } from '@/lib/protocol/requestProof';
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -1178,6 +1186,44 @@ export async function sessionDeny(
 ): Promise<void> {
     const request: SessionPermissionRequest = { id, approved: false, mode, allowTools: allowedTools, decision };
     await sessionRpc(sessionId, 'permission', request);
+}
+
+/** Respond to one Codex structured request decision. */
+export async function sessionCodexStructuredInputResponse(
+    sessionId: string,
+    response: CodexStructuredInputResponse,
+): Promise<CodexStructuredInputResponseResult> {
+    const result = await sessionRpc(sessionId, 'codex-structured-input-response', response);
+    return CodexStructuredInputResponseResultSchema.parse(result);
+}
+
+function parseStructuredInputUrlResult(value: unknown): CodexStructuredInputUrlResult {
+    if (typeof value !== 'object' || value === null || !('url' in value) || typeof value.url !== 'string') {
+        throw new Error('Invalid structured input URL response');
+    }
+    try {
+        const url = new URL(value.url);
+        if (url.protocol !== 'https:' || url.username || url.password || !url.hostname) {
+            throw new Error('Unsafe structured input URL response');
+        }
+    } catch (error) {
+        if (error instanceof Error && error.message === 'Unsafe structured input URL response') throw error;
+        throw new Error('Invalid structured input URL response');
+    }
+    return { url: value.url };
+}
+
+/** Fetch the raw MCP URL only for an explicit user open action. */
+export async function sessionCodexStructuredInputUrl(
+    sessionId: string,
+    requestKey: string,
+): Promise<CodexStructuredInputUrlResult> {
+    const result = await sessionRpc<unknown, { requestKey: string }>(
+        sessionId,
+        'codex-structured-input-url',
+        { requestKey },
+    );
+    return parseStructuredInputUrlResult(result);
 }
 
 /** Abort the current agent turn. */

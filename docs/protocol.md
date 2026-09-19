@@ -287,6 +287,20 @@ auth: {
   - `set-session-execution { sessionId, expectedRevision, execution }` принимает
     provider-discriminated selection, повторно проверяет свежий catalog и
     возвращает новый snapshot. Raw selection из chat message не используется.
+  - Session-scoped `codex-structured-input-response` принимает только
+    `{ requestKey, submissionId, action, answers? | content? }`. Daemon повторно
+    валидирует типы и scope; ответ — `{ status: "submitted" |
+    "already-resolved" }`. Поля формы и secret values не пишутся в session
+    state, messages или completed history.
+  - Session-scoped `codex-structured-input-url { requestKey }` возвращает raw
+    HTTPS URL только для живого MCP URL request. В `agentState` хранится только
+    URL без credentials, query и fragment; web запрашивает raw URL после явного
+    действия пользователя.
+
+`agentState.codexStructuredRequests` — зашифрованная безопасная проекция живых
+Codex structured requests. Native JSON-RPC id и provider payload остаются
+private в runner. Запись удаляется при ответе, provider resolution, timeout,
+turn completion/interruption, transport loss или cleanup.
 
 ## HTTP-endpoint'ы по областям
 
